@@ -38,6 +38,13 @@ pub const PANIC_GENERATOR: i32 = 4;
 pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 /// Fixed memory size, in 64 KiB pages, of a module that allocates objects.
 pub const HEAP_PAGES: u32 = 16;
+/// The last guest-memory page is a transient, single-reader scratch buffer
+/// *only* for modules importing versioned checked stdin. It is never exposed
+/// as an owned string: a successful read copies exactly its UTF-8 bytes into
+/// the bounded guest heap before the lease is released or execution yields.
+const STDIO_SCRATCH_BYTES: u32 = 65536;
+const STDIO_SCRATCH_START: u32 = (HEAP_PAGES - 1) * STDIO_SCRATCH_BYTES;
+const STDIO_READER_BUSY: i32 = 17; // IoError.ReaderBusy in v1 JSPI ABI
 
 const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
@@ -85,10 +92,12 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::FutureInt | Type::ChannelInt | Type::IoError |
-        Type::FutureReadInt | Type::ResultOptionIntIoError |
-        Type::ResultChannelIntIoError | Type::ResultVoidIoError => Some(I32),
-        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::FutureInt | Type::ChannelInt | Type::ChannelStr | Type::WritableStr |
+        Type::IoError | Type::FutureReadInt | Type::ResultOptionIntIoError |
+        Type::ResultOptionStrIoError | Type::ResultChannelIntIoError |
+        Type::ResultVoidIoError => Some(I32),
+        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt |
+        Type::OptionStr | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -136,6 +145,9 @@ struct Layout {
     state_base: u32,
     /// Per-instance free-list for 32-byte generator continuation frames.
     gen_free_global: Option<u32>,
+    /// Per-module single-reader lease for the reserved JSPI stdin scratch
+    /// page. Appended after all preexisting globals, preserving their indices.
+    stdio_busy_global: Option<u32>,
     /// Function index within source funcs+runtime helpers: first appended
     /// generator operation is new(); then checked_ptr, next, close.
     gen_first_func: u32,
@@ -412,6 +424,190 @@ impl Emit<'_> {
     /// Lower the flattened Worker result tag (Some=0, None=1, Err=2)
     /// to the compiler's nested immutable Result<Option<int>, IoError>.
     /// Never synthesize an integer for EOF/error and never duplicate the read.
+    /// Encode a host status in the same Result wire layout used by native
+    /// ADT constructors: tag 0=Ok, tag 1=Err, i32 payload at offset 8.
+    /// For Result<void, IoError> the success payload remains zero.
+    fn channel_status_result(&mut self, status: u32, result: u32, handle: Option<u32>) {
+        self.i32c(16); self.call(self.l.helper(H_ALLOC)); self.set(result);
+        self.get(status);
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(result); self.i32c(1); self.store_i32(0);
+        self.get(result); self.get(status); self.store_i32(8);
+        self.op(0x05);
+        self.get(result); self.i32c(0); self.store_i32(0);
+        if let Some(handle) = handle {
+            self.get(result); self.get(handle); self.load_i32(0);
+            self.store_i32(8);
+        }
+        self.close();
+        self.get(result);
+    }
+
+    fn channel_open(&mut self, capacity: &TE, capacity_slot: u32,
+                    handle: u32, result: u32, status: u32) {
+        // Evaluate once. Check *before* wrapping i64 to i32: otherwise
+        // 2^32+small would turn into an unintended small valid capacity.
+        self.expr(capacity); self.set(capacity_slot);
+        self.i32c(8); self.call(self.l.helper(H_ALLOC)); self.set(handle);
+        self.get(capacity_slot); self.i64c(0); self.op(0x53); // i64.lt_s
+        self.get(capacity_slot); self.i64c(i32::MAX as i64); self.op(0x55); // i64.gt_s
+        self.op(0x72); // i32.or (both comparisons produce i32)
+        self.open(0x04, 0x40, Frame::Other);
+        self.i32c(1); self.set(status); // checked InvalidCapacity
+        self.op(0x05);
+        self.get(capacity_slot); self.op(0xA7); // i32.wrap_i64
+        self.get(handle);
+        self.call(self.l.import(Import::ChannelOpen));
+        self.set(status);
+        self.close();
+        self.channel_status_result(status, result, Some(handle));
+    }
+
+    fn channel_try_send(&mut self, channel: &TE, value: &TE,
+                        result: u32, status: u32) {
+        // One nonparking host admission decision. Full -> Err(Full),
+        // not an implicit wait and not an uncaught host exception.
+        self.expr(channel);
+        self.expr(value);
+        self.call(self.l.import(Import::ChannelSend));
+        self.set(status);
+        self.channel_status_result(status, result, None);
+    }
+
+    fn channel_send_async(&mut self, channel: &TE, value: &TE,
+                          result: u32, status: u32) {
+        // Operands evaluated once in order. Async host admission waits for a
+        // real bounded FIFO slot (or zero-capacity receiver), never spins,
+        // parks a carrier, or treats Full as a successful send.
+        self.expr(channel);
+        self.expr(value);
+        self.call(self.l.import(Import::ChannelSendAsync)); // JSPI suspending
+        self.set(status);
+        // Even immediately admitted writes release the carrier for a turn.
+        self.call(self.l.import(Import::Cooperate));
+        self.channel_status_result(status, result, None);
+    }
+
+    fn channel_close_or_release(&mut self, channel: &TE, release: bool,
+                                 result: u32, status: u32) {
+        self.expr(channel);
+        self.call(self.l.import(if release { Import::ChannelRelease }
+                               else { Import::ChannelClose }));
+        self.set(status);
+        self.channel_status_result(status, result, None);
+    }
+
+    /// One externally authorized UTF-8 stdin record. Allocate before JSPI
+    /// suspension, and never retain a guest DataView across asynchronous I/O.
+    /// Host flattened outcome: i32 tag 0=Some,1=None,2=Err; i32 error +4,
+    /// i32 UTF-8 length +8. A single reserved scratch page is serialized by
+    /// an instance-local lease (including across JSPI suspension). Before the
+    /// lease is released or a cooperative yield occurs, Some(bytes) is copied
+    /// into a separately owned, 8-aligned heap allocation of its *real* size.
+    /// Repeated 1-byte reads therefore do not leak 64 KiB each, and later
+    /// reads cannot mutate any previously returned Option<string> payload.
+    fn stdio_read(&mut self, channel: &TE, bytes: u32, outcome: u32,
+                  result: u32, option: u32, status: u32) {
+        let alloc = self.l.helper(H_ALLOC);
+        let lease = self.l.stdio_busy_global.expect("StdioRead requires a scratch lease");
+        self.i32c(16); self.call(alloc); self.set(outcome);
+        self.i32c(16); self.call(alloc); self.set(result);
+        self.i32c(16); self.call(alloc); self.set(option);
+
+        self.global_get(lease);
+        self.open(0x04, 0x40, Frame::Other);
+        // Another logical continuation owns the buffer: never call the host
+        // and never race its pending, or just-completed, JSPI read.
+        self.get(result); self.i32c(1); self.store_i32(0);
+        self.get(result); self.i32c(STDIO_READER_BUSY); self.store_i32(8);
+        self.op(0x05);
+        self.i32c(1); self.global_set(lease);
+        self.expr(channel);
+        self.i32c(STDIO_SCRATCH_START as i32);
+        self.i32c(STDIO_SCRATCH_BYTES as i32);
+        self.get(outcome);
+        self.call(self.l.import(Import::StdioRead));
+        self.set(status);
+
+        self.get(status);
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(result); self.i32c(1); self.store_i32(0);
+        self.get(result); self.get(status); self.store_i32(8);
+        self.op(0x05);
+        self.get(outcome); self.load_i32(0); self.i32c(2); self.op(0x46);
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(result); self.i32c(1); self.store_i32(0);
+        self.get(result); self.get(outcome); self.load_i32(4); self.store_i32(8);
+        self.op(0x05);
+        // The host's Some/None tags are already validated by the trusted
+        // JSPI bridge. Keep EOF as None, even when a successful record
+        // contains zero bytes: Some("") must retain tag=1.
+        self.get(outcome); self.load_i32(0); self.op(0x45); // tag == Some
+        self.open(0x04, 0x40, Frame::Other);
+        // Save the rounded length in the otherwise unused status local.
+        // The heap is bounded below the exclusive last-page scratch region.
+        self.get(outcome); self.load_i32(8);
+        self.i32c(7); self.op(0x6A); // len + 7
+        self.i32c(-8); self.op(0x71); // & !7
+        self.set(status);
+        // Avoid trapping while still owning the scratch lease when the
+        // object heap is full. Report a typed Quota error and always release
+        // the lease; a permanently busy stdin port is not an acceptable
+        // consequence of exhausting the guest's owned-memory budget.
+        self.get(status);
+        self.i32c(STDIO_SCRATCH_START as i32);
+        self.global_get(1); // heap pointer
+        self.op(0x6B); // exclusive heap limit - current heap pointer
+        self.op(0x4B); // required bytes >u remaining
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(result); self.i32c(1); self.store_i32(0); // Err
+        self.get(result); self.i32c(2); self.store_i32(8); // IoError.Quota
+        self.op(0x05);
+        self.get(status); self.call(alloc); self.set(bytes);
+        // memory.copy owned_ptr, shared_scratch_ptr, exact_byte_length.
+        self.get(bytes);
+        self.i32c(STDIO_SCRATCH_START as i32);
+        self.get(outcome); self.load_i32(8);
+        self.op(0xFC); uleb(&mut self.code, 10); // memory.copy
+        uleb(&mut self.code, 0); uleb(&mut self.code, 0);
+        self.get(option); self.i32c(1); self.store_i32(0); // Some
+        self.get(option);
+        self.get(bytes); self.op(0xAD); // i64.extend_i32_u
+        self.i64c(32); self.op(0x86); // i64.shl
+        self.get(outcome); self.load_i32(8); self.op(0xAD);
+        self.op(0x84); // i64.or, packed owned UTF-8 pointer/length
+        self.store_i64(8);
+        self.get(result); self.i32c(0); self.store_i32(0); // Ok
+        self.get(result); self.get(option); self.store_i32(8);
+        self.close(); // enough heap memory for immutable string
+        self.op(0x05);
+        self.get(option); self.i32c(0); self.store_i32(0); // None, no byte allocation
+        self.get(result); self.i32c(0); self.store_i32(0); // Ok
+        self.get(result); self.get(option); self.store_i32(8);
+        self.close(); // Some/None
+        self.close(); // checked guest Result / host status branch
+        self.close(); // host status
+        self.i32c(0); self.global_set(lease);
+        self.close(); // scratch was already held by another read or released
+
+        // Always cooperate, even for immediately-ready, EOF, denied and
+        // ReaderBusy outcomes, but only AFTER releasing the scratch lease.
+        self.call(self.l.import(Import::Cooperate));
+        self.get(result);
+    }
+
+    fn stdio_write(&mut self, endpoint: &TE, value: &TE,
+                   text: u32, result: u32, status: u32) {
+        self.expr(endpoint); // writable endpoint identity 1 stdout, 2 stderr
+        self.expr(value); // packed immutable string
+        self.set(text);
+        str_parts(&mut self.code, text);
+        self.call(self.l.import(Import::StdioWrite)); // checked JSPI write
+        self.set(status);
+        self.call(self.l.import(Import::Cooperate));
+        self.channel_status_result(status, result, None);
+    }
+
     fn channel_read(&mut self, channel: &TE, ticket: u32, outcome: u32,
                     result: u32, option: u32, status: u32) {
         let alloc = self.l.helper(H_ALLOC);
@@ -569,6 +765,20 @@ impl Emit<'_> {
             TExpr::ChannelRead { channel, ticket, outcome, result, option, status } => {
                 self.channel_read(channel, *ticket, *outcome, *result, *option, *status);
             }
+            TExpr::StdioRead { channel, bytes, outcome, result, option, status } => {
+                self.stdio_read(channel, *bytes, *outcome, *result, *option, *status);
+            }
+            TExpr::StdioWrite { endpoint, value, text, result, status } => {
+                self.stdio_write(endpoint, value, *text, *result, *status);
+            }
+            TExpr::ChannelOpen {capacity,capacity_slot,handle_slot,result_slot,status_slot} =>
+                self.channel_open(capacity,*capacity_slot,*handle_slot,*result_slot,*status_slot),
+            TExpr::ChannelTrySend {channel,value,result_slot,status_slot} =>
+                self.channel_try_send(channel,value,*result_slot,*status_slot),
+            TExpr::ChannelSendAsync {channel,value,result_slot,status_slot} =>
+                self.channel_send_async(channel,value,*result_slot,*status_slot),
+            TExpr::ChannelStatus {channel,release,result_slot,status_slot} =>
+                self.channel_close_or_release(channel,*release,*result_slot,*status_slot),
             // Value stays on the Wasm stack over the void JSPI host call.
             TExpr::AwaitYield(value) => {self.expr(value);self.call(self.l.import(Import::Cooperate));}
             TExpr::Call(f, args) => {
@@ -831,17 +1041,28 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     v
 }
 
-/// `alloc(size: i32) -> i32`: bump-allocate from `heap_ptr`; panic 3 when the
-/// fixed memory is exhausted. Objects are never freed (no GC in this subset).
-fn alloc_body(heap_global: u32) -> (Sig, Vec<u8>, Vec<u8>) {
-    let limit = (HEAP_PAGES * 65536) as i64;
-    let mut c = vec![0x23];
+/// `alloc(size: i32) -> i32`: bounded bump allocation. A single-page
+/// stdin scratch reservation reduces the upper heap bound for checked stdin
+/// guests. Reject overflowing or negative sizes *before* calculating p+size:
+/// a wrapped pointer must never enter the host-visible scratch region.
+fn alloc_body(heap_global: u32, reserved_stdio_page: bool) -> (Sig, Vec<u8>, Vec<u8>) {
+    let limit = (HEAP_PAGES * 65536 - u32::from(reserved_stdio_page) * STDIO_SCRATCH_BYTES) as i64;
+    let mut c = vec![0x23]; // global.get(heap_ptr)
     uleb(&mut c, heap_global as u64);
-    c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x20, 0, 0x6A, 0x41]); // p = heap; p + size
+    c.extend_from_slice(&[0x21, 1]); // local.set(p)
+    // Even a corrupted heap pointer must not produce an underflow in
+    // limit-p. All comparisons use unsigned i32 bounds.
+    c.extend_from_slice(&[0x20, 1, 0x41]); // local.get(p), i32.const(limit)
     sleb(&mut c, limit);
-    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if (p + size) >u limit
+    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if p >u limit
     panic(&mut c, PANIC_HEAP);
-    c.extend_from_slice(&[0x0B, 0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size
+    c.push(0x0B);
+    c.extend_from_slice(&[0x20, 0, 0x41]); // size, limit
+    sleb(&mut c, limit);
+    c.extend_from_slice(&[0x20, 1, 0x6B, 0x4B, 0x04, 0x40]); // if size >u limit - p
+    panic(&mut c, PANIC_HEAP);
+    c.push(0x0B);
+    c.extend_from_slice(&[0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size
     uleb(&mut c, heap_global as u64);
     c.extend_from_slice(&[0x20, 1, 0x0B]); // return p
     (Sig(vec![I32], vec![I32]), vec![1u8, 1, I32], c)
@@ -1090,6 +1311,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         gen_free_global: (!p.generators.is_empty()).then_some(
             1 + u32::from(p.heap) + p.globals.len() as u32
         ),
+        stdio_busy_global: p.imports.contains(&Import::StdioRead).then_some(
+            1 + u32::from(p.heap) + p.globals.len() as u32
+                + u32::from(!p.generators.is_empty())
+        ),
         gen_first_func: p.funcs.len() as u32,
     };
     let mut types = Types(Vec::new());
@@ -1115,6 +1340,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::StateLeave => Sig(vec![I64], vec![]),
             Import::ChannelNbRead => Sig(vec![I32, I32], vec![I32]),
             Import::ChannelAwaitRead => Sig(vec![I32, I32], vec![I32]),
+            Import::ChannelOpen => Sig(vec![I32, I32], vec![I32]),
+            Import::ChannelSend => Sig(vec![I32, I64], vec![I32]),
+            Import::ChannelSendAsync => Sig(vec![I32, I64], vec![I32]),
+            Import::ChannelClose | Import::ChannelRelease => Sig(vec![I32], vec![I32]),
+            Import::StdioRead => Sig(vec![I32, I32, I32, I32], vec![I32]),
+            Import::StdioWrite => Sig(vec![I32, I32, I32], vec![I32]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1126,7 +1357,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let mut bodies = Vec::new();
     let mut helpers = helper_bodies();
     if p.heap {
-        helpers.push(alloc_body(heap_global));
+        helpers.push(alloc_body(heap_global, layout.stdio_busy_global.is_some()));
     }
     if p.strings {
         let alloc = p.heap.then(|| layout.helper(H_ALLOC));
@@ -1301,7 +1532,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
     uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
-        + u64::from(!p.generators.is_empty()));
+        + u64::from(!p.generators.is_empty()) + u64::from(layout.stdio_busy_global.is_some()));
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
         let heap_start = ((p.data.len() as i64 + 7) & !7)
@@ -1316,6 +1547,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     if !p.generators.is_empty() {
         gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // frame freelist head
+    }
+    if layout.stdio_busy_global.is_some() {
+        gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // stdin scratch lease, initially free
     }
     section(&mut out, 6, gsec);
 
@@ -1435,16 +1669,25 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     // Deliberately versioned and opt-in: the public guest.v2 contract
     // remains unchanged for programs without actual async imports.
-    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {
+    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate |
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelSendAsync | Import::ChannelClose | Import::ChannelRelease |
+        Import::StdioRead | Import::StdioWrite)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.async");
         marker.push(2); // JSPI + mandatory cooperative yield; old v1 guests must fail closed
         section(&mut out, 0, marker);
     }
-    if p.imports.iter().any(|i| matches!(i, Import::ChannelNbRead | Import::ChannelAwaitRead)) {
+    if p.imports.iter().any(|i| matches!(i, Import::ChannelNbRead | Import::ChannelAwaitRead |
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelSendAsync | Import::ChannelClose | Import::ChannelRelease)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.channel_int");
         marker.push(1);
+        section(&mut out, 0, marker);
+    }
+    if p.imports.iter().any(|i| matches!(i, Import::StdioRead | Import::StdioWrite)) {
+        let mut marker = Vec::new();
+        name(&mut marker, "atto.stdio_text");
+        marker.push(1); // authenticated, checked UTF-8 guest I/O
         section(&mut out, 0, marker);
     }
     out

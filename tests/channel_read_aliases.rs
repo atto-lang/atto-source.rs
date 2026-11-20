@@ -15,6 +15,10 @@ fn explicit_and_binary_aliases_lower_to_exactly_one_prefix_read() {
         "val result = readch c; return result;",
         "val result = (readch c); return result;",
         "return readch c;",
+        "val result = (c >>); return result;",
+        "val result = c >>; return result;",
+        "return (c >>);",
+        "return c >>;",
         "c >> val result; return result;",
         "c >> let result; return result;",
         "c >> val result: Result<Option<int>,IoError>; return result;",
@@ -45,10 +49,52 @@ fn incorrect_effect_receiver_and_result_reject_without_guest() {
         ("pub susp fnc read_channel_guest_v1(int c): Result<Option<int>,IoError> { return readch c; } pub fnc main():int {return 0;}", "E_IO_READABLE"),
         ("pub susp fnc read_channel_guest_v1(Channel<int> c): int { return readch c; } pub fnc main():int {return 0;}", "E_TYPE"),
         ("pub fnc read_channel_guest_v1(Channel<int> c): Result<Option<int>,IoError> { c >> val item; return item; } pub fnc main():int {return 0;}", "E_SUSPENDS_REQUIRED"),
+        ("pub fnc read_channel_guest_v1(Channel<int> c): Result<Option<int>,IoError> { return (c >>); } pub fnc main():int {return 0;}", "E_SUSPENDS_REQUIRED"),
+        ("pub susp fnc read_channel_guest_v1(int c): Result<Option<int>,IoError> { return (c >>); } pub fnc main():int {return 0;}", "E_IO_READABLE"),
+        ("pub susp fnc read_channel_guest_v1(Channel<int> c): int { return (c >>); } pub fnc main():int {return 0;}", "E_TYPE"),
         ("pub susp fnc read_channel_guest_v1(Channel<int> c): int { c >> val item; return item; } pub fnc main():int {return 0;}", "E_TYPE"),
         ("pub susp fnc read_channel_guest_v1(Channel<int> c): Result<Option<int>,IoError> { c >> const item; return item; } pub fnc main():int {return 0;}", "E_CONST_EFFECT"),
     ] {
         let d=compile(src).expect_err("invalid read must have no Wasm artifact");
         assert_eq!(d.code,code,"source: {src} -> {d}");
+    }
+}
+
+#[test]
+fn terminal_postfix_requires_contiguous_double_gt_not_shift_or_binding() {
+    for bad in [
+        "return (c > >);",
+        "return (c >>> 1);",
+        "return (c >> 1);",
+        "return (1 >> 2);",
+        "return (c >> val x);",
+    ] {
+        let src=source(bad);
+        assert!(compile(&src).is_err(), "must not reinterpret malformed/numeric directional syntax: {bad}");
+    }
+    // A typed directional binder is still a declaration, not postfix syntax.
+    let src=source("c >> val item; return item;");
+    assert!(compile(&src).is_ok(), "existing directional binding remains executable");
+}
+
+#[test]
+fn discarded_terminal_postfix_is_a_checked_io_error() {
+    let err=compile(&source("c >>; return Err(0);"))
+        .expect_err("a checked read outcome may not be discarded");
+    assert_eq!(err.code,"E_IO_DISCARD","{err}");
+}
+
+#[test]
+fn prefix_and_postfix_share_the_checked_read_guest_imports() {
+    let a=compile(&source("return (<< c);")).expect("prefix guest");
+    let b=compile(&source("return (c >>);")).expect("postfix guest");
+    for guest in [&a, &b] {
+        assert!(guest.starts_with(b"\0asm\x01\0\0\0"));
+        for marker in ["atto.channel_int", "channel_int_nb_read_v1",
+                       "channel_int_await_read_v1", "cooperate"] {
+            assert!(marker.as_bytes().len() <= guest.len());
+            assert!(guest.windows(marker.len()).any(|w| w==marker.as_bytes()),
+                "postfix and prefix must use the same checked guest ABI: {marker}");
+        }
     }
 }

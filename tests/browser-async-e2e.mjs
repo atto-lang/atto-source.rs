@@ -16,6 +16,10 @@ const files=new Map([
   ['/channel-source-guest-probe.mjs',[new URL('./browser-async/channel-source-guest-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/stdio-text-host-probe.mjs',[new URL('./browser-async/stdio-text-host-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/stdio-text-source-guest-probe.mjs',[new URL('./browser-async/stdio-text-source-guest-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/stdio_text_guest_v1.mjs',[new URL('../runtime/browser/stdio_text_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/stdio_text_host_v1.mjs',[new URL('../runtime/browser/stdio_text_host_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -73,6 +77,18 @@ try{
   await until(async()=>evaluate('window.__attoReady===true'),'module script ready');
   // Test the actual Worker host channel runtime independently of guest
   // compilation. This must NEVER count as the missing Channel<T> guest ABI.
+  // Independent Chromium Worker host adapter proof. This is NOT source-compiled
+  // Atto guest stdio (the string Channel guest ABI remains unimplemented).
+  const stdioProbe=await evaluate("new Promise((resolve,reject)=>{"+
+    "const w=new Worker('/stdio-text-host-probe.mjs',{type:'module'});"+
+    "const t=setTimeout(()=>{w.terminate();reject(Error('stdio Worker timeout'))},5000);"+
+    "w.onmessage=e=>{clearTimeout(t);w.terminate();resolve(e.data)};"+
+    "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('stdio Worker error'))};"+
+    "w.postMessage({});})");
+  assert.deepEqual(stdioProbe,{ok:true,alias:true,first:'alpha',second:'β\0z',
+    eof:true,readerConflict:'ReaderBusy',stdout:'Echo:alpha',
+    stderr:'echo complete',postRevoke:'Revoked'});
+  console.log('PASS Chromium Worker host: injected UTF-8 stdio, aliases, EOF, reader lease and revoke (NOT .atto guest)');
   const hostProbe=await evaluate(`new Promise((resolve,reject)=>{
     const worker=new Worker('/channel-host-probe.mjs',{type:'module'});
     const timeout=setTimeout(()=>{worker.terminate();reject(new Error('channel host timeout'))},5000);
@@ -104,8 +120,59 @@ try{
   assert.deepEqual(sourceProbe,{ok:true,sourceCompiled:true,pendingSome:41,
     eof:true,invalidHandle:'Err',zeroSome:true,cooperativeYields:3,
     declarationFirstSome:42,declarationFirstYields:1,
-    explicitReadchSome:43,directionalSome:44});
-  console.log('PASS compiled source: <<, val <<, readch c, and c >> val all execute checked JSPI Channel<int> reads');
+    explicitReadchSome:43,directionalSome:44,
+    sourceLifecycleSome:45,sourceLifecycleYields:1,sourceLifecycleReleased:true,
+    checkedSendSome:42,sendBackpressure:true,zeroCapacityRendezvous:true,sendReadYields:3});
+  console.log('PASS compiled Atto source: checked Channel<int>.bounded -> try_send -> readch -> close -> release');
+  // Compile the canonical checked echo with the actual wasm32 Rust compiler
+  // and run that source-generated guest in a real Chromium JSPI Worker. This
+  // does NOT use the legacy scalar stdio.print host import.
+  const textEcho=await evaluate("new Promise((resolve,reject)=>{"+
+    "const w=new Worker('/stdio-text-source-guest-probe.mjs',{type:'module'});"+
+    "const t=setTimeout(()=>{w.terminate();reject(Error('checked stdin echo guest timeout'))},15000);"+
+    "w.onmessage=e=>{clearTimeout(t);w.terminate();resolve(e.data)};"+
+    "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('checked stdin echo Worker error'))};"+
+    "w.postMessage({});})");
+  assert.equal(textEcho.ok,true,textEcho.error||'source-compiled stdio guest');
+  assert.equal(textEcho.compiledAtto,true);
+  assert.equal(textEcho.checkedStdio,true);
+  assert.equal(textEcho.directReadchAbiEquivalent,true);
+  assert.equal(textEcho.nominalIsAdtGuest,true,'nominal on-is branches were not guest-executed');
+  assert.deepEqual(textEcho.patternVariants,[
+    'parenthesized+unary','parenthesized+readch','on-is+unary','on-is+readch'
+  ]);
+  assert.equal(textEcho.patternExecutions.length,36,
+    'must run each of the 4 compiler-generated programs across 9 stdin/permission cases');
+  for(const pattern of textEcho.patternVariants) {
+    const rows=textEcho.patternExecutions.filter(x=>x.pattern===pattern);
+    assert.deepEqual(rows.map(x=>[x.case,x.exit]),[
+      ['LF echo',0],['CRLF + NUL',0],['empty record',0],
+      ['unterminated final',0],['clean EOF',11],['bad UTF-8',14],
+      ['stdin denied',14],['stdout denied',10],['stderr denied',13],
+    ],'checked stdin source guest diverged: '+pattern);
+  }
+  assert.deepEqual(textEcho.cases.map(x=>[x.label,x.exit]),[
+    ['LF echo',0],['CRLF + NUL',0],['empty record',0],
+    ['unterminated final',0],['clean EOF',11],['bad UTF-8',14],
+    ['stdin denied',14],['stdout denied',10],['stderr denied',13],
+  ]);
+  assert.equal(textEcho.stringFallbackGuest,true,
+    'the exact nested Result<Option<string>> string-returning callable must execute');
+  assert.deepEqual(textEcho.fallbackCases.map(x=>[x.name,x.exit]),[
+    ['LF value',0],['None EOF',0],['Err UTF-8',0],
+    ['Err denied stdin',0],['Err denied stdout',12],
+  ]);
+  assert.equal(textEcho.repeatScratchGuest,true,
+    'repeated checked reads must execute in source-generated JSPI guest');
+  assert.equal(textEcho.repeatedReads,41,
+    'repeated text read fixture must exceed the old 16-page heap lifetime');
+  assert.equal(textEcho.quotaScratchGuest,true,
+    'heap exhaustion must produce a checked Result Err, not an unreleased stdin lease');
+  assert.equal(textEcho.quotaFollowupExit,0,
+    'a short text read must work after the previous large record exceeded heap quota');
+  assert.ok(textEcho.cases.every(x=>x.cooperates>0));
+  console.log('PASS source-compiled checked UTF-8 stdin echo: LF/CRLF/NUL, EOF, typed errors and per-port permissions');
+
 
 
 

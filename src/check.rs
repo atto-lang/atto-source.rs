@@ -59,10 +59,19 @@ pub enum Import {
     /// Worker-owned Channel<int> direct read: register without parking, then await.
     ChannelNbRead,
     ChannelAwaitRead,
+    /// Synchronous checked Worker-local Channel<int> lifecycle imports.
+    ChannelOpen,
+    ChannelSend,
+    ChannelSendAsync,
+    ChannelClose,
+    ChannelRelease,
+    /// Authenticated Worker-only UTF-8 process stdio, version 1.
+    StdioRead,
+    StdioWrite,
 }
 
 impl Import {
-    pub const ALL: [Import; 17] = [
+    pub const ALL: [Import; 24] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -80,6 +89,13 @@ impl Import {
         Import::StateLeave,
         Import::ChannelNbRead,
         Import::ChannelAwaitRead,
+        Import::ChannelOpen,
+        Import::ChannelSend,
+        Import::ChannelSendAsync,
+        Import::ChannelClose,
+        Import::ChannelRelease,
+        Import::StdioRead,
+        Import::StdioWrite,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -100,6 +116,13 @@ impl Import {
             Import::StateLeave => "state_leave",
             Import::ChannelNbRead => "channel_int_nb_read_v1",
             Import::ChannelAwaitRead => "channel_int_await_read_v1",
+            Import::ChannelOpen => "channel_int_open_v1",
+            Import::ChannelSend => "channel_int_send_v1",
+            Import::ChannelSendAsync => "channel_int_send_async_v1",
+            Import::ChannelClose => "channel_int_close_v1",
+            Import::ChannelRelease => "channel_int_release_v1",
+            Import::StdioRead => "stdio_text_read_v1",
+            Import::StdioWrite => "stdio_text_write_v1",
         }
     }
 }
@@ -220,6 +243,38 @@ pub enum TExpr {
     ChannelRead {
         channel: Box<TE>, ticket: u32, outcome: u32,
         result: u32, option: u32, status: u32,
+    },
+    /// Checked, cooperative read of one UTF-8 stdin record. Input writes
+    /// into bounded guest-owned memory; no host pointer or naked string leaks.
+    StdioRead {
+        channel: Box<TE>, bytes: u32, outcome: u32,
+        result: u32, option: u32, status: u32,
+    },
+    /// Checked suspending write, distinctly NOT legacy non-fallible print_str.
+    StdioWrite {
+        endpoint: Box<TE>, value: Box<TE>, text: u32,
+        result: u32, status: u32,
+    },
+    /// Bounded Worker-owned handle admission, always Result<Channel<int>,IoError>.
+    ChannelOpen {
+        capacity: Box<TE>, capacity_slot: u32, handle_slot: u32,
+        result_slot: u32, status_slot: u32,
+    },
+    /// Nonparking immediate send. Full is a checked Err(Full), not a wait or panic.
+    ChannelTrySend {
+        channel: Box<TE>, value: Box<TE>,
+        result_slot: u32, status_slot: u32,
+    },
+    /// One suspending, checked FIFO admission; Full waits cooperatively.
+    /// Unlike try_send, this operation never returns Err(Full) for pressure.
+    ChannelSendAsync {
+        channel: Box<TE>, value: Box<TE>,
+        result_slot: u32, status_slot: u32,
+    },
+    /// Worker-local channel close/release; both return Result<void,IoError>.
+    ChannelStatus {
+        channel: Box<TE>, release: bool,
+        result_slot: u32, status_slot: u32,
     },
     /// Preserve evaluated value and release the worker carrier at least one event-loop turn.
     AwaitYield(Box<TE>),
@@ -1321,7 +1376,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ChannelRead { .. })));
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ChannelRead { .. } |
+            TExpr::StdioRead { .. } | TExpr::StdioWrite { .. } |
+            TExpr::ChannelOpen { .. } | TExpr::ChannelTrySend { .. } |
+            TExpr::ChannelSendAsync { .. } | TExpr::ChannelStatus { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let tasks = p.funcs.iter().enumerate().filter(|(_, f)| f.name.starts_with("$atto_task_"))
@@ -1510,7 +1568,10 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } |
         TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
-        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) | TExpr::ChannelRead { .. } => false,
+        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) | TExpr::ChannelRead { .. } |
+        TExpr::StdioRead { .. } | TExpr::StdioWrite { .. } |
+        TExpr::ChannelOpen { .. } | TExpr::ChannelTrySend { .. } |
+        TExpr::ChannelSendAsync { .. } | TExpr::ChannelStatus { .. } => false,
     }
 }
 
@@ -1564,7 +1625,12 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
         | TExpr::SleepMs(a) | TExpr::Barrier(a) | TExpr::TaskAwait(a)
         | TExpr::AwaitYield(a) => any_in(a, f),
-        TExpr::ChannelRead { channel, .. } => any_in(channel, f),
+        TExpr::ChannelRead { channel, .. } | TExpr::ChannelStatus { channel, .. } =>
+            any_in(channel, f),
+        TExpr::ChannelOpen { capacity, .. } => any_in(capacity, f),
+        TExpr::ChannelTrySend { channel, value, .. } |
+        TExpr::ChannelSendAsync { channel, value, .. } =>
+            any_in(channel, f) || any_in(value, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
@@ -1573,6 +1639,9 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
+        TExpr::StdioRead { channel, .. } => any_in(channel, f),
+        TExpr::StdioWrite { endpoint, value, .. } =>
+            any_in(endpoint, f) || any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
@@ -1825,6 +1894,18 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
                         "discarding an unclosed generator handle is prohibited"));
                 }
+                // Channel reads, writes, close and construction can fail.
+                // Do not let a standalone expression erase Err/EOF or a
+                // rejected send. The caller must bind, match or explicitly
+                // propagate the entire checked outcome.
+                if matches!(v.ty,
+                    Type::ResultOptionIntIoError | Type::ResultOptionStrIoError |
+                    Type::ResultChannelIntIoError |
+                    Type::ResultVoidIoError)
+                {
+                    return Err(Diagnostic::new(e.pos, "E_IO_DISCARD",
+                        "discarding a checked channel outcome is prohibited; bind, match or propagate its Result"));
+                }
                 TStmt::Expr(v)
             }
             Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
@@ -1990,8 +2071,10 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
-            Type::ResultOptionIntIoError | Type::ResultChannelIntIoError | Type::ResultVoidIoError) {
+        if matches!(sty, Type::OptionInt | Type::OptionStr |
+            Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultOptionIntIoError | Type::ResultOptionStrIoError |
+            Type::ResultChannelIntIoError | Type::ResultVoidIoError) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -2211,21 +2294,30 @@ impl<'a> FnCx<'a> {
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+                        (Type::OptionStr, "None") => (0, None),
+                        (Type::OptionStr, "Some") => (1, Some(Type::Str)),
                         (Type::OptionResultIntStr, "None") => (0, None),
                         (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
                         (Type::ResultOptionIntIoError, "Ok") => (0, Some(Type::OptionInt)),
                         (Type::ResultOptionIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultOptionStrIoError, "Ok") => (0, Some(Type::OptionStr)),
+                        (Type::ResultOptionStrIoError, "Err") => (1, Some(Type::IoError)),
                         (Type::ResultChannelIntIoError, "Ok") => (0, Some(Type::ChannelInt)),
                         (Type::ResultChannelIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultVoidIoError, "Ok") => (0, None),
                         (Type::ResultVoidIoError, "Err") => (1, Some(Type::IoError)),
                         _ => return Err(type_err(arm.pos,
                             format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
-                    if bind.is_some() != needed.is_some() {
+                    // '_' explicitly ignores either a real payload or the
+                    // absence of one (Result<void, E>.Ok). It never becomes a
+                    // declared variable. A named binder still requires data.
+                    if (bind.is_none() && needed.is_some()) ||
+                       (bind.as_deref().is_some_and(|n| n != "_") && needed.is_none()) {
                         return Err(Diagnostic::new(arm.pos, "E_ARITY",
                             format!("pattern '{name}' has incorrect payload arity")));
                     }
-                    (Some(tag), bind.as_deref(), needed)
+                    (Some(tag), bind.as_deref().filter(|n| *n != "_"), needed)
                 }
                 _ => return Err(type_err(arm.pos,
                     format!("pattern is not a variant of {}", self.tn(sty)))),
@@ -2449,10 +2541,14 @@ impl<'a> FnCx<'a> {
             (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+            (Type::OptionStr, "None") => (0, None),
+            (Type::OptionStr, "Some") => (1, Some(Type::Str)),
             (Type::OptionResultIntStr, "None") => (0, None),
             (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
                         (Type::ResultOptionIntIoError, "Ok") => (0, Some(Type::OptionInt)),
                         (Type::ResultOptionIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultOptionStrIoError, "Ok") => (0, Some(Type::OptionStr)),
+                        (Type::ResultOptionStrIoError, "Err") => (1, Some(Type::IoError)),
                         (Type::ResultChannelIntIoError, "Ok") => (0, Some(Type::ChannelInt)),
                         (Type::ResultChannelIntIoError, "Err") => (1, Some(Type::IoError)),
                         (Type::ResultVoidIoError, "Err") => (1, Some(Type::IoError)),
@@ -2988,7 +3084,25 @@ impl<'a> FnCx<'a> {
                 }
             }
             ExprKind::Var(name) if name == "None" => {
-                return Err(type_err(pos, "None requires a contextual Option<int> type"))
+                return Err(type_err(pos, "None requires a contextual Option<T> type"))
+            }
+            ExprKind::Var(name) if matches!(name.as_str(),
+                "stdio.in" | "stdio.out" | "stdio.err") => {
+                if self.lookup("stdio").is_some() || self.lookup("process").is_some() {
+                    return Err(Diagnostic::new(pos, "E_RESERVED",
+                        "process and stdio host namespaces cannot be shadowed"));
+                }
+                if self.owner != Owner::TopLevel {
+                    return Err(Diagnostic::new(pos, "E_ISOLATION",
+                        "ambient process stdio cannot be imported inside actor/class scope"));
+                }
+                let (id, ty) = match name.as_str() {
+                    "stdio.in" => (0, Type::ChannelStr),
+                    "stdio.out" => (1, Type::WritableStr),
+                    "stdio.err" => (2, Type::WritableStr),
+                    _ => unreachable!(),
+                };
+                TE {e: TExpr::EnumVal(id), ty}
             }
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(l) if l.mail.is_some() => {
@@ -3112,6 +3226,18 @@ impl<'a> FnCx<'a> {
                 // an arbitrary method named read(). The operand is evaluated
                 // exactly once and the result is always the *checked* ADT.
                 let channel = self.value(source)?;
+                if channel.ty == Type::ChannelStr {
+                    let bytes = self.temp(Type::ChannelStr, pos)?;
+                    let outcome = self.temp(Type::ResultOptionStrIoError, pos)?;
+                    let result = self.temp(Type::ResultOptionStrIoError, pos)?;
+                    let option = self.temp(Type::OptionStr, pos)?;
+                    let status = self.temp(Type::IoError, pos)?;
+                    self.imports.push(Import::StdioRead);
+                    self.imports.push(Import::Cooperate);
+                    return Ok(TE {e: TExpr::StdioRead {
+                        channel: Box::new(channel), bytes, outcome, result, option, status,
+                    }, ty: Type::ResultOptionStrIoError});
+                }
                 if channel.ty != Type::ChannelInt {
                     return Err(Diagnostic::new(pos, "E_IO_READABLE",
                         "unary << requires a statically readable Channel<int> in the browser subset"));
@@ -3489,6 +3615,42 @@ impl<'a> FnCx<'a> {
         if recv.ty == Type::Str {
             return self.string_method(recv, name, args, pos);
         }
+        if recv.ty == Type::ChannelInt {
+            match name {
+                "send_async" => {
+                    self.arity("Channel<int>.send_async", 1, args.len(), pos)?;
+                    return self.channel_send_async(recv, &args[0], pos);
+                }
+                "try_send" => {
+                    self.arity("Channel<int>.try_send", 1, args.len(), pos)?;
+                    let value=self.value(&args[0])?;
+                    if value.ty != Type::Int {
+                        return Err(type_err(args[0].pos,
+                            "Channel<int>.try_send accepts only int"));
+                    }
+                    let result_slot=self.temp(Type::ResultVoidIoError,pos)?;
+                    let status_slot=self.temp(Type::IoError,pos)?;
+                    self.imports.push(Import::ChannelSend);
+                    return Ok(TE {e:TExpr::ChannelTrySend {
+                        channel:Box::new(recv), value:Box::new(value),
+                        result_slot,status_slot,
+                    },ty:Type::ResultVoidIoError});
+                }
+                "close" | "release" => {
+                    self.arity("Channel<int>.close/release", 0, args.len(), pos)?;
+                    let release=name=="release";
+                    let result_slot=self.temp(Type::ResultVoidIoError,pos)?;
+                    let status_slot=self.temp(Type::IoError,pos)?;
+                    self.imports.push(if release {Import::ChannelRelease}
+                        else {Import::ChannelClose});
+                    return Ok(TE {e:TExpr::ChannelStatus {
+                        channel:Box::new(recv),release,result_slot,status_slot,
+                    },ty:Type::ResultVoidIoError});
+                }
+                _ => return Err(type_err(pos,
+                    "Channel<int> supports send_async, try_send, close, release, and unary read")),
+            }
+        }
         match recv.ty {
             Type::Class(c) => {
                 // Calls on a loan may only return copyable, lifetime-independent
@@ -3590,9 +3752,95 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    // All checked suspending writes use one typed lowering path. JSPI yields
+    // the Worker carrier while the bounded queue is full; no implicit unwrap.
+    fn channel_send_async(&mut self, channel: TE, payload: &Expr, pos: Pos) -> R<TE> {
+        if !self.suspends {
+            return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
+                "Channel<int> << send can suspend; declare susp/suspends fnc"));
+        }
+        if !self.loans.is_empty() || self.state_write_scope || self.state_read_scope {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "Channel<int> << cannot suspend while an object loan or protected state lease is active"));
+        }
+        if channel.ty != Type::ChannelInt {
+            return Err(Diagnostic::new(pos, "E_IO_WRITABLE",
+                "checked << send requires a statically writable Channel<int>"));
+        }
+        let value=self.value(payload)?;
+        if value.ty != Type::Int {
+            return Err(type_err(payload.pos, "checked Channel<int> << accepts only int"));
+        }
+        let result_slot=self.temp(Type::ResultVoidIoError,pos)?;
+        let status_slot=self.temp(Type::IoError,pos)?;
+        self.imports.push(Import::ChannelSendAsync);
+        self.imports.push(Import::Cooperate);
+        Ok(TE {e:TExpr::ChannelSendAsync {
+            channel:Box::new(channel),value:Box::new(value),result_slot,status_slot,
+        },ty:Type::ResultVoidIoError})
+    }
+
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+        }
+        if name == "$atto_channel_send_async" {
+            self.arity("channel << value", 2, args.len(), pos)?;
+            let channel=self.value(&args[0])?;
+            return self.channel_send_async(channel, &args[1], pos);
+        }
+        if name == "$atto_writech" {
+            self.arity("writech", 2, args.len(), pos)?;
+            if !self.suspends {
+                return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
+                    "checked writech may suspend; declare susp/suspends fnc"));
+            }
+            if !self.loans.is_empty() || self.state_write_scope || self.state_read_scope {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "checked writech cannot suspend with an outstanding protected loan"));
+            }
+            let endpoint = self.value(&args[0])?;
+            if endpoint.ty != Type::WritableStr {
+                return Err(Diagnostic::new(args[0].pos, "E_IO_WRITABLE",
+                    "writech requires a typed writable process stdout/stderr endpoint"));
+            }
+            let value = self.value(&args[1])?;
+            if value.ty != Type::Str {
+                let code = if value.ty == Type::ResultOptionStrIoError {
+                    "E_IO_PAYLOAD_TYPE"
+                } else {
+                    "E_TYPE"
+                };
+                return Err(Diagnostic::new(args[1].pos, code,
+                    "checked process writech accepts a string, not a raw Result/Option outcome"));
+            }
+            let text = self.temp(Type::Str, pos)?;
+            let result = self.temp(Type::ResultVoidIoError, pos)?;
+            let status = self.temp(Type::IoError, pos)?;
+            self.imports.push(Import::StdioWrite);
+            self.imports.push(Import::Cooperate);
+            return Ok(TE {e: TExpr::StdioWrite {
+                endpoint: Box::new(endpoint), value: Box::new(value),
+                text, result, status,
+            }, ty: Type::ResultVoidIoError});
+        }
+        if name == "Channel<int>.bounded" {
+            self.arity(name, 1, args.len(), pos)?;
+            let capacity = self.value(&args[0])?;
+            if capacity.ty != Type::Int {
+                return Err(type_err(args[0].pos, "Channel<int>.bounded requires an int capacity"));
+            }
+            // Host quota/capacity failures become Err(IoError), never traps
+            // or silently truncated i64 capacities.
+            let capacity_slot=self.temp(Type::Int, pos)?;
+            let handle_slot=self.temp(Type::ChannelInt, pos)?;
+            let result_slot=self.temp(Type::ResultChannelIntIoError, pos)?;
+            let status_slot=self.temp(Type::IoError, pos)?;
+            self.imports.push(Import::ChannelOpen);
+            return Ok(TE {e: TExpr::ChannelOpen {
+                capacity: Box::new(capacity), capacity_slot, handle_slot,
+                result_slot, status_slot,
+            }, ty: Type::ResultChannelIntIoError});
         }
         if matches!(name, "rt.sleep" | "rt.barrier") {
             if !self.suspends || !self.awaiting {

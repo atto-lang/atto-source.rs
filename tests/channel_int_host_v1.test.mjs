@@ -194,3 +194,119 @@ test('release does not discard buffered payloads after close',async()=>{
 
 // Keep v1 checked guest ABI probes in the existing channel CI gate.
 import './channel_int_guest_v1.test.mjs';
+
+test('suspending send waits for bounded FIFO capacity without bypass by try_send',async()=>{
+  const {rt,ch}=fresh(1);
+  assert.equal(rt.send(ch,41n).ok,true);
+  let settled=false;
+  const waiting=rt.send_async(ch,42n).then(out=>{settled=true;return out});
+  await Promise.resolve();
+  assert.equal(settled,false,'send_async may not report admission while full');
+  assert.deepEqual(rt.send(ch,99n),error('Full'),
+    'try_send cannot overtake an older blocked writer');
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(41));
+  assert.deepEqual(await waiting,{ok:true,value:{admitted:true}});
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(42));
+  rt.close(ch);assert.equal(rt.release(ch).ok,true);
+});
+
+test('suspending writers are admitted in registration order',async()=>{
+  const {rt,ch}=fresh(1);
+  rt.send(ch,1n);
+  const a=rt.send_async(ch,2n),b=rt.send_async(ch,3n);
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(1));
+  assert.equal((await a).ok,true);
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(2));
+  assert.equal((await b).ok,true);
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(3));
+  rt.close(ch);assert.equal(rt.release(ch).ok,true);
+});
+
+test('zero-capacity async send rendezvous has no speculative buffering',async()=>{
+  const {rt,ch}=fresh(0);
+  let admitted=false;
+  const pending=rt.send_async(ch,0n).then(result=>{admitted=true;return result});
+  await Promise.resolve();
+  assert.equal(admitted,false);
+  assert.deepEqual(rt.snapshot(ch).value.queued,0);
+  const received=rt.nb_read(ch);
+  assert.equal(received.ok,true);
+  assert.equal((await pending).ok,true);
+  assert.deepEqual(await rt.await_read(received.value),item(0));
+  rt.close(ch);assert.equal(rt.release(ch).ok,true);
+});
+
+test('closing a full channel rejects unadmitted writes and preserves buffered payload',async()=>{
+  const {rt,ch}=fresh(1);
+  rt.send(ch,-1n);
+  const blocked=rt.send_async(ch,42n);
+  assert.equal(rt.close(ch).ok,true);
+  assert.deepEqual(await blocked,error('Closed'));
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(-1));
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),eof);
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('abort removes the exact waiting writer and never loses the next value',async()=>{
+  const {rt,ch}=fresh(1);
+  rt.send(ch,1n);
+  const controller=new AbortController();
+  const cancelled=rt.send_async(ch,2n,{signal:controller.signal});
+  const next=rt.send_async(ch,3n);
+  controller.abort();
+  assert.deepEqual(await cancelled,error('Cancelled'));
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(1));
+  assert.equal((await next).ok,true);
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(3));
+  rt.close(ch);assert.equal(rt.release(ch).ok,true);
+});
+
+test('pre-aborted send does not admit even with capacity and pending-send quota is bounded',async()=>{
+  const rt=new ChannelIntHostV1({maxPendingSends:1,maxCapacity:2});
+  const ch=rt.open(1).value;
+  const controller=new AbortController();controller.abort();
+  assert.deepEqual(await rt.send_async(ch,99n,{signal:controller.signal}),
+    error('Cancelled'));
+  assert.deepEqual(rt.snapshot(ch).value.queued,0);
+  rt.send(ch,1n);
+  const first=rt.send_async(ch,2n);
+  assert.deepEqual(await rt.send_async(ch,3n),error('Quota'));
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(1));
+  assert.equal((await first).ok,true);
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(2));
+  rt.close(ch);assert.equal(rt.release(ch).ok,true);
+});
+
+test('deterministic 128-round FIFO stress preserves backpressure, abort and rendezvous',async()=>{
+  for(let round=0;round<128;round++) {
+    const capacity=round%3;
+    const host=new ChannelIntHostV1({maxPendingSends:16,maxTickets:16,maxCapacity:3});
+    const channel=host.open(capacity).value;
+    const initial=[];
+    for(let k=0;k<capacity;k++) {
+      const value=BigInt(1000+round*20+k);
+      initial.push(value);
+      assert.equal(host.send(channel,value).ok,true);
+    }
+    const controllers=Array.from({length:6},()=>new AbortController());
+    const pending=controllers.map((controller,k)=>
+      host.send_async(channel,BigInt(round*20+k),{signal:controller.signal}));
+    const cancelled=new Set([1,4]);
+    for(const i of cancelled) controllers[i].abort();
+    const expected=[...initial,...[0,2,3,5].map(k=>BigInt(round*20+k))];
+    for(const value of expected) {
+      const ticket=host.nb_read(channel);
+      assert.equal(ticket.ok,true);
+      assert.deepEqual(await host.await_read(ticket.value),
+        {ok:true,value:{some:true,value}});
+    }
+    for(let k=0;k<pending.length;k++) {
+      const result=await pending[k];
+      assert.equal(result.ok,!cancelled.has(k));
+      if(cancelled.has(k)) assert.equal(result.error.kind,'Cancelled');
+    }
+    assert.equal(host.snapshot(channel).value.queued,0);
+    assert.equal(host.close(channel).ok,true);
+    assert.equal(host.release(channel).ok,true);
+  }
+});

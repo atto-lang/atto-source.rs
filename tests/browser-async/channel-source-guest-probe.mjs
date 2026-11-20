@@ -152,9 +152,153 @@ self.onmessage=async()=>{
       aliasHost.close(openedAlias.value);aliasHost.release(openedAlias.value);
       aliasResults.push(Number(expected));
     }
+    // Source-created, bounded Worker-owned channel: open -> try_send ->
+    // checked read -> close -> release, all compiled from Atto source.
+    // Not a borrowed host-preopened handle or a synthetic Wasm module.
+    const lifecycleBody=`val opened = Channel<int>.bounded(1);
+      match opened over
+        on Ok(local) -> {
+          val sent = local.try_send(45);
+          val received = readch local;
+          val closed = local.close();
+          val released = local.release();
+          return received;
+        }
+        on Err(problem) -> { return Err(problem); }
+      end`;
+    const lifecycleSource=source.replace('return << c;',lifecycleBody);
+    if(lifecycleSource===source)throw Error('channel lifecycle fixture missing');
+    const lifecycleEncoded=new TextEncoder().encode(lifecycleSource);
+    new Uint8Array(compiler.memory.buffer,compiler.input_ptr(),lifecycleEncoded.length)
+      .set(lifecycleEncoded);
+    if(compiler.compile(lifecycleEncoded.length)!==0) {
+      const mem=new Uint8Array(compiler.memory.buffer),start=compiler.error_ptr();
+      let end=start;while(end<mem.length&&mem[end]&&end-start<512)end++;
+      throw Error('source lifecycle compilation: '+
+        new TextDecoder().decode(mem.subarray(start,end)));
+    }
+    const lifecycleBinary=new Uint8Array(compiler.memory.buffer,compiler.result_ptr(),
+        compiler.result_length()).slice();
+    const lifecycleModule=new WebAssembly.Module(lifecycleBinary);
+    if(!verifyChannelIntGuestV1(lifecycleBinary,lifecycleModule))
+      throw Error('source lifecycle guest omitted channel ABI marker');
+    let lifecycleInstance,lifecycleYields=0;
+    const {imports:lifecycleImports,host:lifecycleHost}=createChannelIntGuestV1({
+      getMemory:()=>lifecycleInstance.exports.memory});
+    lifecycleInstance=new WebAssembly.Instance(lifecycleModule,{atto:{
+      ...lifecycleImports,
+      channel_int_await_read_v1:new WebAssembly.Suspending(lifecycleImports.channel_int_await_read_v1),
+      cooperate:new WebAssembly.Suspending(async()=>{await pause();lifecycleYields++;})
+    }});
+    const lifecyclePtr=await WebAssembly.promising(
+      lifecycleInstance.exports.read_channel_guest_v1)(0);
+    const lifecycleView=new DataView(lifecycleInstance.exports.memory.buffer);
+    if(!Number.isInteger(lifecyclePtr)||lifecyclePtr<0||lifecyclePtr%8
+        ||lifecyclePtr+16>lifecycleView.byteLength
+        ||lifecycleView.getInt32(lifecyclePtr,true)!==0)
+      throw Error('source lifecycle Result not Ok');
+    const lifecycleOption=lifecycleView.getInt32(lifecyclePtr+8,true);
+    if(lifecycleOption<0||lifecycleOption%8||lifecycleOption+16>lifecycleView.byteLength
+        ||lifecycleView.getInt32(lifecycleOption,true)!==1
+        ||lifecycleView.getBigInt64(lifecycleOption+8,true)!==45n)
+      throw Error('source lifecycle guest did not receive Some(45)');
+    if(lifecycleYields!==1)throw Error('source lifecycle missed cooperative suspension');
+    if(lifecycleHost.snapshot(1).ok)throw Error('guest did not release its owned channel');
+
+    // Compile two real Atto guest functions sharing one Worker-owned channel:
+    // the first suspends while the bounded queue is full, the second receives.
+    // We prove it is not try_send: Full is never mistaken for admission.
+    const sendReadSource=`pub susp fnc write_guest(Channel<int> c): Result<void,IoError> {
+      return c << 42;
+    }
+    pub susp fnc read_guest(Channel<int> c): Result<Option<int>,IoError> {
+      return (c >>);
+    }
+    pub fnc main(): int { return 0; }`;
+    const sendReadBytes=new TextEncoder().encode(sendReadSource);
+    new Uint8Array(compiler.memory.buffer,compiler.input_ptr(),sendReadBytes.length)
+      .set(sendReadBytes);
+    if(compiler.compile(sendReadBytes.length)!==0) {
+      const bytes=new Uint8Array(compiler.memory.buffer),start=compiler.error_ptr();
+      let end=start;while(end<bytes.length&&bytes[end]&&end-start<512)end++;
+      throw Error('checked source send compilation: '+
+        new TextDecoder().decode(bytes.subarray(start,end)));
+    }
+    const sendReadWasm=new Uint8Array(compiler.memory.buffer,compiler.result_ptr(),
+      compiler.result_length()).slice();
+    const sendReadModule=new WebAssembly.Module(sendReadWasm);
+    if(!verifyChannelIntGuestV1(sendReadWasm,sendReadModule))
+      throw Error('compiled send+read guest ABI missing');
+    if(!WebAssembly.Module.imports(sendReadModule).some(x=>
+        x.name==='channel_int_send_async_v1'))
+      throw Error('compiled channel send missing distinct suspending import');
+    let sendReadInstance,writeYields=0;
+    const {imports:sendReadImports,host:sendReadHost}=createChannelIntGuestV1({
+      getMemory:()=>sendReadInstance.exports.memory});
+    sendReadInstance=new WebAssembly.Instance(sendReadModule,{atto:{
+      ...sendReadImports,
+      channel_int_send_async_v1:new WebAssembly.Suspending(
+        sendReadImports.channel_int_send_async_v1),
+      channel_int_await_read_v1:new WebAssembly.Suspending(
+        sendReadImports.channel_int_await_read_v1),
+      cooperate:new WebAssembly.Suspending(async()=>{await pause();writeYields++;}),
+    }});
+    const invokeWrite=WebAssembly.promising(sendReadInstance.exports.write_guest);
+    const invokeRead=WebAssembly.promising(sendReadInstance.exports.read_guest);
+    const writeView=()=>new DataView(sendReadInstance.exports.memory.buffer);
+    const full=sendReadHost.open(1);
+    if(!full.ok||!sendReadHost.send(full.value,41n).ok)
+      throw Error('could not prepare full bounded channel');
+    let writerResolved=false;
+    const writer=invokeWrite(full.value).then(ptr=>{writerResolved=true;return ptr});
+    await pause();
+    if(writerResolved)throw Error('checked write did not suspend under backpressure');
+    if(sendReadHost.send(full.value,99n).error?.kind!=='Full')
+      throw Error('nonparking send bypassed waiting compiled guest writer');
+    const firstTicket=sendReadHost.nb_read(full.value);
+    if(!firstTicket.ok)throw Error('could not open initial read ticket');
+    const firstValue=await sendReadHost.await_read(firstTicket.value);
+    if(!firstValue.ok||firstValue.value.value!==41n)
+      throw Error('oldest buffered item was lost on bounded write');
+    const writePtr=await writer;
+    const writeResult=writeView();
+    if(writePtr<0||writePtr%8||writePtr+16>writeResult.byteLength
+        ||writeResult.getInt32(writePtr,true)!==0)
+      throw Error('compiled send did not return checked Ok(void)');
+    const receivedPtr=await invokeRead(full.value);
+    const receivedView=writeView();
+    const opt=receivedView.getInt32(receivedPtr+8,true);
+    if(receivedView.getInt32(receivedPtr,true)!==0 ||
+        receivedView.getInt32(opt,true)!==1 ||
+        receivedView.getBigInt64(opt+8,true)!==42n)
+      throw Error('compiled postfix receive missed admitted 42');
+    sendReadHost.close(full.value);sendReadHost.release(full.value);
+    if(writeYields!==2)throw Error('send and receive each must cooperate once');
+
+    // The same compiled write must rendezvous through an empty unbuffered
+    // channel, without fabricating a slot or returning a premature Ok.
+    const rendezvous=sendReadHost.open(0);
+    if(!rendezvous.ok)throw Error('zero-capacity channel open failed');
+    let rendezvousDone=false;
+    const rvWrite=invokeWrite(rendezvous.value)
+      .then(ptr=>{rendezvousDone=true;return ptr});
+    await pause();
+    if(rendezvousDone)throw Error('zero-capacity checked write admitted without reader');
+    const rvTicket=sendReadHost.nb_read(rendezvous.value);
+    if(!rvTicket.ok)throw Error('zero-capacity read ticket missing');
+    const rv=await sendReadHost.await_read(rvTicket.value);
+    if(!rv.ok||rv.value.value!==42n)
+      throw Error('zero-capacity compiled sender did not rendezvous with reader');
+    const rvPtr=await rvWrite;
+    if(writeView().getInt32(rvPtr,true)!==0)throw Error('rendezvous write not Ok');
+    sendReadHost.close(rendezvous.value);sendReadHost.release(rendezvous.value);
+    if(writeYields!==3)throw Error('rendezvous write must cooperate once');
+
     self.postMessage({ok:true,sourceCompiled:true,pendingSome:41,eof:true,
       invalidHandle:'Err',zeroSome:true,cooperativeYields,
       declarationFirstSome:42,declarationFirstYields:declYields,
-      explicitReadchSome:aliasResults[0],directionalSome:aliasResults[1]});
+      explicitReadchSome:aliasResults[0],directionalSome:aliasResults[1],
+      sourceLifecycleSome:45,sourceLifecycleYields:lifecycleYields,sourceLifecycleReleased:true,
+      checkedSendSome:42,sendBackpressure:true,zeroCapacityRendezvous:true,sendReadYields:writeYields});
   }catch(e){self.postMessage({ok:false,error:String(e?.stack||e)})}
 };

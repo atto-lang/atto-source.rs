@@ -169,3 +169,52 @@ test('guest ABI: close preserves buffered values until explicitly drained',async
   assert.equal(i.channel_int_release_v1(ch),E.Ok);
   assert.equal(i.channel_int_nb_read_v1(ch,4),E.InvalidHandle);
 });
+
+test('guest ABI: async send waits for capacity and returns checked status',async()=>{
+  const {imports:i,v}=fresh();
+  assert.equal(i.channel_int_open_v1(1,0),E.Ok);
+  const ch=v.getInt32(0,true);
+  assert.equal(i.channel_int_send_v1(ch,41n),E.Ok);
+  let settled=false;
+  const pending=i.channel_int_send_async_v1(ch,42n)
+    .then(s=>{settled=true;return s});
+  await Promise.resolve();
+  assert.equal(settled,false,'full queue must not report async admission');
+  assert.equal(i.channel_int_send_v1(ch,99n),E.Full,
+    'nonparking send must not overtake waiting writer');
+  assert.equal(i.channel_int_nb_read_v1(ch,4),E.Ok);
+  assert.equal(await i.channel_int_await_read_v1(v.getInt32(4,true),32),E.Ok);
+  assert.deepEqual(outcome(v),{tag:T.Some,error:0,value:41n});
+  assert.equal(await pending,E.Ok);
+  assert.equal(i.channel_int_nb_read_v1(ch,4),E.Ok);
+  assert.equal(await i.channel_int_await_read_v1(v.getInt32(4,true),32),E.Ok);
+  assert.deepEqual(outcome(v),{tag:T.Some,error:0,value:42n});
+  assert.equal(i.channel_int_close_v1(ch),E.Ok);
+  assert.equal(i.channel_int_release_v1(ch),E.Ok);
+});
+
+test('guest ABI: closing while writer waits returns Closed with no ghost message',async()=>{
+  const {imports:i,v}=fresh();
+  assert.equal(i.channel_int_open_v1(0,0),E.Ok);
+  const ch=v.getInt32(0,true);
+  const waiting=i.channel_int_send_async_v1(ch,77n);
+  assert.equal(i.channel_int_close_v1(ch),E.Ok);
+  assert.equal(await waiting,E.Closed);
+  assert.equal(i.channel_int_nb_read_v1(ch,4),E.Ok);
+  assert.equal(await i.channel_int_await_read_v1(v.getInt32(4,true),32),E.Ok);
+  assert.deepEqual(outcome(v),{tag:T.None,error:0,value:0n});
+  assert.equal(i.channel_int_release_v1(ch),E.Ok);
+});
+
+test('tenant isolation: one channel host can be bound to only one guest adapter',()=>{
+  const {host}=fresh();
+  const otherMemory=new WebAssembly.Memory({initial:1});
+  assert.throws(
+    ()=>createChannelIntGuestV1({getMemory:()=>otherMemory,host}),
+    /already bound/,
+  );
+  assert.throws(
+    ()=>createChannelIntGuestV1({getMemory:()=>otherMemory,host:{send(){}}}),
+    /Worker-owned ChannelIntHostV1/,
+  );
+});

@@ -38,6 +38,7 @@ export const CHANNEL_INT_V1_TAGS = Object.freeze({
 export const CHANNEL_INT_V1_IMPORTS = Object.freeze([
   'channel_int_open_v1',
   'channel_int_send_v1',
+  'channel_int_send_async_v1',
   'channel_int_nb_read_v1',
   'channel_int_await_read_v1',
   'channel_int_cancel_v1',
@@ -49,6 +50,7 @@ const TAG = CHANNEL_INT_V1_TAGS;
 const types = Object.freeze({
   channel_int_open_v1: {params: [0x7f,0x7f], results:[0x7f]},
   channel_int_send_v1: {params: [0x7f,0x7e], results:[0x7f]},
+  channel_int_send_async_v1: {params: [0x7f,0x7e], results:[0x7f]},
   channel_int_nb_read_v1: {params: [0x7f,0x7f], results:[0x7f]},
   channel_int_await_read_v1: {params: [0x7f,0x7f], results:[0x7f]},
   channel_int_cancel_v1: {params: [0x7f], results:[0x7f]},
@@ -57,11 +59,19 @@ const types = Object.freeze({
 });
 const identical=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
 const status=answer=>answer.ok?ERR.Ok:(ERR[answer.error?.kind]??ERR.InvalidHandle);
+// A channel host belongs to exactly one Worker guest adapter. No ambient
+// cross-tenant handle namespace, even if a trusted caller supplies a host.
+const attachedHosts=new WeakSet();
 
 // A read is an owned capability, not a transferable integer capability.
 // The creating Worker constructs precisely one adapter per guest instance.
 export function createChannelIntGuestV1({getMemory,host=new ChannelIntHostV1()}={}) {
   if (typeof getMemory!=='function') throw new TypeError('getMemory callback required');
+  if (!(host instanceof ChannelIntHostV1))
+    throw new TypeError('channel host must be a Worker-owned ChannelIntHostV1');
+  if (attachedHosts.has(host))
+    throw new TypeError('ChannelIntHostV1 already bound to a different guest adapter');
+  attachedHosts.add(host);
   function view(out,len,alignment) {
     const memory=getMemory();
     if (!(memory instanceof WebAssembly.Memory)) return null;
@@ -99,6 +109,12 @@ export function createChannelIntGuestV1({getMemory,host=new ChannelIntHostV1()}=
     },
     channel_int_send_v1(channel,value) {
       return status(host.send(channel,value));
+    },
+    async channel_int_send_async_v1(channel,value) {
+      // JSPI wraps this Promise as WebAssembly.Suspending. No guest memory
+      // pointers cross suspension; the host atomically admits one i64 or
+      // returns checked Closed/Cancelled/Quota/InvalidHandle status.
+      return status(await host.send_async(channel,value));
     },
     channel_int_nb_read_v1(channel,out) {
       const slot=view(out,4,4);

@@ -459,6 +459,7 @@ impl Parser {
                 self.expect(Tok::Gt, "'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
+                    Type::Str => Type::OptionStr,
                     Type::ResultIntStr => Type::OptionResultIntStr,
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
@@ -468,11 +469,22 @@ impl Parser {
                 self.expect(Tok::Lt, "'<' after Channel")?;
                 let item=self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Channel item")?;
-                if item!=Type::Int {
-                    return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
-                        "browser channel ABI v1 admits only Channel<int>"));
+                match item {
+                    Type::Int => Type::ChannelInt,
+                    Type::Str => Type::ChannelStr,
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser channel ABI admits only Channel<int> or stdin Channel<string>")),
                 }
-                Type::ChannelInt
+            }
+            "Writable" => {
+                self.expect(Tok::Lt, "'<' after Writable")?;
+                let item = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Writable item")?;
+                if item != Type::Str {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser checked Writable profile admits only string"));
+                }
+                Type::WritableStr
             }
             "Future" => {
                 self.expect(Tok::Lt, "'<' after Future")?;
@@ -504,6 +516,7 @@ impl Parser {
                 match (good,bad) {
                     (Type::Int,Type::Str) => Type::ResultIntStr,
                     (Type::OptionInt,Type::IoError) => Type::ResultOptionIntIoError,
+                    (Type::OptionStr,Type::IoError) => Type::ResultOptionStrIoError,
                     (Type::ChannelInt,Type::IoError) => Type::ResultChannelIntIoError,
                     (Type::Void,Type::IoError) => Type::ResultVoidIoError,
                     _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
@@ -1213,6 +1226,24 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
+        // Type/effect obligations are NOT ambient host capability grants.
+        // The trusted Worker broker still authenticates each I/O import.
+        if self.eat_word("using") {
+            let mut seen_io = false;
+            let mut seen_suspend = false;
+            loop {
+                let (effect, at) = self.ident("an I/O effect")?;
+                match effect.as_str() {
+                    "io" if !seen_io => seen_io = true,
+                    "suspend" if suspends && !seen_suspend => seen_suspend = true,
+                    "suspend" if !suspends => return Err(Diagnostic::new(at, "E_SUSPENDS_REQUIRED",
+                        "using suspend requires susp/suspends fnc")),
+                    _ => return Err(Diagnostic::new(at, "E_EFFECT",
+                        format!("unsupported or duplicate effect '{effect}'"))),
+                }
+                if !self.eat(&Tok::Comma) { break; }
+            }
+        }
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -2508,6 +2539,12 @@ impl Parser {
     /// typing, unreachable-arm detection and Wasm branches. It does not
     /// pretend that arbitrary expressions are value matches.
     fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
+        self.parse_return_match_body(pos, true)
+    }
+
+    /// A result arm may itself be a checked nested return match:
+    /// on Ok(_) -> match << input over ... end,
+    fn parse_return_match_body(&mut self, pos: Pos, terminator: bool) -> R<Stmt> {
         self.expect_word("match")?;
         let subject = self.parse_expr()?;
         self.expect_word("over")?;
@@ -2541,6 +2578,12 @@ impl Parser {
                         "braced return match arm must return or throw on every path"));
                 }
                 body
+            } else if self.is_word("match") {
+                // Bound nesting with the usual parser recursion budget.
+                self.enter()?;
+                let nested = self.parse_return_match_body(apos, false);
+                self.leave();
+                vec![nested?]
             } else {
                 let value = self.parse_expr()?;
                 vec![Stmt::Return(Some(value), apos)]
@@ -2566,7 +2609,7 @@ impl Parser {
         if arms.is_empty() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "return match requires at least one arm"));
         }
-        self.terminator()?;
+        if terminator { self.terminator()?; }
         Ok(Stmt::Match { subject, arms, pos })
     }
 
@@ -2606,8 +2649,14 @@ impl Parser {
                 }
                 "Some" | "Ok" | "Err" => {
                     self.advance();
+                    // Result<void, E>.Ok has no payload. Keep Ok(_) as a
+                    // compatible explicit-discard spelling, but also permit
+                    // the canonical zero-payload arm "on Ok -> ...".
+                    if w == "Ok" && *self.peek() != Tok::LParen {
+                        return Ok(Pattern::Adt(w, None));
+                    }
                     self.expect(Tok::LParen, "'(' after payload variant")?;
-                    let (name, _) = self.ident("a payload binding name")?;
+                    let (name, _) = self.ident("a payload binding name or '_'")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
                     Ok(Pattern::Adt(w, Some(name)))
                 },
@@ -2615,7 +2664,43 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Wild)
                 }
-                "is" | "structural" => Err(unsupported(pos, "type patterns")),
+                // Alias spelling for a *statically known* ADT constructor,
+                // not an unchecked Scala-style extractor or dynamic type test.
+                // In `on is Ok<line>`, `line` binds the Ok payload; the angle
+                // brackets are pattern syntax, not generic type arguments.
+                "is" => {
+                    self.advance();
+                    let (constructor, at) = self.ident("an ADT variant after 'is'")?;
+                    if !matches!(constructor.as_str(), "Ok" | "Err" | "Some" | "None") {
+                        return Err(Diagnostic::new(at, "E_PATTERN",
+                            "on is currently admits only the nominal Ok, Err, Some and None variants"));
+                    }
+                    if constructor == "None" {
+                        if *self.peek() == Tok::Lt || *self.peek() == Tok::LParen {
+                            return Err(Diagnostic::new(self.pos(), "E_ARITY",
+                                "None has no payload: use on is None"));
+                        }
+                        return Ok(Pattern::Adt(constructor, None));
+                    }
+                    if *self.peek() != Tok::Lt {
+                        if constructor == "Ok" {
+                            // On Result<void,E> only. The existing match
+                            // typechecker rejects missing payloads elsewhere.
+                            return Ok(Pattern::Adt(constructor, None));
+                        }
+                        return Err(Diagnostic::new(self.pos(), "E_ARITY",
+                            "payload variant requires <name> or <_> after 'is'"));
+                    }
+                    self.advance(); // <
+                    let (binding, _) = self.ident("an ADT payload binding or '_'")?;
+                    self.expect(Tok::Gt, "'>' after ADT pattern binding")?;
+                    if *self.peek() == Tok::LParen || *self.peek() == Tok::Lt {
+                        return Err(Diagnostic::new(self.pos(), "E_PATTERN",
+                            "nested or mixed extractor syntax is not admitted in the v1 ADT profile"));
+                    }
+                    Ok(Pattern::Adt(constructor, Some(binding)))
+                }
+                "structural" => Err(unsupported(pos, "structural type patterns")),
                 _ => {
                     self.advance();
                     if *self.peek() == Tok::Dot {
@@ -2939,6 +3024,29 @@ impl Parser {
                 // 'pending |> susp |f| -> await f >> val x' too early.
                 break;
             }
+            // Two *contiguous* '<' tokens are the checked suspending
+            // channel write operator, never a numeric shift or comparison.
+            // Parse the payload once at additive precedence, then let the
+            // typed checker enforce Channel<int>, int and suspending effects.
+            if *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt
+                && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                && self.toks[self.i].pos.col.checked_add(1) ==
+                   Some(self.toks[self.i + 1].pos.col) {
+                if *self.peek_at(2) == Tok::Lt
+                    && self.toks[self.i + 1].pos.line == self.toks[self.i + 2].pos.line
+                    && self.toks[self.i + 1].pos.col.checked_add(1) ==
+                       Some(self.toks[self.i + 2].pos.col) {
+                    return Err(Diagnostic::new(pos, "E_IO_SYNTAX",
+                        "triple-angle <<< is not a Channel<int> write"));
+                }
+                self.advance(); self.advance();
+                self.grow(1)?;
+                links += 1;
+                let value=self.parse_additive()?;
+                left=Expr {kind:ExprKind::Call(
+                    "$atto_channel_send_async".to_owned(), vec![left,value]),pos};
+                continue;
+            }
             let op = match self.peek() {
                 Tok::Lt => BinOp::Lt,
                 Tok::Le => BinOp::Le,
@@ -3020,6 +3128,13 @@ impl Parser {
         if self.eat_word("readch") {
             let readable = self.parse_unary()?;
             return Ok(Expr { kind: ExprKind::PrefixRead(Box::new(readable)), pos });
+        }
+        if self.eat_word("writech") {
+            let sink = self.parse_postfix()?;
+            self.expect(Tok::Comma, "',' after writable endpoint")?;
+            let value = self.parse_expr()?;
+            return Ok(Expr { kind: ExprKind::Call(
+                "$atto_writech".to_owned(), vec![sink, value]), pos });
         }
         // Two contiguous '<' tokens at prefix position are one value-producing
         // channel read. Parse into the production AST; do not reinterpret a
@@ -3191,8 +3306,21 @@ impl Parser {
                         }
                         return Err(unsupported(dot, "runtime members other than sleep/barrier"));
                     }
-                    if matches!(&e.kind, ExprKind::Var(b) if b == "stdio") {
-                        return Err(unsupported(dot, "stdio members other than print and println"));
+                    if let ExprKind::Var(base) = &e.kind {
+                        let endpoint = match (base.as_str(), self.word_at(1)) {
+                            ("stdio", Some("in")) | ("process", Some("stdin")) => Some("stdio.in"),
+                            ("stdio", Some("out")) | ("process", Some("stdout")) => Some("stdio.out"),
+                            ("stdio", Some("err")) | ("process", Some("stderr")) => Some("stdio.err"),
+                            _ => None,
+                        };
+                        if let Some(endpoint) = endpoint {
+                            self.advance(); self.advance();
+                            e = Expr {kind: ExprKind::Var(endpoint.to_owned()),pos};
+                            continue;
+                        }
+                        if matches!(base.as_str(), "stdio" | "process") {
+                            return Err(unsupported(dot, "unknown process stdio endpoint"));
+                        }
                     }
                     self.advance();
                     let member = match self.peek().clone() {
@@ -3216,6 +3344,29 @@ impl Parser {
                     }
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
+                // A terminal `source >>` is a postfix, value-producing read.
+                // Lower to the *same* AST as prefix `<< source` / readch.
+                // The final token must delimit the expression: `source >> val x`
+                // is a separate read-binding statement, and `>>>` is a shift.
+                Tok::Gt if *self.peek_at(1) == Tok::Gt => {
+                    let first = self.pos();
+                    let second = self.toks[self.i + 1].pos;
+                    let contiguous = first.line == second.line
+                        && first.col.checked_add(1) == Some(second.col);
+                    let terminal = matches!(self.peek_at(2),
+                        Tok::RParen | Tok::RBracket | Tok::Comma | Tok::Semi);
+                    if !contiguous || !terminal {
+                        break;
+                    }
+                    self.advance();
+                    self.advance();
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr {
+                        kind: ExprKind::PrefixRead(Box::new(e)),
+                        pos: first,
+                    };
+                }
                 Tok::Question if !self.question_opens_ternary() => {
                     let question = self.pos();
                     self.advance();
@@ -3229,7 +3380,8 @@ impl Parser {
             }
         }
         if let ExprKind::Var(n) = &e.kind {
-            if n.contains('.') {
+            if n.contains('.') && !matches!(n.as_str(),
+                "stdio.in" | "stdio.out" | "stdio.err") {
                 return Err(self.expected("'('"));
             }
         }
@@ -3398,6 +3550,20 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                // Restrict the first browser guest constructor to the exact
+                // typed Channel<int>.bounded(capacity) form. This is a
+                // compiler intrinsic, not an untyped generic method dispatch.
+                "Channel" if *self.peek_at(1) == Tok::Lt
+                    && self.word_at(2) == Some("int")
+                    && *self.peek_at(3) == Tok::Gt
+                    && *self.peek_at(4) == Tok::Dot
+                    && self.word_at(5) == Some("bounded") =>
+                {
+                    for _ in 0..6 { self.advance(); }
+                    let args=self.parse_args()?;
+                    return Ok(Expr {kind: ExprKind::Call(
+                        "Channel<int>.bounded".to_owned(), args), pos});
+                }
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
@@ -3422,6 +3588,25 @@ impl Parser {
                 "new" => {
                     self.advance();
                     let (class, _) = self.ident("a class name after 'new'")?;
+                    // A bounded Channel<int> is fallible: treat the familiar
+                    // constructor spelling as the *checked* bounded intrinsic,
+                    // never as an unchecked allocation or a naked handle.
+                    // A Result<Channel<int>,IoError> must be handled before the
+                    // channel may be used. Other generic 'new' expressions
+                    // remain explicitly unsupported in this guest subset.
+                    if class == "Channel" && self.eat(&Tok::Lt) {
+                        if !self.eat_word("int") {
+                            return Err(unsupported(self.pos(),
+                                "Channel<T> constructor item types other than int"));
+                        }
+                        self.expect(Tok::Gt, "'>' after Channel<int>")?;
+                        if *self.peek() != Tok::LParen {
+                            return Err(self.expected("'(' after Channel<int>"));
+                        }
+                        let args = self.parse_args()?;
+                        return Ok(Expr { kind: ExprKind::Call(
+                            "Channel<int>.bounded".to_owned(), args), pos });
+                    }
                     if *self.peek() == Tok::Lt {
                         return Err(unsupported(self.pos(), "generic class instantiation"));
                     }
