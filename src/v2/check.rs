@@ -1249,7 +1249,16 @@ impl<'a> Checker<'a> {
         match (&ty, is_await) {
             (Ty::AsyncGen(item) | Ty::Channel(item), true) => {
                 self.need_suspends(pos, "'for await'")?;
-                let next = self.rt_scall("__chan_recv_opt", vec![Ir::Local(s)]);
+                // AsyncGenerator<T> owns its runtime channel. A public
+                // Channel<T> iterator never does: it must recheck endpoint
+                // ownership after every suspension, not call the bridge's
+                // unguarded __chan_recv_opt helper.
+                let read_helper = if matches!(&ty, Ty::Channel(_)) {
+                    "__chan_recv_user_opt"
+                } else {
+                    "__chan_recv_opt"
+                };
+                let next = self.rt_scall(read_helper, vec![Ir::Local(s)]);
                 self.flush(&mut inner);
                 inner.push(IrStmt::If(eq(next.clone(), Ir::Const(0)), vec![IrStmt::Break], Vec::new()));
                 let slot = self.declare(name, (**item).clone(), false, pos)?;
