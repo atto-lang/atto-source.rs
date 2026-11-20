@@ -128,6 +128,19 @@ fn rewrite_statement(
     }
 }
 
+// The frozen const factory admits only static scalar expressions. The
+// executable object is an owned compiler-private immutable guest aggregate;
+// this is not authority to evaluate arbitrary host effects at compile time.
+fn constant_scalar(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Int(Some(_)) | ExprKind::Float(_) |
+        ExprKind::Bool(_) | ExprKind::Str(_) => true,
+        ExprKind::Unary(UnOp::Neg | UnOp::Plus, inner) =>
+            matches!(inner.kind, ExprKind::Int(Some(_)) | ExprKind::Float(_)),
+        _ => false,
+    }
+}
+
 fn add_scalar(
     body: &mut Vec<Stmt>,
     args: &mut Vec<Expr>,
@@ -174,8 +187,19 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 body.push(ordinary);
                 continue;
             };
+            let explicit_entries = matches!(&init.kind,
+                ExprKind::Call(name, _) if name.starts_with("@builtin/Map.of_entries<"));
             let parsed_map = match &init.kind {
                 ExprKind::Map(entries) => Some(entries.clone()),
+                ExprKind::Call(factory, args)
+                    if factory.starts_with("@builtin/Map.of_entries<") => {
+                    if args.len() % 2 != 0 {
+                        return Err(error(init.pos, "E_FACTORY_ARITY",
+                            "Map.of_entries key/value pair count is inconsistent"));
+                    }
+                    Some(args.chunks_exact(2).map(|entry|
+                        (entry[0].clone(), entry[1].clone())).collect())
+                },
                 ExprKind::EmptyBraces => {
                     // {} can become a Map only when the checked type
                     // inventory supplies a concrete Map<K,V> context.
@@ -195,8 +219,15 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 continue;
             };
             if kind == BindKind::Const {
-                return Err(error(pos, "E_UNSUPPORTED",
-                    "const Map.of allocation requires a static constant-value ABI"));
+                if !explicit_entries {
+                    return Err(error(pos, "E_UNSUPPORTED",
+                        "const Map.of allocation requires an explicit statically typed Map.of_entries factory"));
+                }
+                if !entries.iter().all(|(key,value)|
+                    static_key(key).is_some() && constant_scalar(value)) {
+                    return Err(error(pos, "E_CONST",
+                        "const Map.of_entries requires only compile-time scalar key/value expressions"));
+                }
             }
             if entries.len() > MAX_ENTRIES || ordinal >= MAX_BINDINGS {
                 return Err(error(pos, "E_UNSUPPORTED",
@@ -260,7 +291,10 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             ordinal += 1;
             locals.insert(name.clone(), lookup);
             body.push(Stmt::Bind {
-                kind,
+                // A const Map.of_entries is statically evaluated and frozen
+                // by construction. The checked Wasm ABI allocates an owned
+                // immutable guest handle; this internal Val cannot mutate it.
+                kind: if kind == BindKind::Const { BindKind::Val } else { kind },
                 name,
                 ty: Some(Type::Named(class_type)),
                 init: Expr {
