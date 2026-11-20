@@ -968,30 +968,27 @@ impl HostTaskLockKernel {
             Ok(out)
         })
     }
-    /// Acknowledgment is independent from actually claiming the guard. A
-    /// cancel/regrant race can invalidate the ticket between hint and ack;
-    /// stale acks must not erase a successor's still-pending wakeup.
+    /// LEGACY negative-only diagnostic: a grant wake hint must NEVER be
+    /// turned into an execution receipt through a separate ack call.
+    /// The only legal path is atomic admit_parked_wakes_to_ready(), followed
+    /// by pop_ready() for an authenticated ready->running transition.
+    /// Reject a real pending grant here rather than bypass ready admission.
     fn acknowledge_grant_wake_hint(&self, lock_id: u64, ticket: Ticket)
         -> Result<(), Error> {
         self.try_with_core(|core| {
-            let lock = core.locks.get_mut(&lock_id).ok_or(Error::StaleTicket)?;
+            let lock = core.locks.get(&lock_id).ok_or(Error::StaleTicket)?;
             if lock.wakeup != Some(ticket) { return Err(Error::StaleTicket); }
-            let task = core.tasks.get_mut(&ticket.continuation.logical_task)
+            let task = core.tasks.get(&ticket.continuation.logical_task)
                 .ok_or(Error::UnknownTask)?;
             if task.continuation != ticket.continuation
                 || task.parked_lock != Some((lock_id, ticket))
                 || task.cancel_requested || task.guest_exited {
                 return Err(Error::StaleTicket);
             }
-            // Only the trusted scheduler calls this AFTER it has admitted
-            // the exact task to its runnable queue. An unacknowledged hint
-            // survives retries; stale acks cannot erase successor wakeups.
-            task.parked_lock = None;
-            task.lock_wait_cancel_wake = false;
-            lock.wakeup = None;
-            Ok(())
+            Err(Error::NotQuiescent)
         })
     }
+
 }
 
 #[cfg(test)]
@@ -1764,8 +1761,12 @@ mod tests {
         // A granted ticket cannot resume a truly parked guest before the
         // scheduler has admitted its continuation to the ready queue.
         assert_eq!(kernel.claim(successor, mutex, next), Err(Error::NotQuiescent));
-        kernel.acknowledge_grant_wake_hint(mutex, next).unwrap();
+        assert_eq!(kernel.acknowledge_grant_wake_hint(mutex, next), Err(Error::NotQuiescent));
+        assert_eq!(kernel.pump_ready(), Ok(2));
+        assert_eq!(kernel.pump_ready(), Ok(0));
         assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
+        assert_eq!(kernel.next_ready(), Ok(Some(cancelled)));
+        assert_eq!(kernel.next_ready(), Ok(Some(successor)));
         kernel.claim(successor, mutex, next).unwrap();
         assert_eq!(kernel.trusted_exit(cancelled).unwrap(), Vec::<u64>::new());
         assert_eq!(kernel.trusted_exit(successor).unwrap(), vec![mutex]);
@@ -1839,10 +1840,15 @@ mod tests {
         // Cancellation is a safe-point flag for the already running holder,
         // not an invitation to dispatch the same logical continuation twice.
         assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
-        assert_eq!(kernel.claim(queued, mutex, waiter), Err(Error::StaleTicket));
+        assert_eq!(kernel.claim(queued, mutex, waiter), Err(Error::NotQuiescent));
         assert_eq!(kernel.trusted_exit(active).unwrap(), vec![mutex]);
         assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, waiter)]);
-        kernel.acknowledge_grant_wake_hint(mutex, waiter).unwrap();
+        // A raw hint is not permission to claim: ready queue insertion and
+        // the trusted dispatch pop must both occur first.
+        assert_eq!(kernel.acknowledge_grant_wake_hint(mutex, waiter), Err(Error::NotQuiescent));
+        assert_eq!(kernel.pump_ready(), Ok(1));
+        assert_eq!(kernel.claim(queued, mutex, waiter), Err(Error::NotQuiescent));
+        assert_eq!(kernel.next_ready(), Ok(Some(queued)));
         kernel.claim(queued, mutex, waiter).unwrap();
         assert_eq!(kernel.trusted_exit(queued).unwrap(), vec![mutex]);
         for who in [active, queued] {
