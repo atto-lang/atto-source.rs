@@ -498,6 +498,10 @@ impl Cursor<'_> {
                 true
             } else { false };
             self.expect(&Tok::Semi, "expected ';' after actor state field")?;
+            if !writable && !initialized {
+                return Err(Diagnostic::new(fpos, "E_STATE",
+                    "immutable val actor state must have a declaration initializer"));
+            }
             if fields.iter().any(|f| f.name == name) {
                 return Err(Diagnostic::new(fpos, "E_DUPLICATE",
                     format!("duplicate protected actor field '{name}'")));
