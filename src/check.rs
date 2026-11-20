@@ -2270,11 +2270,15 @@ impl<'a> FnCx<'a> {
                         _ => return Err(type_err(arm.pos,
                             format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
-                    if bind.is_some() != needed.is_some() {
+                    // '_' explicitly ignores either a real payload or the
+                    // absence of one (Result<void, E>.Ok). It never becomes a
+                    // declared variable. A named binder still requires data.
+                    if (bind.is_none() && needed.is_some()) ||
+                       (bind.as_deref().is_some_and(|n| n != "_") && needed.is_none()) {
                         return Err(Diagnostic::new(arm.pos, "E_ARITY",
                             format!("pattern '{name}' has incorrect payload arity")));
                     }
-                    (Some(tag), bind.as_deref(), needed)
+                    (Some(tag), bind.as_deref().filter(|n| *n != "_"), needed)
                 }
                 _ => return Err(type_err(arm.pos,
                     format!("pattern is not a variant of {}", self.tn(sty)))),
