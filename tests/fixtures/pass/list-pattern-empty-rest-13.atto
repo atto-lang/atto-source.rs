@@ -1,0 +1,8 @@
+// A single unbound sequence rest also matches an empty List.
+pub fnc main(): int {
+  val items: List<int> = List.of();
+  return match<int> items over
+    on List.of(...) -> 13,
+    on _ -> 0
+  end;
+}
