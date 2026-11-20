@@ -2328,6 +2328,13 @@ impl Parser {
                     pos,
                 }))
             }
+            Some("sync") if self.word_at(1) == Some("task") => {
+                // Inline expression-statement form executes on the same caller
+                // with its result discarded; it is not a child Future.
+                let e = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(e))
+            }
             Some("trap") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;

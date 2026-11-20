@@ -42,6 +42,8 @@ fn independent_child_cancellation_not_silently_enabled() {
     reject("pub fnc main(): int { val x = task<int> { return 42; }; return 0; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = await task<int> { return 42; }; return 0; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { do task<void> { return; }; return 0; }", "E_UNSUPPORTED");
-    reject("pub susp fnc main(): int { val Future<int> x = task<int> { return 42; }; x.cancel(); return 0; }", "E_UNSUPPORTED");
-    reject("pub susp fnc main(): int { val Future<int> worker = task<int> { val lock = new Mutex<int>(41); using await lock.lock_async() as guard { return guard.value; } }; worker.cancel(); return 42; }", "E_UNSUPPORTED");
+    // The current browser frontend has no 'susp fnc' declaration grammar;
+    // isolate the unsupported task/cancel behavior inside a valid callable.
+    reject("pub fnc main(): int { val Future<int> x = task<int> { return 42; }; x.cancel(); return 0; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { val Future<int> worker = task<int> { val lock = new Mutex<int>(41); using await lock.lock_async() as guard { return guard.value; } }; worker.cancel(); return 42; }", "E_UNSUPPORTED");
 }
