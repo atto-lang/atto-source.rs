@@ -9,7 +9,7 @@
 
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const CANDIDATE_SOURCES: [(&str, usize, &str); 4] = [
     ("stdlib/core/byte_bounds.atto", 726, "7465eb4b8e3325957d47fd0fc92206e75231c1ad140b5605cec56c5262cb5c7e"),
@@ -22,19 +22,38 @@ fn diagnostic(pos: Pos, code: &'static str, message: &'static str) -> Diagnostic
     Diagnostic::new(pos, code, message)
 }
 
-/// Authenticate an externally supplied library candidate *before* parsing it.
-/// This is intentionally a distinct operation from compiling a guest. The
-/// exact candidate files have not yet been admitted by the Rust typechecker.
+/// A compiler-owned, immutable snapshot of the exact four pinned source
+/// modules. No caller-provided reference survives admission, preventing a
+/// check/use race between source verification and future class linking.
+/// Construction is private, so safe guest code cannot forge a "verified"
+/// package by supplying an arbitrary module with the same name.
+pub struct VerifiedStdBufferCandidate {
+    sources: BTreeMap<String, String>,
+}
+impl VerifiedStdBufferCandidate {
+    /// Retrieve the immutable exact source bytes by canonical relative path.
+    /// This is NOT a compiled or security-certified std.buffer module.
+    pub fn source(&self, path: &str) -> Option<&str> {
+        self.sources.get(path).map(String::as_str)
+    }
+
+    pub fn count(&self) -> usize {
+        self.sources.len()
+    }
+}
+
+/// Authenticate and *copy* externally supplied candidate source bytes.
+/// The candidate is still NOT typechecked, code-generated, or linked.
 pub fn verify_candidate_sources<'a>(
     sources: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> Result<(), Diagnostic> {
-    let mut present = BTreeSet::new();
+) -> Result<VerifiedStdBufferCandidate, Diagnostic> {
+    let mut verified = BTreeMap::new();
     for (path, source) in sources {
         let Some((_, bytes, sha)) = CANDIDATE_SOURCES.iter().find(|(p, _, _)| *p == path) else {
             return Err(diagnostic(Pos::default(), "E_STDLIB_SOURCE",
                 "unknown canonical stdlib source path"));
         };
-        if !present.insert(path) {
+        if verified.contains_key(path) {
             return Err(diagnostic(Pos::default(), "E_STDLIB_SOURCE",
                 "duplicate canonical stdlib source path"));
         }
@@ -43,12 +62,15 @@ pub fn verify_candidate_sources<'a>(
             return Err(diagnostic(Pos::default(), "E_STDLIB_HASH",
                 "canonical stdlib source hash/size differs from pinned manifest"));
         }
+        // Own the bytes before any future parsing. Host callers may mutate
+        // their input source storage after this function returns.
+        verified.insert(path.to_owned(), source.to_owned());
     }
-    if present.len() != CANDIDATE_SOURCES.len() {
+    if verified.len() != CANDIDATE_SOURCES.len() {
         return Err(diagnostic(Pos::default(), "E_STDLIB_SOURCE",
             "missing required pinned canonical stdlib source"));
     }
-    Ok(())
+    Ok(VerifiedStdBufferCandidate { sources: verified })
 }
 
 /// Inspect actual lexer tokens, not substring matches in strings/comments.
@@ -161,6 +183,25 @@ pub fnc main(): int { return 1; }"#;
         // Even after verifying all four sources, the compiler may not emit
         // a guest until it actually parses and links the canonical class.
         assert_eq!(crate::compile(EXAMPLE).unwrap_err().code, "E_STDLIB_UNLINKED");
+    }
+
+    #[test]
+    fn verified_candidate_owns_its_source_bytes_across_caller_mutation() {
+        let mut untrusted: Vec<(String, String)> = authentic_sources()
+            .into_iter()
+            .map(|(path, source)| (path.to_owned(), source.to_owned()))
+            .collect();
+        let approved = verify_candidate_sources(
+            untrusted.iter().map(|(path, value)| (path.as_str(), value.as_str()))
+        ).expect("exact manifest sources must be authenticated");
+        assert_eq!(approved.count(), 4);
+        for (_, source) in &mut untrusted {
+            source.clear();
+            source.push_str("attacker-modified after verification");
+        }
+        assert_eq!(approved.source("stdlib/std/buffer.atto"), Some(CANONICAL_BUFFER));
+        assert_eq!(approved.source("stdlib/core/byte_bounds.atto"), Some(CANONICAL_BOUNDS));
+        assert_eq!(approved.source("bad.atto"), None);
     }
 
     #[test]
