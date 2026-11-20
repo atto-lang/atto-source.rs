@@ -1,0 +1,61 @@
+name: Atto typed actor sends effect and guest compiler
+on:
+  pull_request:
+    paths:
+      - 'src/actor_send_effect_graph.rs'
+      - 'src/ast.rs'
+      - 'src/parser.rs'
+      - 'src/check.rs'
+      - 'src/lib.rs'
+      - 'tests/actor_sends_never.rs'
+      - 'tests/fixtures/pass/actor-bool-never-parity-v1.atto'
+      - '.github/workflows/typed-actor-send-effects.yml'
+  push:
+    paths:
+      - 'src/actor_send_effect_graph.rs'
+      - 'src/ast.rs'
+      - 'src/parser.rs'
+      - 'src/check.rs'
+      - 'src/lib.rs'
+      - 'tests/actor_sends_never.rs'
+      - 'tests/fixtures/pass/actor-bool-never-parity-v1.atto'
+      - '.github/workflows/typed-actor-send-effects.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compile-exact-actor-effects:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify current PR head and tree before test
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "ATTO_RUST_ACTOR_EFFECT_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_RUST_ACTOR_EFFECT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Compile shared typed-IR effect audit and adversarial tests
+        run: |
+          set -euo pipefail
+          rustc --version
+          rustc --edition=2021 --test -D warnings src/actor_send_effect_graph.rs -o "$RUNNER_TEMP/atto-effect-graph-tests"
+          "$RUNNER_TEMP/atto-effect-graph-tests"
+      - name: Compile full Atto guest compiler and real sends-never fixtures
+        run: |
+          set -euo pipefail
+          cargo test --offline --locked --test actor_sends_never
+          cargo build --offline --locked --bin attoc
+      - name: Scope and non-promotion
+        run: |
+          echo 'RUST_ATTO_BOOL_NEVER_SOURCE_TO_WASM=TESTED'
+          echo 'REAL_WASM_ACTOR_RECEIVE_RUNTIME=NOT_EXECUTED'
+          echo 'NATIVE_LLVM_AOT_ACTOR=NOT_EXECUTED'
