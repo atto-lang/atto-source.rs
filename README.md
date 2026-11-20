@@ -430,7 +430,7 @@ See [language spec](https://github.com/atto-lang/atto-spec/pull/32) and
 ## Injected process stdio text host adapter (draft #257)
 
 - `runtime/browser/stdio_text_host_v1.mjs`: explicit-host-injection-only, Worker/Node UTF-8 LF/CRLF stdin framing, checked `Result<Option<string>,IoError>`-shaped host outcomes, strict text decoding, quotas, stdout/stderr admission, cancellation, revocation and exclusive stdin read/stream lease.
-- `tests/stdio_text_host_v1.test.mjs`: eight standalone Node host-boundary tests covering alias identity, EOF/empty/final records, split Unicode/NUL, fatal malformed UTF-8, input/output quota, competing stdin consumers, abort-before-commit, revocation and output failure. Run with `node --test tests/stdio_text_host_v1.test.mjs`.
+- `tests/stdio_text_host_v1.test.mjs`: ten standalone Node host-boundary tests covering alias identity, EOF/empty/final records, split Unicode/NUL, fatal malformed UTF-8, input/output quota, competing stdin consumers, abort-before-commit, revocation and output failure. Run with `node --test tests/stdio_text_host_v1.test.mjs`.
 - `tests/browser-async/stdio-text-host-probe.mjs`: separate real Chromium Worker host adapter test integrated into `tests/browser-async-e2e.mjs`.
 
 **Evidence boundary:** These are host-side infrastructure and tests, NOT a source-compiled Atto `Channel<string>`, process-stdio import ABI, checked `writech` guest result, permission enforcement in the guest checker, or compiled stdin echo. `generation` is trusted host configuration; an independent broker must authenticate tenant/generation before ever handing out guest imports. The existing scalar `stdio.print` import is unchanged and does not prove fallible/suspending text writes.
