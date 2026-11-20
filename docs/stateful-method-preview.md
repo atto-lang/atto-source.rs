@@ -49,3 +49,50 @@ This only establishes the first narrow vertically integrated execution path.
 No full actor mailbox semantics, reentrancy, multiple state fields, nested
 leases, general expressions, or unrestricted `critical-read` / `critical-write`
 execution is claimed.
+
+## Restricted attached-state source parity (2026-11-19)
+
+In addition to the original inline actor-owned `let int count = 17;`
+fixture, the `--stateful-method-preview` compiler now admits exactly one
+**nominal attached** initialized scalar field:
+
+```atto
+use namespace counters;
+declare actor Counter;
+define actor Counter as
+end
+define state on actor Counter as {
+    let int count = 17;
+}
+mtd (mut self: Counter) increment(int delta): void {
+    self.handle_state(critical-write |s| -> {
+        s.count = s.count + delta;
+    });
+}
+```
+
+The attachment is resolved to the sole declared and defined actor *after*
+source declaration scanning. It is reparsed by the ordinary actor-state
+frontend to retain `FieldMode::ActorState`, then subjected to the exact
+typed state-use and audited lease CFG checks. This restricted compiler path
+does **not** emit plain unlocked class storage, nor does it compile a
+general-purpose field accessor. An unrelated owner, duplicate attached
+schema, second inline schema, multi-field, bool/deferred state, alternate
+callback body or unproved effect must reject without a guest artifact.
+
+The required execution test `tests/stateful_method.mjs` asserts that the
+attached and inline sources emit **byte-identical** native-compiled Wasm
+and byte-identical wasm32-compiler output, and executes actual guest
+`Counter.increment` with initial value 17, 25→42 checked update, overflow
+rollback, exact lease release and instance isolation. The existing source
+stateful receiver preview is deliberately *not* the full canonical Counter
+program: it does not compile `on_start`, `receive(ActorMail<int>)`, a
+real actor mailbox or the `using state.read/write` effects of the requested
+example. No production `compile()` support is turned on.
+
+**Evidence status:** tests have been authored for the latest source head.
+The previous pinned private CI evidence applies only to the original
+head `e6dff1d9c292a7243e21df888c84b5f43b8816f0`, not the amended PR
+head. The latest source Actions attempt `44663206929` failed before
+running any steps; real Rust/native/wasm32 test results for the new head
+remain `NOT_EXECUTED`. Keep Draft pending exact-head CI and review.
