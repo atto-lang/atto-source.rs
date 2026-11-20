@@ -38,14 +38,9 @@ impl AffineLeaseInt<LeaseReleased> {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CheckedReadyLease {
-    /// Protected owner value before any guest execution.
-    initial: i64,
-    /// Signed scalar update under the affine exclusive lease.
+    /// The only value needed by guest lowering. The full sequence of
+    /// expected results is checked, not hardcoded or exposed to Wasm.
     delta: i64,
-    /// No parallel or nested acquisition is admitted in this source profile.
-    acquisitions: u8,
-    /// Predicted copy-return results; these are proofs, not guest substitutes.
-    expected: Vec<i64>,
 }
 
 fn pos() -> Pos { Pos { line: 1, col: 1 } }
@@ -56,7 +51,6 @@ impl CheckedReadyLease {
             return Err(Diagnostic::new(pos(), "E_LOCK_UNSUPPORTED",
                 "ready lease proof requires one or two sequential acquisitions"));
         }
-        let mut expected = Vec::with_capacity(acquisitions as usize);
         let mut value = initial;
         for _ in 0..acquisitions {
             // An exceptional checked addition while holding a lease would
@@ -67,16 +61,11 @@ impl CheckedReadyLease {
                 pos(), "E_OVERFLOW",
                 "guarded mutation can overflow: no exceptional lease cleanup ABI"
             ))?;
-            expected.push(value);
         }
-        Ok(Self { initial, delta, acquisitions, expected })
+        // No predicted value is ever substituted for the real guest update.
+        // This proof only authorizes lowering after every call was checked.
+        Ok(Self { delta })
     }
-
-    pub(crate) fn final_expected(&self) -> i64 {
-        self.expected[self.acquisitions as usize - 1]
-    }
-
-    pub(crate) fn initial(&self) -> i64 { self.initial }
 
     fn int(n: i64) -> TE { TE { ty: Type::Int, e: TExpr::I64(n) } }
     fn global(index: u32) -> TE { TE { ty: Type::Int, e: TExpr::GlobalGet(index) } }
@@ -112,10 +101,9 @@ mod tests {
     #[test]
     fn proof_accepts_one_or_two_sequential_ready_acquisitions() {
         let one = CheckedReadyLease::prove(0, 1, 1).unwrap();
-        assert_eq!(one.final_expected(), 1);
-        assert_eq!(one.initial(), 0);
+        assert_eq!(one.delta, 1);
         let two = CheckedReadyLease::prove(0, 1, 2).unwrap();
-        assert_eq!(two.final_expected(), 2);
+        assert_eq!(two.delta, 1);
         assert_eq!(two.lower_one_guard().len(), 6);
         assert!(matches!(two.lower_one_guard()[4], TStmt::GlobalSet(1, _)));
         assert!(matches!(two.lower_one_guard()[5], TStmt::Return(_)));
@@ -146,7 +134,9 @@ mod tests {
 
     #[test]
     fn signed_updates_are_checked_for_each_successive_lease() {
-        assert_eq!(CheckedReadyLease::prove(17, 23, 1).unwrap().final_expected(), 40);
-        assert_eq!(CheckedReadyLease::prove(17, -20, 2).unwrap().final_expected(), -23);
+        assert_eq!(CheckedReadyLease::prove(17, 23, 1).unwrap().delta, 23);
+        assert_eq!(CheckedReadyLease::prove(17, -20, 2).unwrap().delta, -20);
+        assert_eq!(CheckedReadyLease::prove(17, -20, 0).unwrap_err().code,
+                   "E_LOCK_UNSUPPORTED");
     }
 }
