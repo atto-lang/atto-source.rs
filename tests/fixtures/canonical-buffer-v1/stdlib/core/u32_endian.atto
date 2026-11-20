@@ -1,0 +1,26 @@
+// Pure, freestanding u32 byte-lane helpers. No buffer allocation or I/O.
+// Inputs to pack_* are masked to their low eight bits. The public
+// ByteBuffer API must separately reject out-of-range values and offsets.
+pub fnc u32_low8(int value) -> int {
+  return value & 255;
+}
+
+pub fnc u32_lane1(int value) -> int {
+  return (value >>> 8) & 255;
+}
+
+pub fnc u32_lane2(int value) -> int {
+  return (value >>> 16) & 255;
+}
+
+pub fnc u32_lane3(int value) -> int {
+  return (value >>> 24) & 255;
+}
+
+pub fnc u32_pack_le(int b0, int b1, int b2, int b3) -> int {
+  return (b0 & 255) | ((b1 & 255) <<< 8) | ((b2 & 255) <<< 16) | ((b3 & 255) <<< 24);
+}
+
+pub fnc u32_pack_be(int b0, int b1, int b2, int b3) -> int {
+  return ((b0 & 255) <<< 24) | ((b1 & 255) <<< 16) | ((b2 & 255) <<< 8) | (b3 & 255);
+}
