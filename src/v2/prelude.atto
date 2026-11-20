@@ -334,6 +334,23 @@ suspends fnc __chan_recv(int c): int {
   done
 }
 
+// Public Channel<T> iterator read. A caller may have suspended before
+// the channel's owner changed; recheck BOTH DATA ports on every retry.
+// Only internal actor/bridge code may use __chan_recv_opt below.
+suspends fnc __chan_recv_user_opt(int c): int {
+  loop do
+    if __load(c, 56) != 0 then __panic(10); fi
+    if __load(c, 64) != 0 then __panic(10); fi
+    if __load(c, 8) > 0 then
+      return __some(__chan_take(c));
+    fi
+    if __load(c, 32) != 0 then
+      return 0;
+    fi
+    __suspend();
+  done
+}
+
 // Some(item), or None once the channel is closed and drained.
 suspends fnc __chan_recv_opt(int c): int {
   loop do
@@ -740,6 +757,11 @@ fnc __rx_poll(int o): int {
     return r;
   fi
   val c = __load(o, 16);
+  // Observable.from_channel cannot bypass compiler DATA ownership even if
+  // the Observable was created before the pipeline attached its channel.
+  // This guard executes on EVERY poll, including after suspension.
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
   if __load(c, 8) > 0 then
     __set_rt(6, __chan_take(c));
     return 1;
