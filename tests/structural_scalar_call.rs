@@ -123,3 +123,33 @@ pub fnc main(): int {{
     let a = compile(&source).unwrap();
     assert_eq!(a, compile(&source).unwrap());
 }
+
+#[test]
+fn structural_class_with_public_methods_cannot_use_field_only_snapshot_abi() {
+    // Method completeness is part of the ~Class contract even if the body
+    // reads only p.x. There is no verified dynamic method dispatch/loan ABI.
+    // In particular, the unrelated Other type has no required_method().
+    let source = r#"
+define class Point as
+    pub int x = 1;
+    pub required_method(): int { return 7; }
+end
+define class Other as
+    pub int x = 3;
+end
+pub fnc read(~Point p): int { return p.x; }
+pub fnc main(): int {
+    val o = new Other();
+    return read(o);
+}
+"#;
+    let e = compile(source).expect_err("incomplete structural method set must not emit Wasm");
+    assert_eq!(e.code, "E_UNSUPPORTED");
+    assert!(e.message.contains("method witness ABI"), "{e}");
+
+    // It is also unsafe to treat a method-bearing nominal Point as a mere
+    // field snapshot; guest method dispatch has not been validated yet.
+    let same_nominal = source.replace("new Other()", "new Point()");
+    let e2 = compile(&same_nominal).expect_err("method-bearing ABI stays gated");
+    assert_eq!(e2.code, "E_UNSUPPORTED");
+}
