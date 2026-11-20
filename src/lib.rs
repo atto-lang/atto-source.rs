@@ -71,9 +71,12 @@ pub mod mutex_fast_guest;
 /// Affine MutexLease<int> proof and typed guard protocol for the ready-only
 /// guest fast path. This is NOT a general contended scheduler/async ABI.
 pub(crate) mod mutex_lease_hir_v1;
-/// Host-reference waiter/cancellation model, compiled only in Rust unit tests;
-/// NOT an Atto guest mutex runtime or an admitted compiler intrinsic.
-#[cfg(test)]
+/// Trusted, bounded TaskScope/Mutex coordination kernel.
+/// Compiled into the Rust host crate, but intentionally private and NOT
+/// connected to guest Wasm imports, task admission, or the active scheduler.
+/// Do not expose this to untrusted guest source; unverified task+mutex still
+/// fails closed until physical quiescence and actor/TenantVM ABI are proved.
+#[allow(dead_code)]
 mod mutex_wait_queue_v1;
 /// File-scoped namespace headers derived from a package-relative source path.
 pub mod namespace;
