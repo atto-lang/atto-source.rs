@@ -443,6 +443,13 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             return Err(Diagnostic::new(attached.pos, "E_UNBOUND",
                 "attached protected state must have an exact actor declaration"));
         }
+        // Out-of-line nominal receivers share the actor member namespace.
+        // A protected field must never be shadowed by a source method.
+        if out.receivers.iter().any(|r|
+            r.owner == attached.owner && r.name == attached.field.name) {
+            return Err(Diagnostic::new(attached.pos, "E_DUPLICATE",
+                "protected actor state field collides with out-of-line receiver method"));
+        }
         let Some(actor) = out.definitions.iter_mut().find(|a| a.name == attached.owner) else {
             return Err(Diagnostic::new(attached.pos, "E_UNBOUND",
                 "attached protected state requires one concrete actor definition"));
