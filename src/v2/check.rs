@@ -1661,6 +1661,11 @@ impl<'a> Checker<'a> {
                                 return Err(type_err(pos,
                                     "actor-channel-actor triple needs matching nominal DATA ports"));
                             }
+                            // `item` borrows the type metadata inside
+                            // `vals`. Clone it BEFORE consuming the stage
+                            // vector; otherwise Rust lowering itself retains
+                            // a reference into a moved vector.
+                            let channel_payload = item.clone();
                             let mut it = vals.into_iter();
                             let (first_ir, _) = it.next().unwrap();
                             let (middle_ir, _) = it.next().unwrap();
@@ -1684,7 +1689,7 @@ impl<'a> Checker<'a> {
                                             Box::new(Ty::PipeSetupError)))
                             } else {
                                 ("__actor_channel_actor_atomic",
-                                 Ty::Channel(item.clone()))
+                                 Ty::Channel(channel_payload))
                             };
                             return Ok((self.rt(helper,
                                 vec![source_ir, middle_ir, sink_ir]), result_ty));
