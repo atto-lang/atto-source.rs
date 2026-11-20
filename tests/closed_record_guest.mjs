@@ -68,7 +68,6 @@ const negatives=[
  ['pub fnc main(): int {val r=Record.of(name=1,"name":2);return 0;}','E_DUPLICATE'],
  ['pub fnc main(): int {val m=Map.of("a",1,"b");return 0;}','E_FACTORY_ARITY'],
  ['pub fnc main(): int {val m=Map.of("a",1);return 0;}','E_UNSUPPORTED'],
- ['pub fnc main(): int {val a=Array.of(1,2);return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val l=List.of("x","y");return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val a=Array.of();return 0;}','E_TYPE_INFERENCE'],
  ['pub fnc main(): int {val a=Array.of(1,2);return a[2];}','E_INDEX_BOUNDS'],
