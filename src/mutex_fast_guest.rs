@@ -350,25 +350,56 @@ fn guarded_diagnostic(tokens: &[Token]) -> Option<Diagnostic> {
     None
 }
 
+/// Disambiguate nominal generic *type references* from construction calls.
+/// Lexer tokens exclude comments and strings; nesting is bounded by source
+/// admission. The function performs no allocation and never grants a runtime
+/// capability. In particular, `Mutex<int>` in a parameter is NOT a call.
+fn reject_legacy_mutex_constructors(tokens: &[Token]) -> R<()> {
+    const MAX_GENERIC_SCAN: usize = 128;
+    for (i, token) in tokens.iter().enumerate() {
+        if !matches!(&token.tok, Tok::Ident(name) if name == "Mutex")
+            || !tokens.get(i + 1).is_some_and(|t| t.tok == Tok::Lt) {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut closing = None;
+        for (j, t) in tokens.iter().enumerate().skip(i + 1) {
+            if j - i > MAX_GENERIC_SCAN { break; }
+            match &t.tok {
+                Tok::Lt => depth += 1,
+                Tok::Gt => {
+                    if depth == 0 { break; }
+                    depth -= 1;
+                    if depth == 0 { closing = Some(j); break; }
+                }
+                Tok::Semi | Tok::Eof | Tok::LBrace | Tok::RBrace => break,
+                _ => {}
+            }
+        }
+        let Some(end) = closing else { continue; };
+        if !tokens.get(end + 1).is_some_and(|t| t.tok == Tok::LParen) {
+            continue;
+        }
+        if i == 0 || !matches!(&tokens[i - 1].tok,
+            Tok::Ident(name) if name == "new") {
+            return Err(error(token.pos, "E_NEW_REQUIRED",
+                "Mutex<T> is an opaque resource class: use new Mutex<T>(value)"));
+        }
+    }
+    Ok(())
+}
+
 /// A narrow scanner selects only source using the reserved intrinsic and
 /// scoped lock_async spelling. It never claims general Mutex<T> support.
 pub fn try_lower(tokens: &[Token]) -> R<Option<TProgram>> {
     let has_mutex = tokens.windows(2).any(|w| matches!(
         (&w[0].tok,&w[1].tok),(Tok::Ident(name),Tok::Lt) if name=="Mutex"
     ));
-    // Class construction is explicit; no value-struct/function-call spelling.
-    // Match only the closed-world Mutex<int>(...) constructor shape,
-    // not nominal Mutex<int> types in parameters or local annotations.
-    for (i,w) in tokens.windows(5).enumerate() {
-        if matches!((&w[0].tok,&w[1].tok,&w[2].tok,&w[3].tok,&w[4].tok),
-            (Tok::Ident(m),Tok::Lt,Tok::Ident(t),Tok::Gt,Tok::LParen)
-                if m == "Mutex" && t == "int")
-            && (i == 0 || !matches!(&tokens[i-1].tok,
-                Tok::Ident(word) if word == "new")) {
-            return Err(error(tokens[i].pos,"E_NEW_REQUIRED",
-                "Mutex<T> is a resource class; construct with new Mutex<int>(value)"));
-        }
-    }
+    // Constructor validity is independent of whether this source contains
+    // lock_async(). In particular, a bare Mutex<Result<int,E>>(0) or
+    // Mutex<int>(0) in an unrelated function must not fall through to the
+    // ordinary parser as a legal value-struct/function call.
+    reject_legacy_mutex_constructors(tokens)?;
     let lock_async = tokens.windows(3).any(|w| matches!(
         (&w[0].tok,&w[1].tok,&w[2].tok),
         (Tok::Dot,Tok::Ident(name),Tok::LParen) if name=="lock_async"
@@ -421,6 +452,26 @@ pub susp fnc main(): int {
         assert_eq!(crate::compile(&old).unwrap_err().code,"E_NEW_REQUIRED");
         assert_eq!(try_lower(&crate::lexer::lex(&old).unwrap()).unwrap_err().code,
             "E_NEW_REQUIRED");
+    }
+    #[test]
+    fn constructor_policy_is_independent_of_lock_async_calls() {
+        for src in [
+            "pub fnc main(): int { val m = Mutex<int>(0); return 0; }",
+            "pub fnc main(): int { val m = Mutex<Result<int,string>>(0); return 0; }",
+            "pub fnc main(): int { val m = Mutex<List<Map<int,bool>>>(0); return 0; }",
+        ] {
+            assert_eq!(crate::compile(src).unwrap_err().code, "E_NEW_REQUIRED", "{src}");
+        }
+        // Pure type references are not constructors and therefore cannot be
+        // given the misleading 'missing new' diagnostic by this lexical gate.
+        let param = crate::lexer::lex(
+            "pub fnc test(Mutex<int> mutex): int { return 0; }"
+        ).unwrap();
+        assert!(reject_legacy_mutex_constructors(&param).is_ok());
+        let commented = crate::lexer::lex(
+            "// Mutex<int>(0)\\n pub fnc main(): int { return 42; }"
+        ).unwrap();
+        assert!(reject_legacy_mutex_constructors(&commented).is_ok());
     }
     #[test]
     fn implicit_and_explicit_acquisition_are_semantically_identical() {
