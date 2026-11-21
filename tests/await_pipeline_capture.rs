@@ -207,3 +207,27 @@ pub suspends fnc main(): int {
 "#;
     compile_ok(source);
 }
+
+#[test]
+fn arithmetic_suspend_callback_can_bind_a_typed_value_or_caret_return() {
+    for (marker, keyword) in [("", "susp"), ("^ ", "suspends")] {
+        let src = if marker.is_empty() {
+            format!("pub susp fnc main(): int {{ val p=task {{return 41;}}; p |> {keyword} |f| -> await f + 1 >> val answer: int; return answer; }}")
+        } else {
+            format!("pub susp fnc main(): int {{ val p=task {{return 41;}}; {marker}p |> {keyword} |f| -> await f + 1 >> val answer: int; }}")
+        };
+        compile_ok(&src);
+    }
+}
+
+#[test]
+fn arithmetic_callback_capture_preserves_type_and_const_effect_checks() {
+    for (src, code) in [
+        ("pub susp fnc main(): int { val p=task{return 41;}; p |> susp |f| -> await f + 1 >> val x: string; return 42; }", "E_TYPE"),
+        ("pub susp fnc main(): int { val p=task{return 41;}; p |> susp |f| -> await f + 1 >> const x: int; return 42; }", "E_CONST_EFFECT"),
+        ("pub susp fnc main(): int { val p=task{return 41;}; p |> susp |f| -> await f + 1 >> val x: int; return await p; }", "E_MOVED"),
+    ] {
+        let diag=compile(src).expect_err("invalid transformed capture must not produce Wasm");
+        assert_eq!(diag.code,code,"{src}: {diag}");
+    }
+}
