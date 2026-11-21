@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {verifyScalarGuestValue,verifyCheckedPanicGuest} from './compiler-smoke-guest-oracle.mjs';
-import {readCompilerDiagnostic} from './compiler-diagnostic.mjs';
+import {readCompilerDiagnostic,verifyCompilerDiagnosticParity} from './compiler-diagnostic.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const native=resolve(process.env.ATTOC||join(root,'target/release/attoc'));
 const compiler=resolve(process.env.ATTO_WASM_COMPILER||
@@ -111,10 +111,10 @@ try{
       }
     }else{
       assert.equal(cp.status,1,'native accepted invalid '+name);
+      assert.equal(cp.stdout,'','rejected source emitted unexpected stdout');
       assert.ok(!existsSync(output),'rejected native source emitted output');
-      assert.ok(cp.stderr.includes(oracle),'native missing expected diagnostic '+oracle);
       assert.equal(wasm.ok,false,'wasm32 accepted invalid '+name);
-      assert.ok(wasm.message.includes(oracle),'wasm32 missing expected diagnostic '+oracle);
+      verifyCompilerDiagnosticParity(cp.stderr,src,wasm,oracle);
       rows.push({fixture:name,result:'REAL_REJECTION',code:oracle,source_sha256:sha(content),no_artifact:true});
     }
   }
