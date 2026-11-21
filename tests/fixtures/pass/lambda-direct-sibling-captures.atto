@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Both lambdas capture immutable base at their lexical definition points.
+pub fnc main(): int {
+    val base = 2;
+    val add = |n| : int -> n + base;
+    val multiply = |n| : int -> n * base;
+    return add(10) + multiply(15);
+}

@@ -114,3 +114,68 @@ fn not_called_lambda_remains_unsupported() {
     let src = "pub fnc main(): int { val f = |n| -> n + 1; return 0; }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
 }
+
+
+#[test]
+fn three_independent_direct_lambdas_lower_into_distinct_wasm_helpers() {
+    // No indirect-call table and no JS/host implementation. These are
+    // separate compiler-generated typed functions with real Wasm bodies.
+    let src = r#"
+        pub fnc main(): int {
+            val discard = |_| : int -> 5;
+            val seven = || -> 7;
+            val twice = |n| : int -> n * 2;
+            return discard(99) + seven() + twice(15);
+        }
+    "#;
+    let checked = checked(src);
+    assert_eq!(checked.funcs.len(), 4);
+    assert_eq!(checked.funcs[1].name, "$lambda_0");
+    assert_eq!(checked.funcs[2].name, "$lambda_0_1");
+    assert_eq!(checked.funcs[3].name, "$lambda_0_2");
+    assert_eq!(checked.funcs[1].params, [Type::Int]);
+    assert!(checked.funcs[2].params.is_empty());
+    assert_eq!(checked.funcs[3].params, [Type::Int]);
+    let wasm = atto_compiler::compile(src).expect("real guest module");
+    assert_eq!(wasm, atto_compiler::compile(src).unwrap());
+    assert!(wasm.starts_with(b"\\0asm"));
+}
+
+#[test]
+fn sibling_lambdas_get_independent_definition_site_capture_snapshots() {
+    let src = r#"
+        pub fnc main(): int {
+            val base = 2;
+            val add = |n| : int -> n + base;
+            val multiply = |n| : int -> n * base;
+            return add(10) + multiply(15);
+        }
+    "#;
+    let p = checked(src);
+    assert_eq!(p.funcs.len(), 3);
+    assert_eq!(p.funcs[1].params, [Type::Int, Type::Int]);
+    assert_eq!(p.funcs[2].params, [Type::Int, Type::Int]);
+    let wasm = atto_compiler::compile(src).unwrap();
+    assert_eq!(wasm, atto_compiler::compile(src).unwrap());
+    assert!(wasm.starts_with(b"\\0asm"));
+}
+
+#[test]
+fn multi_lambda_rejects_unverified_links_shadowing_and_excessive_bindings() {
+    for (source, code) in [
+        ("pub fnc main(): int { val a = |n| -> n+1; val a = |n| -> n+2; return a(10); }",
+            "E_DUPLICATE"),
+        ("pub fnc main(): int { val a = |n| -> n+1; val b = |n| -> a(n)+2; return a(2)+b(2); }",
+            "E_UNSUPPORTED"),
+        ("pub fnc main(): int { val a = |n| -> n+1; val b = |n| -> n+2; return a(41); }",
+            "E_UNSUPPORTED"),
+    ] {
+        let diagnostic = atto_compiler::compile(source).expect_err("must fail closed");
+        assert_eq!(diagnostic.code, code, "{diagnostic}");
+    }
+    let bindings = (0..9).map(|i| format!("val f_{i} = || -> {i};"))
+        .collect::<String>();
+    let src = format!("pub fnc main(): int {{ {bindings} return f_0(); }}");
+    let diagnostic = atto_compiler::compile(&src).expect_err("per-function helper budget");
+    assert_eq!(diagnostic.code, "E_SOURCE_LIMIT", "{diagnostic}");
+}

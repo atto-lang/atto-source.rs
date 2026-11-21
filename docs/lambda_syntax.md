@@ -86,11 +86,12 @@ checks: they do not grant executable closures or a Wasm callable ABI.
 
 ## Direct-call execution milestone (limited browser Wasm profile)
 
-A single local immutable lambda per ordinary function can now be invoked
-directly in the same function, provided its first call uses scalar literal
-arguments. The compiler infers argument types from that call, verifies the
-lambda with the noncapturing type checker, and emits a private typed Wasm
-function using the existing direct-call ABI.
+Up to eight *independent* local immutable direct-call lambdas per ordinary
+function can be lowered to distinct private typed Wasm functions. The first
+direct call of each lambda must use scalar literal arguments for parameter
+inference. Every generated helper has its own index, arity check, immutable
+scalar capture snapshot and checked Wasm body. Existing per-module function
+and rewrite-nesting budgets remain enforced.
 
 Example: `val double = |n| : int -> n * 2; return double(21);`
 executes with result `42`. An explicitly terminated lambda return must
@@ -98,11 +99,27 @@ be parenthesized, as in `val double = (|n| -> return n * 2;);`.
 
 The local lambda is a compile-time declaration, not a runtime handle.
 Only direct calls are supported: callable values, aliases, escaped closures,
-captures, reassignments, multiple lambdas per source function, contextual
-inference from nonliteral first arguments, and Rx pipelines still fail closed.
+mutable or heap-owning captures, reassignments, calls from one locally lifted
+lambda into another, contextual inference from nonliteral first arguments,
+and Rx pipelines still fail closed. Immutable scalar captures are lifted to
+definition-site snapshot locals, with distinct snapshot names per sibling.
+Unused lambdas, duplicate bindings and more than eight direct lambdas per
+function are rejected before guest emission.
 This milestone uses ordinary typed Wasm direct calls, not indirect-call tables
 or a general first-class function type. Positive/negative guest fixtures and
 native-vs-Wasm byte parity protect the admitted subset.
+
+
+Example of three independent executable lambdas (guest result `42`):
+
+```atto
+pub fnc main(): int {
+  val discard = |_| : int -> 5;
+  val seven = || -> 7;
+  val twice = |n| : int -> n * 2;
+  return discard(99) + seven() + twice(15);
+}
+```
 
 ## Direct-call scope audit
 
