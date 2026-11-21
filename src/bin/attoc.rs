@@ -225,6 +225,23 @@ mod output_publish_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn failed_exclusive_create_preserves_unowned_output_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch_dir();
+        let target = dir.join("independent-data.txt");
+        let destination = dir.join("planted.wasm");
+        std::fs::write(&target, b"keep this unrelated file").unwrap();
+        symlink(&target, &destination).unwrap();
+        let error = publish_wasm(destination.to_str().unwrap(), b"\0asm").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(std::fs::symlink_metadata(&destination).unwrap()
+                    .file_type().is_symlink(), "must not remove planted link");
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep this unrelated file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn fresh_exclusive_publish_writes_complete_output() {
         let dir = scratch_dir();
