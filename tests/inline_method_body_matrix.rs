@@ -132,7 +132,7 @@ fn inline_mtd_state_container_retains_critical_lease_and_reserved_hook_guards() 
     assert_eq!(program.classes[0].methods.len(), 1);
     assert_eq!(program.classes[0].methods[0].name, "read_enabled");
     let wasm = atto_compiler::compile(source).expect("mtd state method must retain ordinary state-container lowering");
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(wasm.starts_with(&[0, 97, 115, 109, 1, 0, 0, 0]));
 
     let override_source = r#"
         define state container Flag as
