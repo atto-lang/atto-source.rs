@@ -726,6 +726,16 @@ impl Parser {
                 "Pointer is a compiler-known builtin and may not be defined as a user class",
             ));
         }
+        // The first nominal-inheritance profile is strictly Error-rooted.
+        // A source 'extends Other' is NOT equivalent to 'extends Error'.
+        let error_parent = if self.eat_word("extends") {
+            let (parent, parent_pos) = self.ident("Error after 'extends'")?;
+            if parent != "Error" {
+                return Err(Diagnostic::new(parent_pos, "E_UNSUPPORTED",
+                    format!("ordinary class inheritance from '{parent}' requires verified inherited layout and dispatch; only 'extends Error' is currently admitted")));
+            }
+            true
+        } else { false };
         self.decl_head("class")?;
         self.expect_word("as")?;
         let m = self.parse_members(&name, false, "end")?;
@@ -733,6 +743,7 @@ impl Parser {
             name,
             pos,
             public,
+            error_parent,
             state_container: false,
             fields: m.fields,
             ctor: m.ctor,
@@ -814,7 +825,7 @@ impl Parser {
         if fields.is_empty() {
             return Err(Diagnostic::new(pos, "E_STATE", "protected state requires at least one scalar field"));
         }
-        Ok(ClassDecl { name, pos, public, state_container: true,
+        Ok(ClassDecl { name, pos, public, error_parent: false, state_container: true,
             fields, ctor: None, methods })
     }
 
@@ -1673,8 +1684,9 @@ impl Parser {
                 Some("panics") => "panics",
                 _ => return Ok(any.then_some(declared)),
             };
-            // Free-form 'raises Error' and 'raises(Error)' share checked
-            // effect flags. Unresolved user-defined subtypes remain rejected.
+            // Free-form and parenthesized headers share checked effect flags.
+            // Keep the exact nominal source type; the checker (not this
+            // source-order-dependent parser) validates Error ancestry.
             let parenthesized = *self.peek_at(1) == Tok::LParen;
             let pos = self.pos();
             let seen = match kind {
@@ -1697,9 +1709,14 @@ impl Parser {
             self.advance();
             if parenthesized { self.advance(); }
             let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
-            if ty != "Error" {
-                return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                    format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+            // None is the built-in Error, and a named subclass has an
+            // independent identity; do not collapse Foo to a bool/alias.
+            let nominal = (ty != "Error").then(|| self.type_name(ty, ty_pos));
+            match kind {
+                "throws" => declared.throws_nominal = nominal,
+                "raises" => declared.raises_nominal = nominal,
+                "panics" => declared.panics_nominal = nominal,
+                _ => unreachable!(),
             }
             if parenthesized {
                 if self.eat(&Tok::Comma) {
@@ -1716,7 +1733,7 @@ impl Parser {
                     self.advance();
                 } else {
                     return Err(Diagnostic::new(self.pos(), "E_TYPE",
-                        format!("'{kind}' admits only built-in Error; expected another effect kind after ','")));
+                        format!("'{kind}' admits one nominal Error subtype; expected another effect kind after ','")));
                 }
             }
         }
