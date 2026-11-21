@@ -60,7 +60,12 @@ fn source_limit_is_enforced() {
 #[test]
 fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
     let chain = |n: usize, op: &str| format!("pub fnc main(): int {{ return {}; }}", vec!["1"; n].join(op));
-    assert!(atto_compiler::compile(&chain(250, " + ")).is_ok());
+    assert!(atto_compiler::compile(&chain(64, " + ")).is_ok());
+    // Parser and guest lowering enforce independent depth budgets. The guest
+    // must reject a 120- or 250-term chain without emitting an artifact.
+    for n in [120, 250] {
+        assert_eq!(atto_compiler::compile(&chain(n, " + ")).unwrap_err().code, "E_NESTING", "{n}");
+    }
     for op in [" + ", " * ", " - ", " == ", " < "] {
         assert_eq!(atto_compiler::compile(&chain(3_000, op)).unwrap_err().code, "E_NESTING", "{op}");
     }
