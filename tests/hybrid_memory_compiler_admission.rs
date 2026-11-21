@@ -21,20 +21,7 @@ pub fnc main(): int {
 // Same object/ownership *shape* as the .NET opt-in generated-NativeAOT target.
 // The Rust/Wasm actor scalar lane must not silently produce a fake bytecode
 // success for this still-unverified nullable class-reference graph.
-const LINKED_NODE_ACTOR: &str = r#"
-define class Node as
-  int value
-  Node? next
-end
-
-define actor HeapGraphProbe as
-  receive(int message) {
-    let first = new Node(42, none)
-    let second = new Node(99, first)
-    assert(second.next?.value == 42)
-  }
-end
-"#;
+const LINKED_NODE_ACTOR: &str = include_str!("fixtures/hybrid_memory_node_graph.atto");
 
 #[test]
 fn existing_scalar_actor_continues_to_compile_as_real_wasm() {
