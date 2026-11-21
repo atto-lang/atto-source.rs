@@ -787,9 +787,15 @@ impl Parser {
                     "protected state {} schema must precede instance methods"));
             }
             let method_public = self.eat_word("pub");
-            self.eat_word("fnc");
-            self.eat_word("method");
-            self.eat_word("mtd");
+            // Method markers are contextual and mutually exclusive.
+            // A bare method literally named mtd() or method() must remain valid.
+            let explicit_marker = self.is_word("fnc")
+                || (matches!(self.word_at(0), Some("method" | "mtd"))
+                    && matches!(self.peek_at(1), Tok::Ident(_))
+                    && *self.peek_at(2) == Tok::LParen);
+            if explicit_marker {
+                self.advance();
+            }
             if self.is_word("handle_state") {
                 return Err(Diagnostic::new(self.pos(), "E_STATE",
                     "handle_state is compiler-owned and cannot be overridden"));
@@ -1132,7 +1138,16 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
-                Some("fnc" | "method" | "mtd") => {
+                Some("fnc") => {
+                    self.advance();
+                    let method = self.parse_method(public, false)?;
+                    m.methods.push(method);
+                }
+                Some("method" | "mtd")
+                    if matches!(self.peek_at(1), Tok::Ident(_))
+                        && matches!(self.peek_at(2), Tok::LParen | Tok::Lt) =>
+                {
+                    // Keep mtd() and method() as ordinary callable names.
                     self.advance();
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
