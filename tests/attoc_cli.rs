@@ -203,3 +203,89 @@ fn exactly_source_cap_input_is_not_rejected_by_bounded_reader() {
         String::from_utf8_lossy(&result.stderr));
     assert!(std::fs::read(out).unwrap().starts_with(b"\\0asm\\x01\\0\\0\\0"));
 }
+
+
+#[cfg(target_os = "linux")]
+#[test]
+fn fifo_input_cannot_block_compilation_or_preserve_a_stale_guest() {
+    // GNU coreutils are available in the Ubuntu CI runner. A missing reader
+    // preflight would block on File::open(FIFO), so enforce a hard timeout.
+    let temp = CliTemporaryDir::new();
+    let fifo = temp.0.join("incoming.atto");
+    let wasm = temp.0.join("old.wasm");
+    let created = Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(created.success(), "could not create test FIFO");
+    std::fs::write(&wasm, b"STALE_GUEST_MUST_NOT_SURVIVE").unwrap();
+    let result = Command::new("timeout")
+        .args(["4s", env!("CARGO_BIN_EXE_attoc")])
+        .arg(fifo.to_str().unwrap())
+        .arg("-o")
+        .arg(wasm.to_str().unwrap())
+        .output()
+        .expect("GNU timeout must be installed on the Linux CI runner");
+    assert_eq!(result.status.code(), Some(2),
+        "non-regular source was accepted or blocked past timeout: {}",
+        String::from_utf8_lossy(&result.stderr));
+    assert!(result.stdout.is_empty());
+    assert!(!wasm.exists(), "old Wasm guest survived rejected FIFO input");
+
+    use std::os::unix::fs::symlink;
+    let alias = temp.0.join("incoming-alias.atto");
+    symlink(&fifo, &alias).unwrap();
+    let aliased = Command::new("timeout")
+        .args(["4s", env!("CARGO_BIN_EXE_attoc")])
+        .arg(alias.to_str().unwrap())
+        .output()
+        .expect("timeout must be installed");
+    assert_eq!(aliased.status.code(), Some(2),
+        "source symlink to FIFO caused blocking open");
+    assert!(aliased.stdout.is_empty());
+}
+
+
+#[cfg(target_os = "linux")]
+#[test]
+fn package_source_and_manifest_fifo_fail_without_blocking_open() {
+    // LockedRoot::read uses openat() and must reject a FIFO *before* attempting
+    // to read from it. GNU timeout turns a regression into a bounded failure
+    // instead of hanging the entire CI workflow indefinitely.
+    let temp = CliTemporaryDir::new();
+    let root = temp.0.to_str().unwrap();
+    let manifest = temp.0.join(".atto.pkg.toml");
+    let main = temp.0.join("main.atto");
+    let output = temp.0.join("compiled.wasm");
+    let valid_manifest = "[package]\nname=\"fifo_guard\"\nversion=\"1.0.0\"\n";
+    std::fs::write(&manifest, valid_manifest).unwrap();
+    std::fs::write(&main, "pub fnc main(): int { return 42; }\n").unwrap();
+    let valid = attoc(&["--package-root", root, "--entry", "main.atto", "-o", output.to_str().unwrap()]);
+    assert!(valid.status.success(), "{}", String::from_utf8_lossy(&valid.stderr));
+    assert!(output.exists());
+
+    std::fs::remove_file(&main).unwrap();
+    assert!(Command::new("mkfifo").arg(&main).status().unwrap().success());
+    let denied = Command::new("timeout")
+        .args(["4s", env!("CARGO_BIN_EXE_attoc"), "--package-root", root,
+               "--entry", "main.atto", "-o", output.to_str().unwrap()])
+        .output().unwrap();
+    assert_eq!(denied.status.code(), Some(1),
+        "openat FIFO must fail before blocking: {}",
+        String::from_utf8_lossy(&denied.stderr));
+    assert!(denied.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("E_IMPORT_PATH"));
+    assert!(!output.exists(), "failed package build retained executable guest");
+
+    std::fs::remove_file(&main).unwrap();
+    std::fs::write(&main, "pub fnc main(): int { return 42; }\n").unwrap();
+    std::fs::remove_file(&manifest).unwrap();
+    assert!(Command::new("mkfifo").arg(&manifest).status().unwrap().success());
+    let denied_manifest = Command::new("timeout")
+        .args(["4s", env!("CARGO_BIN_EXE_attoc"), "--package-root", root,
+               "--entry", "main.atto", "-o", output.to_str().unwrap()])
+        .output().unwrap();
+    assert_eq!(denied_manifest.status.code(), Some(1),
+        "FIFO manifest must fail before blocking: {}",
+        String::from_utf8_lossy(&denied_manifest.stderr));
+    assert!(denied_manifest.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&denied_manifest.stderr).contains("E_MANIFEST"));
+    assert!(!output.exists(), "failed manifest read retained executable guest");
+}

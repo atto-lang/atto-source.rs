@@ -36,7 +36,22 @@ fn same_file(left: &Path, right: &Path) -> bool {
 // The parser's SOURCE_CAP check is too late for a multi-gigabyte input file.
 // This reader is reused for source imports loaded by the native CLI.
 fn read_bounded_source(path: &Path) -> std::io::Result<String> {
+    // Reject FIFO/device/directory paths *before* File::open: opening a FIFO
+    // without a writer can block indefinitely before the byte cap applies.
+    // Follow ordinary source symlinks only when their target is a regular file.
+    let regular_source = || std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "source must resolve to a regular file",
+    );
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(regular_source());
+    }
     let file = std::fs::File::open(path)?;
+    // Recheck the opened descriptor, rather than trusting only a path lookup.
+    // A hostile writable parent is not a race-free filesystem trust boundary.
+    if !file.metadata()?.is_file() {
+        return Err(regular_source());
+    }
     let mut bytes = Vec::new();
     file.take((atto_compiler::SOURCE_CAP + 1) as u64)
         .read_to_end(&mut bytes)?;
