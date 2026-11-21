@@ -439,7 +439,8 @@ fnc __plan_try(int p, int fair): int {
   while k < n do
     let i = k;
     if fair != 0 then
-      i = (__load(p, 16) + k) % n;
+      i = __load(p, 16) + k;
+      if i >= n then i = i - n; fi
     fi
     val ch = __load(p, 48 + 8 * i);
     if ch != 0 then
@@ -453,7 +454,9 @@ fnc __plan_try(int p, int fair): int {
           __store(winner, 0, i);
           __store(winner, 8, __load(option, 0));
           if fair != 0 then
-            __store(p, 16, (i + 1) % n);
+            let next = i + 1;
+            if next >= n then next = 0; fi
+            __store(p, 16, next);
           fi
           return __some(winner);
         fi
