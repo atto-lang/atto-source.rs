@@ -40,10 +40,10 @@ assert.doesNotMatch(manifest, /^\s*(?:cranelift|logos)\s*=/m,
   'Cranelift and Logos are native-only package dependencies');
 
 // These tests import oreslang_source_rs or invoke the native-only oresc CLI.
-// They MUST NOT be built against atto_compiler. Their continued presence is
-// tracked explicitly rather than silently discarded. The separate native
-// package currently runs its own native/tests suite; porting these 38 legacy
-// root suites into that package remains a separate coverage obligation.
+// They MUST NOT be built against atto_compiler. Exactly matching native/
+// tests are auto-discovered; remaining distinct legacy tests are explicitly
+// registered in native/Cargo.toml and checked below. This gate proves target
+// inventory only, not that their Rust code compiles or executes.
 const nativeRootTests = new Set([
   "actor_arena_contract",
   "aosoa_checked_addressing",
@@ -117,6 +117,39 @@ assert.equal(new Set(actual).size, actual.length, 'duplicate explicit browser te
 assert.deepEqual(actual.sort(), expected,
   'Cargo browser test targets must cover every non-native root Rust test');
 assert.equal(nativeRootTests.size, 38, 'unexpected native legacy test inventory');
+// Do not silently strand native-only regression tests outside both crates.
+// native/tests/*.rs remains auto-discovered by Cargo; distinct root suites
+// must be registered explicitly in native/Cargo.toml with unambiguous names.
+assert.doesNotMatch(nativeManifest, /^\s*autotests\s*=\s*false\s*$/m,
+  'native crate must retain discovery of its own native/tests suites');
+const nativeDisk = readdirSync(join(root, 'native/tests'))
+  .filter(name => name.endsWith('.rs')).map(name => name.slice(0, -3));
+assert.equal(new Set(nativeDisk).size, nativeDisk.length,
+  'duplicate native-local test basenames');
+// A matching basename is insufficient: a native-local suite may be an
+// older/incompatible version. Compare the actual file bytes before claiming
+// that its auto-discovered copy covers the root-native regression contract.
+const expectedNativeExternal = [...nativeRootTests]
+  .filter(name => !nativeDisk.includes(name) ||
+    !readFileSync(join(root, 'native/tests', name + '.rs')).equals(
+      readFileSync(join(root, 'tests', name + '.rs'))))
+  .sort();
+const nativeExternalPattern = /\[\[test\]\]\s*name\s*=\s*"legacy_([A-Za-z0-9_]+)"\s*path\s*=\s*"\.\.\/tests\/([A-Za-z0-9_]+)\.rs"/g;
+const parsedNativeExternal = [...nativeManifest.matchAll(nativeExternalPattern)];
+const nativeExternalTargets = parsedNativeExternal.map(m => {
+  assert.equal(m[1], m[2], 'native legacy target name/path mismatch: ' + m[1]);
+  return m[1];
+});
+assert.equal(new Set(nativeExternalTargets).size, nativeExternalTargets.length,
+  'duplicate explicit native legacy regression target');
+assert.equal((nativeManifest.match(/\.\.\/tests\/[^"\n]+\.rs/g) ?? []).length,
+  parsedNativeExternal.length, 'untracked native external integration target');
+assert.deepEqual(nativeExternalTargets.sort(), expectedNativeExternal,
+  'native package must execute every root-native suite not already auto-discovered');
+console.log('NATIVE_CARGO_TARGETS_AUDITED: ' + nativeDisk.length +
+  ' native-local tests; ' + nativeExternalTargets.length +
+  ' distinct root-native suites registered (not executed by this gate)');
+
 console.log('BROWSER_CARGO_TARGETS_AUDITED: ' + actual.length +
   ' browser tests; ' + nativeRootTests.size +
   ' legacy native-only root tests explicitly excluded (not executed by this gate)');
