@@ -3821,7 +3821,13 @@ impl Parser {
                 // Parenthesized *value* expressions reset the condition
                 // grammar, distinguishing (flags | mask) eq expected from the
                 // legacy unparenthesized condition separator: a | b.
-                let inner = self.parse_expr()?;
+                // Parentheses establish a new expression boundary, so a
+                // deliberate `(value : T)` remains legal even as a ternary arm.
+                let old = self.ascription_colon;
+                self.ascription_colon = true;
+                let inner = self.parse_expr();
+                self.ascription_colon = old;
+                let inner = inner?;
                 if *self.peek() == Tok::Comma {
                     return Err(unsupported(self.pos(), "tuples"));
                 }
