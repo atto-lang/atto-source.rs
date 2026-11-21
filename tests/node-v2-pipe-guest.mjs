@@ -28,6 +28,11 @@ const cases=[
   // Nonterminal READY Future and await-spawn use the real guest scheduler.
   ['pass/230-v2-actor-ready-future-pipe.atto',false],
   ['pass/231-v2-await-spawn-ready-pipe.atto',false],
+  // Checked direct actor -> actor bang, its reverse-written equivalent,
+  // and a duplicate spelling that must NOT install a second DATA edge.
+  ['pass/232-v2-direct-actor-pipe-bang.atto',false],
+  ['pass/233-v2-direct-actor-rpipe-bang.atto',false],
+  ['pass/234-v2-direct-actor-bang-duplicate-denied.atto',false],
   ['panic/210-v2-pipe-double-attach.atto',true],
   ['panic/211-v2-pipe-rendezvous-denial.atto',true],
   ['panic/212-v2-pipe-duplicate-consumer.atto',true],
