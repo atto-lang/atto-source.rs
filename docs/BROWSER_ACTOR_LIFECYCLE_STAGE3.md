@@ -119,3 +119,26 @@ Canonical target specification:
 https://github.com/atto-lang/atto-spec/pull/148
 and 11-backend fixtures:
 https://github.com/atto-lang/atto-platform-conformance/pull/237 .
+
+## Worker incarnation fence (2026-11-20 candidate)
+
+Every `ActorSession` is assigned a monotonically increasing, parent-worker
+local incarnation ID when its child Worker is registered. The initialization
+message includes that ID; child READY, per-message DATA reply, error, and DONE
+acknowledgments repeat it. The parent compares it before affecting any
+pending future, delivery receipt or terminal outcome. The parent also includes
+it in subsequent DATA and close commands and the child rejects mismatches.
+
+The exact committed host/session and child-worker modules passed **15+6
+isolated-V8 protocol checks** covering stale READY, DATA reply and DONE
+acknowledgments. Full `node --test`, native `cargo test`, Wasm guest emission
+and actual Chromium browser guest execution on the current source head are
+**not** verified: the source CI and token-free private Actions mirror both
+failed before runner allocation. The private mirror is a test artifact, not a
+release build, and contains exact SHA-verified source blobs.
+
+A monotonic incarnation counter is an internal stale-event fence, not a
+cryptographic capability. It does not authorize communication between
+TenantVMs or replace sender/recipient capability validation, supervisor
+CONTROL authentication, generation checking on external endpoints, or
+platform sandboxing.
