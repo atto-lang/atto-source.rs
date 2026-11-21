@@ -36,6 +36,8 @@ pub struct TypedActor {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedReceiver {
     pub actor: usize,
+    /// Lexical source name, not a dispatch, ownership, or ABI distinction.
+    pub binding: String,
     pub method: String,
     pub arity: usize,
     pub params: Vec<TypedParam>,
@@ -145,7 +147,7 @@ impl TypedActorModule {
             return Err(type_error(h.pos, "internal receiver arity mismatch"));
         }
         Ok(TypedReceiver {
-            actor, method: h.name.clone(), arity: params.len(), params, returns,
+            actor, binding: h.binding.clone(), method: h.name.clone(), arity: params.len(), params, returns,
             mutable: h.mutable, public: h.public, pos: h.pos,
             body_lowered: false,
         })
