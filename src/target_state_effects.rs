@@ -374,7 +374,8 @@ mod tests {
         loans.acquire(2, StatePlace::Field(1), LoanKind::Write, p()).unwrap();
         code(loans.acquire(3, StatePlace::Whole, LoanKind::Read, p()), "E_BORROW_CONFLICT");
         code(loans.acquire(3, StatePlace::Field(0), LoanKind::Write, p()), "E_BORROW_CONFLICT");
-        code(loans.acquire(1, StatePlace::Field(1), LoanKind::Read, p()), "E_BORROW_CONFLICT");
+        code(loans.acquire(1, StatePlace::Field(1), LoanKind::Read, p()), "E_LOAN_DEF_REUSED");
+        code(loans.acquire(6, StatePlace::Field(1), LoanKind::Read, p()), "E_BORROW_CONFLICT");
         loans.end(1, p()).unwrap();
         loans.end(2, p()).unwrap();
         loans.acquire(4, StatePlace::Whole, LoanKind::Write, p()).unwrap();
