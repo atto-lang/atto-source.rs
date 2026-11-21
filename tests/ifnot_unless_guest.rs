@@ -58,7 +58,10 @@ fn invalid_conditionals_fail_closed_before_any_guest() {
             Ok(_) => panic!("unexpected executable guest: {body}"),
         };
         assert_eq!(error.code, expected, "{body}: {error}");
-        assert_eq!(compile(valid).unwrap(), stable_guest,
-            "rejected conditional must not contaminate subsequent Wasm: {body}");
+        assert_eq!(
+            compile(valid).unwrap(),
+            stable_guest,
+            "rejected conditional must not contaminate subsequent Wasm: {body}"
+        );
     }
 }
