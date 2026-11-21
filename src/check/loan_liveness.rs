@@ -110,6 +110,7 @@ fn expr_mentions(expr: &Expr, target: &str, fuel: &mut usize) -> bool {
         | ExprKind::Trap(e)
         | ExprKind::Ownership(_, _, e)
         | ExprKind::Propagate(e)
+        | ExprKind::Ascribe(e, _, _)
         | ExprKind::Member(e, _) => expr_mentions(e, target, fuel),
         ExprKind::Binary(_, lhs, rhs) => {
             expr_mentions(lhs, target, fuel) || expr_mentions(rhs, target, fuel)
@@ -145,6 +146,25 @@ fn expr_mentions(expr: &Expr, target: &str, fuel: &mut usize) -> bool {
 mod tests {
     use super::*;
     use crate::diag::Pos;
+
+    #[test]
+    fn type_ascription_and_explicit_cast_preserve_nested_loan_use() {
+        // Ascribe was added on modern main after this loan visitor forked.
+        // A loan read under either spelling is still live at this statement.
+        let p = Pos { line: 1, col: 1 };
+        for explicit in [false, true] {
+            let use_loan = Expr {
+                kind: ExprKind::Ascribe(
+                    Box::new(Expr { kind: ExprKind::Var("reader".into()), pos: p }),
+                    crate::ast::Type::Int,
+                    explicit,
+                ),
+                pos: p,
+            };
+            let mut fuel = 32;
+            assert!(stmt_mentions(&Stmt::Expr(use_loan), "reader", &mut fuel));
+        }
+    }
 
     #[test]
     fn depleted_budget_preserves_a_loan_even_with_no_apparent_use() {

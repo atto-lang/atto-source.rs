@@ -593,7 +593,7 @@ fn isolation(pos: Pos, actor: &str, what: &str, name: &str) -> Diagnostic {
 fn const_init(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
-        ExprKind::Unary(_, a) => const_init(a),
+        ExprKind::Unary(_, a) | ExprKind::Ascribe(a, _, _) => const_init(a),
         ExprKind::Binary(_, a, b) => const_init(a) && const_init(b),
         ExprKind::Ternary(c, a, b) => const_init(c) && const_init(a) && const_init(b),
         ExprKind::Member(base, _) => matches!(base.kind, ExprKind::Var(_)),
@@ -1844,7 +1844,7 @@ fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) ->
             Ok(())
         }
         ExprKind::Unary(_, v) | ExprKind::Trap(v) | ExprKind::Propagate(v)
-        | ExprKind::Ownership(_, _, v) => ctor_init_expr(v, flow, fields),
+        | ExprKind::Ownership(_, _, v) | ExprKind::Ascribe(v, _, _) => ctor_init_expr(v, flow, fields),
         ExprKind::Binary(_, a, b) => {
             ctor_init_expr(a, flow, fields)?;
             ctor_init_expr(b, flow, fields)
@@ -2073,7 +2073,8 @@ fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
             Ok(())
         }
         ExprKind::Unary(_, inner) | ExprKind::Trap(inner)
-        | ExprKind::Ownership(_, _, inner) | ExprKind::Propagate(inner) =>
+        | ExprKind::Ownership(_, _, inner) | ExprKind::Propagate(inner)
+        | ExprKind::Ascribe(inner, _, _) =>
             constructor_self_expr(inner, captured),
         ExprKind::Binary(_, left, right) => {
             constructor_self_expr(left, captured)?;
@@ -3930,6 +3931,29 @@ impl<'a> FnCx<'a> {
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
+            ExprKind::Ascribe(inner, target, explicit_cast) => {
+                let want = self.resolve(*target, e.pos)?;
+                // A contextual constructor (Some/Ok/Err/None) needs the
+                // expected type before it can be checked and guest-lowered.
+                let result = self.consume_expected(inner, want)?;
+                if *explicit_cast && result.ty == Type::Int && want == Type::Float {
+                    // The backend already lowers IntToFloat to
+                    // f64.convert_i64_s. Explicit as admits binary64
+                    // rounding; : float must not introduce this conversion.
+                    return Ok(TE {
+                        e: TExpr::IntToFloat(Box::new(result)),
+                        ty: Type::Float,
+                    });
+                }
+                if result.ty != want {
+                    let action = if *explicit_cast { "convert" } else { "ascribe" };
+                    let code = if *explicit_cast { "E_UNSUPPORTED_CAST" } else { "E_TYPE" };
+                    return Err(Diagnostic::new(e.pos, code, format!(
+                        "cannot {action} {} to {} in the browser compiler",
+                        self.tn(result.ty), self.tn(want))));
+                }
+                Ok(result)
+            },
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
                 let success_tag = match value.ty {
@@ -4297,7 +4321,7 @@ impl<'a> FnCx<'a> {
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
-            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
+            | ExprKind::Propagate(..) | ExprKind::Ascribe(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
