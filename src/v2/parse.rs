@@ -955,22 +955,6 @@ impl Parser {
         }
     }
 
-    fn binary_chain(&mut self, next: fn(&mut Self) -> R<Expr>, tok: Tok, op: BinOp) -> R<Expr> {
-        let mut left = next(self)?;
-        let mut links = 0;
-        while *self.peek() == tok {
-            let pos = self.pos();
-            self.advance();
-            links += 1;
-            if links > 256 {
-                return Err(Diagnostic::new(pos, "E_NESTING", "operator chain is too long"));
-            }
-            let right = next(self)?;
-            left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
-        }
-        Ok(left)
-    }
-
     fn parse_or(&mut self) -> R<Expr> {
         // The modern lexer rejects removed || syntax before v2 admission.
         self.parse_xor()
@@ -1332,26 +1316,26 @@ impl Parser {
         let mut params = Vec::new();
         self.expect(Tok::Pipe, "'|' to open lambda parameters")?;
         while *self.peek() != Tok::Pipe {
-                let ppos = self.pos();
-                if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Comma | Tok::Pipe) {
-                    let (name, _) = self.ident("a parameter name")?;
-                    params.push(LambdaParam { name, ty: None, pos: ppos });
-                } else if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                    let (name, _) = self.ident("a parameter name")?;
-                    self.advance();
-                    params.push(LambdaParam { name, ty: Some(self.parse_type()?), pos: ppos });
-                } else {
-                    let ty = self.parse_type()?;
-                    let (name, _) = self.ident("a parameter name")?;
-                    params.push(LambdaParam { name, ty: Some(ty), pos: ppos });
-                }
-                if params.len() > 8 {
-                    return Err(Diagnostic::new(ppos, "E_SOURCE_LIMIT", "too many lambda parameters"));
-                }
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
+            let ppos = self.pos();
+            if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Comma | Tok::Pipe) {
+                let (name, _) = self.ident("a parameter name")?;
+                params.push(LambdaParam { name, ty: None, pos: ppos });
+            } else if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+                let (name, _) = self.ident("a parameter name")?;
+                self.advance();
+                params.push(LambdaParam { name, ty: Some(self.parse_type()?), pos: ppos });
+            } else {
+                let ty = self.parse_type()?;
+                let (name, _) = self.ident("a parameter name")?;
+                params.push(LambdaParam { name, ty: Some(ty), pos: ppos });
             }
+            if params.len() > 8 {
+                return Err(Diagnostic::new(ppos, "E_SOURCE_LIMIT", "too many lambda parameters"));
+            }
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
         self.expect(Tok::Pipe, "'|' to close the lambda parameters")?;
         self.expect(Tok::Arrow, "'->' after the lambda parameters")?;
         let ret = if *self.peek() == Tok::LBrace { None } else { Some(self.parse_type()?) };
