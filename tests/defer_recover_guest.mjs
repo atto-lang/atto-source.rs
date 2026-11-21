@@ -20,7 +20,7 @@ const cases = [
         catch (Error e) { stdio.println("caught bang"); return 7; }
         finally { stdio.println("finally"); }
       }`,
-    stdout: 'caught bang\\nfinally\\n', value: 7n,
+    stdout: 'caught bang\nfinally\n', value: 7n,
   },
   {
     name: 'canonical raise bang bypasses catch and reaches recover',
@@ -34,7 +34,7 @@ const cases = [
         catch (Error e) { stdio.println("UNEXPECTED catch"); return -1; }
       }
       pub fnc main(): int { return f(); }`,
-    stdout: 'bang raise\\n', value: 9n,
+    stdout: 'bang raise\n', value: 9n,
   },
   {
     name: 'annotated caught throw is safe in defer and preserves normal result',
