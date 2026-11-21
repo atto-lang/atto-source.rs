@@ -160,7 +160,13 @@ mod tests {
         for lanes in [3, 7, 1023] {
             assert_eq!(Plan::new(Storage::Aosoa(lanes), fields(), 5), Err(PlanError::InvalidBlock));
         }
-        assert!(Plan::new(Storage::Aosoa(1024), fields(), 1025).is_ok());
+        // Accepted edge widths come from the shared layout ABI contract.
+        for lanes in [1, 2, 512, 1024] {
+            let plan = Plan::new(Storage::Aosoa(lanes), fields(), u64::from(lanes) + 1)
+                .expect("power-of-two width must remain legal");
+            assert!(plan.offset(u64::from(lanes), 0).is_some());
+            assert_eq!(plan.offset(u64::from(lanes) + 1, 0), None);
+        }
         assert_eq!(Plan::new(Storage::Aos, vec![], 1), Err(PlanError::InvalidField));
         assert_eq!(Plan::new(Storage::Aos, vec![ScalarField { size: 3, align: 3 }], 1), Err(PlanError::InvalidField));
         assert_eq!(Plan::new(Storage::Soa, fields(), u64::MAX), Err(PlanError::SizeOverflow));
