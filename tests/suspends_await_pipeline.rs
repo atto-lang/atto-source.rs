@@ -54,7 +54,10 @@ fn bare_await_stage_and_unsupported_lambda_shapes_fail_closed() {
         ("pub suspends fnc main(): int { return 42 |> await; }", "E_UNSUPPORTED"),
         ("pub suspends fnc main(): int { return 42 |> suspends |v| -> v; }", "E_UNSUPPORTED"),
         ("pub suspends fnc main(): int { return 42 |> suspends |v| -> await wrong; }", "E_PIPE_BIND"),
-        ("pub suspends fnc main(): int { return 42 |> suspends |v| -> await v + 1; }", "E_UNSUPPORTED"),
+        ("pub suspends fnc main(): int { return 42 |> suspends |v| -> await v + other; }", "E_UNSUPPORTED"),
+        ("pub suspends fnc main(): int { return 42 |> suspends |v| -> await v + 1 + 2; }", "E_UNSUPPORTED"),
+        ("pub suspends fnc main(): int { return 42 |> suspends |v| -> await v * 2; }", "E_UNSUPPORTED"),
+        ("pub suspends fnc main(): int { return 42 |> suspends |v| -> await v + 9223372036854775808; }", "E_INTEGER_RANGE"),
         ("pub suspends fnc main(): int { return 42 |> suspends |v, w| -> await v; }", "E_SYNTAX"),
     ] {
         let diag = compile(src).expect_err("no guest artifact for unsupported pipeline lambda");
@@ -105,5 +108,33 @@ fn contextual_read_await_rejects_binder_theft_and_lossy_future_payload_types() {
         let src = format!("pub suspends fnc main(): int {{ {operation} return 42; }}");
         let diag = compile(&src).expect_err("malformed/lossy read await must fail without artifact");
         assert_eq!(diag.code, expected, "{operation}: {diag}");
+    }
+}
+
+#[test]
+fn suspending_callback_arithmetic_produces_checked_guest_wasm() {
+    for (keyword, op, literal) in [
+        ("susp", "+", "1"),
+        ("suspends", "-", "1"),
+    ] {
+        let src = format!(
+            "pub susp fnc main(): int {{ val future=task {{return 41;}}; return future |> {keyword} |f| -> await f {op} {literal}; }}"
+        );
+        let wasm=compile(&src).expect("scalar susp callback body must compile");
+        assert!(has(&wasm,b"task_await"), "must consume real Future handle");
+        assert!(has(&wasm,b"cooperate"), "must yield at JSPI await boundary");
+        assert_eq!(wasm,compile(&src).unwrap(),"deterministic guest output");
+    }
+}
+
+#[test]
+fn callback_body_arithmetic_preserves_effect_and_type_safety() {
+    for (src,code) in [
+        ("pub fnc main(): int { return 41 |> susp |f| -> await f + 1; }", "E_EFFECT"),
+        ("pub pure susp fnc main(): int { return 41 |> susp |f| -> await f + 1; }", "E_PURE"),
+        ("pub susp fnc main(): int { return true |> susp |f| -> await f + 1; }", "E_TYPE"),
+    ] {
+        let diag=compile(src).expect_err("invalid callback must not emit guest Wasm");
+        assert_eq!(diag.code,code,"{src}: {diag}");
     }
 }
