@@ -250,7 +250,12 @@ pub fn lower(input: &Program) -> R<Program> {
                 is_generator: false,
                 is_pure: true,
                 declared_effects: None,
-                params: d.params.into_iter().chain(
+                params: d.params.into_iter().enumerate().map(|(i, name)| {
+                    // Keep discarded argument slots unique after lifting.
+                    // This is compatible with the repeated-underscore parser
+                    // contract staged in draft Rust #481.
+                    if name == "_" { format!("$lambda_ignored_{i}") } else { name }
+                }).chain(
                     d.captures.into_iter().map(|c| c.source)
                 ).zip(all_types).map(|(name, ty)| Param {
                     name, ty, mutable: false, pos: d.lambda.pos,
