@@ -1013,23 +1013,54 @@ fn close_paren(toks: &[Token], start: usize, limit: usize) -> R<usize> {
     }
     Err(diagnostic(toks, start, "E_EOF", "unterminated argument list"))
 }
-fn count_args(toks: &[Token], open: usize, close: usize) -> usize {
-    if close == open + 1 { return 0; }
-    let (mut n, mut round, mut square, mut braces) = (1, 0, 0, 0);
-    for token in toks.iter().take(close).skip(open + 1) {
-        match token.tok {
-            Tok::LParen => round += 1,
-            Tok::RParen => round -= 1,
-            Tok::LBracket => square += 1,
-            Tok::RBracket => square -= 1,
-            Tok::LBrace => braces += 1,
-            Tok::RBrace => braces -= 1,
-            Tok::Comma if round == 0 && square == 0 && braces == 0 => n += 1,
+fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
+    if close == open + 1 { return Ok(0); }
+    let mut expected_close: Vec<Tok> = Vec::new();
+    let mut count = 1usize;
+    for i in open + 1..close {
+        let token = &toks[i].tok;
+        let closing = match token {
+            Tok::LParen => Some(Tok::RParen),
+            Tok::LBracket => Some(Tok::RBracket),
+            Tok::LBrace => Some(Tok::RBrace),
+            _ => None,
+        };
+        if let Some(close_tok) = closing {
+            if expected_close.len() >= 128 {
+                return Err(diagnostic(toks, i, "E_NESTING", "argument delimiters exceed depth 128"));
+            }
+            expected_close.push(close_tok);
+            continue;
+        }
+        match token {
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                if expected_close.pop().as_ref() != Some(token) {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "unmatched or incorrectly nested argument delimiter"));
+                }
+            }
+            Tok::Comma if expected_close.is_empty() => {
+                if i == open + 1 || i + 1 == close ||
+                    matches!(toks[i-1].tok, Tok::Comma) {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "empty or trailing top-level method argument"));
+                }
+                count += 1;
+                if count > MAX_PARAMS {
+                    return Err(diagnostic(toks, i, "E_SOURCE_LIMIT",
+                        "too many method arguments"));
+                }
+            }
             _ => {}
         }
     }
-    n
+    if !expected_close.is_empty() {
+        return Err(diagnostic(toks, close, "E_SYNTAX",
+            "unclosed nested argument delimiter"));
+    }
+    Ok(count)
 }
+
 fn validate_callback(
     toks: &[Token], symbols: &TargetHeaders, receiver: &ReceiverHeader,
     open: usize, limit: usize,
@@ -1158,7 +1189,7 @@ fn validate_receiver_body(
             // state mutation. They may be used from an immutable receiver.
             if matches!(member, "send" | "end" | "get_done") {
                 let required = if member == "send" { 1 } else { 0 };
-                if count_args(toks, i+3, close) != required {
+                if count_args(toks, i+3, close)? != required {
                     return Err(diagnostic(toks, i, "E_ARITY",
                         "actor runtime operation called with wrong argument count"));
                 }
@@ -1166,7 +1197,7 @@ fn validate_receiver_body(
                 continue;
             }
             resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
-                member, count_args(toks, i+3, close), false, toks[i].pos)?;
+                member, count_args(toks, i+3, close)?, false, toks[i].pos)?;
             i = close + 1;
             continue;
         }
