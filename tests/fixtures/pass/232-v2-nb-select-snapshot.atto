@@ -19,6 +19,8 @@ pub suspends fnc main(): int {
   val Option<SelectResult> got = await pending;
   await worker;
   writech replacement, 7;
+  writech right, 9;
+  // Both live cases are ready. A stale snapshot must not move FAIR to slot 1.
   val SelectResult live = select fair from plan;
   return got.unwrap().value + live.value - 7;
 }
