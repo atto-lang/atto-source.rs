@@ -510,6 +510,10 @@ pub enum ExprKind {
     Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Expression-level `: T` (static ascription) or `as T` (checked explicit cast).
+    /// The expected type is propagated into contextual ADT constructors;
+    /// unsupported runtime conversions are rejected, never emitted unchecked.
+    Ascribe(Box<Expr>, Type, bool), // bool: explicit `as` spelling
     /// Postfix `?`: unwrap Ok/Some or propagate Err/None from the caller.
     Propagate(Box<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.

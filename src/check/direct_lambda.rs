@@ -34,6 +34,7 @@ fn literal_type(e: &Expr) -> Option<Type> {
         ExprKind::Bool(_) => Some(Type::Bool),
         ExprKind::Float(_) => Some(Type::Float),
         ExprKind::Str(_) => Some(Type::Str),
+        ExprKind::Ascribe(inner, ty, _) => literal_type(inner).filter(|found| found == ty),
         ExprKind::Unary(UnOp::Plus | UnOp::Neg, inner) if
             matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_)) => literal_type(inner),
         _ => None,
@@ -372,7 +373,8 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         // escape. Traverse their operand before the ordinary ownership checker
         // validates move/borrow/copy semantics.
         ExprKind::Ownership(_, _, x) | ExprKind::Unary(_, x) |
-        ExprKind::Trap(x) | ExprKind::Propagate(x) => rewrite_expr(x, d),
+        ExprKind::Trap(x) | ExprKind::Propagate(x) |
+        ExprKind::Ascribe(x, _, _) => rewrite_expr(x, d),
         ExprKind::Binary(_, x, y) => {
             rewrite_expr(x, d)?;
             rewrite_expr(y, d)
@@ -431,7 +433,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // otherwise a missed free-variable use could escape capture analysis.
         ExprKind::Int(_) | ExprKind::Float(_) |
         ExprKind::Bool(_) | ExprKind::Str(_) => {},
-        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) =>
+        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) |
+        ExprKind::Ascribe(a, _, _) =>
             free_names(a, names, depth + 1)?,
         ExprKind::Call(_, args) | ExprKind::New(_, args) |
         ExprKind::Array(args) => {
