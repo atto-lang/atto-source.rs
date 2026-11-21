@@ -171,16 +171,17 @@ fn specialize(template: &Template, to: &str, private_name: &str) -> Result<Vec<T
         if word(&result[i]) != Some(template.parameter.as_str()) {
             continue;
         }
-        let marker_type = i > 0
-            && (result[i - 1].tok == Tok::Colon
-                || word(&result[i - 1]) == Some("as"));
+        let marker_type = i > 0 && (result[i - 1].tok == Tok::Colon || word(&result[i - 1]) == Some("as"));
         let type_first_formal = i > template.name_offset + 1
             && i < params_end
             && matches!(result[i - 1].tok, Tok::LParen | Tok::Comma)
             && matches!(result.get(i + 1).map(|t| &t.tok), Some(Tok::Ident(_)));
         if !marker_type && !type_first_formal {
-            return Err(error(result[i].pos, "E_GENERIC_SCOPE",
-                "generic type parameter used as a value or unsupported type position"));
+            return Err(error(
+                result[i].pos,
+                "E_GENERIC_SCOPE",
+                "generic type parameter used as a value or unsupported type position",
+            ));
         }
         result[i].tok = Tok::Ident(to.into());
     }
@@ -291,8 +292,11 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             continue;
         };
         if at > 0 && matches!(base[at - 1].tok, Tok::Dot | Tok::ColonColon) {
-            return Err(error(base[at].pos, "E_GENERIC_SCOPE",
-                "generic function name cannot be rebound through member or namespace access"));
+            return Err(error(
+                base[at].pos,
+                "E_GENERIC_SCOPE",
+                "generic function name cannot be rebound through member or namespace access",
+            ));
         }
         let mut args_at = at + 1;
         let explicit = if base.get(args_at).map(|t| &t.tok) == Some(&Tok::Lt) {
@@ -317,12 +321,15 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         let end = pair(&base, args_at, Tok::LParen, Tok::RParen).ok_or_else(|| error(base[at].pos, "E_SYNTAX", "unclosed generic call"))?;
         // The first compiler profile must not silently leave nested generic
         // calls in rewritten arguments, which could change overload meaning.
-        if base[args_at + 1..end].iter().any(|token| {
-            word(token).is_some_and(|name|
-                templates.iter().any(|candidate| candidate.name == name))
-        }) {
-            return Err(error(base[at].pos, "E_UNSUPPORTED",
-                "nested generic calls require a scope-aware type solver"));
+        if base[args_at + 1..end]
+            .iter()
+            .any(|token| word(token).is_some_and(|name| templates.iter().any(|candidate| candidate.name == name)))
+        {
+            return Err(error(
+                base[at].pos,
+                "E_UNSUPPORTED",
+                "nested generic calls require a scope-aware type solver",
+            ));
         }
         let inferred = context(&base, at, end);
         if explicit.is_some() && inferred.is_some() && explicit != inferred {
@@ -451,8 +458,14 @@ mod tests {
     #[test]
     fn member_and_nested_generic_invocations_are_explicitly_rejected() {
         for (source, expected) in [
-            ("fnc calculate<T>(int x): T { return x as T; } pub fnc main(): int { return obj.calculate<int>(5); }", "E_GENERIC_SCOPE"),
-            ("fnc calculate<T>(int x): T { return x as T; } pub fnc main(): int { return calculate<int>(calculate<int>(5)); }", "E_UNSUPPORTED"),
+            (
+                "fnc calculate<T>(int x): T { return x as T; } pub fnc main(): int { return obj.calculate<int>(5); }",
+                "E_GENERIC_SCOPE",
+            ),
+            (
+                "fnc calculate<T>(int x): T { return x as T; } pub fnc main(): int { return calculate<int>(calculate<int>(5)); }",
+                "E_UNSUPPORTED",
+            ),
         ] {
             assert_eq!(lower(lex(source).unwrap()).unwrap_err().code, expected, "{source}");
         }
