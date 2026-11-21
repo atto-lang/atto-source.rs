@@ -13,7 +13,7 @@ pub suspends fnc main(): int {
   val consumer = spawn Consumer();
   val channel = Channel<int>.bounded(1);
   val Result<PipeHandle, PipeSetupError> connection =
-      producer pipe channel pipe consumer;
+      consumer rpipe! channel rpipe! producer;
   val int admitted = match connection over
     on Ok(_) -> 1,
     on Err(_) -> 0,
@@ -21,7 +21,7 @@ pub suspends fnc main(): int {
   if admitted != 1 then return 92; fi
   producer.send(40);
   producer.send(2);
-  producer.stop();
+  stop! producer;
   await producer.get_done();
   await consumer.get_done();
   return 42;
