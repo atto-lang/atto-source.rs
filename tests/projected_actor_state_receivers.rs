@@ -216,3 +216,19 @@ fn named_receiver_internal_method_calls_resolve_under_same_owner() {
     assert_eq!(h.receivers.len(), 2);
     assert!(h.receivers.iter().all(|r| r.binding == "this"));
 }
+
+#[test]
+fn typed_signature_preserves_binding_without_changing_nominal_method_identity() {
+    use atto_compiler::target_typed::lower_target_signatures;
+    let a = parse("declare actor Foo; mtd (Foo self) read(): int { return 1; }");
+    let b = parse("declare actor Foo; mtd (Foo this) read(): int { return 1; }");
+    let typed_a = lower_target_signatures(&a).unwrap();
+    let typed_b = lower_target_signatures(&b).unwrap();
+    let mut self_sig = typed_a.receivers[0].clone();
+    let this_sig = &typed_b.receivers[0];
+    assert_eq!(self_sig.binding, "self");
+    assert_eq!(this_sig.binding, "this");
+    self_sig.binding = "this".into();
+    assert_eq!(&self_sig, this_sig,
+        "renaming a receiver does not change its typed method signature");
+}
