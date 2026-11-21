@@ -128,5 +128,60 @@ if "$compiler" "$work/unlinked-actor.atto" -o "$work/unlinked.exe" > "$work/unli
 fi
 grep -q E_UNLINKED "$work/unlinked.log"
 test ! -e "$work/unlinked.exe"
+
+# Safety regression: overflow must trap in the *actual machine code*, not
+# silently wrap because the LLVM overflow bit was discarded.
+cat > "$work/overflow.atto" <<'ATTO_OVERFLOW'
+fnc add_one(int value): int { return value + 1; }
+pub fnc main(): int { return add_one(9223372036854775807); }
+ATTO_OVERFLOW
+"$compiler" "$work/overflow.atto" -o "$work/overflow.exe"
+ulimit -c 0
+set +e
+timeout -k 3 20 "$work/overflow.exe" > "$work/overflow-out.log" 2> "$work/overflow-err.log"
+overflow_status=$?
+set -e
+# On the pinned Linux x86-64/Clang target llvm.trap is an illegal instruction.
+if [[ "$overflow_status" != 132 ]]; then
+  echo "LLVM_ADAPTER_OVERFLOW_UNSAFE: expected SIGILL (132), got $overflow_status" >&2
+  exit 1
+fi
+
+# SHA-identical security negatives originally authored in atto-source.llvm.
+# Reject unsafe state access, mutation through read loans, escaping references,
+# suspension with outstanding state loans, and unlinked actor code. Each
+# negative requires its specific diagnostic and NO published LLVM/ELF artifact.
+while read -r blob_sha expected_diag case_file; do
+  source_file="$root/experimental/llvm-aot/fixtures/$case_file"
+  [[ "$(git hash-object "$source_file")" == "$blob_sha" ]] || {
+    echo "LLVM_ADAPTER_FIXTURE_DRIFT: $case_file" >&2
+    exit 1
+  }
+  case_base="$work/${case_file%.atto}"
+  if "$compiler" "$source_file" -o "$case_base.ll" --emit-llvm > "$case_base.log" 2>&1; then
+    echo "LLVM_ADAPTER_UNSAFE: $case_file compiled to LLVM IR" >&2
+    exit 1
+  fi
+  grep -Fq "$expected_diag" "$case_base.log" || {
+    echo "LLVM_ADAPTER_DIAGNOSTIC_DRIFT: $case_file expected $expected_diag" >&2
+    exit 1
+  }
+  test ! -e "$case_base.ll"
+  if "$compiler" "$source_file" -o "$case_base.exe" > "$case_base.native.log" 2>&1; then
+    echo "LLVM_ADAPTER_UNSAFE: $case_file compiled to executable" >&2
+    exit 1
+  fi
+  grep -Fq "$expected_diag" "$case_base.native.log"
+  test ! -e "$case_base.exe"
+done <<'ATTO_NEGATIVES'
+63aa2946aaad15324b70987500891b83f8e9694c E_SEALED 189-target-direct-state-in-receive.atto
+823ca9b9de6ce0647a281548f43194d978e7da33 E_READONLY 191-target-critical-read-mutation.atto
+345f02958e2ce250531398992f58173e183c9eb2 E_ESCAPE 192-target-critical-state-escape.atto
+6012ef9237241940d2aa301bad6892530d7744f1 E_BORROW 193-target-critical-suspension.atto
+f38dbb70875c6e333037cacfb597daabc0c6bb0a E_UNLINKED 194-target-unlinked-forward.atto
+ae14c1de73d52b9438aa92f1406734c6e94cde91 E_MUTABILITY 196-target-immutable-critical-write.atto
+b7fa449891da4ec771a80d38c95f4eb89f99279a E_SEALED 201-target-public-sealed-state.atto
+ATTO_NEGATIVES
+
 sha256sum "$compiler" "$work/positive.ll" "$work/positive.exe" "$work/actor.ll" "$work/actor.exe"
-echo 'PASS: typed frontend -> LLVM native AOT; scalar exit-42; sealed-state actor exit-0; fail-closed negatives; C actor compile'
+echo 'PASS: typed frontend -> LLVM native AOT; scalar exit-42; sealed-state actor exit-0; native overflow SIGILL; 7 sealed-state fail-closed negatives; C actor compile'

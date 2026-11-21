@@ -1,0 +1,10 @@
+// expect-reject: E_SEALED
+// Native linked Atto code must fail closed, never produce a guest artifact.
+use namespace workers;
+declare actor Worker;
+define actor Worker as
+    pub let int secret = 7;
+    receive(ActorMail<int> mail): void { return; }
+end
+mtd (Worker self) identity(int value): int { return value; }
+pub fnc main(): int { return 0; }
