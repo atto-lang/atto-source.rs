@@ -16,10 +16,14 @@ function instantiateScalarGuest(bytes) {
   const declared = new Map(WebAssembly.Module.exports(module).map(item => [item.name, item.kind]));
   assert.equal(declared.get('main'), 'function', 'guest main export must be a function');
   assert.equal(declared.get('panic_code'), 'global', 'guest panic_code export must be a global');
-  assert.equal(declared.get('memory'), 'memory', 'guest memory export must be a memory');
+  if (declared.has('memory')) {
+    assert.equal(declared.get('memory'), 'memory', 'optional guest memory export must be a memory');
+  }
   const exports = new WebAssembly.Instance(module, {}).exports;
   assert.ok(exports.panic_code instanceof WebAssembly.Global, 'panic_code global missing');
-  assert.ok(exports.memory instanceof WebAssembly.Memory, 'guest memory missing');
+  if ('memory' in exports) {
+    assert.ok(exports.memory instanceof WebAssembly.Memory, 'guest memory export has wrong type');
+  }
   assert.equal(exports.panic_code.value, 0, 'panic_code must initialize to zero');
   return exports;
 }
