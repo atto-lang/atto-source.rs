@@ -212,3 +212,26 @@ fn consecutive_method_prefix_markers_are_not_accepted() {
         assert!(atto_compiler::compile(&source).is_err(), "duplicate marker admitted: {source}");
     }
 }
+
+#[test]
+fn bare_end_body_call_named_mtd_is_not_reclassified_as_external_receiver() {
+    let source = r#"
+        pub fnc mtd(): int { return 42; }
+        pub fnc main() -> int ::
+            return mtd();
+        end
+    "#;
+    let guest = atto_compiler::compile(source)
+        .expect("the lexer word mtd is a contextual callable name, not always a receiver marker");
+    assert!(guest.starts_with(&[0, 97, 115, 109, 1, 0, 0, 0]));
+}
+
+#[test]
+fn external_class_receiver_remains_on_checked_target_path() {
+    // This was already executable before inline mtd admission; the new
+    // mode-selection logic must not turn it into an unchecked bare function.
+    const SOURCE: &str = include_str!("fixtures/pass/173-class-mtd-executable.atto");
+    let compiled = atto_compiler::compile(SOURCE)
+        .expect("verified immutable out-of-line mtd still compiles");
+    assert!(compiled.starts_with(&[0, 97, 115, 109, 1, 0, 0, 0]));
+}
