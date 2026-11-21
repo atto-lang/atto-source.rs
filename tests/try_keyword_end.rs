@@ -39,6 +39,18 @@ fn catch_empty_and_typed_catch_compile() {
     accepts(r#"
         fnc fail(): int { throw Error("bad"); }
         pub fnc main(): int {
+          try
+            return fail();
+          catch()
+            return 9;
+          finally
+            stdio.println("cleanup");
+          end
+        }
+    "#);
+    accepts(r#"
+        fnc fail(): int { throw Error("bad"); }
+        pub fnc main(): int {
           try { return fail(); } catch (Error e) { return 9; }
         }
     "#);
