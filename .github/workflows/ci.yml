@@ -95,6 +95,13 @@ jobs:
           rustup component add clippy rustfmt --toolchain 1.85.1
           rustup default 1.85.1
           rustc --version
+      - name: Install patched native Cranelift MSRV toolchain
+        # Lockfile Cranelift 0.136.4 requires Rust 1.96.0 or newer;
+        # use patched 1.96.1 without changing the browser ABI toolchain.
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal
+          rustup component add clippy rustfmt --toolchain 1.96.1
+          rustc +1.96.1 --version
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
       - name: Build actual Rust wasm32 compiler within public 1 MiB artifact budget
@@ -122,7 +129,13 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Independently test the separate native Cranelift package
         working-directory: native
-        run: cargo test --locked --all-targets --verbose
+        run: cargo +1.96.1 test --locked --all-targets --verbose
+      - name: Check formatting in the native Cranelift package
+        working-directory: native
+        run: cargo +1.96.1 fmt --all -- --check
+      - name: Strict native Cranelift Clippy all targets
+        working-directory: native
+        run: cargo +1.96.1 clippy --locked --all-targets -- -D warnings
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc
