@@ -250,6 +250,32 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 /// evidence cannot stand in for a guaranteed enclosing-function exit.
 /// Later checker stages may admit richer terminal constructs only after
 /// proving they cannot fall through.
+/// Guard commas are lazy AND and guard pipes are lazy OR. Native scalar
+/// binary And/Or lowering may be eager, so explicitly turn this guard's
+/// boolean chain into conditional expressions before typechecking/emission.
+/// This preserves exact-once, left-to-right evaluation and prevents effects
+/// in a later guard test when an earlier test already failed.
+fn lazy_guard_predicate(expr: Expr) -> Expr {
+    let pos = expr.pos;
+    match expr.kind {
+        ExprKind::Binary(BinOp::And, left, right) => Expr {
+            kind: ExprKind::Ternary(
+                Box::new(lazy_guard_predicate(*left)),
+                Box::new(lazy_guard_predicate(*right)),
+                Box::new(Expr { kind: ExprKind::Bool(false), pos })),
+            pos,
+        },
+        ExprKind::Binary(BinOp::Or, left, right) => Expr {
+            kind: ExprKind::Ternary(
+                Box::new(lazy_guard_predicate(*left)),
+                Box::new(Expr { kind: ExprKind::Bool(true), pos }),
+                Box::new(lazy_guard_predicate(*right))),
+            pos,
+        },
+        kind => Expr { kind, pos },
+    }
+}
+
 fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
@@ -2250,7 +2276,7 @@ impl Parser {
     fn parse_guard(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("guard")?;
-        let predicate = self.parse_cond_head()?;
+        let predicate = lazy_guard_predicate(self.parse_cond_head()?);
         let failure = if *self.peek() == Tok::LBrace {
             let failure = self.parse_block()?;
             // Mixing the brace and keyword delimiters creates an ambiguous
