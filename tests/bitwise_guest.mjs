@@ -11,7 +11,7 @@ const cases = [
   ['12 & 10', 8n], ['12 | 10', 14n], ['12 ^^ 10', 6n],
   ['~12', -13n], ['8 <<< 2', 32n], ['32 >>> 2', 8n],
   ['-8 ashr 1', -4n], ['-1 >>> 1', 9223372036854775807n],
-  ['1 <<< 64', 1n], ['1 + 2 <<< 3', 24n], ['64 >>> 1 + 1', 16n],
+  ['1 <<< 63', -9223372036854775808n], ['1 + 2 <<< 3', 24n], ['64 >>> 1 + 1', 16n],
   ['12 & 10 | 2 ^^ 6', 12n],
   ['(1 | 2) <<< 1', 6n],
   ['(1 <<< 63) >>> 63', 1n],
@@ -50,6 +50,8 @@ try {
     'return 12 ^ 10;',
     'return 12 ^ ^ 10;',
     'let x: int = 12; x ^= 3; return x;',
+    'return 1 <<< 64;',
+    'return 1 >>> -1;',
   ].entries()) {
     const src = join(tmp, `reject-${index}.atto`);
     const bin = join(tmp, `reject-${index}.wasm`);
@@ -60,7 +62,23 @@ try {
     await assert.rejects(readFile(bin), { code: 'ENOENT' },
       'rejected syntax may not leave any guest artifact');
   }
-  console.log('PASS', i, 'bitwise Wasm guests; 3 retired-caret no-artifact checks');
+  // Dynamic counts are evaluated exactly once, checked before reaching
+  // Wasm's naturally modulo-64 shift instructions, and raise panic code 7.
+  for (const [index, operation] of ['1 <<< distance', '1 >>> distance',
+      '-8 ashr distance'].entries()) {
+    const src = join(tmp, `dynamic-${index}.atto`);
+    const bin = join(tmp, `dynamic-${index}.wasm`);
+    await writeFile(src,
+      `pub fnc main(): int { let distance: int = 64; return ${operation}; }\\n`);
+    const result = spawnSync(attoc, [src, '-o', bin],
+      { encoding: 'utf8', timeout: 30000 });
+    assert.equal(result.status, 0, result.stderr);
+    const bytes = await readFile(bin);
+    const { instance } = await WebAssembly.instantiate(bytes, { atto: {} });
+    assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
+    assert.equal(instance.exports.panic_code.value, 7, operation);
+  }
+  console.log('PASS', i, 'bitwise Wasm guests; 5 no-artifact and 3 runtime shift panic checks');
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }
