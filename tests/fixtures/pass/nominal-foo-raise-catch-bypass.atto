@@ -1,0 +1,20 @@
+// expect-exit: 42
+// Ordinary catch must not consume an exact Foo raise, even across calls.
+define class Foo extends Error as end
+
+fnc int <- risky(int value)
+raises Foo ::
+  if value > 3 then
+    raise! new Foo();
+  fi
+  return value;
+end
+
+pub fnc main(): int raises Foo ::
+  recover |err, cursor| -> {
+    if err.is_type(Foo) then return 42; fi
+    return 0;
+  };
+  try { return risky(4); }
+  catch (Error e) { return 17; }
+end
