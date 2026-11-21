@@ -1,5 +1,6 @@
-//! Bang graph admission is strict: only the three-stage bounded Channel<T>
-//! checked form is allowed; no direct two-actor trap-path impersonation.
+//! Checked bang graph admission: a direct two-actor unicast pair or an
+//! actor-Channel<T>-actor triple. Neither can call the legacy trap publisher;
+//! malformed/partial graphs must fail closed before a guest artifact.
 use atto_compiler::{lexer, v2, Diagnostic};
 
 fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
@@ -71,4 +72,24 @@ fn malformed_bang_suffix_and_recovery_do_not_publish_guest_graph() {
     let good=compile(include_str!("fixtures/pass/230-v2-actor-ready-future-pipe.atto"))
         .expect("valid source must compile after earlier syntax/type errors");
     assert!(good.starts_with(b"\0asm"));
+}
+
+#[test]
+fn checked_direct_actor_requires_nominally_matching_declared_ports() {
+    let source = r#"
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void { emit(mail.value); }
+end
+define actor WrongConsumer receives bool as
+  receive(ActorMail<bool> mail): void { return; }
+end
+pub suspends fnc main(): int {
+  val producer=spawn Producer();
+  val consumer=spawn WrongConsumer();
+  val link=producer pipe! consumer;
+  return 0;
+}
+"#;
+    let e=compile(source).expect_err("different nominal DATA ports must have no Wasm guest");
+    assert_eq!(e.code,"E_TYPE","{e}");
 }
