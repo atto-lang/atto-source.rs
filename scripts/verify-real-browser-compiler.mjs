@@ -7,6 +7,7 @@ import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {readCompilerDiagnostic} from './compiler-diagnostic.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const native=resolve(process.env.ATTOC||join(root,'target/release/attoc'));
 const compiler=resolve(process.env.ATTO_WASM_COMPILER||
@@ -65,11 +66,7 @@ function wasmCompile(api,source){
   assert.ok(status===0||status===1,'unexpected compile return status');
   if(status){
     assert.equal(api.result_length(),0,'compiler published rejected guest bytes');
-    const mem=new Uint8Array(api.memory.buffer),start=api.error_ptr();
-    assert.ok(start>=0&&start<mem.length,'diagnostic bounds');
-    let end=start;while(end<mem.length&&end<start+512&&mem[end]!==0)end++;
-    assert.ok(end<start+512,'unterminated diagnostic');
-    return {ok:false,message:decoder.decode(mem.subarray(start,end))};
+    return {ok:false,message:readCompilerDiagnostic(api.memory,api.error_ptr())};
   }
   const ptrOut=api.result_ptr(),len=api.result_length();
   assert.ok(len>=8&&len<=1048576&&ptrOut>=0&&ptrOut+len<=api.memory.buffer.byteLength,'guest result bounds');

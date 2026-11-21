@@ -1,0 +1,89 @@
+# Rust compiler package ownership: #448 versus #455
+
+**Status:** Draft integration decision, not an implementation, CI PASS,
+release approval, or permission to merge (2026-11-20). The language spec
+remains the authority for grammar and semantics.
+
+## Selected package boundaries
+
+- Root `Cargo.toml`, `src/`: `atto-compiler-browser`, exposing
+  `atto_compiler` and `attoc`; native Rust host compiler and
+  `wasm32-unknown-unknown` compiler that emits browser guest Wasm (ABI v2).
+- `native/Cargo.toml`, `native/src/`: the independent Cranelift native
+  `oresc` compiler and safety/effect IR prototype, currently named
+  `oreslang-source-rs` until a separately reviewed crate rename.
+- Root `tests/`: 85 browser integration suites explicitly registered
+  by #448; 38 legacy native-only root test files **excluded** from browser
+  Cargo. They are NOT automatically run by the separate native crate.
+  Port/verify them deliberately. Do not report an omitted suite as passed.
+
+Keep the canonical browser crate at the root and Cranelift in `native/`.
+Do not replace the root manifest with a native package or add a second
+`browser/Cargo.toml` in #448. The structural gate
+`scripts/verify-browser-cargo-tests.mjs` checks package ownership and the
+explicit test inventory; it is not equivalent to building either compiler.
+
+## Competitor disposition: PR #455
+
+[PR #455](https://github.com/atto-lang/atto-source.rs/pull/455) proposes
+the incompatible inverse layout: native Cargo at root and an older
+browser compiler under `browser/`. **Do not merge the whole PR into #448.**
+Distinct functionality must not be discarded:
+
+1. **ESM:** `browser/src/js.rs` and `compile_js` emit JavaScript from
+   an older checked IR. Evaluate a semantic port onto the *current*
+   source/checker, or an explicit integration with `atto-source.js`,
+   retaining one normative AttoLang grammar. Copying the file verbatim
+   would not establish ABI/type parity. Require real ESM execution,
+   negative diagnostics, deterministic output and no unchecked fallback.
+2. **Actor guest/private memory:** compare #455's browser actor tests
+   and `browser/src/wasm.rs` with current root `src/wasm.rs`,
+   `tests/browser-e2e.mjs` and actor guest ABI v2. Port only uncovered
+   guest/worker isolation, shutdown, failure or lifecycle behavior
+   with real runtime receipts. Actor Wasm instance memory isolation
+   does not by itself prove TenantVM security.
+3. **Native changes:** review #455's CLI, native `.atto` example and
+   effect/safety assertions against `native/`; keep unique linked
+   executable cases rather than overwriting the production root.
+4. **Style-only changes:** do not duplicate broad reformatting without
+   measured benefit and an exact-head test run.
+
+The **current disposition** of #455 is *competing and unresolved*.
+Keep it available until each unique improvement is adopted and tested,
+superseded with evidence, or explicitly rejected by maintainers.
+
+## Executable acceptance criteria for #448
+
+On an **authorized exact-head runner** run:
+
+```sh
+node scripts/verify-browser-cargo-tests.mjs
+node --check scripts/verify-real-browser-compiler.mjs
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --release --bin attoc
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z cargo rustc --locked --release --lib \
+  --target wasm32-unknown-unknown --crate-type cdylib -- \
+  -C link-arg=--max-memory=67108864
+ATTOC=target/release/attoc \
+  ATTO_WASM_COMPILER=target/wasm32-unknown-unknown/release/atto_compiler.wasm \
+  node scripts/verify-real-browser-compiler.mjs
+ATTOC=target/release/attoc node tests/conformance.mjs
+node tests/browser-e2e.mjs
+(cd native && cargo test --locked --all-targets)
+```
+
+Verify executed steps, current source/tree SHA, binary hash/size, guest
+byte equality and execution, checked overflow, negative diagnostics
+and **no stale executable artifacts**. Restore native coverage separately.
+
+## Security/release conditions
+
+[Runner admission #440](https://github.com/atto-lang/atto-source.rs/issues/440),
+[branch protection #442](https://github.com/atto-lang/atto-source.rs/issues/442)
+and [private CI export #446](https://github.com/atto-lang/atto-source.rs/issues/446)
+remain blocking. Empty-step CI failures are `NOT_EXECUTED`, never green.
+The private source transfer allowlist is empty: no cross-org Git mirroring,
+public artifact publishing, unauthorized bypass, Draft→Ready promotion
+or merge until independently authorized tests, reviews and protection
+are satisfied.
