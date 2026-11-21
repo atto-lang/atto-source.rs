@@ -254,9 +254,9 @@ fn package_source_and_manifest_fifo_fail_without_blocking_open() {
     let manifest = temp.0.join(".atto.pkg.toml");
     let main = temp.0.join("main.atto");
     let output = temp.0.join("compiled.wasm");
-    let valid_manifest = "[package]\\nname=\\\"fifo_guard\\\"\\nversion=\\\"1.0.0\\\"\\n";
+    let valid_manifest = "[package]\nname=\"fifo_guard\"\nversion=\"1.0.0\"\n";
     std::fs::write(&manifest, valid_manifest).unwrap();
-    std::fs::write(&main, "pub fnc main(): int { return 42; }\\n").unwrap();
+    std::fs::write(&main, "pub fnc main(): int { return 42; }\n").unwrap();
     let valid = attoc(&["--package-root", root, "--entry", "main.atto", "-o", output.to_str().unwrap()]);
     assert!(valid.status.success(), "{}", String::from_utf8_lossy(&valid.stderr));
     assert!(output.exists());
@@ -275,7 +275,7 @@ fn package_source_and_manifest_fifo_fail_without_blocking_open() {
     assert!(!output.exists(), "failed package build retained executable guest");
 
     std::fs::remove_file(&main).unwrap();
-    std::fs::write(&main, "pub fnc main(): int { return 42; }\\n").unwrap();
+    std::fs::write(&main, "pub fnc main(): int { return 42; }\n").unwrap();
     std::fs::remove_file(&manifest).unwrap();
     assert!(Command::new("mkfifo").arg(&manifest).status().unwrap().success());
     let denied_manifest = Command::new("timeout")
