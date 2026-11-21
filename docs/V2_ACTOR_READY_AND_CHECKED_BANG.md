@@ -3,8 +3,13 @@
 **Status:** staged on the experimental Rust v2 backend; no successful exact-head
 native Rust build, emitted guest Wasm execution, or public compiler artifact
 was verified on this branch. The current GitHub Actions source organization
-has reported failures before runner allocation. This is not a production
-TenantVM or multi-backend runtime parity certification.
+has reported failures before runner allocation. The canonical source
+`.github/private-ci-approved-repositories.txt` on `main` is empty:
+**no cross-organization private-source mirroring is authorized**, even
+to a private carrier with Actions minutes, until its reviewed exact-repository
+allowlist and independent security approval exist. Source-free runner
+canaries are permitted but are not compiler test evidence. This is not
+a production TenantVM or multi-backend runtime parity certification.
 
 ## Source examples
 
