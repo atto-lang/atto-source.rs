@@ -22,7 +22,8 @@ fn exact_published_type_match_is_an_actual_compiled_wasm_guest() {
 
 #[test]
 fn statically_known_string_and_bool_tags_select_matching_type_arms() {
-    pass(r#"
+    pass(
+        r#"
         fnc read(Any value): int {
             match value over
               on is int -> { return 10; }
@@ -35,8 +36,10 @@ fn statically_known_string_and_bool_tags_select_matching_type_arms() {
             if message is int then return 0; fi
             return read(message);
         }
-    "#);
-    pass(r#"
+    "#,
+    );
+    pass(
+        r#"
         fnc read(Any value): int {
             match value over
               on is bool when value -> { return 42; }
@@ -48,41 +51,55 @@ fn statically_known_string_and_bool_tags_select_matching_type_arms() {
             val flag: Any = true;
             return read(flag);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn non_literal_or_escaping_any_cannot_masquerade_as_scalar_wasm() {
-    err(r#"
+    err(
+        r#"
         fnc read(Any v): int { return 42; }
         pub fnc main(): int {
             val n: Any = 1 + 2;
             return read(n);
         }
-    "#, "E_UNSUPPORTED_TYPE");
-    err(r#"
+    "#,
+        "E_UNSUPPORTED_TYPE",
+    );
+    err(
+        r#"
         fnc read(Any v): int { return 42; }
         pub fnc main(): int {
             val n: Any = new Object();
             return read(n);
         }
-    "#, "E_UNSUPPORTED_TYPE");
-    err(r#"
+    "#,
+        "E_UNSUPPORTED_TYPE",
+    );
+    err(
+        r#"
         pub fnc main(): int {
             val n: Any = 42;
             return n;
         }
-    "#, "E_UNSUPPORTED");
-    err(r#"
+    "#,
+        "E_UNSUPPORTED",
+    );
+    err(
+        r#"
         fnc read(Any v): int { return 42; }
         pub fnc main(): int { return read(42); }
-    "#, "E_UNSUPPORTED");
+    "#,
+        "E_UNSUPPORTED",
+    );
 }
 
 #[test]
 fn mismatched_concrete_calls_and_unhandled_type_tests_fail() {
     // Source-local Any does not imply a dynamic runtime tag or a host ABI.
-    err(r#"
+    err(
+        r#"
         fnc read(Any v): int {
             match v over on is string -> { return 1; } on _ -> { return 0; } end
         }
@@ -90,8 +107,11 @@ fn mismatched_concrete_calls_and_unhandled_type_tests_fail() {
             val value: Any = 42;
             return read("wrong");
         }
-    "#, "E_UNSUPPORTED");
-    err(r#"
+    "#,
+        "E_UNSUPPORTED",
+    );
+    err(
+        r#"
         fnc read(Any v): int {
             match v over on is float -> { return 42; } end
         }
@@ -99,8 +119,11 @@ fn mismatched_concrete_calls_and_unhandled_type_tests_fail() {
             val value: Any = 42;
             return read(value);
         }
-    "#, "E_MATCH");
-    err(r#"
+    "#,
+        "E_MATCH",
+    );
+    err(
+        r#"
         fnc read(Any v): int {
             match v over on is int when v > 0 -> { return 42; } end
         }
@@ -108,7 +131,9 @@ fn mismatched_concrete_calls_and_unhandled_type_tests_fail() {
             val value: Any = 42;
             return read(value);
         }
-    "#, "E_MATCH");
+    "#,
+        "E_MATCH",
+    );
 }
 
 #[test]

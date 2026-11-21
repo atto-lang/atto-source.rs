@@ -3,14 +3,14 @@
 use atto_compiler::compile;
 const SITE: &str = include_str!("playground_previews/data-shapes.atto");
 fn pass(s: &str) {
-    let bytes=compile(s).unwrap_or_else(|e|panic!("expected compiled guest: {e}"));
+    let bytes = compile(s).unwrap_or_else(|e| panic!("expected compiled guest: {e}"));
     assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
-    assert_eq!(bytes,compile(s).unwrap(),"Wasm guest must be deterministic");
+    assert_eq!(bytes, compile(s).unwrap(), "Wasm guest must be deterministic");
 }
 fn reject(s: &str) {
-    let d=compile(s).expect_err("unsafe or unsupported product shape must emit no guest");
-    assert!(d.code.starts_with("E_"),"{d}");
-    assert!(d.pos.line>0 && d.pos.col>0,"{d}");
+    let d = compile(s).expect_err("unsafe or unsupported product shape must emit no guest");
+    assert!(d.code.starts_with("E_"), "{d}");
+    assert!(d.pos.line > 0 && d.pos.col > 0, "{d}");
 }
 
 #[test]
@@ -20,7 +20,8 @@ fn exact_published_product_shapes_compile_to_actual_guest_wasm() {
 
 #[test]
 fn scalar_struct_and_record_constructors_are_typechecked() {
-    pass(r#"
+    pass(
+        r#"
         define struct Point as int x; int y; end
         define record Receipt as int id; string status; end
         pub fnc main(): int {
@@ -29,12 +30,14 @@ fn scalar_struct_and_record_constructors_are_typechecked() {
             stdio.println(receipt.status);
             return point.x + point.y;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn positional_products_are_nominal_two_field_guest_objects() {
-    pass(r#"
+    pass(
+        r#"
         pub fnc main(): int {
             val a: Tuple<int, string> = (42, "ok");
             val b: Pair<string, int> = Pair("answer", 42);
@@ -44,7 +47,8 @@ fn positional_products_are_nominal_two_field_guest_objects() {
             stdio.println(c);
             return 0;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
@@ -80,7 +84,9 @@ fn structurally_ambiguous_or_incomplete_keyed_products_reject() {
               return 0;
             }
         "#,
-    ] {reject(s);}
+    ] {
+        reject(s);
+    }
 }
 
 #[test]
@@ -107,15 +113,19 @@ fn dynamic_and_mismatched_generic_products_fail_without_artifacts() {
               return p.x;
            }
         "#,
-    ] {reject(s);}
+    ] {
+        reject(s);
+    }
 }
 
 #[test]
 fn forged_internal_product_classes_and_unadmitted_source_fail() {
-    reject(r#"
+    reject(
+        r#"
        define class __atto_shape_pair_string_int as end
        pub fnc main(): int { return 0; }
-    "#);
+    "#,
+    );
     reject("pub fnc main(): int { val x=__atto_shape_pair_string_int; return 0; }");
     reject("pub fnc main(): int { val t=Pair(42,10); return 0; }");
     pass("pub fnc main(): int { return 42; }");

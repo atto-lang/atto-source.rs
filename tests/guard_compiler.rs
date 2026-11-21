@@ -19,27 +19,33 @@ fn exact_website_guard_preview_compiles() {
 
 #[test]
 fn terminal_guard_lowers_to_typed_boolean_branch() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
         pub fnc main(): int {
             let int value = 7;
             guard value > 0 { return 1; }
             return 2;
         }
-    "#);
-    compile_ok(r#"
+    "#,
+    );
+    compile_ok(
+        r#"
         pub fnc main(): int {
             guard false {
                 if true { return 1; } else { return 2; } fi
             }
             return 3;
         }
-    "#);
-    compile_ok(r#"
+    "#,
+    );
+    compile_ok(
+        r#"
         pub fnc main(): int {
             guard true { throw Error("failure"); }
             return 42;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]

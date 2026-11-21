@@ -1,5 +1,8 @@
 //! Real compiler contracts for the corrected exact website boolean preview.
-use atto_compiler::{compile, lexer::{lex, Tok}};
+use atto_compiler::{
+    compile,
+    lexer::{lex, Tok},
+};
 fn valid(src: &str) {
     let bytes = compile(src).unwrap_or_else(|e| panic!("expected valid Wasm: {e}"));
     assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
@@ -16,14 +19,16 @@ fn corrected_exact_website_boolean_source_compiles_guest_deterministically() {
 }
 #[test]
 fn infix_short_circuit_uses_typed_ternary_and_does_not_break_lambda_pipes() {
-    valid(r#"
+    valid(
+        r#"
         pub fnc main(): int {
             val a = true; val b = false;
             val ok = a && b || a;
             stdio.println(ok);
             return 42;
         }
-    "#);
+    "#,
+    );
     let tokens = lex("|| -> 42").unwrap();
     assert_eq!(tokens[0].tok, Tok::Pipe);
     assert_eq!(tokens[1].tok, Tok::Pipe);
@@ -42,8 +47,10 @@ fn invalid_operator_types_and_retired_xor_remain_rejected() {
 fn literal_bool_array_packs_cannot_become_general_array_runtime() {
     valid("pub fnc main(): int { stdio.println(And([true, true, false])); return 0; }");
     invalid("pub fnc main(): int { val list = [true,false]; return 0; }");
-    invalid(r#"
+    invalid(
+        r#"
         fnc effect(): bool { return true; }
         pub fnc main(): int { stdio.println(And([effect(), false])); return 0; }
-    "#);
+    "#,
+    );
 }
