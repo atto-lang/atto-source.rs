@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -22,11 +22,16 @@ const tests=[
   ['pass','04-binding-forms.atto',52n],
   ['pass','06-precedence.atto',120n],
   ['pass','19-recursion-fib.atto',55n],
+  ['pass','wide-negative-i64',-9007199254740993n,
+    'pub fnc main(): int { return -9007199254740993; }\n'],
   ['fail','01-val-reassign.atto','E_IMMUTABLE'],
   ['fail','02-param-reassign.atto','E_IMMUTABLE'],
   ['fail','03-unknown-name.atto','E_UNBOUND'],
   ['fail','09-call-arity.atto','E_ARITY'],
-  ['fail','23-no-main.atto','E_ENTRY']
+  ['fail','23-no-main.atto','E_ENTRY'],
+  ['panic','checked-add-overflow',1,
+    'pub fnc main(): int { val x: int = 9223372036854775807; return x + 1; }\n'],
+  ['pass','01-answer.atto',42n]
 ];
 assert.equal(new Set(tests.map(([kind,name])=>kind+'/'+name)).size,tests.length,
   'smoke matrix contains duplicate source fixtures');
@@ -77,29 +82,49 @@ function guestValue(bytes){
     (exp.panic_code.value===0||exp.panic_code.value===0n),'guest panicked');
   return n;
 }
+function guestPanic(bytes,expectedCode){
+  const mod=new WebAssembly.Module(bytes);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[],'panic guest unexpectedly imports host capabilities');
+  const exp=new WebAssembly.Instance(mod,{}).exports;
+  assert.equal(typeof exp.main,'function','panic guest main missing');
+  assert.ok(exp.panic_code instanceof WebAssembly.Global,'panic code export missing');
+  assert.throws(()=>exp.main(),WebAssembly.RuntimeError,'checked i64 overflow must trap');
+  assert.equal(Number(exp.panic_code.value),expectedCode,'wrong source-language panic code');
+}
 const tmp=mkdtempSync(join(tmpdir(),'atto-real-rust-wasm-'));
 try{
   const {api,digest}=wasmInstance(),nativeHash=sha(file(native)),rows=[];
   for(let i=0;i<tests.length;i++){
-    const [kind,name,oracle]=tests[i],src=join(root,'tests/fixtures',kind,name);
+    const [kind,name,oracle,inline]=tests[i];
+    const src=inline===undefined?join(root,'tests/fixtures',kind,name):join(tmp,`inline-${i}.atto`);
+    if(inline!==undefined)writeFileSync(src,inline,'utf8');
     const content=file(src),output=join(tmp,String(i)+'.wasm');
     const source=decoder.decode(content);
-    const annotation=source.match(kind==='pass'
+    const annotation=inline===undefined?source.match(kind==='pass'
       ? /^\/\/ expect-exit:\s*(\d+)\s*$/m
-      : /^\/\/ expect-error:\s*(E_[A-Z0-9_]+)\s*$/m);
-    assert.ok(annotation,'missing fixture expectation: '+name);
-    assert.equal(annotation[1],String(oracle),'smoke expectation drift: '+name);
+      : /^\/\/ expect-error:\s*(E_[A-Z0-9_]+)\s*$/m):null;
+    if(inline===undefined){
+      assert.ok(annotation,'missing fixture expectation: '+name);
+      assert.equal(annotation[1],String(oracle),'smoke expectation drift: '+name);
+    }
+    if(kind==='fail')writeFileSync(output,'STALE_GUEST_MUST_NOT_SURVIVE','utf8');
     const cp=spawnSync(native,[src,'-o',output],{cwd:root,encoding:'utf8',timeout:20000,maxBuffer:1048576,shell:false});
     assert.ifError(cp.error);assert.equal(cp.signal,null,'native compiler terminated by signal');
     const wasm=wasmCompile(api,source);
-    if(kind==='pass'){
+    if(kind==='pass'||kind==='panic'){
       assert.equal(cp.status,0,'native rejected '+name+': '+cp.stderr);
       assert.equal(wasm.ok,true,'wasm32 compiler rejected '+name);
       const binary=file(output);
       assert.deepEqual(wasm.guest,binary,'native/wasm32 compiler guest bytes differ');
-      assert.equal(guestValue(binary),oracle,'native guest result');
-      assert.equal(guestValue(wasm.guest),oracle,'wasm32 guest result');
-      rows.push({fixture:name,result:'REAL_GUEST',value:String(oracle),source_sha256:sha(content),guest_sha256:sha(binary)});
+      if(kind==='pass'){
+        assert.equal(guestValue(binary),oracle,'native guest result');
+        assert.equal(guestValue(wasm.guest),oracle,'wasm32 guest result');
+        rows.push({fixture:name,result:'REAL_GUEST',value:String(oracle),source_sha256:sha(content),guest_sha256:sha(binary)});
+      }else{
+        guestPanic(binary,oracle);
+        guestPanic(wasm.guest,oracle);
+        rows.push({fixture:name,result:'REAL_CHECKED_PANIC',panic_code:oracle,source_sha256:sha(content),guest_sha256:sha(binary)});
+      }
     }else{
       assert.equal(cp.status,1,'native accepted invalid '+name);
       assert.ok(!existsSync(output),'rejected native source emitted output');
