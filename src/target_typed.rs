@@ -125,6 +125,12 @@ impl TypedActorModule {
     }
 
     fn lower_one(&self, h: &ReceiverHeader) -> Result<TypedReceiver, Diagnostic> {
+        // A plain mutable bit cannot represent field-specific write rights.
+        // Reject instead of erasing the footprint in an executable typed ABI.
+        if h.state_write.is_some() {
+            return Err(Diagnostic::new(h.pos, "E_UNSUPPORTED",
+                "projected actor-state receiver requires typed field and effect proofs"));
+        }
         let actor = self.actor_index(&h.owner, h.pos)?;
         let mut params = Vec::with_capacity(h.params.len());
         for p in &h.params {
