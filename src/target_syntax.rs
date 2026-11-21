@@ -283,7 +283,20 @@ impl Cursor<'_> {
             }
             return Ok(());
         }
-        if return_first { return self.explicit_end_body(); }
+        if return_first {
+            // The receiver scanner preserves the same delimiter admission.
+            // Production checking is still required after this token scan.
+            if self.take(&Tok::ColonColon) {
+                let boundary = self.toks[self.i - 1].pos.line;
+                if *self.tok() == Tok::LBrace {
+                    return Err(self.err("E_SYNTAX", "return-first :: cannot precede a brace block"));
+                }
+                if self.pos().line <= boundary {
+                    return Err(self.err("E_SYNTAX", "return-first :: needs a newline before statements"));
+                }
+            }
+            return self.explicit_end_body();
+        }
         if !arrow_type {
             return Err(self.err("E_SYNTAX", "expected '{' or begin/end for a method body"));
         }
