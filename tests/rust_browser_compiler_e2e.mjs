@@ -199,6 +199,8 @@ test('pipe-delimited const fnc compiles through real Rust/Wasm and native Rust, 
   const valid = [
     ['ignored-int', 'pub fnc main(): int { const fnc v = |_| : int -> 5; return v(41); }', 5n],
     ['ignored-bool', 'pub fnc main(): int { const fnc v = |_| : int -> 5; return v(true); }', 5n],
+    ['two-ignored-local', 'pub fnc main(): int { const fnc v = |_, _| : int -> 5; return v(41, false); }', 5n],
+    ['two-ignored-module', 'const fnc v = |int _, bool _| : int -> 5; pub fnc main(): int { return v(41, false); }', 5n],
     ['zero-arg', 'pub fnc main(): int { const fnc v = || : int -> 5; return v(); }', 5n],
     ['typed-module', 'const fnc v = |int _| : int -> 5; pub fnc main(): int { return v(41); }', 5n],
     ['local-named', 'pub fnc main(): int { const fnc v = |int x| : int -> x + 1; return v(x: 41); }', 42n],
@@ -208,6 +210,9 @@ test('pipe-delimited const fnc compiles through real Rust/Wasm and native Rust, 
     'pub fnc main(): int { const fnc v = _ -> 5; return 0; }',
     'pub fnc main(): int { const fnc v = x : int -> x + 5; return 0; }',
     'pub fnc main(): int { const fnc v = |_| : int -> 5; return v(); }',
+    'pub fnc main(): int { const fnc v = |_, _| : int -> 5; return v(41); }',
+    'pub fnc main(): int { const fnc v = |_, _| : int -> 5; return v(41, false, true); }',
+    'pub fnc main(): int { const fnc v = |_, _| : int -> _; return v(41, false); }',
   ];
   const scratch = await mkdtemp(join(tmpdir(), 'atto-pipe-const-real-'));
   try {
