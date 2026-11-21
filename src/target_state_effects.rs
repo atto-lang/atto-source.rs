@@ -217,6 +217,10 @@ pub struct ParsedActorProjection {
     pub actor: String,
     pub method: String,
     pub ceiling: WriteCeiling,
+    /// Direct guarded field sites observed in source, NOT a complete effect
+    /// summary (unknown callees and transitive effects remain unverified).
+    pub observed_fields: BTreeSet<usize>,
+    pub observed_writes: BTreeSet<usize>,
 }
 
 /// Compiler-path preflight: resolve projected receiver field names against the
@@ -228,13 +232,17 @@ pub fn validate_source_actor_state_projections(
 ) -> Check<Vec<ParsedActorProjection>> {
     let mut checked = Vec::new();
     for receiver in &headers.receivers {
-        if receiver.state_write.is_none() {
+        let sites: Vec<_> = headers.state_field_uses.iter()
+            .filter(|site| site.owner == receiver.owner &&
+                site.method == receiver.name && site.arity == receiver.arity)
+            .collect();
+        if receiver.state_write.is_none() && sites.is_empty() {
             continue;
         }
         let Some(actor) = headers.definitions.iter().find(|actor| actor.name == receiver.owner)
         else {
             // No implementation or state schema exists yet. Existing typed
-            // signature lowering refuses these projected receivers.
+            // signature lowering refuses unverified projected receivers.
             continue;
         };
         let names: Vec<&str> = actor.fields.iter().map(|field| field.name.as_str()).collect();
@@ -249,10 +257,30 @@ pub fn validate_source_actor_state_projections(
                 }
             }
         }
+        let mut observed_fields = BTreeSet::new();
+        let mut observed_writes = BTreeSet::new();
+        for site in sites {
+            let StatePlace::Field(id) = schema.place(Some(&site.field), site.pos)? else {
+                unreachable!("named field must resolve to a concrete field");
+            };
+            observed_fields.insert(id);
+            if site.write {
+                // The parser already rejects critical-read mutations and
+                // out-of-projection writes; preserve a second canonical check.
+                if !schema.permits(&ceiling, StatePlace::Field(id)) ||
+                    !actor.fields[id].binding.rebindable() {
+                    return Err(error(site.pos, "E_MUTABILITY",
+                        "guarded field write exceeds canonical actor-state permissions"));
+                }
+                observed_writes.insert(id);
+            }
+        }
         checked.push(ParsedActorProjection {
             actor: actor.name.clone(),
             method: receiver.name.clone(),
             ceiling,
+            observed_fields,
+            observed_writes,
         });
     }
     Ok(checked)

@@ -422,3 +422,51 @@ fn forward_only_state_ceiling_cannot_forge_an_authenticated_layout() {
         validate_source_actor_state_projections(&headers).unwrap().is_empty());
     assert_eq!(compile(src).unwrap_err().code, "E_UNSUPPORTED");
 }
+
+
+#[test]
+fn concrete_actor_guard_sites_are_canonicalized_without_claiming_full_effects() {
+    use atto_compiler::target_state_effects::validate_source_actor_state_projections;
+    let src = r#"
+declare actor Meter;
+define actor Meter as
+    let int counter = 0;
+    let int xyz = 0;
+end
+mtd (Meter mut this.state.counter) increment(): void {
+    this.handle_state(critical-write |s| -> { s.counter += 1; s.xyz; });
+}
+mtd (Meter this) inspect(): void {
+    this.handle_state(critical-read |s| -> { s.counter; });
+}
+"#;
+    let headers = parse(src);
+    assert_eq!(headers.state_field_uses.len(), 3);
+    let facts = validate_source_actor_state_projections(&headers).unwrap();
+    assert_eq!(facts.len(), 2);
+    assert_eq!(facts[0].method, "increment");
+    assert_eq!(facts[0].observed_fields.iter().copied().collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(facts[0].observed_writes.iter().copied().collect::<Vec<_>>(), [0]);
+    assert_eq!(facts[1].method, "inspect");
+    assert_eq!(facts[1].observed_fields.iter().copied().collect::<Vec<_>>(), [0]);
+    assert!(facts[1].observed_writes.is_empty());
+    assert_eq!(compile(src).unwrap_err().code, "E_UNSUPPORTED",
+        "observed direct fields alone are not authenticated transitive effects");
+}
+
+#[test]
+fn concrete_actor_guard_read_of_unknown_field_is_rejected_before_guest_lowering() {
+    let src = r#"
+declare actor Meter;
+define actor Meter as let int counter = 0; end
+mtd (Meter this) inspect(): void {
+    this.handle_state(critical-read |s| -> { s.missing; });
+}
+"#;
+    let headers = parse(src);
+    assert_eq!(headers.state_field_uses.len(), 1);
+    let err = atto_compiler::target_state_effects::
+        validate_source_actor_state_projections(&headers).unwrap_err();
+    assert_eq!(err.code, "E_STATE_FIELD_UNKNOWN");
+    assert_eq!(compile(src).unwrap_err().code, "E_STATE_FIELD_UNKNOWN");
+}

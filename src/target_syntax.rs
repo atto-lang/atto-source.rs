@@ -39,6 +39,18 @@ pub struct ReceiverHeader {
 }
 /// Source token offsets for an out-of-line receiver, retained so executable
 /// class mtd declarations can be lowered by the production method parser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateFieldUse {
+    pub owner: String,
+    pub method: String,
+    pub arity: usize,
+    pub field: String,
+    pub write: bool,
+    pub pos: Pos,
+}
+
+/// An observed direct syntactic field access inside a validated critical
+/// callback. This is intentionally NOT a complete, trusted effect summary.
 #[derive(Clone, Debug)]
 pub struct ReceiverSite {
     pub declaration_start: usize,
@@ -87,6 +99,9 @@ pub struct TargetHeaders {
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
+    /// Bounded field accesses observed in guarded receiver bodies only.
+    /// Calls, aliases, closure captures and transitive effects remain unverified.
+    pub state_field_uses: Vec<StateFieldUse>,
 }
 struct Cursor<'a> { toks: &'a [Token], i: usize }
 impl Cursor<'_> {
@@ -782,7 +797,8 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
         }
     }
     for (i, start, end) in spans {
-        validate_receiver_body(toks, &out, i, start, end)?;
+        let state_uses = validate_receiver_body(toks, &out, i, start, end)?;
+        out.state_field_uses.extend(state_uses);
     }
     for (start, end) in function_spans {
         validate_spawned_actor_calls(toks, &out, start, end)?;
@@ -1080,7 +1096,7 @@ fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
 fn validate_callback(
     toks: &[Token], symbols: &TargetHeaders, receiver: &ReceiverHeader,
     open: usize, limit: usize,
-) -> R<usize> {
+) -> R<(usize, Vec<StateFieldUse>)> {
     let close = close_paren(toks, open, limit)?;
     let mut k = open + 1;
     if !word_at(toks, k, "critical") || !at(toks, k+1, &Tok::Minus) ||
@@ -1117,6 +1133,7 @@ fn validate_callback(
     }
     // The v1 gate is conservative. A full borrow checker must subsequently
     // prove reference lifetimes, effect purity, and field types before codegen.
+    let mut uses = Vec::new();
     for i in k..close {
         if ["await", "select", "yield", "suspends", "spawn", "rt", "defer"].iter()
             .any(|w| word_at(toks, i, w)) {
@@ -1201,22 +1218,37 @@ fn validate_callback(
                     }
                 }
             }
+            if uses.len() >= 4096 {
+                return Err(diagnostic(toks, i, "E_SOURCE_LIMIT",
+                    "too many actor-state field observations"));
+            }
+            if let Some(Tok::Ident(field)) = toks.get(i+2).map(|t| &t.tok) {
+                uses.push(StateFieldUse {
+                    owner: receiver.owner.clone(),
+                    method: receiver.name.clone(),
+                    arity: receiver.arity,
+                    field: field.clone(),
+                    write: mutates,
+                    pos: toks[i+2].pos,
+                });
+            }
         }
     }
     // Prevent the callback from smuggling a second actor's receiver semantics.
     let _ = symbols;
-    Ok(close)
+    Ok((close, uses))
 }
 fn validate_receiver_body(
     toks: &[Token], symbols: &TargetHeaders, which: usize,
     start: usize, end: usize,
-) -> R<()> {
+) -> R<Vec<StateFieldUse>> {
     let receiver = &symbols.receivers[which];
     // Class receivers are parsed but not actor-sealed. No class mtd emits
     // guest code until its linker, type checker and dispatch are implemented.
     if symbols.classes.iter().any(|c| c == &receiver.owner) {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let mut state_uses = Vec::new();
     // Bare -> Type bodies start with a statement rather than a delimiter;
     // do not skip the first token and bypass sealed-state validation.
     let mut i = if at(toks, start, &Tok::LBrace) || at(toks, start, &Tok::ColonColon) {
@@ -1267,7 +1299,8 @@ fn validate_receiver_body(
                     "direct actor fields are sealed; use receiver.handle_state"));
             }
             if member == "handle_state" {
-                let closed = validate_callback(toks, symbols, receiver, i+3, end)?;
+                let (closed, uses) = validate_callback(toks, symbols, receiver, i+3, end)?;
+                state_uses.extend(uses);
                 i = closed + 1;
                 continue;
             }
@@ -1292,7 +1325,7 @@ fn validate_receiver_body(
         }
         i += 1;
     }
-    Ok(())
+    Ok(state_uses)
 }
 fn validate_spawned_actor_calls(
     toks: &[Token], symbols: &TargetHeaders, start: usize, end: usize,
