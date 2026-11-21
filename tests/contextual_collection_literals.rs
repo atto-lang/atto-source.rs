@@ -143,7 +143,7 @@ fn insufficient_context_and_unsupported_dynamic_products_fail_closed() {
     rejected(r#"pub fnc main(): int {val List x=[];return 0;}"#, "E_TYPE_INFERENCE");
     rejected(r#"pub fnc main(): int {val Pair<int,bool> = 5 => true;return 0;}"#, "E_SYNTAX");
     rejected(r#"pub fnc main(): int {val Entry<int,bool> = 5 => true;return 0;}"#, "E_SYNTAX");
-    rejected(r#"pub fnc main(): int {val x=5=>true;return 0;}"#, "E_TYPE");
+    rejected(r#"pub fnc main(): int {val x=5=>true;return 0;}"#, "E_UNSUPPORTED");
     rejected(r#"pub fnc main(): int {val List<int> x=[1,"str"];return 0;}"#, "E_TYPE");
     rejected(r#"pub fnc main(): int {val Map<int,string> x={"a"=> "wrong"};return 0;}"#, "E_TYPE");
 }
