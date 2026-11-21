@@ -3478,7 +3478,15 @@ impl Parser {
                 return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
                     "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
             }
-            Tok::Ident(s) if s == "trap" || s == "trap!" => {
+            Tok::Ident(s) if s == "trap!" => {
+                // Canonical trap! is a typed Result<T,E> boundary. Existing
+                // legacy trap returns Option<T> on ordinary throw; routing
+                // canonical source through it would silently erase Error
+                // identity and violate the language's Result contract.
+                return Err(Diagnostic::new(pos, "E_TRAP_BANG_RESULT_UNVERIFIED",
+                    "trap! requires checked Result<T,Error> and guest unwind; legacy trap Option<T> is not equivalent"));
+            }
+            Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Trap(Box::new(inner)), pos });
