@@ -288,6 +288,16 @@ try{
   assert.match(await run(callbackOverflow,'E_PANIC'),/E_PANIC: integer overflow/);
   console.log('PASS integration: checked arithmetic inside suspended callback traps overflow');
 
+  const callbackCaptured='pub susp fnc main(): int { val future=task {return 41;}; future |> susp |f| -> await f + 1 >> val answer: int; stdio.println(answer); return answer; }';
+  assert.equal((await run(callbackCaptured,'main() -> 42')).trim(),'42\nmain() -> 42');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'callback arithmetic terminal capture must not double-await the Future');
+  const callbackCaret='pub susp fnc main(): int { val future=task {return 41;}; ^ future |> suspends |f| -> await f + 1 >> val answer: int; }';
+  assert.equal((await run(callbackCaret,'main() -> 42')).trim(),'main() -> 42');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'caret callback capture must await exactly once');
+  console.log('PASS integration: typed and caret captures of checked susp callback results in guest Wasm');
+
   const captured='fnc transform_result(int x): int { return x + 1; } pub suspends fnc main(): int { val future=task { return 41; }; future |> susp |f| -> await f |> transform_result >> val result: int; stdio.println(result); return result; }';
   assert.match(await run(captured,'main() -> 42'),/^42\nmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
