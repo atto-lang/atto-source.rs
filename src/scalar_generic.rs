@@ -512,6 +512,25 @@ mod tests {
     }
 
     #[test]
+    fn colon_formal_and_typed_local_cannot_shadow_generic_callable() {
+        let generic = "fnc calculate<T>(int x): T { return x as T; } ";
+        for fragment in [
+            "fnc evaluate(calculate: int): int { return calculate; } ",
+            "fnc evaluate(): int { let calculate: int = 1; return calculate; } ",
+            "fnc evaluate(): int { const calculate: int = 1; return calculate; } ",
+        ] {
+            let source = format!(
+                "{generic}{fragment}pub fnc main(): int {{ return calculate<int>(5); }}"
+            );
+            assert_eq!(
+                lower(lex(&source).unwrap()).unwrap_err().code,
+                "E_DUPLICATE",
+                "{fragment}"
+            );
+        }
+    }
+
+    #[test]
     fn specialization_budget_rejects_before_materializing_large_instances() {
         let mut source = String::new();
         for n in 0..MAX_GENERIC_FUNCTIONS {
