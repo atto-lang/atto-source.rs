@@ -92,7 +92,7 @@ fn identifier_record_fields_are_static_and_nonidentifier_struct_fields_reject() 
         Some(2)
     );
     assert_eq!(
-        registry.nominal_struct("app::Header", &[named("content_type", T::String),]),
+        registry.nominal_struct("app::Header", &[named("content-type", T::String),]),
         Err(Error::InvalidStructField)
     );
 }
