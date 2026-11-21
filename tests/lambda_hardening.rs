@@ -5,7 +5,7 @@
 use atto_compiler::{
     ast::{BinOp, ExprKind, LambdaBody, Stmt},
     lexer,
-    parser::{Parser, MAX_PARAMS},
+    parser::{Parser, MAX_NESTED_LAMBDAS, MAX_PARAMS},
 };
 
 fn program(expr: &str) -> String {
@@ -81,6 +81,10 @@ fn nesting_limits_are_not_laundered_by_legacy_type_lookahead() {
     let legacy = format!("|n| -> {deep_type} {{ return n; }}");
     assert_eq!(parsed(&explicit).unwrap_err().code, "E_NESTING");
     assert_eq!(parsed(&legacy).unwrap_err().code, "E_NESTING");
+    let small = format!("{}1", "|x| -> ".repeat(16));
+    assert!(parsed(&small).is_ok(), "moderately nested lambda must remain valid");
+    let capped = format!("{}1", "|x| -> ".repeat(MAX_NESTED_LAMBDAS as usize + 1));
+    assert_eq!(parsed(&capped).unwrap_err().code, "E_NESTING");
     let nested = format!("{}1", "|x| -> ".repeat(150));
     assert_eq!(parsed(&nested).unwrap_err().code, "E_NESTING");
 }
