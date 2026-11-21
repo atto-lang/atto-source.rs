@@ -16,6 +16,13 @@ command -v cargo
 command -v node
 node --version
 rustc +1.85.1 --version
+printf 'SOURCE_HEAD=%s\\nSOURCE_TREE=%s\\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+# Every browser integration test must be an explicit Cargo target; legacy
+# native-only tests must never be picked up by implicit Cargo discovery.
+node scripts/verify-browser-cargo-tests.mjs
+node --check tests/rust_browser_compiler_e2e.mjs
+# Deep parser/negative tests use this documented source-CI stack budget.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
 rustup target list --installed --toolchain 1.85.1 | grep -Fxq wasm32-unknown-unknown
 export CARGO_NET_OFFLINE=true
 # Use the site's current reproducible optimization profile; fail closed if
