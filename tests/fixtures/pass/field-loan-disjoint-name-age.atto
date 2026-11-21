@@ -1,0 +1,18 @@
+// expect-exit: 42
+// expect-stdout: Alice
+// java: rejects
+// The borrowed name stays readable after modifying a different field.
+define class Person as
+  pub let string name = "Alice";
+  pub let int age = 30;
+end
+
+pub fnc main(): int {
+  let person = new Person();
+  block {
+    val borrowed_name = borrow! person.name;
+    person.age = 42;
+    stdio.println(borrowed_name);
+  }
+  return person.age;
+}
