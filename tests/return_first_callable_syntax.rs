@@ -14,8 +14,23 @@ const INT_FORMS: &[&str] = &[
     "int <- calculate(int x) return x * 2; end",
     "int <- calculate(int x) begin return x * 2; end",
     "fnc int <- calculate(int x) begin return x * 2; end",
+    "int• calculate(int x) { return x * 2; }",
+    "fnc int• calculate(int x) begin return x * 2; end",
+    "int• calculate(int x) return x * 2; end",
     "fnc calculate(int x) -> int begin return x * 2; end",
 ];
+
+#[test]
+fn bullet_is_exact_utf8_return_delimiter_not_any_similar_glyph() {
+    let tokens = lex("int• answer()").expect("lex exact U+2022 bullet");
+    assert_eq!(tokens[1].tok, Tok::LeftArrow);
+    assert_eq!((tokens[1].pos.line, tokens[1].pos.col), (1, 4));
+    for glyph in ["·", "∙", "‧", "●"] {
+        let source = format!("int{glyph} answer() begin return 42; end");
+        let err = lex(&source).expect_err("lookalike bullet must not be normalized");
+        assert_eq!(err.code, "E_TOKEN", "{source}");
+    }
+}
 
 #[test]
 fn all_requested_int_forms_share_signature_and_compile_to_wasm() {

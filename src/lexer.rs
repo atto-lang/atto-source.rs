@@ -28,7 +28,8 @@ pub enum Tok {
     Colon,
     ColonColon,
     Arrow,
-    /// Exact contiguous return-first callable delimiter `<-`.
+    /// Return-first callable delimiter: contiguous `<-` or U+2022 `•`.
+    /// Both spellings share one parser and checked Wasm-lowering path.
     LeftArrow,
     FatArrow,
     Dot,
@@ -347,6 +348,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             // (e.g. T<U<V<W>>>=value) from becoming comparison tokens.
             ('<', Some('=')) if i >= 2 && chars[i - 1] == '<' && chars[i - 2] == '<' =>
                 (Tok::Lt, 1),
+            ('•', _) => (Tok::LeftArrow, 1),
             ('<', Some('-')) => (Tok::LeftArrow, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
