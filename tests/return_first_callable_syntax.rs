@@ -317,8 +317,9 @@ fn triggered_return_first_raise_has_recover_and_catch_bypass_guest_targets() {
     for fixture in [
         include_str!("fixtures/pass/return-first-raise-recover-guest.atto"),
         include_str!("fixtures/pass/return-first-raise-bypasses-catch.atto"),
+        include_str!("fixtures/pass/return-first-raise-bypasses-trap.atto"),
     ] {
-        assert!(fixture.contains("raise! Error(\"too large\")"));
+        assert!(fixture.contains("raise! Error("));
         let guest = compile(fixture).unwrap_or_else(|err|
             panic!("triggered-raise candidate compiler rejection: {err}"));
         assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
