@@ -89,3 +89,24 @@ fn trailing_receiver_statements_are_not_silently_omitted() {
     let src = valid().replace("    });\n}", "    });\n    helper();\n}");
     assert_eq!(derive_bounded_guard_mir(&src).unwrap_err().code, "E_MIR_UNSUPPORTED_EFFECT");
 }
+
+#[test]
+fn source_census_rejects_unreported_functions_actors_or_initializers() {
+    for source in [
+        format!("{}\nfnc hidden(): int {{ return 1; }}\n", valid()),
+        format!("declare actor Extra;\n{}", valid()),
+        valid().replace("let int xyz = 0;", "let int xyz = helper();"),
+        valid().replace("let int xyz = 0;", "let int xyz = 1 + 2;"),
+        valid().replace("declare actor Meter;", "declare actor Meter;\nfnc hidden(): int { return 1; }"),
+    ] {
+        assert!(derive_bounded_guard_mir(&source).is_err(), "{source}");
+    }
+}
+#[test]
+fn compound_effect_inventory_is_bounded_before_transport() {
+    let base = valid();
+    let repeated = "s.counter += 1; ".repeat(257);
+    let expanded = base.replace("s.counter += 1;\n        s.xyz;", &repeated);
+    let e = derive_bounded_guard_mir(&expanded).expect_err("513 effects must exceed 512 budget");
+    assert_eq!(e.code, "E_SOURCE_LIMIT");
+}

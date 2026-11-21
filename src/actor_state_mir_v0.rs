@@ -73,7 +73,8 @@ pub fn derive_bounded_guard_mir(source: &str) -> Result<BoundedGuardMir, Diagnos
     let headers = parse_target_declarations(&toks)?;
     let _ = validate_source_actor_state_projections(&headers)?;
     if headers.receivers.len() != 1 || headers.receiver_sites.len() != 1 ||
-       headers.definitions.len() != 1 || !headers.classes.is_empty() ||
+       headers.actors.len() != 1 || headers.definitions.len() != 1 ||
+       !headers.classes.is_empty() ||
        !headers.class_definitions.is_empty() || !headers.imports.is_empty() ||
        headers.namespace.is_some() || !headers.constructors.is_empty() ||
        !headers.struct_forwards.is_empty() || !headers.class_forwards.is_empty() ||
@@ -90,6 +91,40 @@ pub fn derive_bounded_guard_mir(source: &str) -> Result<BoundedGuardMir, Diagnos
        actor.fields.is_empty() {
         return Err(bad(&toks, 0, "E_MIR_UNSUPPORTED_EFFECT",
             "receiver body or actor implementation cannot be audited in this profile"));
+    }
+    // Prove this restricted *source unit* contains no extra functions,
+    // declarations, initializers with hidden effects, or trailing code.
+    // The production parser has already authenticated ActorDecl.fields;
+    // this second, deliberately narrow census proves their exact source
+    // range was not silently truncated by the event exporter.
+    let mut covered = 0usize;
+    expect_word(&toks, &mut covered, "declare")?;
+    expect_word(&toks, &mut covered, "actor")?;
+    expect_word(&toks, &mut covered, &actor.name)?;
+    expect(&toks, &mut covered, &Tok::Semi)?;
+    expect_word(&toks, &mut covered, "define")?;
+    expect_word(&toks, &mut covered, "actor")?;
+    expect_word(&toks, &mut covered, &actor.name)?;
+    expect_word(&toks, &mut covered, "as")?;
+    for field in &actor.fields {
+        expect_word(&toks, &mut covered, "let")?;
+        expect_word(&toks, &mut covered, "int")?;
+        expect_word(&toks, &mut covered, &field.name)?;
+        expect(&toks, &mut covered, &Tok::Assign)?;
+        if !matches!(toks.get(covered).map(|t| &t.tok),
+            Some(Tok::Int(Some(n))) if *n <= i64::MAX as u64) {
+            return Err(bad(&toks, covered, "E_MIR_UNSUPPORTED_EFFECT",
+                "nonliteral actor field initialization requires typed effects"));
+        }
+        covered += 1;
+        expect(&toks, &mut covered, &Tok::Semi)?;
+    }
+    expect_word(&toks, &mut covered, "end")?;
+    if covered != site.declaration_start || !is_word(&toks, covered, "mtd") ||
+       site.end + 1 != toks.len() ||
+       !matches!(toks.last().map(|t| &t.tok), Some(Tok::Eof)) {
+        return Err(bad(&toks, covered, "E_MIR_UNSUPPORTED_EFFECT",
+            "extra source declarations or unverified top-level effects"));
     }
     let names: Vec<&str> = actor.fields.iter().map(|f| f.name.as_str()).collect();
     let layout = StateLayoutModel::new(&actor.name, &names, actor.pos)?;
@@ -177,6 +212,10 @@ pub fn derive_bounded_guard_mir(source: &str) -> Result<BoundedGuardMir, Diagnos
         };
         expect(&toks, &mut i, &Tok::Semi)?;
         events.push(FieldEvent { kind, field, pos });
+        if events.len() > MAX_EVENTS {
+            return Err(bad(&toks, i, "E_SOURCE_LIMIT",
+                "actor guard read/write inventory exceeds event budget"));
+        }
     }
     if events.is_empty() {
         return Err(bad(&toks, i, "E_MIR_UNSUPPORTED_EFFECT",
