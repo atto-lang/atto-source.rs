@@ -69,7 +69,7 @@ try {
     const src = join(tmp, `dynamic-${index}.atto`);
     const bin = join(tmp, `dynamic-${index}.wasm`);
     await writeFile(src,
-      `pub fnc main(): int { let distance: int = 64; return ${operation}; }\\n`);
+      `pub fnc main(): int { let distance: int = 64; return ${operation}; }\n`);
     const result = spawnSync(attoc, [src, '-o', bin],
       { encoding: 'utf8', timeout: 30000 });
     assert.equal(result.status, 0, result.stderr);
