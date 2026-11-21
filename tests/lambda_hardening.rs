@@ -139,7 +139,7 @@ fn unused_callable_execution_still_fails_closed() {
 fn bounded_static_array_literal_now_emits_real_deterministic_guest() {
     let source = "pub fnc main(): int { val xs = [1,2,3]; return 0; }";
     let bytes = atto_compiler::compile(source).expect("bounded Array guest must compile");
-    assert!(bytes.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(bytes, atto_compiler::compile(source).unwrap());
 }
 
