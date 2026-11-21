@@ -52,6 +52,37 @@ const caretXorRuntime = new WebAssembly.Instance(caretXorModule, { atto: {} });
 assert.equal(caretXorRuntime.exports.main(), 6n, 'return marker and XOR are unambiguous');
 assert.equal(caretXorRuntime.exports.panic_code.value, 0);
 
+// The same wasm32-hosted compiler must lower signed i64 division to f64,
+// not silently truncate the quotient and not emit an int-returning guest.
+const divisionSource = `fnc half(int numerator, int denominator): float {
+  return numerator / denominator;
+}
+pub fnc main(): int {
+  if half(5, 2) eq 2.5 then return 42; fi
+  return 1;
+}`;
+const division = compile(divisionSource);
+assert.equal(division.ok, true, division.diagnostic || 'int/int -> float compile');
+const divisionModule = new WebAssembly.Module(division.guest);
+assert.deepEqual(WebAssembly.Module.imports(divisionModule), []);
+const divisionGuest = new WebAssembly.Instance(divisionModule, { atto: {} });
+assert.equal(divisionGuest.exports.main(), 42n, 'integer division is floating');
+assert.equal(divisionGuest.exports.panic_code.value, 0);
+
+const rejectedTruncation = compile('pub fnc main(): int { return 5 / 2; }');
+assert.equal(rejectedTruncation.ok, false, 'float result must not narrow to int');
+assert.match(rejectedTruncation.diagnostic, /E_TYPE|E_RETURN_TYPE/);
+
+const rejectedShift = compile('pub fnc main(): int { return 1 <<< 64; }');
+assert.equal(rejectedShift.ok, false, 'invalid constant shift must not emit Wasm');
+assert.match(rejectedShift.diagnostic, /E_SHIFT_DISTANCE/);
+
+const runtimeShift = compile('pub fnc main(): int { let distance: int = 64; return 1 <<< distance; }');
+assert.equal(runtimeShift.ok, true, runtimeShift.diagnostic || 'dynamic checked shift compile');
+const checkedShift = new WebAssembly.Instance(new WebAssembly.Module(runtimeShift.guest), { atto: {} });
+assert.throws(() => checkedShift.exports.main(), WebAssembly.RuntimeError);
+assert.equal(checkedShift.exports.panic_code.value, 7, 'must not mask dynamic shift by 63');
+
 const compiled = compile(source);
 assert.equal(compiled.ok, true, compiled.diagnostic || 'preview must compile');
 const guestModule = new WebAssembly.Module(compiled.guest);
@@ -82,4 +113,4 @@ for (const [src, expected] of [
   assert.equal(failure.ok, false, 'negative source cannot return a Wasm artifact');
   assert.ok(failure.diagnostic.includes(expected), failure.diagnostic);
 }
-console.log('PASS exact website bitwise source: wasm32 compiler -> guest Wasm = 188; native bytes equal; 3 negatives');
+console.log('PASS website bitwise Wasm guest, native bytes, floating division, checked shifts and source rejection');
