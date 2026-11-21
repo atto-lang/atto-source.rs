@@ -64,6 +64,27 @@ impl Parser {
     fn is_word(&self, w: &str) -> bool {
         self.word_at(0) == Some(w)
     }
+    /// Contextual bang operators must be a contiguous keyword + '!'.
+    /// A separated unary-not is not a pipeline/stop operator.
+    fn has_contextual_bang(&self, word: &str) -> bool {
+        if !self.is_word(word) || *self.peek_at(1) != Tok::Bang {
+            return false;
+        }
+        let a = self.toks[self.i].pos;
+        let b = self.toks[self.i + 1].pos;
+        a.line == b.line && b.col == a.col + word.len() as u32
+    }
+    fn reject_glued_bang_suffix(&self, pos: Pos) -> R<()> {
+        if self.i == 0 { return Ok(()); }
+        let bang = self.toks[self.i - 1].pos;
+        if self.pos().line == bang.line && self.pos().col == bang.col + 1
+            && matches!(self.peek(), Tok::Ident(_) | Tok::Bang)
+        {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "contextual bang operator requires a separated endpoint"));
+        }
+        Ok(())
+    }
     fn eat(&mut self, t: &Tok) -> bool {
         if self.peek() == t {
             self.advance();
@@ -502,6 +523,19 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Yield(e, pos))
             }
+            Some("stop") if self.has_contextual_bang("stop") => {
+                self.advance(); // 'stop'
+                self.advance(); // contiguous '!'
+                self.reject_glued_bang_suffix(pos)?;
+                let actor = self.parse_unary()?;
+                self.terminator()?;
+                // The ordinary actor.stop() type gate is authoritative.
+                // The guest runtime closes ingress gracefully; it never
+                // asserts that queued DATA or actor DONE settled here.
+                Ok(Stmt::Expr(Expr { kind: Ex::Method {
+                    base: Box::new(actor), name: "stop".into(), args: Vec::new(),
+                }, pos }))
+            }
             Some("return") => {
                 self.advance();
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)
@@ -881,9 +915,9 @@ impl Parser {
         Ok(c)
     }
 
-    /// Continuous actor-only legacy pipeline: preserve written evaluation
-    /// order. 'rpipe' reverses the DATA edge, never the constructors.
-    /// Mixing directions without parentheses is an error, not inferred duplex.
+    /// Continuous actor-only legacy pipeline plus checked pipe!/rpipe!.
+    /// Preserve evaluation order; reverse only the direction of DATA edges.
+    /// Checked operators never silently fall into the legacy trap path.
     fn parse_actor_pipe(&mut self) -> R<Expr> {
         let mut left = self.parse_or()?;
         let mut direction: Option<BinOp> = None;
@@ -891,8 +925,12 @@ impl Parser {
         loop {
             let pos = self.pos();
             let op = if self.is_word("rpipe") {
-                BinOp::Rpipe
-            } else if (self.cond == 0 && *self.peek() == Tok::Pipe) || self.is_word("pipe") {
+                if self.has_contextual_bang("rpipe") { BinOp::CheckedRpipe }
+                else { BinOp::Rpipe }
+            } else if self.is_word("pipe") {
+                if self.has_contextual_bang("pipe") { BinOp::CheckedPipe }
+                else { BinOp::Pipe }
+            } else if self.cond == 0 && *self.peek() == Tok::Pipe {
                 BinOp::Pipe
             } else {
                 return Ok(left);
@@ -908,6 +946,10 @@ impl Parser {
                     "continuous actor pipeline exceeds 16 stages"));
             }
             self.advance();
+            if matches!(op, BinOp::CheckedPipe | BinOp::CheckedRpipe) {
+                self.advance(); // the contiguous '!'; never a postfix not
+                self.reject_glued_bang_suffix(pos)?;
+            }
             let right = self.parse_or()?;
             left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
         }
