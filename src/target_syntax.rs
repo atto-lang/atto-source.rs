@@ -13,6 +13,14 @@ pub struct ReceiverParam {
     pub pos: Pos,
 }
 
+/// A declaration-only permission footprint for sealed actor state. The
+/// syntax frontend does not authenticate field layout, effects or guest ABI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReceiverStateWrite {
+    Whole,
+    Fields(Vec<String>),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceiverHeader {
     pub owner: String,
@@ -21,6 +29,9 @@ pub struct ReceiverHeader {
     pub params: Vec<ReceiverParam>,
     pub return_type: String,
     pub mutable: bool,
+    /// None for legacy/readonly receivers; Some for projected actor-state rights.
+    /// Must never be silently erased when linking or compiling method bodies.
+    pub state_write: Option<ReceiverStateWrite>,
     pub public: bool,
     pub pos: Pos,
 }
@@ -187,7 +198,7 @@ impl Cursor<'_> {
         }
         if !self.take(&Tok::Lt) { return Ok(name); }
         let arity = match name.as_str() {
-            "Option" | "Generator" | "ActorRef" => 1,
+            "Option" | "Generator" | "ActorRef" | "ActorMail" => 1,
             "Result" => 2,
             _ => return Err(self.err("E_UNSUPPORTED_TYPE",
                 "target generic type must be Option, Result, Generator or ActorRef")),
@@ -334,23 +345,56 @@ impl Cursor<'_> {
     }
     fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize, usize)> {
         self.expect(&Tok::LParen, "expected '(' before receiver")?;
-        // Both the explicit typed spelling and the nominal receiver spelling
-        // are accepted: (mut self: Foo), (self: Foo), (Foo self),
-        // (Foo) and (Foo _). All variants have one nominal owner.
-        let (owner, mutable) = if self.take_word("mut") {
+        // Old typed receivers remain accepted. New type-first actor receivers
+        // declare a field-scoped state write *ceiling*, not an acquired loan.
+        let (owner, mutable, state_write) = if self.take_word("mut") {
             self.expect_word("self")?;
             self.expect(&Tok::Colon, "expected ':' after self")?;
-            (self.ident()?, true)
+            (self.ident()?, true, None)
         } else if self.take_word("self") {
             self.expect(&Tok::Colon, "expected ':' after self")?;
-            (self.ident()?, false)
+            (self.ident()?, false, None)
         } else {
             let owner = self.ident()?;
-            // Explicit name or compiler-owned implicit receiver.
-            if !self.take_word("self") {
-                self.take_word("_");
+            if self.take_word("mut") {
+                self.expect_word("self")?;
+                self.expect(&Tok::Dot, "expected '.state' after 'mut self'")?;
+                self.expect_word("state")?;
+                let scope = if self.take(&Tok::Dot) {
+                    let fields = if self.take(&Tok::LBrace) {
+                        // A nonempty, bounded, duplicate-free set of fields.
+                        // The *typed* state-schema resolver must independently
+                        // validate all identifiers before code generation.
+                        let mut fields = vec![self.ident()?];
+                        while self.take(&Tok::Comma) {
+                            if fields.len() >= 32 {
+                                return Err(self.err("E_SOURCE_LIMIT",
+                                    "state receiver projection exceeds 32 fields"));
+                            }
+                            fields.push(self.ident()?);
+                        }
+                        self.expect(&Tok::RBrace, "expected '}' after state fields")?;
+                        fields
+                    } else {
+                        vec![self.ident()?]
+                    };
+                    let mut seen = std::collections::HashSet::new();
+                    if fields.iter().any(|field| !seen.insert(field)) {
+                        return Err(self.err("E_DUPLICATE",
+                            "duplicate mutable state field in receiver projection"));
+                    }
+                    ReceiverStateWrite::Fields(fields)
+                } else {
+                    ReceiverStateWrite::Whole
+                };
+                (owner, true, Some(scope))
+            } else {
+                // Explicit name or compiler-owned implicit receiver.
+                if !self.take_word("self") {
+                    self.take_word("_");
+                }
+                (owner, false, None)
             }
-            (owner, false)
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
         let method_start = self.i;
@@ -380,7 +424,7 @@ impl Cursor<'_> {
         let start = self.i;
         self.body(arrow_type, colon_type, return_first)?;
         let end = self.i;
-        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end, method_start))
+        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, state_write, public, pos }, start, end, method_start))
     }
 
     /// Use production parsing for one declaration; unlike a token-only scan,
@@ -683,6 +727,11 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 format!("receiver owner '{}' is not declared in this source namespace",
                     receiver.owner)));
         }
+        if receiver.state_write.is_some() && !out.actors.contains(&receiver.owner) &&
+            !out.definitions.iter().any(|a| a.name == receiver.owner) {
+            return Err(Diagnostic::new(receiver.pos, "E_ACTOR",
+                "projected .state receiver permissions require an actor owner"));
+        }
         // For classes, mtd adds a *second implementation*: same owner/name/
         // arity alongside an inline method is a duplicate. For actors, mtd
         // remains a signature-only declaration paired with an inline actor
@@ -800,6 +849,10 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
         }
     }
     for (receiver, site) in headers.receivers.iter().zip(&headers.receiver_sites) {
+        if receiver.state_write.is_some() {
+            return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
+                "projected state receiver requires checked actor state effects; cannot lower as a class"));
+        }
         if receiver.mutable {
             return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
                 "mutable class mtd receivers require a verified mutable-self ownership ABI"));
@@ -1037,6 +1090,17 @@ fn validate_callback(
                 return Err(diagnostic(toks, i+2, "E_SEALED",
                     "state field member access requires a field name"));
             }
+            if write && matches!(toks.get(i+3).map(|t| &t.tok),
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
+                if let Some(ReceiverStateWrite::Fields(allowed)) = &receiver.state_write {
+                    if let Some(Tok::Ident(field)) = toks.get(i+2).map(|t| &t.tok) {
+                        if !allowed.contains(field) {
+                            return Err(diagnostic(toks, i+2, "E_MUTABILITY",
+                                "guarded actor state write exceeds receiver field permission set"));
+                        }
+                    }
+                }
+            }
             if !write {
                 if matches!(toks.get(i+3).map(|t| &t.tok),
                     Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
@@ -1090,6 +1154,17 @@ fn validate_receiver_body(
                 continue;
             }
             let close = close_paren(toks, i+3, end)?;
+            // Actor runtime capability operations are distinct from guest
+            // state mutation. They may be used from an immutable receiver.
+            if matches!(member, "send" | "end" | "get_done") {
+                let required = if member == "send" { 1 } else { 0 };
+                if count_args(toks, i+3, close) != required {
+                    return Err(diagnostic(toks, i, "E_ARITY",
+                        "actor runtime operation called with wrong argument count"));
+                }
+                i = close + 1;
+                continue;
+            }
             resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
                 member, count_args(toks, i+3, close), false, toks[i].pos)?;
             i = close + 1;
