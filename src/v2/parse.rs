@@ -18,7 +18,7 @@ pub const MAX_ITEMS: usize = 1024;
 const KEYWORDS: &[&str] = &[
     "define", "fnc", "routine", "suspends", "return", "self", "pub", "const", "val", "let", "mut", "if", "then", "else",
     "elif", "elseif", "fi", "do", "done", "end", "while", "for", "loop", "block", "break", "continue", "match", "over",
-    "on", "default", "when", "spawn", "await", "nb", "try", "readch", "writech", "eq", "neq", "is", "new", "true",
+    "on", "default", "when", "spawn", "await", "nb", "try", "readch", "writech", "select", "from", "fair", "first", "eq", "neq", "is", "new", "true",
     "false", "task", "using", "with", "use", "yield", "pipe", "rpipe", "as", "in", "receives", "emits", "susp",
 ];
 
@@ -571,8 +571,12 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::With { scope, body, pos })
             }
+            // These expression forms must also work as standalone statements.
+            // Braced/static select blocks are a separate syntax contract and
+            // deliberately remain unsupported in this bounded v2 guest profile.
             Some(w @ ("throw" | "try" | "switch" | "select" | "defer" | "raise" | "panic"))
-                if !(w == "try" && self.word_at(1) == Some("readch")) =>
+                if !((w == "try" && matches!(self.word_at(1), Some("readch" | "select")))
+                    || (w == "select" && matches!(self.word_at(1), Some("from" | "fair" | "first")))) =>
             {
                 Err(unsupported(pos, &format!("'{w}' together with async/pattern features")))
             }
@@ -1054,6 +1058,24 @@ impl Parser {
                 self.advance();
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: Ex::Await(Box::new(inner)), pos });
+            }
+            Tok::Ident(s) if s == "select" || ((s == "try" || s == "nb") && self.word_at(1) == Some("select")) => {
+                let mode = match s.as_str() {
+                    "try" => PlanMode::Try,
+                    "nb" => PlanMode::Nb,
+                    _ => PlanMode::Wait,
+                };
+                if mode != PlanMode::Wait {
+                    self.advance();
+                }
+                self.expect_word("select")?;
+                let fair = if self.eat_word("fair") { true } else {
+                    self.eat_word("first");
+                    false
+                };
+                self.expect_word("from")?;
+                let plan = self.parse_unary()?;
+                return Ok(Expr { kind: Ex::PlanSelect { mode, fair, plan: Box::new(plan) }, pos });
             }
             Tok::Ident(s) if s == "readch" || ((s == "try" || s == "nb") && self.word_at(1) == Some("readch")) => {
                 let mode = match s.as_str() {

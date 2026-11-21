@@ -1,0 +1,16 @@
+// v2 guest: try select does not wait, consume or advance FAIR on a miss.
+// expect-exit: 42
+// No stdout; empty expectation is represented by absence of the directive.
+pub suspends fnc main(): int {
+  val left = Channel<int>.bounded(1);
+  val right = Channel<int>.bounded(1);
+  val plan = SelectPlan.from_list([
+    SelectCase.read(left), SelectCase.read(right)
+  ]);
+  val Option<SelectResult> none = try select fair from plan;
+  writech left, 42;
+  writech right, 17;
+  // With both cases ready, a try-miss must leave FAIR cursor at slot zero.
+  val Option<SelectResult> some = try select fair from plan;
+  return some.unwrap().value + some.unwrap().index;
+}

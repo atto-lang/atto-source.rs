@@ -1,0 +1,11 @@
+// v2 guest: dynamic removal of every slot cannot create an eternal waiter.
+// expect-panic: 10
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  val DynamicSelectPlan<int> plan = DynamicSelectPlan<int>.from_list([
+    SelectCase.read(ch)
+  ]);
+  val bool removed = plan.remove(0);
+  val Option<SelectResult> hit = try select first from plan;
+  return 42;
+}

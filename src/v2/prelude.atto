@@ -407,6 +407,194 @@ fnc __chan_close(int c): void {
   __chan_close_internal(c);
 }
 
+// ----------------------------------------------------------- select plans
+// Experimental Channel<int> list-source profile. All operations below are
+// compiled into the guest's own Wasm memory, not simulated by JavaScript.
+// Plan layout: slots, live, FAIR cursor, version, dynamic, commit epoch (48 bytes),
+// followed by up to 256 stable, zero-based read-case channel pointers.
+
+// A SelectCase must never grant an implicit read capability for a channel
+// claimed as an actor DATA port. Check at construction, mutation, and on
+// EVERY select before consuming ANY case so later forbidden cases cannot be
+// masked by an earlier winner. The bounded scan is non-suspending.
+fnc __plan_check_case(int ch): void {
+  if ch == 0 then __panic(10); fi
+  if __load(ch, 56) != 0 then __panic(10); fi
+  if __load(ch, 64) != 0 then __panic(10); fi
+}
+
+fnc __plan_preflight(int p): void {
+  let i = 0;
+  while i < __load(p, 0) do
+    val ch = __load(p, 48 + 8 * i);
+    if ch != 0 then __plan_check_case(ch); fi
+    i = i + 1;
+  done
+}
+// A zero slot is a removed case. No guest scheduling/yield happens during the
+// ready-case scan, the chosen read, or the cursor update: only one case commits.
+fnc __plan_from_list(int cases, int dynamic): int {
+  val n = __load(cases, 0);
+  if n <= 0 then __panic(10); fi
+  if n > 256 then __panic(10); fi
+  val p = __alloc(2096);
+  __store(p, 0, n);
+  __store(p, 8, n);
+  __store(p, 32, dynamic);
+  let i = 0;
+  while i < n do
+    val ch = __load(cases, 8 + 8 * i);
+    __plan_check_case(ch);
+    __store(p, 48 + 8 * i, ch);
+    i = i + 1;
+  done
+  return p;
+}
+
+// Return Option<SelectResult>. Each SelectResult occupies [index, value].
+// The case-to-read handoff is atomic within this cooperative guest runtime.
+// FAIR only advances when a read commits; first is stable lexical priority.
+fnc __plan_try(int p, int fair): int {
+  val n = __load(p, 0);
+  // A live plan may have all its dynamic slots removed; never spin forever.
+  if n == 0 then __panic(10); fi
+  // Fail before one channel read if any other active case has become a
+  // pipeline-owned channel since the plan/snapshot was created.
+  __plan_preflight(p);
+  let k = 0;
+  let live = 0;
+  let viable = 0;
+  while k < n do
+    let i = k;
+    if fair != 0 then
+      i = __load(p, 16) + k;
+      if i >= n then i = i - n; fi
+    fi
+    val ch = __load(p, 48 + 8 * i);
+    if ch != 0 then
+      live = live + 1;
+      if __load(ch, 8) > 0 then
+        viable = viable + 1;
+        val option = __chan_try(ch);
+        if option != 0 then
+          val winner = __alloc(16);
+          __store(winner, 0, i);
+          __store(winner, 8, __load(option, 0));
+          if fair != 0 then
+            let next = i + 1;
+            if next >= n then next = 0; fi
+            __store(p, 16, next);
+          fi
+          // Distinct from the structural version: every committed winner
+          // invalidates stale snapshots' right to overwrite this cursor.
+          __store(p, 40, __load(p, 40) + 1);
+          return __some(winner);
+        fi
+      else
+        // One closed-and-drained case cannot mask another ready case.
+        if __load(ch, 32) == 0 then viable = viable + 1; fi
+      fi
+    fi
+    k = k + 1;
+  done
+  if live == 0 then __panic(10); fi
+  // No open/readable cases: report a closed stream rather than sleeping.
+  if viable == 0 then __panic(9); fi
+  return 0;
+}
+
+fnc __plan_size(int p): int {
+  return __load(p, 8);
+}
+
+fnc __plan_version(int p): int {
+  return __load(p, 24);
+}
+
+fnc __plan_remove(int p, int key): int {
+  if __load(p, 32) == 0 then __panic(10); fi
+  if key < 0 then __panic(10); fi
+  if key >= __load(p, 0) then __panic(10); fi
+  if __load(p, 48 + 8 * key) == 0 then return 0; fi
+  __store(p, 48 + 8 * key, 0);
+  __store(p, 8, __load(p, 8) - 1);
+  __store(p, 24, __load(p, 24) + 1);
+  return 1;
+}
+
+fnc __plan_put(int p, int key, int ch): void {
+  if __load(p, 32) == 0 then __panic(10); fi
+  if key < 0 then __panic(10); fi
+  if key >= __load(p, 0) then __panic(10); fi
+  __plan_check_case(ch);
+  if __load(p, 48 + 8 * key) == 0 then
+    __store(p, 8, __load(p, 8) + 1);
+  fi
+  __store(p, 48 + 8 * key, ch);
+  __store(p, 24, __load(p, 24) + 1);
+}
+
+// A pending nb select pins the ordered descriptor snapshot. Later put/remove
+// changes the live plan version, not the waiter's already captured channels.
+// Copies belong to the same guest memory/isolate: no cross-tenant capability.
+fnc __plan_snapshot(int p): int {
+  val copy = __alloc(2096);
+  let i = 0;
+  while i < 48 do
+    __store(copy, i, __load(p, i));
+    i = i + 8;
+  done
+  i = 0;
+  while i < __load(p, 0) do
+    __store(copy, 48 + 8 * i, __load(p, 48 + 8 * i));
+    i = i + 1;
+  done
+  __store(copy, 32, 0);
+  return copy;
+}
+
+suspends fnc __plan_wait_opt(int p, int fair): int {
+  loop do
+    val got = __plan_try(p, fair);
+    if got != 0 then return got; fi
+    __suspend();
+  done
+}
+
+// Commit a snapshot's winner to the live FAIR cursor only if its captured
+// generation still exists. An intervening winner on the *same* generation
+// must not suppress this later committed winner's cursor advancement.
+fnc __plan_commit_snapshot(int p, int generation, int fair, int option): void {
+  if __load(p, 24) != generation then return; fi
+  if fair != 0 then
+    val winner = __load(option, 0);
+    let next = __load(winner, 0) + 1;
+    if next >= __load(p, 0) then next = 0; fi
+    __store(p, 16, next);
+  fi
+  __store(p, 40, __load(p, 40) + 1);
+}
+
+// Blocking selection captures the descriptors BEFORE it suspends. Mutations
+// after this point cannot retarget a registered waiter to a replacement slot.
+suspends fnc __plan_wait(int p, int fair): int {
+  val generation = __load(p, 24);
+  val snapshot = __plan_snapshot(p);
+  val result = await __plan_wait_opt(snapshot, fair);
+  __plan_commit_snapshot(p, generation, fair, result);
+  return __load(result, 0);
+}
+
+fnc __plan_nb(int p, int fair): int {
+  val generation = __load(p, 24);
+  val snapshot = __plan_snapshot(p);
+  return task {
+    val answer = await __plan_wait_opt(snapshot, fair);
+    __plan_commit_snapshot(p, generation, fair, answer);
+    return answer;
+  };
+}
+
 // ------------------------------------------------------------------ actors
 // Actor instance (56-byte prefix): 0 mailbox channel, 8 downstream target,
 // 16 next sequence, 24 downstream kind (0 actor, 1 bounded channel),

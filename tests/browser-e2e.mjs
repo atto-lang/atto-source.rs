@@ -163,6 +163,44 @@ try{
     console.log('PASS browser: async showcase ' + filename + ' compiled and executed');
   }
 
+  // Rust/Wasm compiler and real Chromium Web Worker execute the same
+  // source-level SelectPlan fixtures as the native-compiler/Node runner.
+  // These are bounded list SelectPlans, not full keyed-map select parity.
+  for (const [filename, expectedStdout] of [
+    ['230-v2-static-select-fair.atto', '10\n20\n'],
+    ['231-v2-dynamic-select-mutate.atto', '2\n'],
+    ['232-v2-nb-select-snapshot.atto', ''],
+    ['233-v2-try-select-empty.atto', ''],
+    ['234-v2-select-single-winner.atto', '0\n1\n'],
+    ['235-v2-blocking-select-generation.atto', ''],
+    ['236-v2-select-closed-loser.atto', '1\n'],
+    ['237-v2-select-closed-buffered.atto', '0\n'],
+  ]) {
+    const src = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
+    const output = await run(src, 'main() -> 42');
+    assert.equal(output, expectedStdout + 'main() -> 42',
+      filename + ': Rust browser compiler must emit a real Wasm SelectPlan guest');
+    console.log('PASS browser: actual Rust/Wasm SelectPlan guest ' + filename);
+  }
+
+  // All SelectPlan panic guests run through the actual browser compiler,
+  // worker and guest. A generic "E_PANIC" is not enough: check exact codes.
+  for (const [filename,expectedPanic] of [
+    ['233-v2-select-empty-unwrap.atto',14],
+    ['234-v2-select-all-closed.atto',9],
+    ['235-v2-select-no-live-cases.atto',10],
+    ['236-v2-select-pipe-owned-at-construction.atto',10],
+    ['237-v2-select-pipe-claimed-after-plan.atto',10],
+    ['238-v2-dynamic-select-put-pipe-owned.atto',10],
+  ]) {
+    const src = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
+    assert.match(await run(src, 'E_PANIC'), /^E_PANIC:/,
+      filename + ': SelectPlan must trap in the actual guest');
+    assert.equal(await evaluate('window.__attoLastPanicCode'), expectedPanic,
+      filename + ': mismatched guest panic code');
+    console.log('PASS browser: real SelectPlan panic ' + expectedPanic + ' ' + filename);
+  }
+
   // A timeout must close the suspended guest's live span before trapping.
   // The counter is read from Wasm linear memory, not inferred from stdout.
   const timeoutGuest = 'import span from pkg "core.telemetry"; import sleep from pkg "std.time"; '+

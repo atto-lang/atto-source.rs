@@ -1,0 +1,26 @@
+// v2 guest nb select pins descriptor generation and makes one channel read.
+// expect-exit: 42
+// No stdout; empty expectation is represented by absence of the directive.
+pub suspends fnc main(): int {
+  val left = Channel<int>.bounded(1);
+  val right = Channel<int>.bounded(1);
+  val replacement = Channel<int>.bounded(1);
+  val DynamicSelectPlan<int> plan = DynamicSelectPlan<int>.from_list([
+    SelectCase.read(left), SelectCase.read(right)
+  ]);
+  val Future<Option<SelectResult>> pending = nb select fair from plan;
+  val bool removed = plan.remove(0);
+  plan.put(0, SelectCase.read(replacement));
+  // A new case cannot redirect the pending ticket captured before put().
+  val worker = task {
+    writech left, 42;
+    return 0;
+  };
+  val Option<SelectResult> got = await pending;
+  await worker;
+  writech replacement, 7;
+  writech right, 9;
+  // Both live cases are ready. A stale snapshot must not move FAIR to slot 1.
+  val SelectResult live = select fair from plan;
+  return got.unwrap().value + live.value - 7;
+}

@@ -1,0 +1,28 @@
+// No SelectPlan may admit a pipeline-owned channel, even as a later case.
+// expect-panic: 10
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void { emit(mail.value); }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void { stdio.println(mail.value); }
+end
+
+pub suspends fnc main(): int {
+  val ready = Channel<int>.bounded(1);
+  val claimed = Channel<int>.bounded(1);
+  writech ready, 42;
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val Result<PipeHandle, PipeSetupError> connection =
+      producer pipe claimed pipe consumer;
+  val int accepted = match connection over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if accepted != 1 then return 90; fi
+  val SelectPlan plan = SelectPlan.from_list([
+    SelectCase.read(ready), SelectCase.read(claimed)
+  ]);
+  val Option<SelectResult> got = try select first from plan;
+  return got.unwrap().value;
+}

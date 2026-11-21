@@ -1,0 +1,20 @@
+// v2 guest SelectPlan: FAIR cursor advances only after a winning read.
+// expect-exit: 42
+// expect-stdout: 10\n20\n
+pub suspends fnc main(): int {
+  val left = Channel<int>.bounded(2);
+  val right = Channel<int>.bounded(2);
+  writech left, 10;
+  writech left, 11;
+  writech right, 20;
+  writech right, 21;
+  val SelectPlan plan = SelectPlan.from_list([
+    SelectCase.read(left),
+    SelectCase.read(right)
+  ]);
+  val SelectResult first = select fair from plan;
+  val SelectResult second = select fair from plan;
+  stdio.println(first.value);
+  stdio.println(second.value);
+  return first.value + second.value + second.index + 11;
+}
