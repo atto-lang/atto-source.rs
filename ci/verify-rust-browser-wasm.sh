@@ -16,7 +16,7 @@ command -v cargo
 command -v node
 node --version
 rustc +1.85.1 --version
-printf 'SOURCE_HEAD=%s\\nSOURCE_TREE=%s\\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+printf 'SOURCE_HEAD=%s\nSOURCE_TREE=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
 # Every browser integration test must be an explicit Cargo target; legacy
 # native-only tests must never be picked up by implicit Cargo discovery.
 node scripts/verify-browser-cargo-tests.mjs
