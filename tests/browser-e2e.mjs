@@ -93,9 +93,10 @@ try{
   for (const name of [
     'return-first-raise-recover-guest.atto',
     'return-first-raise-bypasses-catch.atto',
+    'return-first-raise-bypasses-trap.atto',
   ]) {
     const source = await readFile(new URL('./fixtures/pass/' + name, import.meta.url), 'utf8');
-    assert.match(source, /raise! Error\("too large"\)/);
+    assert.match(source, /raise! Error\(/);
     assert.equal(await run(source, 'main() -> 42'), 'main() -> 42', name);
   }
   for (const lookalike of ['·', '∙', '‿', '‧', '●']) {
