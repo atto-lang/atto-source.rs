@@ -3764,10 +3764,292 @@ impl Parser {
                     let (name, pos) = self.ident("a lambda parameter")?;
                     (name, None, pos)
                 };
-                if params.contains(&name) {
-                    return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
+                // '_' is an ignored formal, not a user-addressable binding.
+                // Give each discarded slot a compiler-private unique name so
+                // arity, local frames, lifted functions and module-level const
+                // callable ABI preserve all slots without false duplicates.
+                // '
+                if self.eat(&Tok::Pipe) { break; }
+                self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
+            }
+        }
+        let mut return_type = if self.eat(&Tok::Colon) {
+            Some(self.parse_lambda_type()?)
+        } else { None };
+        if self.eat(&Tok::FatArrow) {
+            if return_type.is_some() {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "use ':' rather than combining a return annotation with '=>'"));
+            }
+            return_type = Some(self.parse_lambda_type()?);
+            self.expect(Tok::Arrow, "'->' after legacy '=>' return type")?;
+        } else {
+            self.expect(Tok::Arrow, "'->' after lambda parameters and optional return type")?;
+            if return_type.is_none() && matches!(self.peek(), Tok::Ident(_)) {
+                // Legacy braced form: |n| -> int { return n; }.
+                // Roll back for an ordinary expression body, e.g. |n| -> n * 2.
+                let checkpoint = (self.i, self.depth, self.height);
+                let candidate = self.parse_lambda_type();
+                match candidate {
+                    Ok(candidate) if *self.peek() == Tok::LBrace => {
+                        return_type = Some(candidate);
+                    }
+                    result => {
+                        // Speculative type recognition must never change the
+                        // parser state when the tokens actually start an
+                        // expression. In particular, an interrupted recursive
+                        // type parse can leave the nesting counters elevated.
+                        (self.i, self.depth, self.height) = checkpoint;
+                        if let Err(err) = result {
+                            // Resource/recursion limits are security gates;
+                            // never downgrade them to a different expression.
+                            if err.code == "E_NESTING" || err.code == "E_SOURCE_LIMIT" {
+                                return Err(err);
+                            }
+                        }
+                    }
                 }
-                params.push(name);
+            }
+        }
+        let body = if *self.peek() == Tok::LBrace {
+            LambdaBody::Block(self.parse_block()?)
+        } else if self.is_word("return") {
+            // Unlike ordinary statements, a braceless lambda's return must
+            // have a literal semicolon. A newline before the closing ')' does
+            // not terminate this lambda body.
+            let pos = self.pos();
+            self.advance();
+            let value = if *self.peek() == Tok::Semi {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
+            if !self.eat(&Tok::Semi) {
+                return Err(Diagnostic::new(self.pos(), "E_SEMICOLON",
+                    "a braceless lambda return requires ';' before its closing delimiter"));
+            }
+            LambdaBody::Statement(Box::new(Stmt::Return(value, pos)))
+        } else {
+            LambdaBody::Expression(Box::new(self.parse_expr()?))
+        };
+        Ok(ExprKind::Lambda { params, param_types, return_type, body })
+    }
+
+    fn parse_array_literal(&mut self) -> R<ExprKind> {
+        self.expect(Tok::LBracket, "'['")?;
+        let mut items = Vec::new();
+        if !self.eat(&Tok::RBracket) {
+            loop {
+                if items.len() >= 1024 {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "array literal exceeds 1024 elements"));
+                }
+                items.push(self.parse_expr()?);
+                if !self.eat(&Tok::Comma) { break; }
+                if *self.peek() == Tok::RBracket { break; }
+            }
+            self.expect(Tok::RBracket, "']' after array items")?;
+        }
+        Ok(ExprKind::Array(items))
+    }
+
+    fn parse_primary(&mut self) -> R<Expr> {
+        let pos = self.pos();
+        let t = self.peek().clone();
+        let kind = match t {
+            Tok::Int(v) => {
+                self.advance();
+                ExprKind::Int(v)
+            }
+            Tok::Str(s) => {
+                self.advance();
+                ExprKind::Str(s)
+            }
+            Tok::Float(bits) => {
+                self.advance();
+                ExprKind::Float(bits)
+            }
+            Tok::LParen => {
+                self.advance();
+                // Parenthesized *value* expressions reset the condition
+                // grammar, distinguishing (flags | mask) eq expected from the
+                // legacy unparenthesized condition separator: a | b.
+                let inner = self.parse_expr()?;
+                if *self.peek() == Tok::Comma {
+                    return Err(unsupported(self.pos(), "tuples"));
+                }
+                self.expect(Tok::RParen, "')'")?;
+                return Ok(Expr { kind: inner.kind, pos });
+            }
+            Tok::Ident(s) => match s.as_str() {
+                "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
+                }
+                "true" => {
+                    self.advance();
+                    ExprKind::Bool(true)
+                }
+                "false" => {
+                    self.advance();
+                    ExprKind::Bool(false)
+                }
+                "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
+                "self" => {
+                    if self.state_method {
+                        return Err(Diagnostic::new(pos, "E_STATE_ACCESS",
+                            "state fields are sealed; use a critical state lease"));
+                    }
+                    self.advance();
+                    ExprKind::SelfRef
+                }
+                "handle_state" if self.state_method => self.parse_state_critical_read()?,
+                "new" => {
+                    self.advance();
+                    let (class, _) = self.ident("a class name after 'new'")?;
+                    if *self.peek() == Tok::Lt {
+                        return Err(unsupported(self.pos(), "generic class instantiation"));
+                    }
+                    if *self.peek() != Tok::LParen {
+                        return Err(self.expected("'(' after the class name"));
+                    }
+                    let args = self.parse_args()?;
+                    ExprKind::New(class, args)
+                }
+                "spawn" => {
+                    self.advance();
+                    let (actor, _) = self.ident("an actor name after 'spawn'")?;
+                    self.expect(Tok::LParen, "'(' after the actor name")?;
+                    if *self.peek() != Tok::RParen {
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_ACTOR",
+                            format!(
+                                "actor '{actor}' does not accept constructor/startup arguments; initialize actor-local state with fields"
+                            ),
+                        ));
+                    }
+                    self.advance();
+                    ExprKind::Spawn(actor)
+                }
+                "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                    return Err(unsupported(pos, &format!("'{s}' expressions")))
+                }
+                w if is_reserved(w) => {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_SYNTAX",
+                        format!("expected an expression, found keyword '{w}'"),
+                    ))
+                }
+                _ if self.state_binder.as_deref() == Some(s.as_str()) => {
+                    if *self.peek_at(1) != Tok::Dot {
+                        return Err(Diagnostic::new(pos, "E_ESCAPE",
+                            "state borrow cannot escape or be passed by value"));
+                    }
+                    self.advance();
+                    ExprKind::SelfRef
+                }
+                _ => {
+                    self.advance();
+                    if *self.peek() == Tok::Lt && self.looks_generic() {
+                        return Err(unsupported(self.pos(), "generic calls"));
+                    }
+                    ExprKind::Var(s)
+                }
+            },
+            Tok::Pipe => self.parse_lambda()?,
+            Tok::LBracket => self.parse_array_literal()?,
+            Tok::LBrace => return Err(unsupported(pos, "record literals")),
+            _ => return Err(self.expected("an expression")),
+        };
+        Ok(Expr { kind, pos })
+    }
+
+    /// `f<int>(..)` heuristic: `<` Type `>` `(`.
+    fn looks_generic(&self) -> bool {
+        matches!(self.peek_at(1), Tok::Ident(_)) && *self.peek_at(2) == Tok::Gt && *self.peek_at(3) == Tok::LParen
+    }
+}
+
+fn incr(name: String, pos: Pos, op: BinOp) -> Stmt {
+    let var = Expr {
+        kind: ExprKind::Var(name.clone()),
+        pos,
+    };
+    let one = Expr {
+        kind: ExprKind::Int(Some(1)),
+        pos,
+    };
+    Stmt::Assign {
+        name,
+        value: Expr {
+            kind: ExprKind::Binary(op, Box::new(var), Box::new(one)),
+            pos,
+        },
+        pos,
+    }
+}
+
+fn describe(t: &Tok) -> String {
+    match t {
+        Tok::Ident(s) => format!("'{s}'"),
+        Tok::Int(_) => "an integer".into(),
+        Tok::Str(_) => "a string".into(),
+        Tok::Eof => "end of input".into(),
+        other => {
+            let s = match other {
+                Tok::LParen => "(",
+                Tok::RParen => ")",
+                Tok::LBrace => "{",
+                Tok::RBrace => "}",
+                Tok::LBracket => "[",
+                Tok::RBracket => "]",
+                Tok::Semi => ";",
+                Tok::Comma => ",",
+                Tok::Colon => ":",
+                Tok::ColonColon => "::",
+                Tok::Arrow => "->",
+                Tok::LeftArrow => "<-",
+                Tok::FatArrow => "=>",
+                Tok::Dot => ".",
+                Tok::Assign => "=",
+                Tok::EqEq => "==",
+                Tok::NotEq => "!=",
+                Tok::Lt => "<",
+                Tok::Le => "<=",
+                Tok::Gt => ">",
+                Tok::Ge => ">=",
+                Tok::Plus => "+",
+                Tok::PlusPlus => "++",
+                Tok::PlusAssign => "+=",
+                Tok::Minus => "-",
+                Tok::MinusMinus => "--",
+                Tok::Star => "*",
+                Tok::YieldStar => "yield*",
+                Tok::Slash => "/",
+                Tok::Bang => "!",
+                Tok::Question => "?",
+                Tok::Pipe => "|",
+                Tok::PipeGt => "|>",
+                Tok::Amp => "&",
+                Tok::Caret => "^",
+                Tok::Tilde => "~",
+                Tok::At => "@",
+                _ => "?",
+            };
+            format!("'{s}'")
+        }
+    }
+}
+ is not a source identifier character, so no user can
+                // reference or collide with these generated formal names.
+                let binding_name = if name == "_" {
+                    format!("$ignored_lambda_{}", params.len())
+                } else { name };
+                if params.contains(&binding_name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                        format!("duplicate lambda parameter '{binding_name}'")));
+                }
+                params.push(binding_name);
                 param_types.push(annotation);
                 if self.eat(&Tok::Pipe) { break; }
                 self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
