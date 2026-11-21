@@ -2308,7 +2308,12 @@ impl<'a> Checker<'a> {
 
     fn method(&mut self, base: &Expr, name: &str, args: &[Arg], pos: Pos, awaited: bool) -> R<(Ir, Ty, bool)> {
         if let Ex::Var(kind) = &base.kind {
-            if kind == "SelectCase" {
+            // Do not synthesize a builtin factory when a local with this name
+            // shadows it; only the unbound nominal name is a static factory.
+            let unshadowed_builtin = matches!(kind.as_str(),
+                "SelectCase" | "SelectPlan" | "DynamicSelectPlan")
+                && self.find(kind, base.pos)?.is_none();
+            if unshadowed_builtin && kind == "SelectCase" {
                 if name != "read" {
                     return Err(type_err(pos, "SelectCase supports only read(Channel<int>)"));
                 }
@@ -2320,7 +2325,7 @@ impl<'a> Checker<'a> {
                 }
                 return Ok((channel, Ty::SelectCase, false));
             }
-            if kind == "SelectPlan" || kind == "DynamicSelectPlan" {
+            if unshadowed_builtin && (kind == "SelectPlan" || kind == "DynamicSelectPlan") {
                 let (plan, ty) = self.select_plan_factory(name, args, kind == "DynamicSelectPlan", pos)?;
                 return Ok((plan, ty, false));
             }
