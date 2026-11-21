@@ -200,6 +200,7 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
         "Tuple" | "tuple" => Some("Tuple"),
         "Pair" | "pair" => Some("Pair"),
         "Entry" | "entry" => Some("Entry"),
+        "Symbol" | "symbol" => Some("Symbol"),
         _ => None,
     }
 }
@@ -534,6 +535,7 @@ impl Parser {
                     "Map" => !generic || args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
                     "Pair" | "Entry" => generic && args.len() == 2,
+                    "Symbol" => !generic,
                     _ => unreachable!(),
                 };
                 if !correct_arity {
@@ -2200,25 +2202,22 @@ impl Parser {
         }
         self.advance();
         let mut init = self.parse_expr()?;
-        // In an explicitly typed Pair/Entry binding, K => V is the
-        // contextual, arity-two constructor shorthand. Do not reinterpret
-        // a map entry, lambda arrow, or unrelated expression as a pair.
-        if self.eat(&Tok::FatArrow) {
-            let is_product = ty.and_then(|type_| match type_ {
-                Type::Named(i) => self.type_names.get(i as usize).map(|(name,_)| name.as_str()),
-                _ => None,
-            }).and_then(|name| {
-                if name.starts_with("@builtin/Pair<") { Some("Pair") }
-                else if name.starts_with("@builtin/Entry<") { Some("Entry") }
-                else { None }
-            });
-            let Some(product) = is_product else {
-                return Err(Diagnostic::new(pos, "E_TYPE",
-                    "'=>' creates a Pair or Entry only with an explicit Pair<K,V>/Entry<K,V> context"));
-            };
-            let rhs = self.parse_expr()?;
-            init = Expr {pos: init.pos,
-                kind: ExprKind::Call(format!("@builtin/{product}.of"), vec![init,rhs])};
+        // An explicitly typed Pair/Entry binding retains its verified
+        // Pair.of/Entry.of guest constructor. Bare k => v, by contrast,
+        // remains a nominal Entry expression until separately lowered.
+        let product = ty.and_then(|type_| match type_ {
+            Type::Named(i) => self.type_names.get(i as usize).map(|(name,_)| name.as_str()),
+            _ => None,
+        }).and_then(|name| {
+            if name.starts_with("@builtin/Pair<") { Some("Pair") }
+            else if name.starts_with("@builtin/Entry<") { Some("Entry") }
+            else { None }
+        });
+        if let Some(product) = product {
+            if let ExprKind::Entry(key,value) = init.kind {
+                init = Expr {pos: init.pos,
+                    kind: ExprKind::Call(format!("@builtin/{product}.of"), vec![*key,*value])};
+            }
         }
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
@@ -3066,18 +3065,25 @@ impl Parser {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
                     "too many Map.of pairs"));
             }
-            let key = self.parse_expr()?;
-            let arrow = self.eat(&Tok::FatArrow);
+            // parse_expr owns => as an Entry expression. Map.of's two
+            // source spellings must still construct the SAME ordered pairs.
+            let first = self.parse_expr()?;
+            let (key, value, arrow) = match first {
+                Expr {kind: ExprKind::Entry(key,value), ..} => (*key,*value,true),
+                key => {
+                    if !self.eat(&Tok::Comma) {
+                        return Err(Diagnostic::new(self.pos(), "E_FACTORY_ARITY",
+                            "Map.of positional arguments require alternating key/value pairs"));
+                    }
+                    let value = self.parse_expr()?;
+                    (key,value,false)
+                }
+            };
             if arrow_form.is_some_and(|prior| prior != arrow) {
                 return Err(Diagnostic::new(key.pos, "E_FACTORY_ARITY",
                     "Map.of cannot mix Entry-arrow and alternating key/value pairs"));
             }
             arrow_form = Some(arrow);
-            if !arrow && !self.eat(&Tok::Comma) {
-                return Err(Diagnostic::new(self.pos(), "E_FACTORY_ARITY",
-                    "Map.of positional arguments require alternating key/value pairs"));
-            }
-            let value = self.parse_expr()?;
             if let Some(key_id) = constant_map_key(&key) {
                 if entries.iter().any(|(prev, _)| constant_map_key(prev).as_deref()
                     == Some(key_id.as_str())) {
@@ -3109,24 +3115,22 @@ impl Parser {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
                     "Map.of_entries entry count exceeds source budget"));
             }
-            let left = self.parse_expr()?;
-            let (key, value) = if self.eat(&Tok::FatArrow) {
-                let value = self.parse_expr()?;
-                (left, value)
-            } else {
-                match left {
-                    Expr {kind: ExprKind::Call(factory, args), pos: _}
-                        if factory == "@builtin/Entry.of" && args.len() == 2 => {
-                            let mut args = args.into_iter();
-                            (args.next().expect("checked Entry arity"), args.next().expect("checked Entry arity"))
-                        }
-                    Expr {kind: ExprKind::Call(factory, _), pos} if factory == "@builtin/Pair.of" => {
-                        return Err(Diagnostic::new(pos, "E_TYPE",
-                            "Map.of_entries accepts Entry<K,V>, not Pair<K,V>"));
+            // The general expression parser now constructs ExprKind::Entry
+            // for k => v. Recognize it without consuming '=>' a second time.
+            let source = self.parse_expr()?;
+            let (key, value) = match source {
+                Expr {kind: ExprKind::Entry(key,value), ..} => (*key,*value),
+                Expr {kind: ExprKind::Call(factory, args), pos: _}
+                    if factory == "@builtin/Entry.of" && args.len() == 2 => {
+                        let mut args = args.into_iter();
+                        (args.next().expect("checked Entry arity"), args.next().expect("checked Entry arity"))
                     }
-                    other => return Err(Diagnostic::new(other.pos, "E_FACTORY_ARITY",
-                        "Map.of_entries expects key => value or Entry.of(key,value)")),
+                Expr {kind: ExprKind::Call(factory, _), pos} if factory == "@builtin/Pair.of" => {
+                    return Err(Diagnostic::new(pos, "E_TYPE",
+                        "Map.of_entries accepts Entry<K,V>, not Pair<K,V>"));
                 }
+                other => return Err(Diagnostic::new(other.pos, "E_FACTORY_ARITY",
+                    "Map.of_entries expects key => value or Entry.of(key,value)")),
             };
             if let Some(key_id) = constant_map_key(&key) {
                 if pairs.iter().any(|(earlier, _)| constant_map_key(earlier).as_deref() ==
