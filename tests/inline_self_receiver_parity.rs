@@ -8,8 +8,7 @@ use atto_compiler::{
 };
 
 fn parse(source: &str) -> atto_compiler::ast::Program {
-    Parser::new(lexer::lex(source).expect("lex"))
-        .parse_program().expect("parse")
+    Parser::new(lexer::lex(source).expect("lex")).parse_program().expect("parse")
 }
 
 #[test]
