@@ -45,7 +45,21 @@ try {
     assert.equal(guest.exports.main(), expected, body);
     assert.equal(guest.exports.panic_code.value, 0, body);
   }
-  console.log('PASS '+cases.length+' compiled Rust→Wasm negated conditional guest executions');
+  // This is byte-identical to the website syntax preview on PR #202.
+  // Prevent marketing/editor admission from outrunning the real guest ABI.
+  const fullSource = await readFile(new URL('./fixtures/ifnot-unless-guard-play.atto', import.meta.url), 'utf8');
+  const path = join(tmp, 'website-full.atto');
+  const artifact = join(tmp, 'website-full.wasm');
+  await writeFile(path, fullSource);
+  const compiled = spawnSync(attoc, [path, '-o', artifact], {encoding:'utf8', timeout:30000});
+  assert.equal(compiled.status, 0, 'website preview cannot compile: '+compiled.stderr);
+  const fullBytes = await readFile(artifact);
+  assert.ok(WebAssembly.validate(fullBytes), 'website preview produced invalid Wasm');
+  const fullGuest = new WebAssembly.Module(fullBytes);
+  assert.deepEqual(WebAssembly.Module.imports(fullGuest), [], 'website preview needs ambient host imports');
+  assert.equal(new WebAssembly.Instance(fullGuest, {}).exports.main(), 42n);
+  console.log('PASS '+cases.length+' compiled conditional guests + 1 complete website preview (42)');
+
 } finally {
   await rm(tmp, {recursive:true, force:true});
 }
