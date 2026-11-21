@@ -381,3 +381,13 @@ path = "tests/lambda_stack_budget.rs"
 [[test]]
 name = "scalar_generic_specialization"
 path = "tests/scalar_generic_specialization.rs"
+
+# Explicit conditional guest suite extends the baseline 88 compiler suites.
+[[test]]
+name = "ifnot_unless_guest"
+path = "tests/ifnot_unless_guest.rs"
+
+# Inline readonly receiver parser + deterministic Wasm arity regressions.
+[[test]]
+name = "inline_self_receiver_parity"
+path = "tests/inline_self_receiver_parity.rs"
