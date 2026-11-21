@@ -107,7 +107,9 @@ pub fnc main(): int {
   val owner = new Data();
   val loan = borrow! owner;
   drop! owner;
-  return 0;
+  // The loan is demonstrably still live here; lexical scope alone is
+  // not the reason drop is rejected under NLL.
+  return loan.value;
 }"#;
     error(src, "E_BORROW");
 }
