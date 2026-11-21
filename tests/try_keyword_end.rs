@@ -93,3 +93,33 @@ fn maybe_value_matching_nested_in_keyword_try_must_fail_closed() {
         assert_eq!(failure.code, "E_UNSUPPORTED", "{failure}: {body}");
     }
 }
+
+#[test]
+fn contextual_maybe_identifier_is_legal_but_fallible_scope_stays_unsupported() {
+    accepts(r#"
+        fnc maybe(): int { return 7; }
+        pub fnc main(): int { return maybe(); }
+    "#);
+    accepts(r#"
+        pub fnc main(): int {
+            val maybe: int = 7;
+            return maybe;
+        }
+    "#);
+    let unsupported = r#"
+        pub fnc main(): int {
+          try
+            return maybe
+              Ok(value) ?= Ok(7);
+              value
+            else
+              Err(reason) -> { return 0; };
+            end;
+          finally
+            return 9;
+          end
+        }
+    "#;
+    let failure = compile(unsupported).expect_err("fallible value scope requires typed CFG");
+    assert_eq!(failure.code, "E_UNSUPPORTED", "{failure}");
+}
