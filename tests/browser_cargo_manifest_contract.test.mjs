@@ -23,6 +23,10 @@ function inventory(text) {
     'duplicate test name');
   assert.equal(new Set(tests.map(([, path]) => path)).size, tests.length,
     'duplicate test path');
+  assert.deepEqual(bins, [
+    ['attoc', 'src/bin/attoc.rs'],
+    ['atto-state-mir', 'src/bin/atto_state_mir.rs'],
+  ], 'missing or unauthorized explicit binary target');
   for (const [name, path] of tests) assert.equal(name, path,
     'integration target path/name drift');
   return { bins, tests };
@@ -61,5 +65,9 @@ test('duplicate, missing and injected Cargo targets fail closed', () => {
     'path = "tests/actor_state_mir_v0.rs"',
     'path = "tests/actor_state_mir_v0.rs"\n[[test]]\nname = "hidden"'
   )), /every test must declare/);
+  assert.throws(() => inventory(manifest.replace(
+    '[[bin]]\nname = "attoc"\npath = "src/bin/attoc.rs"',
+    ''
+  )), /missing or unauthorized/);
   assert.equal(original.tests.length, 92);
 });
