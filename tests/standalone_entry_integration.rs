@@ -81,7 +81,7 @@ fn scalar_symbol_maps_are_type_only_and_guest_denied() {
     assert_eq!(t[0].value.ty,T::Entry(Box::new(T::Symbol),Box::new(T::Int)));
     assert_eq!(t[1].value.ty,T::Map(Box::new(T::Symbol),Box::new(T::Int)));
     assert_eq!(parse("let m={#foo=>1,#foo=>2};").unwrap_err().code,"E_DUPLICATE");
-    rejected("let m={#foo=>5};","E_UNSUPPORTED");
+    rejected("let m={#foo=>5};","E_MAP_KEY");
     rejected("let e=#foo=>5;","E_UNSUPPORTED");
     rejected(r#"let e="foo"=>5;"#,"E_UNSUPPORTED");
 }
