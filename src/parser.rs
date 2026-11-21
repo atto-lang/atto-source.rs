@@ -276,6 +276,23 @@ fn lazy_guard_predicate(expr: Expr) -> Expr {
     }
 }
 
+/// Guard-specific return proof. This is stricter than the existing
+/// general termination proof used by return-match arms: a throw may
+/// terminate, but it cannot discharge guard's explicit-return obligation.
+fn guard_failure_returns(stmts: &[Stmt]) -> bool {
+    match stmts.last() {
+        Some(Stmt::Return(..)) => true,
+        Some(Stmt::Block(inner)) => guard_failure_returns(inner),
+        Some(Stmt::Match { arms, .. }) =>
+            !arms.is_empty() && arms.iter().all(|arm| guard_failure_returns(&arm.body)),
+        Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
+            !arms.is_empty()
+                && arms.iter().all(|(_, branch)| guard_failure_returns(branch))
+                && guard_failure_returns(other),
+        _ => false,
+    }
+}
+
 fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
@@ -2296,9 +2313,9 @@ impl Parser {
             return Err(Diagnostic::new(self.pos(), "E_GUARD",
                 "guard requires '{ ... }' or 'else ... end' failure branch"));
         };
-        if !guard_failure_exits(&failure) {
+        if !guard_failure_returns(&failure) {
             return Err(Diagnostic::new(pos, "E_GUARD",
-                "guard failure branch must exit the enclosing function on every path"));
+                "guard failure branch must explicitly return from the enclosing function on every path"));
         }
         Ok(Stmt::If {
             arms: vec![(
