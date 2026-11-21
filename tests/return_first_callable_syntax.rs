@@ -29,6 +29,7 @@ fn bullet_is_exact_utf8_return_delimiter_not_any_similar_glyph() {
         let source = format!("int{glyph} answer() begin return 42; end");
         let err = lex(&source).expect_err("lookalike bullet must not be normalized");
         assert_eq!(err.code, "E_TOKEN", "{source}");
+        assert_eq!((err.pos.line, err.pos.col), (1, 4), "{source}");
     }
 }
 
