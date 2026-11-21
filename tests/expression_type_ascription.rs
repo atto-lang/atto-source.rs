@@ -20,7 +20,7 @@ fn scalar_ascription_and_identity_cast_emit_wasm() {
         "(true ? 42 : 7) as int",
     ] {
         let bytes = compile(&source(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
-        assert_eq!(&bytes[..8], b"\\0asm\\x01\\0\\0\\0", "{expr}");
+        assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0", "{expr}");
     }
 }
 
@@ -32,7 +32,7 @@ fn nested_ascriptions_preserve_contextual_adt_construction() {
              pub fnc main(): int {{ return 42; }}"
         );
         let bytes = compile(&source).unwrap_or_else(|e| panic!("{annotation}: {e}"));
-        assert!(bytes.starts_with(b"\\0asm"), "{annotation}");
+        assert!(bytes.starts_with(b"\0asm"), "{annotation}");
     }
 }
 
@@ -57,7 +57,7 @@ fn explicit_int_to_float_conversion_compiles_to_real_wasm() {
         "pub fnc main(): int { val converted = (40 + 2) as float; if converted eq 42.0 then return 42; fi return 0; }",
     ] {
         let bytes = compile(src).unwrap_or_else(|e| panic!("{src}: {e}"));
-        assert!(bytes.starts_with(b"\\0asm"));
+        assert!(bytes.starts_with(b"\0asm"));
     }
 }
 
@@ -65,7 +65,7 @@ fn explicit_int_to_float_conversion_compiles_to_real_wasm() {
 fn ternary_separator_remains_distinct_from_type_ascription() {
     let yes = compile(&source("true ? 42 : 7")).unwrap();
     let no = compile(&source("false ? 42 : 7")).unwrap();
-    assert!(yes.starts_with(b"\\0asm"));
-    assert!(no.starts_with(b"\\0asm"));
+    assert!(yes.starts_with(b"\0asm"));
+    assert!(no.starts_with(b"\0asm"));
     assert_eq!(compile(&source("true ? 42 : bool")).unwrap_err().code, "E_SYNTAX");
 }
