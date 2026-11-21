@@ -444,7 +444,7 @@ impl Emit<'_> {
                 self.i32c(1);
                 self.set(kind);
             }
-            for (ordinal, _) in self.l.nominal_raises.iter().enumerate() {
+            for ordinal in 0..self.l.nominal_raises.len() {
                 self.op(0x07); // catch private nominal exception tag
                 uleb(&mut self.code, 2 + ordinal as u64);
                 self.landing();
@@ -484,7 +484,7 @@ impl Emit<'_> {
             }
             // Delegated recoveries preserve the exact Foo tag and owned
             // exception pointer; generic Error cannot impersonate a Foo.
-            for (ordinal, _) in self.l.nominal_raises.iter().enumerate() {
+            for ordinal in 0..self.l.nominal_raises.len() {
                 self.get(kind);
                 self.i32c((2 + ordinal) as i32);
                 self.op(0x46); // i32.eq
