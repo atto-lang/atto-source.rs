@@ -20,6 +20,7 @@ const cases = [
   { path: 'fail/lambda-direct-forward-call.atto', reject: 'E_UNSUPPORTED' },
   { path: 'fail/lambda-direct-statement-call.atto', reject: 'E_UNSUPPORTED' },
   { path: 'fail/lambda-direct-nested-statement-call.atto', reject: 'E_UNSUPPORTED' },
+  { path: 'fail/lambda-direct-cleanup-call.atto', reject: 'E_UNSUPPORTED' },
   { path: 'fail/lambda-direct-sibling-arity.atto', reject: 'E_ARITY' },
 ];
 // Also use the actual wasm32-built Rust compiler: compile the identical

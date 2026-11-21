@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// Deferred callback body cannot bind a local lambda call to global homonym.
+fnc transform(int n): int { return n * 100; }
+pub fnc main(): int {
+    val transform = |n| : int -> n + 1;
+    defer { transform(1); };
+    return transform(41);
+}

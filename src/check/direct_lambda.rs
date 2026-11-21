@@ -312,14 +312,20 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             if let Some(cleanup) = finally { rewrite_statements(cleanup, d)?; }
             Ok(())
         }
-        // Cleanup/recovery bodies are checked in an isolated scope, but
-        // their factory argument expressions execute at registration and must
-        // undergo the same checked direct-call rewriting as ordinary calls.
-        Stmt::Defer { args, .. } => {
-            for arg in args { rewrite_expr(arg, d)?; }
-            Ok(())
-        },
-        Stmt::Recover { args, .. } => {
+        // Cleanup/recovery bodies run in their own lexical scope. They are
+        // intentionally not rewritten as ordinary direct-call sites. A call
+        // to a local lambda from either body must fail closed; otherwise the
+        // source name could silently resolve to an unrelated global function
+        // after the local lambda declaration has been erased.
+        Stmt::Defer { args, body, pos, .. } |
+        Stmt::Recover { args, body, pos, .. } => {
+            let names = BTreeSet::from([d.source.clone()]);
+            if calls_any_named_statements(body, &names, 0)? {
+                return Err(error(*pos, "E_UNSUPPORTED",
+                    "direct lambda calls inside deferred or recovery handlers need closure environment lowering"));
+            }
+            // Registration arguments are evaluated once in the caller and
+            // still receive normal direct-call and ownership validation.
             for arg in args { rewrite_expr(arg, d)?; }
             Ok(())
         }

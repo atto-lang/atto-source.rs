@@ -105,6 +105,10 @@ helper. Calls to another local lambda, forward references, and self-recursion
 remain unsupported even when hidden in a nested statement or cleanup.
 Only expression-body lambdas currently lift immutable scalar captures;
 statement/block bodies use the independent noncapturing type checker.
+Direct lambda calls in deferred/recovery handler bodies also fail closed;
+those handlers run in isolated scopes and must not resolve an erased local
+lambda name against a global homonym. Factory argument expressions still
+follow ordinary direct-call rewriting and arity checks.
 
 Only direct calls are supported: callable values, aliases, escaped closures,
 mutable or heap-owning captures, reassignments, named calls to sibling/forward
