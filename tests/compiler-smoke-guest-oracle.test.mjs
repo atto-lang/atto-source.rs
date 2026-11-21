@@ -16,10 +16,10 @@ function sleb(v) {
 const enc=new TextEncoder();
 function textBytes(s){const b=[...enc.encode(s)];return [...uleb(b.length),...b]}
 function section(id,bytes){return [id,...uleb(bytes.length),...bytes]}
-function syntheticGuest({value=42n,panic=0,trap=false,exportMemory=true,exportPanic=true,returnI32=false,trapCode=1}={}){
+function syntheticGuest({value=42n,panic=0,trap=false,exportMemory=true,declareMemory=true,exportPanic=true,returnI32=false,trapCode=1}={}){
   const type=section(1,[1,96,0,1,returnI32?127:126]);
   const func=section(3,[1,0]);
-  const memory=section(5,[1,0,1]);
+  const memory=declareMemory?section(5,[1,0,1]):[];
   const global=section(6,[1,127,1,65,...sleb(panic),11]);
   const symbols=[[...textBytes('main'),0,0]];
   if(exportPanic)symbols.push([...textBytes('panic_code'),3,0]);
@@ -37,8 +37,12 @@ test('real Wasm instance yields exact signed i64 beyond JS safe integers',()=>{
 });
 test('rejects missing required guest ABI exports',()=>{
   assert.throws(()=>verifyScalarGuestValue(syntheticGuest({exportPanic:false}),42n),/panic_code export/);
-  assert.throws(()=>verifyScalarGuestValue(syntheticGuest({exportMemory:false}),42n),/memory export/);
   assert.throws(()=>verifyScalarGuestValue(syntheticGuest({returnI32:true}),42n),/signed Wasm i64/);
+});
+test('admits compiler-generated scalar and checked-panic Wasm without linear memory',()=>{
+  const memoryless={exportMemory:false,declareMemory:false};
+  assert.equal(verifyScalarGuestValue(syntheticGuest(memoryless),42n),42n);
+  assert.equal(verifyCheckedPanicGuest(syntheticGuest({...memoryless,trap:true,trapCode:1}),1),1);
 });
 test('rejects forged positive guest output with nonzero initial panic',()=>{
   assert.throws(()=>verifyScalarGuestValue(syntheticGuest({panic:1}),42n),/initialize to zero/);

@@ -35,7 +35,7 @@ const tests=[
   ['fail','return-first-bullet-lookalike.atto','E_TOKEN'],
   ['fail','return-first-lookalike-middle-dot','E_TOKEN',
     'int· answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
-  ['fail','return-first-lookalike-hyphenation-point','E_TOKEN',
+  ['fail','return-first-lookalike-undertie','E_TOKEN',
     'int‧ answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
   ['fail','return-first-lookalike-black-circle','E_TOKEN',
     'int● answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
@@ -124,8 +124,6 @@ try{
       assert.ok(cp.stderr.includes(oracle),'native missing expected diagnostic '+oracle);
       assert.equal(wasm.ok,false,'wasm32 accepted invalid '+name);
       assert.ok(wasm.message.includes(oracle),'wasm32 missing expected diagnostic '+oracle);
-      // The Unicode rejection must be precise, identical in the native
-      // and wasm32 compiler paths, and unable to leave a runnable guest.
       const tokenPosition = name==='return-first-bullet-lookalike.atto'
         ? [2,4] : name.startsWith('return-first-lookalike-') ? [1,4] : null;
       if(tokenPosition){
