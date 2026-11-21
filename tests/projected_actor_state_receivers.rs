@@ -36,8 +36,8 @@ mtd (Foo2 self) receive(ActorMail<String> mail): void {
     assert_eq!(h.receivers.len(), 4);
     assert!(h.receivers.iter().all(|receiver| !receiver.mutable));
     assert!(h.receivers.iter().all(|receiver| receiver.state_write.is_none()));
-    assert_eq!(compile(src).unwrap_err().code, "E_UNSUPPORTED",
-        "actor method execution is not implemented by the syntax frontend");
+    assert_eq!(compile(src).unwrap_err().code, "E_UNSUPPORTED_TYPE",
+        "ActorMail generic is recognized but has no verified guest ABI");
 }
 
 #[test]
