@@ -51,8 +51,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Bind native checkout to exact source commit and tree
+      - name: Bind native checkout to exact source commit and clean worktree
         shell: bash
+        # Check the entire repository; the default native/ working directory
+        # otherwise hides root-level compiler/test file modifications.
+        working-directory: .
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           EXPECTED_TREE: ${{ inputs.expected_tree || '' }}
@@ -62,6 +65,10 @@ jobs:
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           ACTUAL_TREE=$(git rev-parse 'HEAD^{tree}')
+          # git write-tree alone checks the index, NOT modified working files.
+          # Fail closed before building any source whose bytes differ from HEAD.
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code HEAD --
           test "$(git write-tree)" = "$ACTUAL_TREE"
           if [[ "$SOURCE_EVENT" = workflow_dispatch ]]; then
             [[ "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]]
