@@ -2,6 +2,9 @@
 // admission. This module runs in the browser compiler's module Web Worker and
 // has no access to user JavaScript or source evaluation.
 export const ACTOR_MAILBOX_CAPACITY = 32;
+// Parent-worker local monotonically increasing identity. One token is bound
+// to one dedicated child Worker and never reused within this process.
+let next_actor_incarnation = 1;
 export const ACTOR_ADMISSION = Object.freeze({
   OK: 0, CLOSED: 1, FULL: 2, INVALID: 3,
 });
@@ -16,8 +19,12 @@ export class ActorSession {
         !Number.isInteger(timeout_ms) || timeout_ms < 1) {
       throw actor_error('E_ACTOR_SESSION_ARGS');
     }
+    if (!Number.isSafeInteger(next_actor_incarnation)) {
+      throw actor_error('E_ACTOR_INCAR_LIMIT');
+    }
     this.worker = worker;
     this.actor_id = actor_id;
+    this.incarnation = next_actor_incarnation++;
     this.timeout_ms = timeout_ms;
     this.state = 'starting';
     this.closed = false;
@@ -46,7 +53,8 @@ export class ActorSession {
     worker.onmessageerror = () => this.fail('E_ACTOR_MESSAGE_CLONE');
     this.ready_timer = setTimeout(() => this.fail('E_ACTOR_READY_TIMEOUT'), timeout_ms);
     try {
-      worker.postMessage({ kind: 'init', actorId: actor_id, wasm });
+      worker.postMessage({ kind: 'init', actorId: actor_id,
+        incarnation: this.incarnation, wasm });
     } catch {
       this.fail('E_ACTOR_INIT_CLONE');
     }
@@ -112,6 +120,10 @@ export class ActorSession {
   on_message(msg) {
     if (this.is_terminal()) return; // stale messages cannot resurrect the task
     if (!msg || typeof msg !== 'object') return this.fail('E_ACTOR_PROTOCOL');
+    // An old/different actor incarnation must never resolve this session's
+    // READY, pending DATA acknowledgement or physically quiescent DONE.
+    if (msg.incarnation !== this.incarnation)
+      return this.fail('E_ACTOR_INCAR_MISMATCH');
     switch (msg.kind) {
       case 'ready':
         if (this.state !== 'starting') return this.fail('E_ACTOR_PROTOCOL');
@@ -161,7 +173,8 @@ export class ActorSession {
       const timer = setTimeout(() => this.fail('E_ACTOR_TIMEOUT'), this.timeout_ms);
       this.pending = { resolve, reject, timer };
       try {
-        this.worker.postMessage({ kind: 'message', value });
+        this.worker.postMessage({ kind: 'message',
+          incarnation: this.incarnation, value });
       } catch {
         this.fail('E_ACTOR_MESSAGE_CLONE');
       }
@@ -186,7 +199,8 @@ export class ActorSession {
         this.state = 'closing';
         this.done_timer = setTimeout(
           () => this.fail('E_ACTOR_DONE_TIMEOUT'), this.timeout_ms);
-        this.worker.postMessage({ kind: 'close' });
+        this.worker.postMessage({ kind: 'close',
+          incarnation: this.incarnation });
       } catch (error) {
         if (!this.is_terminal()) this.fail('E_ACTOR_DRAIN_FAULT');
         throw error;
