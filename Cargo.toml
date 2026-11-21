@@ -2,6 +2,10 @@
 # Keep this browser/compiler package restricted to its declared attoc CLI.
 # Legacy Rust entrypoints co-located under src/ belong to a separate crate.
 autobins = false
+# These suites belong to the browser Wasm crate; the legacy Cranelift tests
+# are for the separate native/Cargo.toml package. Keep the explicit list
+# exhaustive with scripts/verify-browser-cargo-tests.mjs.
+autotests = false
 name = "atto-compiler-browser"
 version = "0.2.0"
 edition = "2021"
@@ -22,3 +26,346 @@ strip = true
 [[bin]]
 name = "attoc"
 path = "src/bin/attoc.rs"
+
+# Browser compiler integration tests: explicit targets prevent Cargo from
+# pulling legacy oreslang_source_rs/Cranelift tests into this crate.
+
+[[test]]
+name = "actor_implements_mtd_runtime"
+path = "tests/actor_implements_mtd_runtime.rs"
+
+[[test]]
+name = "actor_memory_contract"
+path = "tests/actor_memory_contract.rs"
+
+[[test]]
+name = "actor_persistence_frontend"
+path = "tests/actor_persistence_frontend.rs"
+
+[[test]]
+name = "adt_actor_supervisor_boundary"
+path = "tests/adt_actor_supervisor_boundary.rs"
+
+[[test]]
+name = "atomic_arc_box_gate"
+path = "tests/atomic_arc_box_gate.rs"
+
+[[test]]
+name = "attoc_cli"
+path = "tests/attoc_cli.rs"
+
+[[test]]
+name = "bitwise_ops"
+path = "tests/bitwise_ops.rs"
+
+[[test]]
+name = "callable_body_styles"
+path = "tests/callable_body_styles.rs"
+
+[[test]]
+name = "callable_ir"
+path = "tests/callable_ir.rs"
+
+[[test]]
+name = "class_field_default_let"
+path = "tests/class_field_default_let.rs"
+
+[[test]]
+name = "class_field_visibility"
+path = "tests/class_field_visibility.rs"
+
+[[test]]
+name = "class_mtd_execution"
+path = "tests/class_mtd_execution.rs"
+
+[[test]]
+name = "class_mtd_receivers"
+path = "tests/class_mtd_receivers.rs"
+
+[[test]]
+name = "collection_layout_main_parser"
+path = "tests/collection_layout_main_parser.rs"
+
+[[test]]
+name = "collection_type_reservation"
+path = "tests/collection_type_reservation.rs"
+
+[[test]]
+name = "copy_doublebang"
+path = "tests/copy_doublebang.rs"
+
+[[test]]
+name = "deferred_final_scalar_matrix"
+path = "tests/deferred_final_scalar_matrix.rs"
+
+[[test]]
+name = "detached_io"
+path = "tests/detached_io.rs"
+
+[[test]]
+name = "direct_lambda"
+path = "tests/direct_lambda.rs"
+
+[[test]]
+name = "direct_lambda_audit"
+path = "tests/direct_lambda_audit.rs"
+
+[[test]]
+name = "erlang_callable_bodies"
+path = "tests/erlang_callable_bodies.rs"
+
+[[test]]
+name = "executable_class_mtd"
+path = "tests/executable_class_mtd.rs"
+
+[[test]]
+name = "explicit_callable_returns"
+path = "tests/explicit_callable_returns.rs"
+
+[[test]]
+name = "fixtures"
+path = "tests/fixtures.rs"
+
+[[test]]
+name = "folder_namespaces"
+path = "tests/folder_namespaces.rs"
+
+[[test]]
+name = "full_aot_no_fallback"
+path = "tests/full_aot_no_fallback.rs"
+
+[[test]]
+name = "generator_frame"
+path = "tests/generator_frame.rs"
+
+[[test]]
+name = "generator_frontend"
+path = "tests/generator_frontend.rs"
+
+[[test]]
+name = "generator_resume_cfg"
+path = "tests/generator_resume_cfg.rs"
+
+[[test]]
+name = "generator_typed_cfg"
+path = "tests/generator_typed_cfg.rs"
+
+[[test]]
+name = "guard_compiler"
+path = "tests/guard_compiler.rs"
+
+[[test]]
+name = "inline_method_body_matrix"
+path = "tests/inline_method_body_matrix.rs"
+
+[[test]]
+name = "io_shorthand"
+path = "tests/io_shorthand.rs"
+
+[[test]]
+name = "lambda_hardening"
+path = "tests/lambda_hardening.rs"
+
+[[test]]
+name = "lambda_syntax"
+path = "tests/lambda_syntax.rs"
+
+[[test]]
+name = "lambda_type_audit"
+path = "tests/lambda_type_audit.rs"
+
+[[test]]
+name = "lambda_types"
+path = "tests/lambda_types.rs"
+
+[[test]]
+name = "mtd_lowering_bounds"
+path = "tests/mtd_lowering_bounds.rs"
+
+[[test]]
+name = "multihop_linker"
+path = "tests/multihop_linker.rs"
+
+[[test]]
+name = "namespace_storefront"
+path = "tests/namespace_storefront.rs"
+
+[[test]]
+name = "nominal_actor_struct_implements"
+path = "tests/nominal_actor_struct_implements.rs"
+
+[[test]]
+name = "ownership_complete_vocabulary"
+path = "tests/ownership_complete_vocabulary.rs"
+
+[[test]]
+name = "ownership_freeze_weak_pin"
+path = "tests/ownership_freeze_weak_pin.rs"
+
+[[test]]
+name = "package_cli"
+path = "tests/package_cli.rs"
+
+[[test]]
+name = "package_resolver"
+path = "tests/package_resolver.rs"
+
+[[test]]
+name = "playground_preview_corpus"
+path = "tests/playground_preview_corpus.rs"
+
+[[test]]
+name = "pointer_syntax_safety"
+path = "tests/pointer_syntax_safety.rs"
+
+[[test]]
+name = "preview_boolean"
+path = "tests/preview_boolean.rs"
+
+[[test]]
+name = "preview_callable_body_styles"
+path = "tests/preview_callable_body_styles.rs"
+
+[[test]]
+name = "preview_data_shapes"
+path = "tests/preview_data_shapes.rs"
+
+[[test]]
+name = "preview_defer_recover"
+path = "tests/preview_defer_recover.rs"
+
+[[test]]
+name = "preview_match_types_is"
+path = "tests/preview_match_types_is.rs"
+
+[[test]]
+name = "preview_modules"
+path = "tests/preview_modules.rs"
+
+[[test]]
+name = "preview_nominal_composition"
+path = "tests/preview_nominal_composition.rs"
+
+[[test]]
+name = "preview_result_option_end"
+path = "tests/preview_result_option_end.rs"
+
+[[test]]
+name = "preview_routine"
+path = "tests/preview_routine.rs"
+
+[[test]]
+name = "preview_visibility"
+path = "tests/preview_visibility.rs"
+
+[[test]]
+name = "private_ci_policy_contract"
+path = "tests/private_ci_policy_contract.rs"
+
+[[test]]
+name = "receiver_constructors_state"
+path = "tests/receiver_constructors_state.rs"
+
+[[test]]
+name = "relative_file_imports"
+path = "tests/relative_file_imports.rs"
+
+[[test]]
+name = "return_first_callable_syntax"
+path = "tests/return_first_callable_syntax.rs"
+
+[[test]]
+name = "return_match_guarded_values"
+path = "tests/return_match_guarded_values.rs"
+
+[[test]]
+name = "return_match_hardening"
+path = "tests/return_match_hardening.rs"
+
+[[test]]
+name = "routing_guest_baseline"
+path = "tests/routing_guest_baseline.rs"
+
+[[test]]
+name = "scoped_using_timeout_gate"
+path = "tests/scoped_using_timeout_gate.rs"
+
+[[test]]
+name = "sequence_v2_ellipsis_lexer"
+path = "tests/sequence_v2_ellipsis_lexer.rs"
+
+[[test]]
+name = "sequence_v2_fail_closed"
+path = "tests/sequence_v2_fail_closed.rs"
+
+[[test]]
+name = "source_callable_types"
+path = "tests/source_callable_types.rs"
+
+[[test]]
+name = "state_ir_contract"
+path = "tests/state_ir_contract.rs"
+
+[[test]]
+name = "stdio_output_effect"
+path = "tests/stdio_output_effect.rs"
+
+[[test]]
+name = "target_erlang_bodies"
+path = "tests/target_erlang_bodies.rs"
+
+[[test]]
+name = "target_link"
+path = "tests/target_link.rs"
+
+[[test]]
+name = "target_syntax"
+path = "tests/target_syntax.rs"
+
+[[test]]
+name = "target_typed"
+path = "tests/target_typed.rs"
+
+[[test]]
+name = "trait_required_methods"
+path = "tests/trait_required_methods.rs"
+
+[[test]]
+name = "tuple_binding_admission"
+path = "tests/tuple_binding_admission.rs"
+
+[[test]]
+name = "tuple_binding_adversarial"
+path = "tests/tuple_binding_adversarial.rs"
+
+[[test]]
+name = "tuple_binding_guest"
+path = "tests/tuple_binding_guest.rs"
+
+[[test]]
+name = "tuple_ownership_ir"
+path = "tests/tuple_ownership_ir.rs"
+
+[[test]]
+name = "type_declarations"
+path = "tests/type_declarations.rs"
+
+[[test]]
+name = "typeof_static_return"
+path = "tests/typeof_static_return.rs"
+
+[[test]]
+name = "unified_imports"
+path = "tests/unified_imports.rs"
+
+[[test]]
+name = "value_class_admission"
+path = "tests/value_class_admission.rs"
+
+[[test]]
+name = "virtual_hardware_actor_guest"
+path = "tests/virtual_hardware_actor_guest.rs"
+
+[[test]]
+name = "virtual_hardware_guest"
+path = "tests/virtual_hardware_guest.rs"
