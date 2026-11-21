@@ -410,7 +410,7 @@ fnc __chan_close(int c): void {
 // ----------------------------------------------------------- select plans
 // Experimental Channel<int> list-source profile. All operations below are
 // compiled into the guest's own Wasm memory, not simulated by JavaScript.
-// Plan layout: slots, live, FAIR cursor, version, dynamic, reserved (48 bytes),
+// Plan layout: slots, live, FAIR cursor, version, dynamic, commit epoch (48 bytes),
 // followed by up to 256 stable, zero-based read-case channel pointers.
 // A zero slot is a removed case. No guest scheduling/yield happens during the
 // ready-case scan, the chosen read, or the cursor update: only one case commits.
@@ -459,6 +459,9 @@ fnc __plan_try(int p, int fair): int {
             if next >= n then next = 0; fi
             __store(p, 16, next);
           fi
+          // Distinct from the structural version: every committed winner
+          // invalidates stale snapshots' right to overwrite this cursor.
+          __store(p, 40, __load(p, 40) + 1);
           return __some(winner);
         fi
       fi
@@ -535,12 +538,17 @@ suspends fnc __plan_wait(int p, int fair): int {
 
 fnc __plan_nb(int p, int fair): int {
   val generation = __load(p, 24);
+  val commit_epoch = __load(p, 40);
   val snapshot = __plan_snapshot(p);
   return task {
     val answer = await __plan_wait_opt(snapshot, fair);
-    // A stale pending plan must not advance the current plan's FAIR cursor.
+    // Neither a structural mutation nor another committed selection may
+    // allow this asynchronous snapshot to overwrite the live FAIR cursor.
     if __load(p, 24) == generation then
-      __store(p, 16, __load(snapshot, 16));
+      if __load(p, 40) == commit_epoch then
+        __store(p, 16, __load(snapshot, 16));
+        __store(p, 40, __load(snapshot, 40));
+      fi
     fi
     return answer;
   };
