@@ -72,6 +72,9 @@ pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
 pub mod tuple_ownership_ir;
 pub mod target_typed;
+/// Restricted canonical actor-state field and sequential live-loan oracle;
+/// not executable guest admission or CFG/NLL verification.
+pub mod target_state_effects;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;
