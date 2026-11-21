@@ -183,19 +183,22 @@ try{
     console.log('PASS browser: actual Rust/Wasm SelectPlan guest ' + filename);
   }
 
-  // These guests must compile, then trap in the real browser Wasm runtime,
-  // before an earlier ready case can bypass a later actor DATA-port claim.
-  for (const filename of [
-    '236-v2-select-pipe-owned-at-construction.atto',
-    '237-v2-select-pipe-claimed-after-plan.atto',
-    '238-v2-dynamic-select-put-pipe-owned.atto',
+  // All SelectPlan panic guests run through the actual browser compiler,
+  // worker and guest. A generic "E_PANIC" is not enough: check exact codes.
+  for (const [filename,expectedPanic] of [
+    ['233-v2-select-empty-unwrap.atto',14],
+    ['234-v2-select-all-closed.atto',9],
+    ['235-v2-select-no-live-cases.atto',10],
+    ['236-v2-select-pipe-owned-at-construction.atto',10],
+    ['237-v2-select-pipe-claimed-after-plan.atto',10],
+    ['238-v2-dynamic-select-put-pipe-owned.atto',10],
   ]) {
     const src = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
     assert.match(await run(src, 'E_PANIC'), /^E_PANIC:/,
-      filename + ': pipeline-owned SelectCase must trap in the actual guest');
-    assert.equal(await evaluate('window.__attoLastPanicCode'), 10,
-      filename + ': claimed channel read must not acquire DATA access');
-    console.log('PASS browser: real SelectPlan rejects DATA port ' + filename);
+      filename + ': SelectPlan must trap in the actual guest');
+    assert.equal(await evaluate('window.__attoLastPanicCode'), expectedPanic,
+      filename + ': mismatched guest panic code');
+    console.log('PASS browser: real SelectPlan panic ' + expectedPanic + ' ' + filename);
   }
 
   // A timeout must close the suspended guest's live span before trapping.
