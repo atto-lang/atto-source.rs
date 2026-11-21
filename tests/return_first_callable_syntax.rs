@@ -358,3 +358,81 @@ fn checked_exception_effect_mixes_and_missing_raises_fail_closed() {
     let err = compile(undeclared).expect_err("raises must not pass throws-only bound");
     assert_eq!(err.code, "E_EFFECT", "{err}");
 }
+
+
+#[test]
+fn explicit_error_inheritance_preserves_nominal_checked_effect_identity() {
+    // Both declarations orders are legal; the parser must retain the exact
+    // nominal type and the checker must validate the Error ancestry.
+    for body in [
+        concat!(
+            "define class Foo extends Error as end\n",
+            "fnc int • twice(int value)\nraises Foo ::\n",
+            "  return value * 2;\nend\n",
+        ),
+        concat!(
+            "fnc int <- twice(int value)\nraises(Foo)\nbegin\n",
+            "  return value * 2;\nend\n",
+            "define class Foo extends Error as end\n",
+        ),
+    ] {
+        let source = format!("{body}pub fnc main(): int {{ return twice(21); }}");
+        let p = Parser::new(lex(&source).unwrap()).parse_program().unwrap();
+        assert_eq!(p.classes.len(), 1, "{body}");
+        assert_eq!(p.classes[0].name, "Foo");
+        assert!(p.classes[0].error_parent, "no implicit or missing ancestry");
+        let nominal = p.funcs[0].declared_effects.unwrap().raises_nominal
+            .expect("Foo effect must carry a nominal identity");
+        assert_eq!(p.type_names[nominal as usize].0, "Foo");
+        let guest = compile(&source).unwrap_or_else(|err|
+            panic!("validated, non-raising Foo contract rejected: {err}"));
+        assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn nominal_error_effects_reject_non_error_or_unknown_types() {
+    for (prefix, annotation, code) in [
+        ("define class Bar as end\n", "raises Bar", "E_TYPE"),
+        ("", "raises Missing", "E_TYPE"),
+        ("define class Foo extends Object as end\n", "raises Foo", "E_UNSUPPORTED"),
+        ("define class Foo as end\n", "throws Foo", "E_TYPE"),
+    ] {
+        let source = format!(
+            "{prefix}fnc int <- risky(int x)\n{annotation} ::\n  return x;\nend\n\
+             pub fnc main(): int {{ return risky(42); }}"
+        );
+        let err = compile(&source).expect_err("unproved Error subtype must emit no guest");
+        assert_eq!(err.code, code, "{annotation}: {err}");
+    }
+}
+
+#[test]
+fn nominal_error_runtime_payload_must_not_silently_degrade_to_string_tag() {
+    let raised = r#"
+        define class Foo extends Error as end
+        fnc int <- risky(int value)
+        raises Foo ::
+          if value > 3 then
+            raise! new Foo();
+          fi
+          return value * 2;
+        end
+        pub fnc main(): int { return risky(3); }
+    "#;
+    let err = compile(raised).expect_err(
+        "unverified subtype-bearing Wasm EH must not produce a guest");
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+
+    let incorrectly_narrowed = r#"
+        define class Foo extends Error as end
+        fnc int <- risky(int value)
+        raises Foo ::
+          raise! Error("not a Foo");
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let err = compile(incorrectly_narrowed).expect_err(
+        "declaring Foo must not silently authorize a generic Error");
+    assert_eq!(err.code, "E_EFFECT", "{err}");
+}
