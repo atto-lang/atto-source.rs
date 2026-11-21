@@ -508,3 +508,80 @@ fn builtin_error_identity_cannot_be_shadowed_by_class_or_function() {
         assert_eq!(err.code, "E_DUPLICATE", "{src}: {err}");
     }
 }
+
+
+#[test]
+fn compiled_wasm_uses_one_private_tag_per_nominal_error_type() {
+    fn uleb(data: &[u8], cursor: &mut usize) -> usize {
+        let mut n = 0usize;
+        let mut shift = 0;
+        loop {
+            let byte = data[*cursor];
+            *cursor += 1;
+            n |= ((byte & 0x7F) as usize) << shift;
+            if byte & 0x80 == 0 { return n; }
+            shift += 7;
+            assert!(shift < 35, "tag count LEB is too wide");
+        }
+    }
+    fn private_tag_count(wasm: &[u8]) -> usize {
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+        let mut i = 8;
+        while i < wasm.len() {
+            let id = wasm[i];
+            i += 1;
+            let len = uleb(wasm, &mut i);
+            let payload_end = i + len;
+            assert!(payload_end <= wasm.len(), "malformed Wasm section length");
+            if id == 13 { return uleb(wasm, &mut i); }
+            i = payload_end;
+        }
+        0
+    }
+    let foo = compile(include_str!("fixtures/pass/nominal-foo-raise-recover.atto"))
+        .expect("Foo private EH tag");
+    let two = compile(include_str!("fixtures/pass/nominal-foo-raise-vs-bar.atto"))
+        .expect("Foo/Bar private EH tags");
+    assert_eq!(private_tag_count(&foo), 3, "throw, base raise, Foo");
+    assert_eq!(private_tag_count(&two), 4, "throw, base raise, Foo, Bar");
+}
+
+#[test]
+fn nominal_error_view_type_checks_cannot_accept_user_forgery() {
+    for (source, code) in [
+        (r#"
+            define class Foo extends Error as end
+            define class Plain as end
+            pub fnc main(): int {
+              recover |err, cursor| -> {
+                if err.is_type(Plain) then return 17; fi
+                return 42;
+              };
+              raise! new Foo();
+            }
+        "#, "E_TYPE"),
+        (r#"
+            define class Foo extends Error as end
+            pub fnc main(): int {
+              recover |err, cursor| -> {
+                if err.is_type("Foo") then return 17; fi
+                return 42;
+              };
+              raise! new Foo();
+            }
+        "#, "E_TYPE"),
+        (r#"
+            define class Foo extends Error as end
+            pub fnc main(): int {
+              recover |err, cursor| -> {
+                if err.is_type(Foo, Foo) then return 17; fi
+                return 42;
+              };
+              raise! new Foo();
+            }
+        "#, "E_ARITY"),
+    ] {
+        let err = compile(source).expect_err("untrusted ErrorView type probe must emit no artifact");
+        assert_eq!(err.code, code, "{err}");
+    }
+}
