@@ -80,3 +80,44 @@ fn parsed_but_unlowered_lambda_fails_closed() {
     assert_eq!(err.code, "E_UNSUPPORTED");
     assert!(err.message.contains("lambdas"), "{err}");
 }
+
+#[test]
+fn explicit_pipes_are_required_in_const_function_expressions() {
+    // The bar delimiters are syntax, not optional shorthand.
+    for (expr, arity) in [
+        ("|_| : int -> 5", 1usize),
+        ("|| : int -> 5", 0),
+        ("|x| : int -> x + 5", 1),
+        ("|int x| : int -> x + 5", 1),
+        ("|x: int| : int -> x + 5", 1),
+    ] {
+        let source = format!(
+            "pub fnc main(): int {{ const fnc v = {expr}; return 0; }}"
+        );
+        let program = parse(&source);
+        let Stmt::Bind { init, .. } = &program.funcs[0].body[0] else {
+            panic!("expected const fnc binding: {expr}");
+        };
+        let ExprKind::Lambda { params, .. } = &init.kind else {
+            panic!("expected a lambda: {expr}");
+        };
+        assert_eq!(params.len(), arity, "{expr}");
+    }
+
+    for expr in [
+        "_ : int -> 5",
+        "_ -> 5",
+        "x : int -> x + 5",
+        "x -> x + 5",
+    ] {
+        for prefix in ["const fnc v =", "val v ="] {
+            let src = format!(
+                "pub fnc main(): int {{ {prefix} {expr}; return 0; }}"
+            );
+            assert!(
+                Parser::new(lexer::lex(&src).unwrap()).parse_program().is_err(),
+                "bare lambda head was accepted: {prefix} {expr}"
+            );
+        }
+    }
+}
