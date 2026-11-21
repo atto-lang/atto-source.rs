@@ -77,6 +77,8 @@ pub mod target_typed;
 pub mod target_state_effects;
 /// Restricted source-grounded flat actor-state guard MIR export, never guest admission.
 pub mod actor_state_mir_v0;
+/// Source-derived fixed-diamond CFG, explicitly not full typed MIR.
+pub mod actor_state_cfg_v1;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;

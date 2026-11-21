@@ -110,3 +110,48 @@ fn compound_effect_inventory_is_bounded_before_transport() {
     let e = derive_bounded_guard_mir(&expanded).expect_err("513 effects must exceed 512 budget");
     assert_eq!(e.code, "E_SOURCE_LIMIT");
 }
+
+#[test]
+fn source_derived_diamond_cfg_has_exact_branches_and_no_guest() {
+    use atto_compiler::actor_state_cfg_v1::derive_bounded_diamond_cfg;
+    let src = include_str!("fixtures/actor-state-cfg-v1.atto");
+    let cfg = derive_bounded_diamond_cfg(src).unwrap();
+    assert_eq!(cfg.field_count, 2);
+    assert!(cfg.exclusive && cfg.condition);
+    assert_eq!(cfg.then_events.len(), 2);
+    assert_eq!(cfg.else_events.len(), 1);
+    assert_eq!(cfg.then_events[0].field, 0);
+    assert_eq!(cfg.else_events[0].field, 1);
+    let wire = cfg.to_wire();
+    assert!(wire.contains("\nBRANCH\tTRUE\t1\t2\nBLOCK\t1\n"));
+    assert!(wire.contains("\nBLOCK\t2\nWRITE\t1\t"));
+    assert!(wire.contains("\nEND\t1\nGOTO\t3\nBLOCK\t3\nRETURN\nDONE\n"));
+    assert_eq!(compile(src).unwrap_err().code, "E_UNSUPPORTED");
+}
+#[test]
+fn diamond_parser_refuses_unverified_effects_in_either_arm() {
+    use atto_compiler::actor_state_cfg_v1::derive_bounded_diamond_cfg;
+    let src = include_str!("fixtures/actor-state-cfg-v1.atto");
+    for mutated in [
+        src.replace("s.xyz = 2;", "s.xyz = helper();"),
+        src.replace("s.counter += 1;", "await something;"),
+        src.replace("if true then", "if s.counter eq 1 then"),
+        src.replace("if true then", "if true then if false then"),
+        src.replace("fi\n", ""),
+        src.replace("else\n", ""),
+        format!("{src}\nfnc backdoor(): int {{ return 42; }}"),
+    ] {
+        assert!(derive_bounded_diamond_cfg(&mutated).is_err(),
+            "unverified mutation cannot produce diamond CFG: {mutated}");
+    }
+}
+#[test]
+fn both_literal_conditions_have_both_branches_verified() {
+    use atto_compiler::actor_state_cfg_v1::derive_bounded_diamond_cfg;
+    let src = include_str!("fixtures/actor-state-cfg-v1.atto");
+    let false_src = src.replace("if true then", "if false then");
+    let cfg = derive_bounded_diamond_cfg(&false_src).unwrap();
+    assert!(!cfg.condition);
+    assert_eq!(cfg.then_events.len(), 2);
+    assert_eq!(cfg.else_events.len(), 1);
+}
