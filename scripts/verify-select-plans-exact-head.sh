@@ -32,8 +32,11 @@ fi
 export CHROME_BIN
 
 rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
-rustup component add rustfmt --toolchain 1.85.1
-cargo +1.85.1 fmt --all --check
+rustup component add rustfmt clippy --toolchain 1.85.1
+cargo +1.85.1 fmt --all -- --check
+cargo +1.85.1 clippy --locked --all-targets -- -D warnings
+bash tests/private-ci-export-policy-guard-test.sh
+bash scripts/private-ci-export-policy-guard.sh .github/private-ci-approved-repositories.txt
 cargo +1.85.1 test --locked --test v2_select_plans
 cargo +1.85.1 test --locked
 cargo +1.85.1 build --locked --bin attoc
