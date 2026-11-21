@@ -435,8 +435,11 @@ fnc __plan_from_list(int cases, int dynamic): int {
 // FAIR only advances when a read commits; first is stable lexical priority.
 fnc __plan_try(int p, int fair): int {
   val n = __load(p, 0);
-  if n == 0 then return 0; fi
+  // A live plan may have all its dynamic slots removed; never spin forever.
+  if n == 0 then __panic(10); fi
   let k = 0;
+  let live = 0;
+  let viable = 0;
   while k < n do
     let i = k;
     if fair != 0 then
@@ -445,10 +448,13 @@ fnc __plan_try(int p, int fair): int {
     fi
     val ch = __load(p, 48 + 8 * i);
     if ch != 0 then
-      // Forbid consuming a pipeline-owned channel without a DATA grant.
+      live = live + 1;
+      // Check ownership even for closed/drained cases: stale DATA grants
+      // must never become implicit public read privileges.
       if __load(ch, 56) != 0 then __panic(10); fi
       if __load(ch, 64) != 0 then __panic(10); fi
       if __load(ch, 8) > 0 then
+        viable = viable + 1;
         val option = __chan_try(ch);
         if option != 0 then
           val winner = __alloc(16);
@@ -464,12 +470,16 @@ fnc __plan_try(int p, int fair): int {
           __store(p, 40, __load(p, 40) + 1);
           return __some(winner);
         fi
+      else
+        // One closed-and-drained case cannot mask another ready case.
+        if __load(ch, 32) == 0 then viable = viable + 1; fi
       fi
-      // Closed/drained channels cannot silently spin forever as ready cases.
-      if __load(ch, 32) != 0 then __panic(9); fi
     fi
     k = k + 1;
   done
+  if live == 0 then __panic(10); fi
+  // No open/readable cases: report a closed stream rather than sleeping.
+  if viable == 0 then __panic(9); fi
   return 0;
 }
 
