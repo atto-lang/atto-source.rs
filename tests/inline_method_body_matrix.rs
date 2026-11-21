@@ -163,3 +163,52 @@ fn explicit_inline_actor_mtd_still_satisfies_nominal_method_contracts() {
     assert!(atto_compiler::compile(source).is_ok(),
         "mtd must lower exactly like an inline actor method, without skipping interface checks");
 }
+
+#[test]
+fn contextual_mtd_and_method_remain_callable_names() {
+    // Java and JS support the method spellings as ordinary names when followed
+    // immediately by '('. A declaration marker instead precedes a second name.
+    let source = r#"
+        define class Names as
+            pub mtd(): int { return 10; }
+            pub method(): int { return 20; }
+            pub mtd named(): int { return 12; }
+        end
+        pub fnc main(): int {
+            val names = new Names();
+            return names.mtd() + names.method() + names.named();
+        }
+    "#;
+    let program = Parser::new(lex(source).unwrap()).parse_program().unwrap();
+    let names: Vec<&str> = program.classes[0].methods
+        .iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["mtd", "method", "named"]);
+    let wasm = atto_compiler::compile(source).expect("contextual method names must compile");
+    assert!(wasm.starts_with(&[0, 97, 115, 109, 1, 0, 0, 0]));
+}
+
+#[test]
+fn state_container_mtd_name_is_not_greedily_consumed_as_marker() {
+    let source = r#"
+        define state container Flag as
+            state { let bool enabled: true; }
+            pub mtd(): bool {
+                return handle_state(critical-read |s| -> s.enabled);
+            }
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let program = Parser::new(lex(source).unwrap()).parse_program().unwrap();
+    assert_eq!(program.classes[0].methods[0].name, "mtd");
+    assert!(atto_compiler::compile(source).is_ok());
+}
+
+#[test]
+fn consecutive_method_prefix_markers_are_not_accepted() {
+    for invalid in ["mtd method foo()", "method mtd foo()", "fnc mtd foo()"] {
+        let source = format!(
+            "define class C as {invalid}: int {{ return 42; }} end pub fnc main(): int {{ return 0; }}"
+        );
+        assert!(atto_compiler::compile(&source).is_err(), "duplicate marker admitted: {source}");
+    }
+}
