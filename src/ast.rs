@@ -73,7 +73,6 @@ pub struct Program {
     pub type_names: Vec<(String, Pos)>,
 }
 
-
 /// Target-only nominal actor interface retained in the production Program AST.
 /// Indices in method ActorRef types refer to forwards, NOT executable actors.
 /// The backend must not emit this partial interface.
@@ -254,7 +253,10 @@ pub enum Stmt {
         pos: Pos,
     },
     /// `defer || -> { ... };` registers a LIFO cleanup without running it.
-    Defer { body: Vec<Stmt>, pos: Pos },
+    Defer {
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
     /// `recover (|T a, ..| -> |err, c| -> { ... })(args);` registers a
     /// recovery callback whose factory arguments are evaluated once, now.
     Recover {
@@ -385,7 +387,12 @@ pub enum LambdaBody {
 
 /// Explicit Atto ownership operators, not pointer address syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, Take, Share }
+pub enum OwnershipOp {
+    Borrow,
+    Copy,
+    Take,
+    Share,
+}
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
