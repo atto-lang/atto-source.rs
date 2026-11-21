@@ -107,6 +107,7 @@ try{
     'nominal-foo-raise-vs-bar.atto',
     'nominal-foo-raise-catch-bypass.atto',
     'nominal-foo-delegated-recover.atto',
+    'nominal-foo-trap-bypass.atto',
   ]) {
     const source = await readFile(new URL('./fixtures/pass/' + name, import.meta.url), 'utf8');
     assert.match(source, /raise! new (Foo|Bar)\(\)/);
