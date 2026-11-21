@@ -3,7 +3,7 @@
  //! checker. This is NOT an interpreter or string substitution.
  //! Critical callbacks are lowered only for a deliberately tiny, statically
  //! checked scalar form; unsupported bodies reject before native codegen.
-use atto_compiler::ast::{Method, Program, Type};
+use atto_compiler::ast::{FieldVisibility, Method, Program, Type};
 use atto_compiler::check;
 use atto_compiler::diag::Pos;
 use atto_compiler::lexer::{Tok, Token};
@@ -168,31 +168,27 @@ fn lower_method_body(tokens: &[Token], body_start: usize, body_end: usize,
     }
     Ok(out)
 }
-fn parse_one_function(tokens: &[Token], start: usize, end: usize)
-    -> Result<atto_compiler::ast::Func,String> {
-    let mut from=None;
-    for i in (0..start).rev() {
-        if is_word(tokens,i,"fnc")
-            && tokens[i+1..start].iter().all(|tok|
-                !matches!(tok.tok,Tok::LBrace|Tok::RBrace|Tok::Semi)) {
-            from=Some(if i>0 && is_word(tokens,i-1,"pub") {i-1}else{i});
-            break;
-        }
+fn parse_one_function(
+    tokens: &[Token], site: &target_syntax::FunctionSite,
+) -> Result<atto_compiler::ast::Func, String> {
+    // Token spans are provided by the canonical target parser; backwards
+    // scanning for "fnc" could silently bind the wrong declaration and also
+    // missed the supported 'routine' and return-first callable spellings.
+    if site.declaration_start >= site.body_start ||
+        site.body_start >= site.end || site.end > tokens.len() {
+        return Err(error("E_INTERNAL", "invalid native target function span"));
     }
-    let from=from.ok_or_else(||error("E_INTERNAL","fnc header lost"))?;
-    let mut subset=tokens[from..end].to_vec();
-    subset.push(t(Tok::Eof,tokens[end-1].pos));
-    let p=Parser::new(subset).parse_program().map_err(|e|e.to_string())?;
-    if p.funcs.len()!=1 || !p.actors.is_empty() || !p.classes.is_empty() {
-        return Err(error("E_SYNTAX","invalid native target top-level function"));
+    let mut subset = tokens[site.declaration_start..site.end].to_vec();
+    subset.push(t(Tok::Eof, tokens[site.end - 1].pos));
+    let p = Parser::new(subset).parse_program().map_err(|e| e.to_string())?;
+    if p.funcs.len() != 1 || !p.actors.is_empty() || !p.classes.is_empty() {
+        return Err(error("E_SYNTAX", "invalid native target top-level function"));
     }
-    let func=p.funcs.into_iter().next().expect("exactly one function");
-    // Parsed standalone function name indices are local to their temporary
-    // parser. Do not allow unresolved Named/NamedRef indices to enter the
-    // unified checked program without a verified type-name relocation table.
-    if !matches!(func.ret,Type::Int|Type::Bool|Type::Void)
+    let func = p.funcs.into_iter().next().expect("exactly one function");
+    // Temporary parser indices refer to a different nominal type table.
+    if !matches!(func.ret, Type::Int | Type::Bool | Type::Void)
         || func.params.iter().any(|p|
-            !matches!(p.ty,Type::Int|Type::Bool)) {
+            !matches!(p.ty, Type::Int | Type::Bool)) {
         return Err(error("E_UNSUPPORTED_NATIVE_TYPE",
             "target fnc signatures admit only int/bool parameters and int/bool/void result"));
     }
@@ -283,7 +279,7 @@ pub fn lower(tokens: &[Token]) -> Result<Program,String> {
         // Actor state is sealed even if the legacy concrete parser accepts
         // a 'pub' field. Target-native syntax must not export state via an
         // accidental public field descriptor.
-        if actor.fields.iter().any(|field| field.public) {
+        if actor.fields.iter().any(|field| field.visibility != FieldVisibility::Private) {
             return Err(error("E_SEALED",
                 "target actor state cannot be declared public"));
         }
@@ -316,17 +312,24 @@ pub fn lower(tokens: &[Token]) -> Result<Program,String> {
                 "direct actor state access is forbidden; use critical-read/write"));
         }
     }
-    for &(start,end) in &headers.function_body_spans {
-        program.funcs.push(parse_one_function(tokens,start,end)?);
+    // The canonical parser owns the token span ledger; consumers may not
+    // infer it from token spellings (including return-first declarations).
+    for site in &headers.function_sites {
+        program.funcs.push(parse_one_function(tokens, site)?);
     }
-    if headers.receiver_body_spans.len()!=headers.receivers.len() {
-        return Err(error("E_INTERNAL","receiver span coverage mismatch"));
+    if headers.receiver_sites.len() != headers.receivers.len() {
+        return Err(error("E_INTERNAL", "receiver span coverage mismatch"));
     }
-    for &(index,start,end) in &headers.receiver_body_spans {
-        let head=headers.receivers.get(index)
-            .ok_or_else(||error("E_INTERNAL","receiver index mismatch"))?;
-        let m=parse_one_receiver(tokens,start,end,head)?;
-        let owner=program.actors.iter_mut().find(|actor|actor.name==head.owner)
+    for (index, site) in headers.receiver_sites.iter().enumerate() {
+        if site.declaration_start >= site.method_start ||
+            site.method_start >= site.body_start ||
+            site.body_start >= site.end || site.end > tokens.len() {
+            return Err(error("E_INTERNAL", "invalid native target receiver span"));
+        }
+        let head = headers.receivers.get(index)
+            .ok_or_else(|| error("E_INTERNAL", "receiver index mismatch"))?;
+        let m = parse_one_receiver(tokens, site.body_start, site.end, head)?;
+        let owner = program.actors.iter_mut().find(|actor|actor.name==head.owner)
             .ok_or_else(||error("E_UNLINKED","target receiver has no concrete actor"))?;
         owner.methods.push(m);
     }
