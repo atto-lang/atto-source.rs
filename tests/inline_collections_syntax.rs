@@ -65,7 +65,7 @@ fn builtin_aliases_share_interned_identity_within_one_program() {
 
 #[test]
 fn brace_entries_distinguish_maps_from_records() {
-    let records = parse_binding("let Record foo = {bar: [], \"quoted\": {nested: true}};").unwrap();
+    let records = parse_binding("let Record foo = {bar: [], quoted: {nested: true}};").unwrap();
     match init_kind(&records) {
         ExprKind::Record(entries) => {
             assert_eq!(entries.len(), 2);
@@ -96,7 +96,7 @@ fn tuple_arity_is_not_grouping() {
 fn reject_bad_fields_keys_and_missing_separators() {
     for (source, expected) in [
         ("let Record x = {a: 1, a: 2};", "E_DUPLICATE"),
-        ("let Record x = {a: 1, \"a\": 2};", "E_DUPLICATE"),
+        ("let Record x = {a: 1, \"a\": 2};", "E_LITERAL_KIND"),
         ("let Map x = {\"a\" => 1, \"a\" => 2};", "E_DUPLICATE"),
         ("let Map x = {-1 => 1, -1 => 2};", "E_DUPLICATE"),
         ("let Map x = {-0 => 1, 0 => 2};", "E_DUPLICATE"),
@@ -177,15 +177,15 @@ fn literal_map_indexing_uses_real_guest_owned_storage() {
 #[test]
 fn bracket_access_keeps_receiver_and_literal_key_distinct_from_dot_members() {
     let program = parse_binding(
-        "let Record headers = {\"content-type\": \"application/json\", status_code: 200};\n\
-         let string content = headers[\"content-type\"];\n\
+        "let Record headers = {content_type: \"application/json\", status_code: 200};\n\
+         let string content = headers[\"content_type\"];\n\
          let int status = headers.status_code;"
     ).expect("bracket record access should be admitted as syntax");
     match &program.funcs[0].body[1] {
         Stmt::Bind { init, .. } => match &init.kind {
             ExprKind::Index(base, key) => {
                 assert!(matches!(&base.kind, ExprKind::Var(name) if name == "headers"));
-                assert!(matches!(&key.kind, ExprKind::Str(name) if name == "content-type"));
+                assert!(matches!(&key.kind, ExprKind::Str(name) if name == "content_type"));
             }
             _ => panic!("bracket access must not be converted to Member"),
         },
@@ -207,7 +207,7 @@ fn bracket_access_keeps_receiver_and_literal_key_distinct_from_dot_members() {
 #[test]
 fn computed_bracket_keys_are_not_misparsed_as_static_record_fields() {
     let program = parse_binding(
-        "let Record headers = {\"content-type\": \"ok\"};\n\
+        "let Record headers = {content_type: \"ok\"};\n\
          let string key = \"content-type\";\n\
          let string found = headers[key];"
     ).unwrap();
@@ -219,16 +219,18 @@ fn computed_bracket_keys_are_not_misparsed_as_static_record_fields() {
 }
 
 #[test]
-fn quoted_record_key_duplicates_reject_after_string_decoding() {
-    for source in [
-        "let Record x = {\"\": 1, \"\": 2};",
-        "let Record x = {a: 1, \"a\": 2};",
+fn quoted_map_keys_decode_identically_and_never_become_record_fields() {
+    for (source, code) in [
+        (r#"let Map<string,int> x = {"": 1, '': 2};"#, "E_DUPLICATE"),
+        (r#"let Record x = {a: 1, "a": 2};"#, "E_LITERAL_KIND"),
+        (r#"let Map<string,int> x = {"a": 1, 'a' => 2};"#, "E_DUPLICATE"),
     ] {
-        assert_eq!(parse_binding(source).unwrap_err().code, "E_DUPLICATE", "{source}");
+        assert_eq!(parse_binding(source).unwrap_err().code, code, "{source}");
     }
-    let program = parse_binding("let Record x = {\"\": 1, \"content-type\": 2};").unwrap();
-    assert!(matches!(init_kind(&program), ExprKind::Record(entries)
-        if entries[0].0.is_empty() && entries[1].0 == "content-type"));
+    let program = parse_binding(r#"let Map<string,int> x = {"": 1, 'content-type': 2};"#).unwrap();
+    assert!(matches!(init_kind(&program), ExprKind::Map(entries)
+        if matches!(&entries[0].0.kind, ExprKind::Str(name) if name.is_empty())
+            && matches!(&entries[1].0.kind, ExprKind::Str(name) if name == "content-type")));
 }
 
 #[test]

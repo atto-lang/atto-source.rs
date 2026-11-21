@@ -37,17 +37,17 @@ fn real_guest_compiles_canonical_closed_record_dot_fields() {
 }
 
 #[test]
-fn quoted_utf8_names_have_checked_direct_guest_field_loads() {
+fn identifier_record_names_have_checked_direct_guest_field_loads() {
     wasm(
         r#"
         pub fnc main(): int {
           let Record headers = {
-            "content-type": "application/json",
-            "über field": 40,
+            content_type: "application/json",
+            ueber_field: 40,
             status_code: 2
           };
-          stdio.println(headers["content-type"]);
-          return headers["über field"] + headers.status_code;
+          stdio.println(headers["content_type"]);
+          return headers["ueber_field"] + headers.status_code;
         }
     "#,
     );
@@ -85,12 +85,12 @@ fn two_source_permutations_share_one_generated_record_shape() {
 }
 
 #[test]
-fn known_scalar_type_slots_and_empty_string_label_compile() {
+fn known_scalar_type_slots_and_identifier_label_compile() {
     wasm(
         r#"
         pub fnc main(): int {
-          val Record r = {"": 40, enabled: true, ratio: 1.5};
-          return r[""];
+          val Record r = {value: 40, enabled: true, ratio: 1.5};
+          return r["value"];
         }
     "#,
     );
@@ -150,7 +150,7 @@ fn rejected_fields_and_ownership_do_not_emit_guest_wasm() {
             return 0;
         }
     "#,
-        "E_DUPLICATE",
+        "E_LITERAL_KIND",
     );
     invalid(
         r#"
@@ -263,7 +263,7 @@ fn dynamic_integer_index_is_not_a_string_field_projection() {
 
 #[test]
 fn parsed_bracket_index_keeps_provenance_before_private_lowering() {
-    let source = "pub fnc main(): int {let Record r = {\"x-y\": 42}; return r[\"x-y\"];}";
+    let source = "pub fnc main(): int {let Record r = {x_y: 42}; return r[\"x_y\"];}";
     let program = Parser::new(lexer::lex(source).unwrap())
         .parse_program()
         .unwrap();
@@ -276,7 +276,7 @@ fn parsed_bracket_index_keeps_provenance_before_private_lowering() {
     closed_record_guest::lower(&mut copy, &typed).unwrap();
     match &copy.funcs[0].body.last().unwrap() {
         Stmt::Return(Some(v), _) => {
-            assert!(matches!(&v.kind, ExprKind::Member(_, field) if field=="x-y"))
+            assert!(matches!(&v.kind, ExprKind::Member(_, field) if field=="x_y"))
         }
         _ => panic!("a proved closed field becomes an ordinary checked member projection"),
     }

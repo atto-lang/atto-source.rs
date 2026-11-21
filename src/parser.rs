@@ -3456,7 +3456,9 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
-    /// A brace literal is either a record (colon fields) or a map (fat arrows).
+    /// Identifier-colon entries construct Records. Quoted-string-colon and
+    /// expression-fat-arrow entries construct Maps. Quote delimiters do not
+    /// erase the Map/Record distinction, even for identifier-like strings.
     /// Empty braces remain unresolved until contextual typing. Never treat
     /// expression braces as statement blocks or silently coerce mixed entries.
     fn parse_brace_literal(&mut self) -> R<ExprKind> {
@@ -3472,17 +3474,18 @@ impl Parser {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
                     "brace literal exceeds 1024 entries"));
             }
-            let named_field = matches!(self.peek(), Tok::Ident(_) | Tok::Str(_))
+            let identifier_field = matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
                 && *self.peek_at(1) == Tok::Colon;
-            if named_field {
+            let quoted_map_key = matches!(self.peek(), Tok::Str(_))
+                && *self.peek_at(1) == Tok::Colon;
+            if identifier_field {
                 if record_mode == Some(false) {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix record ':' entries and map '=>' entries"));
+                        "cannot mix identifier Record fields with quoted or expression Map entries"));
                 }
                 record_mode = Some(true);
                 let (name, at) = match self.advance() {
-                    Token { tok: Tok::Ident(name), pos } |
-                    Token { tok: Tok::Str(name), pos } => (name, pos),
+                    Token { tok: Tok::Ident(name), pos } => (name, pos),
                     _ => unreachable!(),
                 };
                 self.expect(Tok::Colon, "':' after record field")?;
@@ -3495,14 +3498,27 @@ impl Parser {
             } else {
                 if record_mode == Some(true) {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix record ':' entries and map '=>' entries"));
+                        "cannot mix identifier Record fields with quoted or expression Map entries"));
                 }
                 record_mode = Some(false);
-                let key = self.parse_expr()?;
-                if !self.eat(&Tok::FatArrow) {
-                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "expected ':' for a record field or '=>' for a map entry"));
-                }
+                let key = if quoted_map_key {
+                    // Preserve decoded UTF-8 as a Map key expression, never
+                    // as a structurally named Record field.
+                    let key_pos = self.pos();
+                    let decoded = match self.advance().tok {
+                        Tok::Str(decoded) => decoded,
+                        _ => unreachable!(),
+                    };
+                    self.expect(Tok::Colon, "':' after quoted Map key")?;
+                    Expr { kind: ExprKind::Str(decoded), pos: key_pos }
+                } else {
+                    let key = self.parse_expr()?;
+                    if !self.eat(&Tok::FatArrow) {
+                        return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                            "expected '=>' for expression Map key"));
+                    }
+                    key
+                };
                 let value = self.parse_expr()?;
                 // Constant duplicate keys are definite mistakes. Dynamically
                 // computed keys need checked equality/hash rules at runtime.
