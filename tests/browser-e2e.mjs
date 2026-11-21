@@ -84,7 +84,7 @@ try{
   // then executed as new guest Wasm. A lexer-only unit test is insufficient.
   const bulletSource = await readFile(new URL('./fixtures/pass/return-first-bullet-and-arrow.atto', import.meta.url), 'utf8');
   assert.equal(await run(bulletSource, 'main() -> 42'), 'main() -> 42');
-  for (const lookalike of ['·', '∙', '‧', '●']) {
+  for (const lookalike of ['·', '∙', '‿', '‧', '●']) {
     const invalid = `int${lookalike} answer() begin return 42; end\npub fnc main(): int { return answer(); }`;
     assert.match(await run(invalid, 'E_TOKEN'), /^E_TOKEN:/,
       'non-U+2022 bullet must not produce a guest');
