@@ -4475,7 +4475,14 @@ impl<'a> FnCx<'a> {
                 // first-class object or a transferable/returnable handle.
                 return match name {
                     "message" => Ok(TE {
-                        e: TExpr::ErrorMessage { kind_slot: kind, message_slot: msg },
+                        // Preserve the exact old bytecode for programs that
+                        // have no nominal Error subclass; only mixed payload
+                        // modules need the trusted tag-dependent view.
+                        e: if self.g.classes.iter().any(|c| c.error_parent) {
+                            TExpr::ErrorMessage { kind_slot: kind, message_slot: msg }
+                        } else {
+                            TExpr::Local(msg)
+                        },
                         ty: Type::Str,
                     }),
                     "is_raise" => Ok(TE { e: TExpr::Local(kind), ty: Type::Bool }),
