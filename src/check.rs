@@ -3916,14 +3916,12 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                if a.ty == Type::Int && b.ty == Type::Int {
-                    if *op == BinOp::Div {
-                        return Err(Diagnostic::new(
-                            pos,
-                            "E_UNSUPPORTED",
-                            "'/' on two ints is not admitted: whether int / int yields float or int is undecided (spec S-25); write a float operand, e.g. 7.0 / 2",
-                        ));
-                    }
+                // Canonical int / int produces binary64, never integer
+                // truncation. The existing IntToFloat typed IR already
+                // lowers to signed f64.convert_i64_s in wasm.rs. Both operands
+                // are converted exactly once before the f64 division.
+                if a.ty == Type::Int && b.ty == Type::Int && *op != BinOp::Div {
+                    // Keep checked signed-i64 +, -, * and integer comparisons.
                 } else {
                     // Java binary numeric promotion: an int operand widens to float.
                     let widen = |v: TE| -> TE {
@@ -3949,7 +3947,7 @@ impl<'a> FnCx<'a> {
             }
             let ty = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
-                BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::Div => unreachable!("division widens its operands before integer lowering"),
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr =>
                     unreachable!("bitwise operations handled before numeric promotion"),
