@@ -92,5 +92,41 @@ test "$(cat "$work/forged.exe")" = 'preserve-native-output'
 
 clang -std=c11 -O2 -pthread -Wall -Wextra -Werror -c \
   "$root/experimental/llvm-aot/runtime/actor_runtime.c" -o "$work/actor_runtime.o"
-sha256sum "$compiler" "$work/positive.ll" "$work/positive.exe"
-echo 'PASS: typed frontend -> LLVM native AOT; deterministic IR; exit-42 guest; fail-closed negative; C actor compile'
+
+# Exact-byte fixture from atto-source.llvm tests/actors/pass/188-critical-read-write.atto.
+# The relocated compiler must prove parser-owned target body ranges, sealed
+# state, two independent actor instances and real linked native C runtime.
+actor_src="$root/experimental/llvm-aot/fixtures/188-critical-read-write.atto"
+test "$(git hash-object "$actor_src")" = "3550660aa86317c4d9c08366e278e2b25ff8c68d"
+"$compiler" "$actor_src" -o "$work/actor.ll" --emit-llvm
+grep -q 'define void @atto_actor_init(i32 %kind)' "$work/actor.ll"
+grep -q 'define void @atto_actor_receive(i32 %kind,' "$work/actor.ll"
+"$compiler" "$actor_src" -o "$work/actor.exe"
+readelf -h "$work/actor.exe" > "$work/actor-elf-header.txt"
+grep -q 'Class:[[:space:]]*ELF64' "$work/actor-elf-header.txt"
+set +e
+timeout -k 3 20 "$work/actor.exe" > "$work/actor-stdout.txt"
+actor_status=$?
+set -e
+if (( actor_status != 0 )); then
+  echo "LLVM_ADAPTER_ACTOR_FAILED: sealed-state native guest exited $actor_status" >&2
+  exit 1
+fi
+printf '5\n7\n' > "$work/actor-expected.txt"
+LC_ALL=C sort "$work/actor-stdout.txt" > "$work/actor-sorted.txt"
+cmp "$work/actor-expected.txt" "$work/actor-sorted.txt"
+
+# An incomplete forward-only actor must fail before producing any executable.
+cat > "$work/unlinked-actor.atto" <<'UNLINKED_ACTOR'
+use namespace counters;
+declare actor Counter;
+pub fnc main(): int { return 0; }
+UNLINKED_ACTOR
+if "$compiler" "$work/unlinked-actor.atto" -o "$work/unlinked.exe" > "$work/unlinked.log" 2>&1; then
+  echo "LLVM_ADAPTER_ACTOR_UNSAFE: unresolved actor compiled" >&2
+  exit 1
+fi
+grep -q E_UNLINKED "$work/unlinked.log"
+test ! -e "$work/unlinked.exe"
+sha256sum "$compiler" "$work/positive.ll" "$work/positive.exe" "$work/actor.ll" "$work/actor.exe"
+echo 'PASS: typed frontend -> LLVM native AOT; scalar exit-42; sealed-state actor exit-0; fail-closed negatives; C actor compile'
