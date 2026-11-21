@@ -45,7 +45,7 @@ fn llvm_target_parser_exposes_bounded_native_callable_spans() {
     let site = &headers.function_sites[0];
     assert!(site.declaration_start < site.body_start);
     assert!(site.body_start < site.end && site.end <= tokens.len());
-    assert!(matches!(tokens[site.declaration_start].tok, Tok::Ident(ref v) if v == "pub"));
-    assert!(matches!(tokens[site.body_start].tok, Tok::LBrace));
-    assert!(matches!(tokens[site.end - 1].tok, Tok::RBrace));
+    assert!(matches!(&tokens[site.declaration_start].tok, Tok::Ident(v) if v == "pub"));
+    assert!(matches!(&tokens[site.body_start].tok, Tok::LBrace));
+    assert!(matches!(&tokens[site.end - 1].tok, Tok::RBrace));
 }
