@@ -59,7 +59,7 @@ jobs:
       - name: Test native compiler core over the fixture corpus
         env:
           RUST_MIN_STACK: "16777216"
-        run: cargo test --locked --verbose
+        run: cargo test --locked --all-targets --verbose
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks

@@ -87,6 +87,14 @@ const diskSet = new Set(disk);
 assert.equal(diskSet.size, disk.length, 'duplicate root Rust test basename');
 for (const name of nativeRootTests) {
   assert.ok(diskSet.has(name), 'native-exclusion entry missing: ' + name);
+  // An exception is permitted only for a test bound to the separate native
+  // Cranelift crate or its oresc CLI. Never turn this list into a generic way
+  // to hide failing browser compiler tests from Cargo discovery.
+  const source = readFileSync(join(root, 'tests', name + '.rs'), 'utf8');
+  assert.match(source, /\boreslang_source_rs\s*::|\bCARGO_BIN_EXE_oresc\b/,
+    'native exclusion is not justified by a native compiler dependency: ' + name);
+  assert.doesNotMatch(source, /\batto_compiler\s*::/,
+    'native exclusion unexpectedly imports the browser compiler: ' + name);
 }
 const expected = disk.filter(name => !nativeRootTests.has(name)).sort();
 const pattern = /\[\[test\]\]\s*name\s*=\s*"([^"]+)"\s*path\s*=\s*"tests\/([^"]+)\.rs"/g;
