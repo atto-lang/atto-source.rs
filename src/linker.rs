@@ -209,7 +209,7 @@ fn header(source: &str, file: &str) -> R<Header> {
     // import (including an attempted nested one) must never be silently lost.
     for token in &t[i..] {
         if let Tok::Ident(s) = &token.tok {
-            if s == "import" || s == "namespace" || s == "use" {
+            if s == "import" || s == "namespace" {
                 return Err(err(
                     token.pos,
                     "E_SYNTAX",

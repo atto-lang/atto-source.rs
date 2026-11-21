@@ -9,6 +9,10 @@ on:
         description: 'Exact 40-character source PR head SHA; reject drift'
         required: true
         type: string
+      expected_tree:
+        description: 'Exact 40-character expected Git tree SHA for source receipt'
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -24,10 +28,16 @@ jobs:
         shell: bash
         env:
           EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_TREE: ${{ inputs.expected_tree }}
           DISPATCH_HEAD: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_REPOSITORY" = "atto-lang/atto-source.rs"
+          test "$SOURCE_REF_TYPE" = "branch"
           test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -36,16 +46,34 @@ jobs:
       - name: Bind checkout to exact head/tree
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_TREE: ${{ inputs.expected_tree || '' }}
+          SOURCE_EVENT: ${{ github.event_name }}
         run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          git rev-parse HEAD
-          git rev-parse HEAD^{tree}
+          ACTUAL_TREE=$(git rev-parse 'HEAD^{tree}')
+          [[ "$ACTUAL_TREE" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$SOURCE_EVENT" == "workflow_dispatch" ]]; then
+            [[ "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]]
+            test "$ACTUAL_TREE" = "$EXPECTED_TREE"
+          fi
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code HEAD --
+          test "$(git write-tree)" = "$ACTUAL_TREE"
+          printf 'EXACT_SOURCE_VERIFIED head=%s tree=%s\n' "$EXPECTED_HEAD" "$ACTUAL_TREE"
       - name: Verify byte-identical canonical AOT copy admission source
         shell: bash
         run: |
           set -euo pipefail
           test "$(git hash-object src/copy_graph_v1.rs)" = "3008a139cfba41131839de3567a263163152cf00"
           echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=3008a139cfba41131839de3567a263163152cf00"
+      - name: Verify source export policy remains deny-by-default
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/private-ci-export-policy-guard-test.sh
+          bash scripts/private-ci-export-policy-guard.sh .github/private-ci-approved-repositories.txt
       - name: Verify explicit browser-vs-native Rust test target inventory
         run: node scripts/verify-browser-cargo-tests.mjs
       - name: Syntax-check real native/Wasm compiler smoke before building toolchains

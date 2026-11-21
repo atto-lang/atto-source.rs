@@ -98,14 +98,19 @@ not proof that a runner has been provisioned or tests have passed.
    A zero-step run is **NOT_EXECUTED** and must block the next action.
 3. Only after the canary succeeds, open **Actions → Portable Atto frontend
    and browser Wasm conformance → Run workflow**, select the *same current*
-   source PR branch, and provide its full **40-character current HEAD SHA**
-   as `expected_head`. The job compares this value with immutable dispatch
-   `github.sha` **before checkout**; mismatch fails closed.
+   source PR branch, and provide the current full 40-character **commit
+   SHA** as `expected_head` plus the Git commit's 40-character **tree SHA**
+   as `expected_tree`. Fetch the tree from the verified commit object; do
+   not infer it from source file names or branch labels. The job compares
+   `expected_head` with immutable dispatch `github.sha` **before checkout**
+   and checks the actual checkout tree against `expected_tree` before any
+   code/test script runs. A mismatch fails closed.
 4. Automatic `pull_request` and `push` jobs always use
    `ubuntu-24.04`, never the repository-configured private runner label.
    Checkout pins the head SHA with `persist-credentials: false` and
    `contents: read` only. The workflow retains the exact-head tree
-   check, Cargo target inventory, Rust 1.85.1 native and wasm32 builds,
+   check, the source-local private-export deny policy test and guard, Cargo
+   target inventory, Rust 1.85.1 native and wasm32 builds,
    `cargo fmt --all -- --check`, Cargo/Clippy, native-package tests,
    real compiler and compiled guest tests, browser E2E and receipts.
 5. Independently inspect the actual run ID, steps, exit codes, generated
