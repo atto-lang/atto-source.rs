@@ -1626,6 +1626,13 @@ impl Parser {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
         } = self.parse_named_callable_header("a function name")?;
         let declared_effects = self.parse_effect_clauses()?;
+        if return_first && declared_effects.is_some()
+            && !self.is_word("begin")
+            && !matches!(self.peek(), Tok::ColonColon | Tok::LBrace)
+        {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "return-first effects require begin, :: or braces before the body"));
+        }
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1666,11 +1673,9 @@ impl Parser {
                 Some("panics") => "panics",
                 _ => return Ok(any.then_some(declared)),
             };
-            if *self.peek_at(1) != Tok::LParen {
-                // Keep unsupported free-form Java-style headers in the
-                // existing parser error path rather than consuming body text.
-                return Ok(any.then_some(declared));
-            }
+            // Free-form 'raises Error' and 'raises(Error)' share checked
+            // effect flags. Unresolved user-defined subtypes remain rejected.
+            let parenthesized = *self.peek_at(1) == Tok::LParen;
             let pos = self.pos();
             let seen = match kind {
                 "throws" => declared.throws,
@@ -1690,7 +1695,7 @@ impl Parser {
             }
             any = true;
             self.advance();
-            self.advance();
+            if parenthesized { self.advance(); }
             let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
             if ty != "Error" {
                 return Err(Diagnostic::new(ty_pos, "E_TYPE",
@@ -1700,8 +1705,10 @@ impl Parser {
                 return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
                     format!("duplicate Error type in '{kind}' effect clause")));
             }
-            self.expect(Tok::RParen, "')' to close the effect clause")?;
-            // `throws(Error), raises(Error)`: a comma may separate clauses.
+            if parenthesized {
+                self.expect(Tok::RParen, "')' to close the effect clause")?;
+            }
+            // \`throws(Error), raises(Error)\`: a comma may separate clauses.
             if *self.peek() == Tok::Comma
                 && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
                 && *self.peek_at(2) == Tok::LParen
@@ -2240,7 +2247,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
             }
-            Some("throw") => {
+            Some("throw" | "throw!") => {
                 self.advance();
                 // Only the typed Error constructor is admitted by the
                 // checker. A raw string is never silently throwable.
@@ -2248,12 +2255,13 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Throw(error, pos))
             }
-            Some("raise") => {
+            Some("raise" | "raise!") => {
                 self.advance();
                 let error = self.parse_expr()?;
                 self.terminator()?;
                 Ok(Stmt::Raise(error, pos))
             }
+            Some("panic!") => Err(unsupported(pos, "typed panic! and supervisor CONTROL lowering")),
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
@@ -3586,6 +3594,10 @@ impl Parser {
                 // Lifetime binders are type-level. Do not emit guest values.
                 return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
                     "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
+            }
+            Tok::Ident(s) if s == "trap!" => {
+                return Err(Diagnostic::new(pos, "E_TRAP_BANG_RESULT_UNVERIFIED",
+                    "trap! requires checked Result<T,Error>; legacy Option trap is not equivalent"));
             }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
