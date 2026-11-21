@@ -1717,14 +1717,45 @@ impl<'a> Checker<'a> {
                     }
                 }
                 if checked_bang {
-                    // The checked bang form MUST NOT call the legacy
-                    // trap-based actor-to-actor publisher or a partially
-                    // attached actor-channel segment. Until an atomic direct
-                    // ActorRef->ActorRef Result helper exists, only the
-                    // validated, bounded actor/Channel<T>/actor triple is
-                    // executable. This rejection precedes operand lowering.
+                    // Checked direct-actor ports use one Result-returning
+                    // guest admission helper. Never reuse __actor_link (which
+                    // traps) or publish partial edge fragments. Reject nested
+                    // graphs and unknown endpoint kinds before guest output.
+                    if matches!(&l.kind, Ex::Binary(..))
+                        || matches!(&r.kind, Ex::Binary(..))
+                    {
+                        return Err(err(pos, "E_UNSUPPORTED",
+                            "checked two-actor pipe! requires direct, un-nested ActorRef endpoints"));
+                    }
+                    let vals = self.operands(&[(l, None), (r, None)])?;
+                    let (src_ty, dst_ty) = if reverse {
+                        (&vals[1].1, &vals[0].1)
+                    } else {
+                        (&vals[0].1, &vals[1].1)
+                    };
+                    if let (Ty::Actor(a), Ty::Actor(b)) = (src_ty, dst_ty) {
+                        let from = &self.objs[*a];
+                        let to = &self.objs[*b];
+                        if !from.emits_declared || !to.receives_declared {
+                            return Err(type_err(pos,
+                                "checked actor pipe! requires declared 'emits T' and 'receives T' ports"));
+                        }
+                        let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
+                            format!("actor '{}' has no declared emission type", from.name)))?;
+                        if to.receive.is_none() || *emitted != to.mail {
+                            return Err(type_err(pos,
+                                "checked actor pipe! requires equal nominal DATA port types"));
+                        }
+                        let mut it = vals.into_iter();
+                        let first = it.next().unwrap().0;
+                        let last = it.next().unwrap().0;
+                        let (source, sink) = if reverse { (last, first) } else { (first, last) };
+                        return Ok((self.rt("__actor_link_try", vec![source, sink]),
+                            Ty::Result(Box::new(Ty::PipeHandle),
+                                       Box::new(Ty::PipeSetupError))));
+                    }
                     return Err(err(pos, "E_UNSUPPORTED",
-                        "checked pipe!/rpipe! currently requires an actor -> bounded Channel<T> -> actor triple"));
+                        "checked pipe! needs two typed actors or an actor -> bounded Channel<T> -> actor triple"));
                 }
                 // Parenthesized continuous graphs are not ordinary endpoint
                 // expressions. Reject before recursively publishing any edge.
