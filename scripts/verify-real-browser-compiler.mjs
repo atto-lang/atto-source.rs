@@ -19,6 +19,7 @@ const tests=[
   ['pass','01-answer.atto',42n],
   ['pass','02-spec-ch16-add.atto',42n],
   ['pass','03-arrow-return.atto',42n],
+  ['pass','return-first-bullet-and-arrow.atto',42n],
   ['pass','04-binding-forms.atto',52n],
   ['pass','06-precedence.atto',120n],
   ['pass','19-recursion-fib.atto',55n],
@@ -29,6 +30,7 @@ const tests=[
   ['fail','03-unknown-name.atto','E_UNBOUND'],
   ['fail','09-call-arity.atto','E_ARITY'],
   ['fail','23-no-main.atto','E_ENTRY'],
+  ['fail','return-first-bullet-lookalike.atto','E_TOKEN'],
   ['panic','checked-add-overflow',1,
     'pub fnc main(): int { val x: int = 9223372036854775807; return x + 1; }\n'],
   ['pass','01-answer.atto',42n]
