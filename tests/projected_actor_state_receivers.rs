@@ -470,3 +470,23 @@ mtd (Meter this) inspect(): void {
     assert_eq!(err.code, "E_STATE_FIELD_UNKNOWN");
     assert_eq!(compile(src).unwrap_err().code, "E_STATE_FIELD_UNKNOWN");
 }
+
+
+#[test]
+fn concrete_actor_with_over_thirty_two_state_fields_keeps_narrow_projection() {
+    let mut src = String::from("declare actor Foo;\ndefine actor Foo as\n");
+    for id in 0..33 {
+        src.push_str(&format!("let int f{id} = 0;\n"));
+    }
+    src.push_str("end\n");
+    src.push_str("mtd (Foo mut self.state.f32) f(): void {\n");
+    src.push_str("  self.handle_state(critical-write |s| -> { s.f32 += 1; });\n}\n");
+    let headers = parse(&src);
+    let proofs = atto_compiler::target_state_effects::
+        validate_source_actor_state_projections(&headers).unwrap();
+    assert_eq!(proofs.len(), 1);
+    assert_eq!(proofs[0].observed_fields.len(), 1);
+    assert_eq!(proofs[0].observed_writes.len(), 1);
+    // The source layout proof alone does not enable executable actor ABI.
+    assert_eq!(compile(&src).unwrap_err().code, "E_UNSUPPORTED");
+}

@@ -9,6 +9,13 @@ use crate::diag::{Diagnostic, Pos};
 use crate::target_syntax::{ReceiverHeader, ReceiverStateWrite};
 use std::collections::BTreeSet;
 
+// This is a bounded reference model, never a proof of CFG/SSA liveness.
+const MAX_STATE_LOAN_DEFS: usize = 4096;
+// Actor layout may have up to parser::MAX_MEMBERS fields; the
+// receiver's individual projected field set remains capped at 32.
+const MAX_STATE_SCHEMA_FIELDS: usize = 256;
+const MAX_STATE_EFFECT_SITES: usize = 4096;
+
 type Check<T> = Result<T, Diagnostic>;
 
 fn error(pos: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic {
@@ -40,7 +47,7 @@ pub struct StateLayoutModel {
 
 impl StateLayoutModel {
     pub fn new(actor: &str, fields: &[&str], pos: Pos) -> Check<Self> {
-        if actor.is_empty() || fields.is_empty() || fields.len() > 32 {
+        if actor.is_empty() || fields.is_empty() || fields.len() > MAX_STATE_SCHEMA_FIELDS {
             return Err(error(pos, "E_STATE_FIELD_UNKNOWN", "missing or oversized actor-state schema"));
         }
         let mut unique = BTreeSet::new();
@@ -140,11 +147,14 @@ pub struct EffectModel {
 pub struct LiveStateLoanModel<'a> {
     layout: &'a StateLayoutModel,
     live: Vec<LiveLoan>,
+    /// Globally issued within this sequential model, including ended loans.
+    /// Loan identity must never be recycled into a different provenance.
+    issued: BTreeSet<u32>,
 }
 
 impl<'a> LiveStateLoanModel<'a> {
     pub fn new(layout: &'a StateLayoutModel) -> Self {
-        Self { layout, live: Vec::new() }
+        Self { layout, live: Vec::new(), issued: BTreeSet::new() }
     }
 
     fn conflicts(&self, place: StatePlace, kind: LoanKind) -> bool {
@@ -153,13 +163,22 @@ impl<'a> LiveStateLoanModel<'a> {
     }
 
     pub fn acquire(&mut self, id: u32, place: StatePlace, kind: LoanKind, pos: Pos) -> Check<()> {
-        self.layout.validate_place(place, pos)?;
-        if self.live.iter().any(|loan| loan.id == id) {
-            return Err(error(pos, "E_BORROW_CONFLICT", "duplicate live loan identity"));
+        if id == 0 {
+            return Err(error(pos, "E_LOAN_ID_ZERO", "loan identity zero is reserved"));
         }
+        if self.issued.contains(&id) {
+            return Err(error(pos, "E_LOAN_DEF_REUSED",
+                "loan identity must be unique, even after EndLoan"));
+        }
+        if self.issued.len() >= MAX_STATE_LOAN_DEFS {
+            return Err(error(pos, "E_LOAN_BUDGET", "too many distinct loan definitions"));
+        }
+        self.layout.validate_place(place, pos)?;
         if self.conflicts(place, kind) {
             return Err(error(pos, "E_BORROW_CONFLICT", "overlapping live state loans"));
         }
+        // Only successful, validated loan definitions consume an identity.
+        self.issued.insert(id);
         self.live.push(LiveLoan { id, place, kind });
         Ok(())
     }
@@ -186,6 +205,12 @@ impl<'a> LiveStateLoanModel<'a> {
     ) -> Check<()> {
         let effect = effect.ok_or_else(|| error(pos, "E_EFFECT_UNVERIFIED",
             "missing sealed transitive method effects"))?;
+        if effect.reads.len().checked_add(effect.writes.len())
+            .is_none_or(|n| n > MAX_STATE_EFFECT_SITES)
+        {
+            return Err(error(pos, "E_EFFECT_BUDGET",
+                "transitive actor-state effect footprint exceeds bound"));
+        }
         if effect.may_suspend || effect.may_escape {
             return Err(error(pos, "E_BORROW", "unverified suspension or escape in state effect"));
         }
@@ -314,6 +339,21 @@ mod tests {
     }
 
     #[test]
+    fn state_layout_cap_is_independent_of_projection_cap() {
+        let names: Vec<String> = (0..33).map(|id| format!("field_{id}")).collect();
+        let fields: Vec<&str> = names.iter().map(String::as_str).collect();
+        let schema = StateLayoutModel::new("Foo", &fields, p()).unwrap();
+        assert_eq!(schema.place(Some("field_32"), p()).unwrap(), StatePlace::Field(32));
+        let projection = header("Foo mut self.state.field_32");
+        let permission = schema.receiver_ceiling(&projection).unwrap();
+        assert!(matches!(permission, WriteCeiling::Fields(ids) if ids.contains(&32)));
+        let too_many: Vec<String> =
+            (0..=MAX_STATE_SCHEMA_FIELDS).map(|id| format!("f{id}")).collect();
+        let too_many: Vec<&str> = too_many.iter().map(String::as_str).collect();
+        code(StateLayoutModel::new("Foo", &too_many, p()), "E_STATE_FIELD_UNKNOWN");
+    }
+
+    #[test]
     fn named_receiver_alpha_equivalence_preserves_write_ceiling() {
         let schema = layout();
         let a = schema.receiver_ceiling(&header("Foo mut self.state.{counter, xyz}")).unwrap();
@@ -382,6 +422,50 @@ mod tests {
         effect.may_suspend = false;
         effect.may_escape = true;
         code(loans.check_effect(&ceiling, Some(&effect), p()), "E_BORROW");
+    }
+
+    #[test]
+    fn loan_ids_are_single_assignment_even_across_end_and_failed_acquire() {
+        let schema = layout();
+        let mut loans = LiveStateLoanModel::new(&schema);
+        code(loans.acquire(0, StatePlace::Field(0), LoanKind::Read, p()),
+            "E_LOAN_ID_ZERO");
+        loans.acquire(1, StatePlace::Field(0), LoanKind::Read, p()).unwrap();
+        code(loans.acquire(1, StatePlace::Field(1), LoanKind::Read, p()),
+            "E_LOAN_DEF_REUSED");
+        code(loans.acquire(2, StatePlace::Field(0), LoanKind::Write, p()),
+            "E_BORROW_CONFLICT");
+        loans.end(1, p()).unwrap();
+        code(loans.acquire(1, StatePlace::Field(1), LoanKind::Write, p()),
+            "E_LOAN_DEF_REUSED");
+        // A failed conflict check does not register a definition.
+        loans.acquire(2, StatePlace::Field(0), LoanKind::Write, p()).unwrap();
+        loans.end(2, p()).unwrap();
+        code(loans.acquire(2, StatePlace::Field(0), LoanKind::Read, p()),
+            "E_LOAN_DEF_REUSED");
+    }
+
+    #[test]
+    fn loan_and_effect_budgets_fail_closed_without_changing_live_state() {
+        let schema = layout();
+        let mut loans = LiveStateLoanModel::new(&schema);
+        for id in 1..=(MAX_STATE_LOAN_DEFS as u32) {
+            loans.acquire(id, StatePlace::Field(0), LoanKind::Read, p()).unwrap();
+            loans.end(id, p()).unwrap();
+        }
+        code(loans.acquire(MAX_STATE_LOAN_DEFS as u32 + 1,
+            StatePlace::Field(0), LoanKind::Read, p()), "E_LOAN_BUDGET");
+        loans.suspend(p()).unwrap();
+        let mut effect = EffectModel {
+            reads: vec![StatePlace::Field(0); MAX_STATE_EFFECT_SITES + 1],
+            writes: vec![],
+            may_suspend: false,
+            may_escape: false,
+        };
+        code(loans.check_effect(&WriteCeiling::ReadOnly, Some(&effect), p()),
+            "E_EFFECT_BUDGET");
+        effect.reads.pop();
+        loans.check_effect(&WriteCeiling::ReadOnly, Some(&effect), p()).unwrap();
     }
 
     #[test]
