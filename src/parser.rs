@@ -3338,7 +3338,9 @@ impl Parser {
                 Tok::Le => BinOp::Le,
                 Tok::Gt => BinOp::Gt,
                 Tok::Ge => BinOp::Ge,
-                Tok::Ident(s) if s == "as" || s == "matches" => return Err(unsupported(pos, &format!("'{s}'"))),
+                // `as T` is consumed by parse_expr after the complete
+                // value expression, not rejected here as a comparison.
+                Tok::Ident(s) if s == "matches" => return Err(unsupported(pos, &format!("'{s}'"))),
                 _ => break,
             };
             self.advance();
