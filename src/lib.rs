@@ -75,6 +75,8 @@ pub mod target_typed;
 /// Restricted canonical actor-state field and sequential live-loan oracle;
 /// not executable guest admission or CFG/NLL verification.
 pub mod target_state_effects;
+/// Restricted source-grounded flat actor-state guard MIR export, never guest admission.
+pub mod actor_state_mir_v0;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;

@@ -27,6 +27,11 @@ strip = true
 name = "attoc"
 path = "src/bin/attoc.rs"
 
+# Explicit host-only bounded actor-state MIR exporter, never a guest compiler.
+[[bin]]
+name = "atto-state-mir"
+path = "src/bin/atto_state_mir.rs"
+
 # Browser compiler integration tests: explicit targets prevent Cargo from
 # pulling legacy oreslang_source_rs/Cranelift tests into this crate.
 
@@ -394,3 +399,7 @@ path = "tests/projected_receiver_cli_denial.rs"
 [[test]]
 name = "projected_receiver_playground_contract"
 path = "tests/projected_receiver_playground_contract.rs"
+
+[[test]]
+name = "actor_state_mir_v0"
+path = "tests/actor_state_mir_v0.rs"
