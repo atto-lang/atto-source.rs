@@ -142,3 +142,57 @@ test('a stuck receive times out without blocking the parent event loop', async (
   assert.equal(actor.state,'failed');
   assert.equal(worker.terminated,1);
 });
+
+test('get_ready() is one stable initialization Future independent of terminal DONE', async () => {
+  const worker=new FakeActorWorker({hold_ready:true,hold_done:true});
+  const actor=new ActorSession(worker,7,new Uint8Array(),{timeout_ms:400});
+  assert.strictEqual(actor.get_ready(),actor.get_ready(),'stable readiness observer');
+  assert.notStrictEqual(actor.get_ready(),actor.get_done(),'READY is not DONE');
+  assert.equal(Object.hasOwn(actor,'ready'),false,'no public .ready lifecycle property');
+  assert.equal(Object.hasOwn(actor,'done'),false,'no public .done lifecycle property');
+
+  let observed_ready=false;
+  void actor.get_ready().then(()=>{observed_ready=true;});
+  assert.equal(actor.admit(19n),ACTOR_ADMISSION.OK,'spawned actor has registered mailbox before READY');
+  assert.equal(worker.messages.filter(m=>m.kind==='message').length,0);
+  worker.emit({kind:'ready'});
+  await actor.get_ready();
+  assert.equal(observed_ready,true);
+  assert.notEqual(actor.state,'completed');
+
+  const closing=actor.drain_and_close();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(actor.state,'closing');
+  assert.equal(worker.messages.filter(m=>m.kind==='message').length,1);
+  worker.emit({kind:'done',processed:1});
+  await closing;
+  assert.equal(actor.state,'completed');
+  await actor.get_ready(); // Late observer sees the same successful READY.
+  assert.strictEqual(actor.get_ready(),actor.get_ready());
+});
+
+test('failed startup rejects get_ready and get_done and ignores forged late READY', async () => {
+  const worker=new FakeActorWorker({hold_ready:true});
+  const actor=new ActorSession(worker,8,new Uint8Array(),{timeout_ms:300});
+  const ready=actor.get_ready(),done=actor.get_done();
+  worker.emit({kind:'error',message:'E_ACTOR_START_FAILED'});
+  await assert.rejects(ready,/E_ACTOR_START_FAILED/);
+  await assert.rejects(done,/E_ACTOR_START_FAILED/);
+  worker.emit({kind:'ready'});
+  assert.equal(actor.state,'failed');
+  assert.strictEqual(actor.get_ready(),ready);
+  await assert.rejects(actor.get_ready(),/E_ACTOR_START_FAILED/);
+  assert.equal(actor.admit(1n),ACTOR_ADMISSION.CLOSED);
+});
+
+test('readiness waiter does not close or cancel the actor', async () => {
+  const worker=new FakeActorWorker();
+  const actor=new ActorSession(worker,9,new Uint8Array(),{timeout_ms:300});
+  await actor.get_ready();
+  assert.equal(actor.state,'ready');
+  assert.equal(actor.admit(2n),ACTOR_ADMISSION.OK);
+  const settled=await actor.drain_and_close();
+  assert.equal(settled.processed,1);
+  assert.equal(actor.state,'completed');
+  assert.strictEqual(actor.get_ready(),actor.get_ready());
+});
