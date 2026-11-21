@@ -46,6 +46,16 @@ pub fn lower(input: &Program) -> R<Program> {
     for (idx, f) in program.funcs.iter_mut().enumerate() {
         if f.is_generator { continue; }
         let mut direct = Vec::<Direct>::new();
+        // Discover every same-function direct-lambda name before lowering.
+        // Looking only at already visited declarations would miss a forward
+        // reference inside an earlier lambda body, potentially binding the
+        // callee to an unrelated top-level function after helper generation.
+        let lambda_names = f.body.iter().filter_map(|stmt| match stmt {
+            Stmt::Bind { name, init, .. }
+                if matches!(&init.kind, ExprKind::Lambda { .. }) =>
+                Some(name.clone()),
+            _ => None,
+        }).collect::<BTreeSet<_>>();
         // Keep the top-level lexical binding ledger before desugaring removes
         // the lambda declaration. The ordinary checker would otherwise miss
         // an earlier same-scope declaration with the identical name.
@@ -125,17 +135,13 @@ pub fn lower(input: &Program) -> R<Program> {
                     }
                     let mut free = BTreeSet::new();
                     if let ExprKind::Lambda { body: LambdaBody::Expression(expression), .. } = &init.kind {
-                        // An independently lifted function cannot invoke a
-                        // previously declared local lambda: its hidden captured
-                        // environment is not in that generated function scope.
-                        // Reject rather than resolving a shadowed top-level
-                        // callable with the same source name.
-                        let previous = direct.iter()
-                            .map(|d| d.source.clone())
-                            .collect::<BTreeSet<_>>();
-                        if calls_any_named(expression, &previous, 0)? {
+                        // Named calls to any same-function lambda—including
+                        // a later binding or self-reference—need closure graph
+                        // linking. Never silently bind the identical name to
+                        // a global function, which changes source meaning.
+                        if calls_any_named(expression, &lambda_names, 0)? {
                             return Err(error(*pos, "E_UNSUPPORTED",
-                                "direct lambda-to-lambda calls require verified closure environment linking"));
+                                "local lambda calls and self-recursion require verified closure environment linking"));
                         }
                         free_names(expression, &mut free, 0)?;
                     }

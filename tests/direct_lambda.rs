@@ -161,6 +161,22 @@ fn sibling_lambdas_get_independent_definition_site_capture_snapshots() {
 }
 
 #[test]
+fn lambda_forward_reference_must_not_resolve_to_an_unrelated_global_function() {
+    // The previous source-order scanner only knew already-visited bindings.
+    // A future local lambda could accidentally become a global direct call.
+    let source = r#"
+        fnc later(int n): int { return n * 100; }
+        pub fnc main(): int {
+            val first = |n| : int -> later(n) + 1;
+            val later = |n| : int -> n + 1;
+            return first(1) + later(1);
+        }
+    "#;
+    let diag = atto_compiler::compile(source).expect_err("forward callable shadow must reject");
+    assert_eq!(diag.code, "E_UNSUPPORTED", "{diag}");
+}
+
+#[test]
 fn multi_lambda_rejects_unverified_links_shadowing_and_excessive_bindings() {
     for (source, code) in [
         ("pub fnc main(): int { val a = |n| -> n+1; val a = |n| -> n+2; return a(10); }",

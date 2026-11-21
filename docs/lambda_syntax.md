@@ -103,8 +103,8 @@ currently verified lexical call-graph scan; later statement/block lambda
 bodies fail closed. The first lambda retains its earlier statement-body support.
 
 Only direct calls are supported: callable values, aliases, escaped closures,
-mutable or heap-owning captures, reassignments, calls from one locally lifted
-lambda into another, contextual inference from nonliteral first arguments,
+mutable or heap-owning captures, reassignments, named calls to sibling/forward
+or self local lambdas, contextual inference from nonliteral first arguments,
 and Rx pipelines still fail closed. Immutable scalar captures are lifted to
 definition-site snapshot locals, with distinct snapshot names per sibling.
 Unused lambdas, duplicate bindings and more than eight direct lambdas per
