@@ -1124,7 +1124,8 @@ fn validate_callback(
                 "suspension, spawning and deferred effects are forbidden during critical access"));
         }
         if word_at(toks, i, "handle_state") ||
-            word_at(toks, i, &receiver.binding) {
+            (word_at(toks, i, &receiver.binding) &&
+                !(i > 0 && at(toks, i - 1, &Tok::Dot))) {
             return Err(diagnostic(toks, i, "E_BORROW",
                 "nested actor state access or self capture is forbidden in critical callback"));
         }
