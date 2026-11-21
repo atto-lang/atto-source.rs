@@ -114,3 +114,45 @@ fn lambda_expression_heads_must_be_pipe_delimited() {
         assert!(parsed.is_err(), "bare lambda head was accepted: {expr}");
     }
 }
+
+#[test]
+fn explicit_pipe_lambdas_compile_to_real_wasm_and_recover_after_rejection() {
+    // Keep the proven browser ABI: one direct lambda per lexical function,
+    // and a scalar literal on the first direct call for inferred parameters.
+    // The public playground executes this compiled source as an actual guest.
+    let valid = r#"
+        fnc five_discarding_one(): int {
+            val constant = |_| : int -> 5;
+            return constant(99);
+        }
+        fnc seven_from_no_args(): int {
+            val constant = || -> 7;
+            return constant();
+        }
+        pub fnc main(): int {
+            val twice = |n| : int -> n * 2;
+            return five_discarding_one() + seven_from_no_args() + twice(15);
+        }
+    "#;
+    let first = atto_compiler::compile(valid).expect("all three explicit pipe heads must lower");
+    assert!(first.starts_with(b"\0asm\x01\0\0\0"), "real Wasm module required");
+    assert_eq!(first, atto_compiler::compile(valid).unwrap(), "Wasm must be reproducible");
+
+    for forbidden in [
+        "_ : int -> 5",
+        "_ -> 5",
+        "value : int -> value + 5",
+        "value -> value + 5",
+    ] {
+        let invalid = format!(
+            "pub fnc main(): int {{ val fnc_value = {forbidden}; return 42; }}"
+        );
+        let err = atto_compiler::compile(&invalid)
+            .expect_err("delimiter-free function expressions cannot emit Wasm");
+        assert!(err.code.starts_with("E_"), "structured error: {forbidden}");
+        assert!(err.pos.line > 0 && err.pos.col > 0,
+            "diagnostic location must be populated: {forbidden}");
+        assert_eq!(atto_compiler::compile(valid).unwrap(), first,
+            "one rejected source must not corrupt the next valid compiler call");
+    }
+}
