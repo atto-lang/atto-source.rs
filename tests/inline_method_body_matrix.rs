@@ -1,5 +1,7 @@
 //! Accepted inline-method spelling matrix. Parser assertions deliberately
 //! do not pretend that out-of-line receiver dispatch is executable.
+//! Named non-void callable cases return explicitly; legacy implicit tails
+//! remain a separately versioned grammar concern, not an mtd exception.
 use atto_compiler::{lexer::lex, parser::Parser, ast::Stmt};
 
 #[test]
@@ -10,12 +12,12 @@ fn inline_methods_accept_five_body_styles_with_canonical_mtd() {
             mtd colon_arrow(): int -> { return 5; }
             arrow_braces() -> int { return 5; }
             arrow_end() -> int
-                let int x = 3,
-                x + 2
+                let int x = 3;
+                return x + 2;
             end
             arrow_delimited() -> int ::
-                let int x = 3,
-                x + 2
+                let int x = 3;
+                return x + 2;
             end
             static fnc static_braces(): int { return 5; }
         end
@@ -41,10 +43,13 @@ fn inline_actor_mtd_methods_share_the_five_body_styles() {
             mtd colon_arrow(): int -> { return 5; }
             arrow_braces() -> int { return 5; }
             arrow_end() -> int
-                let int x = 3,
-                x + 2
+                let int x = 3;
+                return x + 2;
             end
-            arrow_delimited() -> int :: let int x = 3, x + 2 end
+            arrow_delimited() -> int ::
+                let int x = 3;
+                return x + 2;
+            end
         end
         pub fnc main(): int { return 0; }
     "#;
@@ -61,7 +66,7 @@ fn inline_actor_mtd_methods_share_the_five_body_styles() {
 fn duplicate_arity_is_not_resolved_by_receiver_style() {
     let source = r#"
         define class Calculator as
-            fnc get() -> int :: 5 end
+            fnc get() -> int :: return 5; end
             mtd get() -> int { return 6; }
         end
         pub fnc main(): int { return 0; }
