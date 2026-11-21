@@ -11,7 +11,7 @@ fn signed_int_division_has_float_result_and_wasm_artifact() {
         "fnc half(int a, int b): float { return a / b; } pub fnc main(): int { if half(5, -2) eq -2.5 then return 42; fi return 1; }",
     ] {
         let guest = compile(body).unwrap_or_else(|e| panic!("division: {e}"));
-        assert_eq!(&guest[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
     }
 }
 
