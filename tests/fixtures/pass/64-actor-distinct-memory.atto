@@ -1,0 +1,26 @@
+// Two spawned instances of one nominal actor must remain separate compiled guests.
+// The conformance host also checks that their exported Wasm memories are distinct.
+// This does NOT prove pinned logical actor stacks or zero-GC guest allocation.
+// expect-exit: 0
+// expect-stdout: main queued
+// expect-stdout: 11
+// expect-stdout: 12
+// expect-stdout: 42
+// expect-stdout: 43
+// stdout-order: unordered
+define actor Echo as
+    receive(ActorMail<int> mail): void {
+        stdio.println(mail.value);
+        stdio.println(mail.value + 1);
+        return;
+    }
+end
+
+pub fnc main(): int {
+    val first = spawn Echo();
+    val second = spawn Echo();
+    first.send(11);
+    second.send(42);
+    stdio.println("main queued");
+    return 0;
+}

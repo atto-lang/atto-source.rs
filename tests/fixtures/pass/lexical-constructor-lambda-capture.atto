@@ -1,0 +1,18 @@
+// Regression: constructor arguments must use definition-site lambda capture.
+// A global transform of the same name must never intercept the local call.
+// expect-exit: 42
+fnc transform(int n): int { return n * 100; }
+define class Container as
+  mut int value = 0;
+  constructor(int v) { self.value = v; }
+  pub get(): int { return self.value; }
+end
+pub fnc main(): int {
+  val factor = 2;
+  val transform = |n| : int -> n * factor;
+  block {
+    val factor = 100;
+    val container = new Container(transform(21));
+    return container.get();
+  }
+}

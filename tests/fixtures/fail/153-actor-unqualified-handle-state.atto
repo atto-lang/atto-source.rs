@@ -1,0 +1,5 @@
+// expect-error: E_SEALED
+declare actor Counter;
+mtd (mut self: Counter) update(): void {
+  handle_state(critical-write |s| -> { s.count = 1; });
+}

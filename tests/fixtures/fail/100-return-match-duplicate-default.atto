@@ -1,0 +1,8 @@
+// expect-error: E_MATCH
+// java: rejects
+pub fnc main(): int {
+  return match 5 over
+    default -> 1,
+    default -> 2,
+  end
+}

@@ -1,0 +1,4 @@
+scalar-native	rust	execution
+unsupported-gate	rust	execution
+artifact-provenance	rust	execution
+negative-admission	rust	rejection

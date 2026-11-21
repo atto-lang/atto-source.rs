@@ -1,0 +1,3 @@
+// expect-error: E_SEALED
+declare actor Counter;
+mtd (Counter self) count(): int { return self.count; }

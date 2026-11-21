@@ -1,0 +1,4 @@
+// expect-error: E_DUPLICATE
+declare actor Foo;
+mtd (Foo self) foo(): void {}
+mtd (self: Foo) foo(): void {}

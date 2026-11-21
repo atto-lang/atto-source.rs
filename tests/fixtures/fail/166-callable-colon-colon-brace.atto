@@ -1,0 +1,3 @@
+// expect-error: E_SYNTAX
+fnc broken() -> int :: { return 5; } end
+pub fnc main(): int { return broken(); }

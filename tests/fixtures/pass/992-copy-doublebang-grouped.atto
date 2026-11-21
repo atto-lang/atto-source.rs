@@ -1,0 +1,7 @@
+// expect-exit: 42
+// java: rejects
+pub fnc main(): int {
+  val input = 41;
+  val value = copy!! (input);
+  return value + 1;
+}

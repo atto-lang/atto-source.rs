@@ -98,6 +98,15 @@ fn value(expr: &Expr, bindings: &BTreeMap<String, Binding>) -> R<TE> {
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
                 BinOp::Gt | BinOp::Ge => (Type::Int, Type::Bool),
                 BinOp::And | BinOp::Or => (Type::Bool, Type::Bool),
+                // This continuation path emits a restricted typed-CFG profile.
+                // Refuse bitwise operations here until that distinct generator
+                // guest-emission path is explicitly verified; ordinary scalar
+                // functions still lower these operators through the main IR.
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr => {
+                    return Err(blocked(expr.pos,
+                        "bitwise operations in generator continuations need verified lowering"));
+                }
                 BinOp::Div => {
                     return Err(blocked(expr.pos,
                         "division in generator continuation is not yet supported"));

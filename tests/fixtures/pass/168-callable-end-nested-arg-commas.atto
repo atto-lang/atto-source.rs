@@ -1,0 +1,12 @@
+// expect-exit: 42
+fnc add(int a, int b) -> int {
+    return a + b;
+}
+fnc calculate(int base) -> int ::
+    let int x = add(base, 1),
+    let int y = add(x, 1),
+    y
+end
+pub fnc main(): int {
+    return calculate(40);
+}

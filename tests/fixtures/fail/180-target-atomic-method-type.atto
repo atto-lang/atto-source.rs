@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED_TYPE
+use namespace workers;
+declare actor Worker;
+mtd (Worker self) ping(Atomic<int> value): void { return; }

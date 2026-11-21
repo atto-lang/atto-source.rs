@@ -1,0 +1,5 @@
+// expect-error: E_SEMICOLON
+fnc broken() -> int {
+    let int x = 3, x + 2
+}
+pub fnc main(): int { return broken(); }

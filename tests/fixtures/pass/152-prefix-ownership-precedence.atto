@@ -1,0 +1,10 @@
+// expect-exit: 42
+// java: rejects
+pub fnc main(): int {
+  let value = 41;
+  val copied = copy! value;
+  val shared_value = share! 1;
+  val moved = take! value;
+  val grouped = copy!(0);
+  return copied + shared_value + (moved - 41) + grouped;
+}

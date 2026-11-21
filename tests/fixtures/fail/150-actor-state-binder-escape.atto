@@ -1,0 +1,5 @@
+// expect-error: E_ESCAPE
+declare actor Counter;
+mtd (mut self: Counter) steal(): void {
+  self.handle_state(critical-read |s| -> { val leaked = s; });
+}

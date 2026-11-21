@@ -1,0 +1,3 @@
+// expect-error: E_TYPE
+declare actor Worker;
+mtd (Worker self) run(Worker peer): void {}

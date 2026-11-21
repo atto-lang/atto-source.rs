@@ -1,0 +1,16 @@
+// Enum variants are nominal and exhaustive without a default.
+// java: rejects
+// expect-exit: 1
+define enum Light as
+  Red
+  Green
+  Yellow
+end
+pub fnc main(): int {
+  val light = Light.Green;
+  return match light over
+    on Light.Red -> 0,
+    on Light.Green -> 1,
+    on Light.Yellow -> 2,
+  end
+}

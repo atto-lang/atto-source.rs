@@ -1,0 +1,30 @@
+// expect-exit: 42
+// Compiled scalar-only routing probe. NOT the general Array/trie router.
+// No transport parsing, captures, cross-file imports or actor runtime.
+define module RouteProbe as
+  pub fnc resolve(string method, string path): int {
+    if path eq "/users/new" then
+      if method eq "GET" then
+        return 101;
+      fi
+      return 405;
+    fi
+    if path.starts_with("/users/") then
+      if method eq "GET" then
+        return 102;
+      fi
+      return 405;
+    fi
+    return 404;
+  }
+end
+
+pub fnc main(): int {
+  if RouteProbe.resolve("GET", "/users/new") neq 101 then return 1; fi
+  if RouteProbe.resolve("HEAD", "/users/new") neq 405 then return 2; fi
+  if RouteProbe.resolve("GET", "/users/123") neq 102 then return 3; fi
+  if RouteProbe.resolve("POST", "/users/123") neq 405 then return 4; fi
+  if RouteProbe.resolve("GET", "/absent") neq 404 then return 5; fi
+  if RouteProbe.resolve("GET", "/users/new/details") neq 102 then return 6; fi
+  return 42;
+}

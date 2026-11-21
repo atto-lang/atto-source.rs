@@ -1,0 +1,6 @@
+// expect-error: E_ALIAS_TARGET
+// java: rejects
+define class Dog as pub int age: 5; end
+define class Cat as pub int age: 10; end
+define class Hybrid extends Dog as use Cat.age as cat_age; end
+pub fnc main(): int { return 0; }

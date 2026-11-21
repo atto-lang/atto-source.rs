@@ -1,0 +1,2 @@
+# Rustfmt defaults for the imported native crate: stop rustfmt from
+# inheriting the browser compiler's ../rustfmt.toml (upstream had none).

@@ -1,0 +1,8 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  return match true over
+    on 1 -> 2,
+    default -> 3,
+  end
+}

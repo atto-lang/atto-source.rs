@@ -1,0 +1,14 @@
+// expect-error: E_BORROW
+// java: rejects
+// An exclusive mutable loan forbids copying the owner until it has ended.
+define class Parcel as
+    pub let int value = 42;
+end
+pub fnc main(): int {
+    let original = new Parcel();
+    block {
+        val borrowed = borrow! mut original;
+        val clone = copy!! original;
+        return clone.value;
+    }
+}

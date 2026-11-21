@@ -1,0 +1,9 @@
+// An unchosen branch must never overflow, trap, or run side effects.
+// java: rejects
+// expect-exit: 3
+pub fnc main(): int {
+  return match 5 over
+    on 5 -> 3,
+    default -> 9223372036854775807 + 1,
+  end
+}

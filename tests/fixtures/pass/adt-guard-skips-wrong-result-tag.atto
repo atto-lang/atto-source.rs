@@ -1,0 +1,11 @@
+// expect-exit: 42
+// The Ok guard must not inspect the Err record's payload.
+fnc value(): Result<int,string> { return Err("missing"); }
+pub fnc main(): int {
+  match value() over
+    on Ok(n) when n > 0 -> { return 1; }
+    on Ok(n) -> { return 2; }
+    on Err(message) when message == "missing" -> { return 42; }
+    on Err(message) -> { return 3; }
+  end
+}

@@ -1,0 +1,21 @@
+// Browser-v2 compatibility example, not canonical sealed actor-state syntax.
+// A tenant uses one Web Worker; each actor has a distinct Wasm instance and private memory.
+// main finishes first; each actor mailbox drains FIFO, with round-robin scheduling.
+define actor Counter as
+  let int total = 0;
+
+  receive(ActorMail<int> mail): void {
+    self.total = self.total + mail.value;
+    stdio.println(self.total);
+    return;
+  }
+end
+
+pub fnc main(): int {
+  val counter = spawn Counter();
+  for (let i = 1; i <= 5; i++) {
+    counter.send(i);
+  }
+  stdio.println("main sent 5 messages");
+  return 0;
+}

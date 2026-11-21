@@ -1,0 +1,32 @@
+// expect-exit: 42
+// Integration snapshot: atto-xo/atto-xo-clients/atto/recommendation_client_v1.atto (82fde3fb0a127ea6aa72d2e42d3714d58dd354df)
+// Atto XO client-side paper/research-only admission helpers.
+// Structural wire validation and broker execution are NOT provided here.
+// Keep these scalar ranges aligned with atto-xo-interfaces JSON Schema v1.
+pub fnc valid_v1_rank(int rank): bool {
+    return And(rank >= 1, rank <= 5);
+}
+
+pub fnc valid_v1_safe_integer(int value): bool {
+    return And(value >= 1, value <= 9007199254740991);
+}
+
+pub fnc valid_v1_deadline(int started_at_ms, int publish_deadline_ms): bool {
+    return And(And(started_at_ms > 0, publish_deadline_ms >= started_at_ms),
+        publish_deadline_ms - started_at_ms == 480000);
+}
+
+
+pub fnc main(): int {
+  if valid_v1_rank(1),
+      valid_v1_rank(5),
+      !valid_v1_rank(0),
+      !valid_v1_rank(6),
+      valid_v1_safe_integer(9007199254740991),
+      !valid_v1_safe_integer(9007199254740992),
+      valid_v1_deadline(1000,481000),
+      !valid_v1_deadline(1000,481001) then
+    return 42;
+  fi
+  return 0;
+}

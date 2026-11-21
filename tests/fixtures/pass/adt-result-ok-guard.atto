@@ -1,0 +1,9 @@
+// expect-exit: 42
+fnc result(): Result<int,string> { return Ok(40); }
+pub fnc main(): int {
+  match result() over
+    on Ok(n) when n == 40 -> { return n + 2; }
+    on Ok(n) -> { return 1; }
+    on Err(message) -> { return 0; }
+  end
+}

@@ -1,0 +1,6 @@
+// expect-error: E_PURE
+pure fnc bad_output(): int {
+    stdio.println(42);
+    return 42;
+}
+pub fnc main(): int { return bad_output(); }

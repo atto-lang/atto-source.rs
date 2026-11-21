@@ -1,0 +1,10 @@
+// expect-error: E_MOVED
+// java: rejects
+// A repeated loop position must not transfer a pre-existing local.
+pub fnc main(): int {
+  let running = true;
+  while take! running {
+    break;
+  }
+  return 0;
+}

@@ -1,0 +1,8 @@
+// expect-error: E_ISOLATION
+declare actor Counter;
+mtd (Counter self) inc(): void {}
+pub fnc main(): int {
+  val counter = spawn Counter();
+  counter.inc();
+  return 0;
+}

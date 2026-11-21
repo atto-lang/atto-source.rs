@@ -1,0 +1,6 @@
+// expect-error: E_STATE
+define state container Counter as
+  state { let int count: 0; }
+  pub handle_state(): int { return 100; }
+end
+pub fnc main(): int { return 0; }

@@ -1,0 +1,9 @@
+// A block-only binding cannot be captured from a later definition.
+// expect-error: E_CAPTURE
+pub fnc main(): int {
+  block {
+    val factor = 2;
+  }
+  val scale = |n| : int -> n * factor;
+  return scale(21);
+}

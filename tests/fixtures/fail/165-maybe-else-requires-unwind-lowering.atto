@@ -1,0 +1,12 @@
+// expect-error: E_UNSUPPORTED
+// Proposed maybe/else must not silently compile before value/cleanup lowering exists.
+pub fnc main(): int {
+  maybe
+    Ok(value) ?= Ok(5),
+    defer stdio.println("cleanup"),
+    value
+  else
+    on Err(reason) -> 0
+  end
+  return 0;
+}

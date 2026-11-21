@@ -1,0 +1,5 @@
+// expect-error: E_STATE
+define state container Counter as
+  state {}
+end
+pub fnc main(): int { return 0; }

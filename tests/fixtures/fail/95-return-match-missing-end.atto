@@ -1,0 +1,6 @@
+// expect-error: E_EOF
+// java: rejects
+fnc f(int n): int {
+  return match n over
+    on 0 -> 0,
+    default -> 2,

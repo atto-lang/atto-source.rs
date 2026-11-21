@@ -1,0 +1,15 @@
+// expect-exit: 42
+// java: llvm-design
+define enum Phase as
+  Waiting
+  Running
+  Finished
+end
+fnc code(Phase phase): int {
+  match phase over
+    on Phase.Waiting -> { return 1; }
+    on Phase.Running -> { return 2; }
+    on Phase.Finished -> { return 42; }
+  end
+}
+pub fnc main(): int { return code(Phase.Finished); }

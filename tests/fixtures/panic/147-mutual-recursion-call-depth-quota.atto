@@ -1,0 +1,5 @@
+// Mutual recursion is one cycle of the call graph: both edges are counted.
+// expect-panic: 6
+fnc ping(int n): int { return pong(n + 1) + 1; }
+fnc pong(int n): int { return ping(n + 1) + 1; }
+pub fnc main(): int { return ping(0); }
