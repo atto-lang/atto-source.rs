@@ -1,0 +1,10 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+define class Parcel as
+  int value = 42;
+end
+
+fnc wrong(): Parcel {
+  return Parcel;
+}
+pub fnc main(): int { return 0; }
