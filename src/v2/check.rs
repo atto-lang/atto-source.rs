@@ -20,6 +20,8 @@ pub const MAX_FUNCTIONS: usize = 4096;
 
 /// panic_code values raised by lowered code (the prelude documents 6..=12).
 pub const PANIC_MATCH: i32 = 13;
+/// Unwrapping a missing Option<SelectResult>; distinct from match failure.
+pub const PANIC_SELECT_EMPTY: i32 = 14;
 
 const TAG_INT: i64 = 1;
 const TAG_BOOL: i64 = 2;
@@ -2396,10 +2398,11 @@ impl<'a> Checker<'a> {
                 "unwrap" => {
                     self.plain_args(name, args, 0, pos)?;
                     let value = self.spill(recv);
-                    // Distinguish an empty Option unwrap (13) from scheduler
-                    // deadlock (6), actor admission (10), and span faults (12).
+                    // Distinguish an empty Option unwrap (14) from scheduler
+                    // deadlock (6), actor admission (10), span faults (12)
+                    // and match failure (13).
                     self.c().pre.push(IrStmt::If(eq(value.clone(), Ir::Const(0)),
-                        vec![IrStmt::Panic(13)], vec![]));
+                        vec![IrStmt::Panic(PANIC_SELECT_EMPTY)], vec![]));
                     Ok((load(value, 0), Ty::SelectResult, false))
                 }
                 _ => Err(type_err(pos, "Option<SelectResult> supports unwrap() in this bounded select-plan profile")),
