@@ -76,7 +76,7 @@ fn map_record_mix_and_wrong_context_reject(){
         reject(&format!("pub fnc main():int {{let x={literal};return 0;}}"),"E_LITERAL_KIND");
     }
     reject(r#"pub fnc main():int {let r:Record={"foo":5};return 0;}"#,"E_TYPE");
-    reject(r#"pub fnc main():int {let r:Map<string,int>={foo:5};return 0;}"#,"E_TYPE");
+    reject(r#"pub fnc main():int {let r:Map<string,int> = {foo:5};return 0;}"#,"E_TYPE");
 }
 #[test]
 fn string_duplicate_identity_cross_delimiters(){
