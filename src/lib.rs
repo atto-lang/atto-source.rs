@@ -7,6 +7,8 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Checked actor-relative Ref32 offset layout; host/runtime model only, not guest allocation.
+pub mod ref_layout;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
