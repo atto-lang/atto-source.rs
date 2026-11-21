@@ -1,6 +1,6 @@
 //! Security and compatibility hardening for lambda parsing.
-//! These test syntax only; the browser compiler must reject execution until
-//! callable types, ownership-aware captures and Wasm lowering exist.
+//! Syntax-only callable cases still fail closed when unsupported. Bounded
+//! fixed-sequence guest execution is admitted separately by the compiler.
 
 use atto_compiler::{
     ast::{BinOp, ExprKind, LambdaBody, Stmt},
@@ -121,15 +121,21 @@ fn conditional_or_still_parses_as_or_and_not_as_lambda() {
 }
 
 #[test]
-fn unsupported_callable_and_array_execution_fails_closed() {
+fn unsupported_unused_callables_fail_closed_but_fixed_arrays_compile() {
     for source in [
         "pub fnc main(): int { val f = |n| : int -> n * 2; return 0; }",
         "pub fnc main(): int { val f = (|n| -> return n;); return 0; }",
-        "pub fnc main(): int { val xs = [1,2,3]; return 0; }",
     ] {
-        let err = atto_compiler::compile(source).expect_err("must never emit Wasm");
+        let err = atto_compiler::compile(source).expect_err("unused first-class callable must not emit Wasm");
         assert_eq!(err.code, "E_UNSUPPORTED", "{source}: {err}");
     }
+
+    // The checked bounded fixed-sequence guest is now executable. Do not
+    // misclassify it as a forbidden generic heap array or first-class closure.
+    let bounded = "pub fnc main(): int { val xs = [1,2,3]; return 0; }";
+    let wasm = atto_compiler::compile(bounded).expect("bounded fixed array must compile");
+    assert!(wasm.starts_with(b"\0asm"));
+    assert_eq!(atto_compiler::compile(bounded).unwrap(), wasm);
 }
 
 #[test]
