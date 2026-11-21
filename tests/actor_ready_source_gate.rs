@@ -48,5 +48,5 @@ fn method_value_is_a_future_not_a_scalar_or_implicit_boolean() {
 fn failed_ready_compile_does_not_poison_compiler_state() {
     rejected(&source("await worker.get_ready();", "void"));
     let good = compile(&source("return 42;", "int")).expect("valid actor spawn still compiles");
-    assert!(good.starts_with(b"\\0asm"), "expected real Wasm module bytes");
+    assert!(good.starts_with(b"\0asm"), "expected real Wasm module bytes");
 }
