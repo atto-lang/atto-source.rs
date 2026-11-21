@@ -273,7 +273,8 @@ fn validate_resolved_type(root: &LiteralType) -> Result<(), Error> {
                     pending.push(child);
                 }
             }
-            LiteralType::Array(t) | LiteralType::List(t) | LiteralType::Option(t) =>
+            LiteralType::Array(t) | LiteralType::List(t) |
+            LiteralType::Vector(t) | LiteralType::Option(t) =>
                 pending.push(t),
             LiteralType::Map(k, v) | LiteralType::Pair(k, v) | LiteralType::Entry(k, v) => {
                 pending.push(k);
