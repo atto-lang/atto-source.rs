@@ -13,7 +13,7 @@ pub suspends fnc main(): int {
   // A checked DATA graph is admitted immediately, without Future.all.
   val channel = Channel<int>.bounded(1);
   val Result<PipeHandle, PipeSetupError> connection =
-      producer pipe channel pipe consumer;
+      producer pipe! channel pipe! consumer;
   val int admitted = match connection over
     on Ok(_) -> 1,
     on Err(_) -> 0,
@@ -26,7 +26,7 @@ pub suspends fnc main(): int {
   await consumer.get_ready();
   producer.send(40);
   producer.send(2);
-  producer.stop();
+  stop! producer;
   await finished;
   await consumer.get_done();
   return 42;
