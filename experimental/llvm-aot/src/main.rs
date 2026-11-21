@@ -670,21 +670,46 @@ impl Drop for OutputStage {
     }
 }
 
-// A zero-exit wrapper is not enough to prove clang wrote a valid native
-// artifact: validate the admitted Linux/x86-64 ELF output before publication.
+// Structural sanity check only: a valid-looking ELF header is NOT a
+// signature, code provenance proof, or proof that the binary is safe to run.
+// Reject short/fake artifacts and truncated program-header tables before the
+// atomic publish step; real native guest execution is independently required.
+fn validate_elf64_header(h: &[u8; 64], len: u64) -> Result<(), String> {
+    let bad = || "E_CLANG_ARTIFACT: malformed Linux x86-64 ELF64 executable".to_string();
+    if h[..7] != [0x7f, b'E', b'L', b'F', 2, 1, 1]
+        || !matches!(u16::from_le_bytes([h[16], h[17]]), 2 | 3) // ET_EXEC/ET_DYN
+        || u16::from_le_bytes([h[18], h[19]]) != 62 // EM_X86_64
+        || u32::from_le_bytes(h[20..24].try_into().map_err(|_| bad())?) != 1
+        || u16::from_le_bytes([h[52], h[53]]) != 64 // ELF64 header size
+        || u16::from_le_bytes([h[54], h[55]]) != 56 // ELF64 program header entry
+    {
+        return Err(bad());
+    }
+    let entry = u64::from_le_bytes(h[24..32].try_into().map_err(|_| bad())?);
+    let phoff = u64::from_le_bytes(h[32..40].try_into().map_err(|_| bad())?);
+    let phnum = u16::from_le_bytes([h[56], h[57]]) as u64;
+    // Require an entrypoint and an in-file program-header table, unlike
+    // ET_REL objects or a forged 20-byte magic prefix.
+    if entry == 0 || phoff < 64 || phnum == 0
+        || phoff.checked_add(phnum * 56).is_none_or(|end| end > len)
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
 fn validate_native_artifact(path: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("E_CLANG_ARTIFACT: {e}"))?;
+    if !metadata.file_type().is_file() {
+        return Err("E_CLANG_ARTIFACT: artifact is not a regular file".into());
+    }
     let mut file = std::fs::File::open(path)
         .map_err(|e| format!("E_CLANG_ARTIFACT: {e}"))?;
-    let mut header = [0u8; 20];
+    let mut header = [0u8; 64];
     file.read_exact(&mut header)
         .map_err(|e| format!("E_CLANG_ARTIFACT: incomplete ELF header: {e}"))?;
-    if header[..4] != [0x7f, b'E', b'L', b'F']
-        || header[4] != 2   // ELFCLASS64
-        || header[5] != 1   // little endian
-        || header[18..20] != [62, 0]  // EM_X86_64
-    {
-        return Err("E_CLANG_ARTIFACT: expected Linux x86-64 ELF64 output".into());
-    }
+    validate_elf64_header(&header, metadata.len())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -793,6 +818,46 @@ mod tests {
     fn rejects_runtime_printing_without_native_abi() {
         assert!(compile_ir("pub fnc main(): int { stdio.println(1); return 42; }").is_err());
     }
+    #[test]
+    fn rejects_bitwise_and_shifts_not_yet_lowered_for_native() {
+        for expr in ["6 & 3", "6 | 3", "6 ^ 3", "6 <<< 1", "6 >>> 1", "6 ashr 1"] {
+            let source = format!("pub fnc main(): int {{ return {expr}; }}");
+            let err = compile_ir(&source).expect_err("unsupported native bitwise must fail");
+            assert!(err.contains("E_UNSUPPORTED_NATIVE_BITWISE"), "{expr}: {err}");
+        }
+    }
+
+    #[test]
+    fn elf64_sanity_gate_rejects_truncated_and_forged_artifacts() {
+        // Minimal synthetic ELF header with one complete program header.
+        // This tests structural checks, NOT executable authenticity.
+        let mut h = [0u8; 64];
+        h[..7].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
+        h[16..18].copy_from_slice(&3u16.to_le_bytes());
+        h[18..20].copy_from_slice(&62u16.to_le_bytes());
+        h[20..24].copy_from_slice(&1u32.to_le_bytes());
+        h[24..32].copy_from_slice(&0x1000u64.to_le_bytes());
+        h[32..40].copy_from_slice(&64u64.to_le_bytes());
+        h[52..54].copy_from_slice(&64u16.to_le_bytes());
+        h[54..56].copy_from_slice(&56u16.to_le_bytes());
+        h[56..58].copy_from_slice(&1u16.to_le_bytes());
+        assert!(validate_elf64_header(&h, 120).is_ok());
+        assert!(validate_elf64_header(&h, 20).is_err());
+        assert!(validate_elf64_header(&h, 119).is_err());
+        let mut bad = h;
+        bad[16..18].copy_from_slice(&1u16.to_le_bytes()); // ET_REL
+        assert!(validate_elf64_header(&bad, 120).is_err());
+        bad = h;
+        bad[24..32].fill(0); // empty entrypoint
+        assert!(validate_elf64_header(&bad, 120).is_err());
+        bad = h;
+        bad[54..56].copy_from_slice(&20u16.to_le_bytes()); // bad phentsize
+        assert!(validate_elf64_header(&bad, 120).is_err());
+        bad = h;
+        bad[18..20].copy_from_slice(&183u16.to_le_bytes()); // AArch64, wrong target
+        assert!(validate_elf64_header(&bad, 120).is_err());
+    }
+
     #[test]
     fn freestanding_core_compiles_checked_scalar_without_host_runtime() {
         let ir = compile_ir_with_profile(
