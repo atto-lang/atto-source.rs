@@ -173,6 +173,7 @@ try{
     ['233-v2-try-select-empty.atto', ''],
     ['234-v2-select-single-winner.atto', '0\n1\n'],
     ['235-v2-blocking-select-generation.atto', ''],
+    ['236-v2-select-closed-loser.atto', '1\n'],
   ]) {
     const src = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const output = await run(src, 'main() -> 42');
