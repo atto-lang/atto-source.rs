@@ -806,8 +806,29 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
-    let lowered = direct_lambda::lower(p)?;
-    check_lowered(&lowered)
+    // No-lambda programs must not clone the entire recursive AST before
+    // semantic checking.  A 250-link, parser-admitted binary spine can
+    // otherwise overflow the default 2 MiB Rust test-worker stack while
+    // deriving Clone, even though binary_chain type-checks it iteratively.
+    //
+    // direct_lambda::lower only rewrites top-level lambda bindings in
+    // non-generator functions.  Skip it precisely when it would be a
+    // byte-for-byte structural no-op.  Preserve its independent function
+    // budget for callers that bypass the source parser.
+    if p.funcs.len() > crate::parser::MAX_FUNCS {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            "source exceeds the module function budget"));
+    }
+    let has_direct_lambda = p.funcs.iter().any(|f| !f.is_generator &&
+        f.body.iter().any(|stmt| matches!(stmt,
+            Stmt::Bind { init: Expr { kind: ExprKind::Lambda { .. }, .. }, .. }
+        )));
+    if has_direct_lambda {
+        let lowered = direct_lambda::lower(p)?;
+        check_lowered(&lowered)
+    } else {
+        check_lowered(p)
+    }
 }
 
 fn check_lowered(p: &Program) -> R<TProgram> {
