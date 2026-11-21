@@ -53,6 +53,11 @@ fn canonical_exception_bangs_never_erase_error_type_or_result_identity() {
     reject("E_TRAP_BANG_RESULT_UNVERIFIED", r#"
         pub fnc main(): int { return trap! 7; }
     "#);
+    // Never pretend a fatal guest panic can be implemented by ordinary
+    // catch, host exceptions, or the Rust/Wasm Error/Result path.
+    reject("E_UNSUPPORTED", r#"
+        pub fnc main(): int { panic! Error("fatal"); }
+    "#);
 }
 
 #[test]
