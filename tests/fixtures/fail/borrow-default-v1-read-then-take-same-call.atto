@@ -1,0 +1,12 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_BORROW
+// The first argument's implicit read loan stays live while the second
+// argument evaluates: take! must not consume the same live owner.
+define class Parcel as pub let int value = 21; end
+fnc read_then_consume(Parcel read_only, take! Parcel owned): int {
+  return read_only.value + owned.value;
+}
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return read_then_consume(parcel, take! parcel);
+}
