@@ -67,7 +67,7 @@ fn ternary_separator_remains_distinct_from_type_ascription() {
     let no = compile(&source("false ? 42 : 7")).unwrap();
     assert!(yes.starts_with(b"\0asm"));
     assert!(no.starts_with(b"\0asm"));
-    assert_eq!(compile(&source("true ? 42 : bool")).unwrap_err().code, "E_SYNTAX");
+    assert_eq!(compile(&source("true ? 42 : bool")).unwrap_err().code, "E_UNBOUND");
 }
 
 #[test]
