@@ -3861,6 +3861,26 @@ impl<'a> FnCx<'a> {
                         "bitwise operator '{}' requires two int operands, found {} and {}",
                         op.symbol(), self.tn(a.ty), self.tn(b.ty))));
                 }
+                if matches!(op, BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                    // Literal distances are known at compile time. Reject
+                    // invalid values before emitting even a partial guest;
+                    // dynamic/compound distances are checked by the Wasm
+                    // helper after evaluating both source operands once.
+                    let static_distance = match &b.e {
+                        TExpr::I64(distance) => Some(*distance),
+                        TExpr::Neg(inner) => match &inner.e {
+                            TExpr::I64(magnitude) => magnitude.checked_neg(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(distance) = static_distance {
+                        if !(0..=63).contains(&distance) {
+                            return Err(Diagnostic::new(pos, "E_SHIFT_DISTANCE",
+                                "shift distance must be within 0..63"));
+                        }
+                    }
+                }
                 return Ok(TE {
                     e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
                     ty: Type::Int,
