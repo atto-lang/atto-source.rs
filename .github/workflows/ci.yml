@@ -4,12 +4,48 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      expected_head:
+        description: 'Exact 40-character source PR head SHA; reject drift'
+        required: true
+        type: string
+      expected_tree:
+        description: 'Exact 40-character expected Git tree SHA for source receipt'
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
   real-compiler:
-    runs-on: ubuntu-24.04
+    # Optional SOURCE-LOCAL runner only for an administrator-triggered dispatch.
+    # The repository administrator, not PR source, provisions the dedicated
+    # runner and sets ATTO_PRIVATE_RUST_RUNNER_LABEL to its unique label.
+    # Automatic pull_request and push jobs never choose this private runner.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && (vars.ATTO_PRIVATE_RUST_RUNNER_LABEL || 'atto-source-local-runner-not-configured') || 'ubuntu-24.04' }}
     steps:
+      - name: Reject manual dispatch SHA drift before checking out private source
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_TREE: ${{ inputs.expected_tree }}
+          DISPATCH_HEAD: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_REF_TYPE: ${{ github.ref_type }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          RUNNER_NAME: ${{ runner.name }}
+          SELECTED_RUNNER_LABEL: ${{ vars.ATTO_PRIVATE_RUST_RUNNER_LABEL }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_REPOSITORY" = "atto-lang/atto-source.rs"
+          test "$SOURCE_REF_TYPE" = "branch"
+          # The manual route must never silently execute on a hosted pool.
+          test -n "$SELECTED_RUNNER_LABEL"
+          test "$RUNNER_ENVIRONMENT" = "self-hosted"
+          test -n "$RUNNER_NAME"
+          test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
@@ -17,30 +53,89 @@ jobs:
       - name: Bind checkout to exact head/tree
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_TREE: ${{ inputs.expected_tree || '' }}
+          SOURCE_EVENT: ${{ github.event_name }}
         run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          git rev-parse HEAD
-          git rev-parse HEAD^{tree}
+          ACTUAL_TREE=$(git rev-parse 'HEAD^{tree}')
+          [[ "$ACTUAL_TREE" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$SOURCE_EVENT" == "workflow_dispatch" ]]; then
+            [[ "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]]
+            test "$ACTUAL_TREE" = "$EXPECTED_TREE"
+          fi
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code HEAD --
+          test "$(git write-tree)" = "$ACTUAL_TREE"
+          printf 'EXACT_SOURCE_VERIFIED head=%s tree=%s\n' "$EXPECTED_HEAD" "$ACTUAL_TREE"
       - name: Verify byte-identical canonical AOT copy admission source
         shell: bash
         run: |
           set -euo pipefail
           test "$(git hash-object src/copy_graph_v1.rs)" = "3008a139cfba41131839de3567a263163152cf00"
           echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=3008a139cfba41131839de3567a263163152cf00"
+      - name: Verify source export policy remains deny-by-default
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/private-ci-export-policy-guard-test.sh
+          bash scripts/private-ci-export-policy-guard.sh .github/private-ci-approved-repositories.txt
+      - name: Verify explicit browser-vs-native Rust test target inventory
+        run: node scripts/verify-browser-cargo-tests.mjs
+      - name: Syntax-check real native/Wasm compiler smoke before building toolchains
+        run: node --check scripts/verify-real-browser-compiler.mjs
+      - name: Test strict real compiler ABI diagnostic decoding before Rust setup
+        run: node --test tests/compiler-diagnostic.test.mjs
+      - name: Test source-free bounded Wasm guest ABI and panic oracles
+        run: node --test tests/compiler-smoke-guest-oracle.test.mjs
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
-          rustup component add clippy --toolchain 1.85.1
+          rustup component add clippy rustfmt --toolchain 1.85.1
           rustup default 1.85.1
           rustc --version
+      - name: Install patched native Cranelift MSRV toolchain
+        # Lockfile Cranelift 0.136.4 requires Rust 1.96.0 or newer;
+        # use patched 1.96.1 without changing the browser ABI toolchain.
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal
+          rustup component add clippy rustfmt --toolchain 1.96.1
+          rustc +1.96.1 --version
+      - name: Build native attoc host
+        run: cargo build --locked --release --bin attoc
+      - name: Build actual Rust wasm32 compiler within public 1 MiB artifact budget
+        env:
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: z
+        run: |
+          set -euo pipefail
+          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+          artifact=target/wasm32-unknown-unknown/release/atto_compiler.wasm
+          test -s "$artifact"
+          test "$(wc -c < "$artifact")" -le 1048576 || { echo "E_COMPILER_SIZE: browser compiler exceeds public 1 MiB budget" >&2; exit 1; }
+          sha256sum "$artifact"
+      - name: Prove real attoc versus wasm32 compiler and compiled guest baseline
+        env:
+          ATTOC: target/release/attoc
+          ATTO_WASM_COMPILER: target/wasm32-unknown-unknown/release/atto_compiler.wasm
+        run: node scripts/verify-real-browser-compiler.mjs
       - name: Test native compiler core over the fixture corpus
         env:
           RUST_MIN_STACK: "16777216"
-        run: cargo test --locked --verbose
+        run: cargo test --locked --all-targets --verbose
+      - name: Check formatting on the entire canonical browser Cargo crate
+        run: cargo fmt --all -- --check
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Build native attoc host
-        run: cargo build --locked --release --bin attoc
+      - name: Independently test the separate native Cranelift package
+        working-directory: native
+        run: cargo +1.96.1 test --locked --all-targets --verbose
+      - name: Check formatting in the native Cranelift package
+        working-directory: native
+        run: cargo +1.96.1 fmt --all -- --check
+      - name: Strict native Cranelift Clippy all targets
+        working-directory: native
+        run: cargo +1.96.1 clippy --locked --all-targets -- -D warnings
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc
@@ -53,10 +148,6 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/bitwise_guest.mjs
-      - name: Build actual Wasm compiler
-        run: |
-          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
-          sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
       - name: Compile exact bitwise preview inside browser Wasm compiler and compare native guest bytes
         env:
           ATTOC: target/release/attoc

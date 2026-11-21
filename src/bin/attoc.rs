@@ -3,8 +3,131 @@
 //! Syntax check: attoc --check input.atto
 //! Linked package: attoc --package-root DIR --entry src/main.atto [-o out.wasm]
 //! Discovered package: attoc --package path/to/main.atto [-o out.wasm]
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
+
+// The .atto source must never be removed when a user accidentally chooses it
+// (or its symlink/hardlink alias) as the Wasm destination.
+fn same_file(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    if matches!(
+        (left.canonicalize(), right.canonicalize()),
+        (Ok(a), Ok(b)) if a == b
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if matches!(
+            (left.metadata(), right.metadata()),
+            (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino()
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+// Keep untrusted source reads bounded *before* allocating an input buffer.
+// The parser's SOURCE_CAP check is too late for a multi-gigabyte input file.
+// This reader is reused for source imports loaded by the native CLI.
+fn read_bounded_source(path: &Path) -> std::io::Result<String> {
+    // Reject FIFO/device/directory paths *before* File::open: opening a FIFO
+    // without a writer can block indefinitely before the byte cap applies.
+    // Follow ordinary source symlinks only when their target is a regular file.
+    let regular_source = || std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "source must resolve to a regular file",
+    );
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(regular_source());
+    }
+    let file = std::fs::File::open(path)?;
+    // Recheck the opened descriptor, rather than trusting only a path lookup.
+    // A hostile writable parent is not a race-free filesystem trust boundary.
+    if !file.metadata()?.is_file() {
+        return Err(regular_source());
+    }
+    let mut bytes = Vec::new();
+    file.take((atto_compiler::SOURCE_CAP + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > atto_compiler::SOURCE_CAP {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("E_SOURCE_LIMIT: source exceeds {} UTF-8 bytes", atto_compiler::SOURCE_CAP),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "source is not valid UTF-8")
+    })
+}
+
+fn input_source_path(input: &Input) -> std::path::PathBuf {
+    match input {
+        Input::Single(file) | Input::Check(file) | Input::Discovered(file) => {
+            Path::new(file).to_path_buf()
+        }
+        Input::Package { root, entry } | Input::LockedPackage { root, entry, .. } => {
+            Path::new(root).join(entry)
+        }
+    }
+}
+
+// No previous successful guest is allowed to survive a failed recompilation.
+// This is deliberately before source reading, parsing and code generation.
+fn clear_previous_output(input: &Input, output: &str) -> std::io::Result<()> {
+    // An output path must never be another Atto source file, even if that
+    // file is an imported module rather than the entry source. Removing a
+    // pre-existing .atto path before compilation would silently destroy it.
+    if Path::new(output)
+        .extension()
+        .and_then(|suffix| suffix.to_str())
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case("atto"))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Wasm output cannot use a .atto source extension",
+        ));
+    }
+    if same_file(&input_source_path(input), Path::new(output)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output resolves to the Atto source file",
+        ));
+    }
+    match std::fs::remove_file(output) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+// Creation is exclusive: a planted output symlink cannot be followed between
+// the initial stale-file cleanup and successful compiler output publication.
+fn write_fresh_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
+    // The destination belongs to us only after create_new succeeds. In
+    // particular, never delete another process's file when exclusive open
+    // fails after the preflight stale-output cleanup.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    let result = file.write_all(bytes).and_then(|_| file.sync_all());
+    if result.is_err() {
+        // This cleanup is only permitted after our exclusive file creation.
+        // An adversarially writable output directory is NOT a security boundary.
+        let _ = std::fs::remove_file(output);
+    }
+    result
+}
+
+fn publish_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
+    write_fresh_wasm(output, bytes)
+}
 
 enum Input {
     Single(String),
@@ -45,12 +168,22 @@ fn main() -> ExitCode {
             (Input::LockedPackage { root: root.clone(), entry: entry.clone(), digest: digest.clone() }, Some(out.clone())),
         _ => return usage(),
     };
+    if let Some(ref target) = output {
+        if let Err(error) = clear_previous_output(&input, target) {
+            eprintln!("{target}: cannot prepare Wasm output: {error}");
+            return ExitCode::from(2);
+        }
+    }
     let check_only = matches!(&input, Input::Check(_));
     let (label, compiled) = match input {
         Input::Single(path) | Input::Check(path) => {
-            let source = match std::fs::read(&path).map(String::from_utf8) {
-                Ok(Ok(s)) => s,
-                _ => {
+            let source = match read_bounded_source(Path::new(&path)) {
+                Ok(s) => s,
+                Err(error) if error.to_string().starts_with("E_SOURCE_LIMIT:") => {
+                    eprintln!("{path}: {error}");
+                    return ExitCode::from(1);
+                }
+                Err(_) => {
                     eprintln!("{path}: cannot read UTF-8 source");
                     return ExitCode::from(2);
                 }
@@ -71,7 +204,7 @@ fn main() -> ExitCode {
                             return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
                                 "import resolves outside project root"));
                         }
-                        std::fs::read_to_string(resolved)
+                        read_bounded_source(&resolved)
                     }),
                     Err(_) => atto_compiler::compile_with_path(&source, name.as_path()),
                 },
@@ -97,12 +230,11 @@ fn main() -> ExitCode {
         Ok(bytes) => {
             if check_only { return ExitCode::SUCCESS; }
             if let Some(output) = output {
-                if std::fs::write(&output, &bytes).is_err() {
-                    eprintln!("{output}: cannot write Wasm output");
+                if let Err(error) = publish_wasm(&output, &bytes) {
+                    eprintln!("{output}: cannot write Wasm output: {error}");
                     return ExitCode::from(2);
                 }
             } else {
-                use std::io::Write;
                 if std::io::stdout().write_all(&bytes).is_err() {
                     eprintln!("cannot write compiled Wasm to stdout");
                     return ExitCode::from(2);
@@ -114,5 +246,60 @@ fn main() -> ExitCode {
             eprintln!("{label}: {d}");
             ExitCode::from(1)
         }
+    }
+}
+
+
+#[cfg(test)]
+mod output_publish_tests {
+    use super::publish_wasm;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch_dir() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "atto-attoc-exclusive-{}-{}", std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).expect("create isolated temporary test directory");
+        path
+    }
+
+    #[test]
+    fn failed_exclusive_create_does_not_unlink_existing_output() {
+        let dir = scratch_dir();
+        let destination = dir.join("protected.wasm");
+        std::fs::write(&destination, b"existing owner data").unwrap();
+        let error = publish_wasm(destination.to_str().unwrap(), b"\0asm").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"existing owner data");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_exclusive_create_preserves_unowned_output_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch_dir();
+        let target = dir.join("independent-data.txt");
+        let destination = dir.join("planted.wasm");
+        std::fs::write(&target, b"keep this unrelated file").unwrap();
+        symlink(&target, &destination).unwrap();
+        let error = publish_wasm(destination.to_str().unwrap(), b"\0asm").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(std::fs::symlink_metadata(&destination).unwrap()
+                    .file_type().is_symlink(), "must not remove planted link");
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep this unrelated file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fresh_exclusive_publish_writes_complete_output() {
+        let dir = scratch_dir();
+        let destination = dir.join("compiled.wasm");
+        publish_wasm(destination.to_str().unwrap(), b"\0asm\x01\0\0\0").unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(),
+                   b"\0asm\x01\0\0\0");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

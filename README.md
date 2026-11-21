@@ -1,5 +1,35 @@
 > **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/atto-lang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
 
+## Building and testing the Rust/Wasm browser compiler
+
+This repository contains two distinct Rust products. The root `Cargo.toml`
+builds `atto_compiler` and the `attoc` CLI for the browser's
+`.atto -> Wasm` path. The separate `native/Cargo.toml` builds the legacy
+Cranelift native compiler (`oreslang_source_rs`). The root `src/main.rs`
+and `src/bin/ci_verify.rs` are not browser executable targets.
+
+```sh
+node scripts/verify-browser-cargo-tests.mjs
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --release --bin attoc
+rustup target add wasm32-unknown-unknown
+cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+ATTOC=target/release/attoc node tests/conformance.mjs
+```
+
+The browser package explicitly enumerates **88** root Rust integration-test
+targets. **38** legacy native/Cranelift tests under the same root `tests/`
+directory are intentionally **not** browser-package targets; their coverage
+must be separately reconciled with `native/tests/` and the native package's
+own `cargo test --locked --manifest-path native/Cargo.toml`. Omitting them
+from the browser build is not evidence that those native tests passed.
+
+An exact-head successful native+wasm32 build, actual guest Wasm executions,
+and Chromium Worker E2E are required before describing the compiler or
+playground release as verified. A source-only manifest inventory check or
+GitHub Action with zero executed steps does not satisfy this requirement.
+
 ## Named callable return annotations (strict target)
 
 Under the new strict named-callable rule, every function, routine, class/actor method (including static and out-of-line methods) and actor `receive` handler must explicitly specify a result. Write `-> int`, `-> void`, or opt into `-> infer`. The `: T` / `: infer` spelling is also legal; concrete types are preferred. Missing annotations produce `E_RETURN_ANNOTATION`, never a silently inferred `void`. Constructors and contextual lambdas are separate grammar categories.

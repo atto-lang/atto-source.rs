@@ -12,3 +12,131 @@ serde_json = "1.0"
 [[bin]]
 name = "oresc"
 path = "src/main.rs"
+
+# Native-only legacy suites excluded from the canonical browser crate.
+# Keep native/tests/ auto-discovery ON; register only distinct root tests.
+[[test]]
+name = "legacy_actor_arena_contract"
+path = "../tests/actor_arena_contract.rs"
+
+[[test]]
+name = "legacy_aosoa_checked_addressing"
+path = "../tests/aosoa_checked_addressing.rs"
+
+[[test]]
+name = "legacy_atto_match_tilde_failclosed_v1"
+path = "../tests/atto_match_tilde_failclosed_v1.rs"
+
+[[test]]
+name = "legacy_atto_scalar_java_llvm_v1"
+path = "../tests/atto_scalar_java_llvm_v1.rs"
+
+[[test]]
+name = "legacy_checked_i64_interprocedural"
+path = "../tests/checked_i64_interprocedural.rs"
+
+[[test]]
+name = "legacy_checked_i64_ref_layout"
+path = "../tests/checked_i64_ref_layout.rs"
+
+[[test]]
+name = "legacy_collection_identity_failclosed"
+path = "../tests/collection_identity_failclosed.rs"
+
+[[test]]
+name = "legacy_declarative_export_trailing_boundary"
+path = "../tests/declarative_export_trailing_boundary.rs"
+
+[[test]]
+name = "legacy_declarative_exports"
+path = "../tests/declarative_exports.rs"
+
+[[test]]
+name = "legacy_http_actor_admission"
+path = "../tests/http_actor_admission.rs"
+
+[[test]]
+name = "legacy_layout_plan"
+path = "../tests/layout_plan.rs"
+
+[[test]]
+name = "legacy_layout_trace"
+path = "../tests/layout_trace.rs"
+
+[[test]]
+name = "legacy_name_first_formals"
+path = "../tests/name_first_formals.rs"
+
+[[test]]
+name = "legacy_output_publication"
+path = "../tests/output_publication.rs"
+
+[[test]]
+name = "legacy_owner_arena"
+path = "../tests/owner_arena.rs"
+
+[[test]]
+name = "legacy_platform_core_v1"
+path = "../tests/platform_core_v1.rs"
+
+[[test]]
+name = "legacy_pull_push_unsupported_gate"
+path = "../tests/pull_push_unsupported_gate.rs"
+
+[[test]]
+name = "legacy_singleton_admission"
+path = "../tests/singleton_admission.rs"
+
+[[test]]
+name = "legacy_source_byte_limit_cli"
+path = "../tests/source_byte_limit_cli.rs"
+
+[[test]]
+name = "legacy_strict_aot_negative_cli"
+path = "../tests/strict_aot_negative_cli.rs"
+
+[[test]]
+name = "legacy_tiering_policy"
+path = "../tests/tiering_policy.rs"
+
+[[test]]
+name = "legacy_trace_sites"
+path = "../tests/trace_sites.rs"
+
+[[test]]
+name = "legacy_unary_plus_parity"
+path = "../tests/unary_plus_parity.rs"
+
+# Root-native variants with the same basename as native/tests/ but distinct
+# Git blob contents: execute both, never treat filename equality as coverage.
+[[test]]
+name = "legacy_atto_immutable_parity"
+path = "../tests/atto_immutable_parity.rs"
+
+[[test]]
+name = "legacy_checked_i64_cli"
+path = "../tests/checked_i64_cli.rs"
+
+[[test]]
+name = "legacy_checked_i64_native"
+path = "../tests/checked_i64_native.rs"
+
+[[test]]
+name = "legacy_compiler_boundary_matrix"
+path = "../tests/compiler_boundary_matrix.rs"
+
+[[test]]
+name = "legacy_compiler_numeric_separators_batch4"
+path = "../tests/compiler_numeric_separators_batch4.rs"
+
+[[test]]
+name = "legacy_execution_domain_admission"
+path = "../tests/execution_domain_admission.rs"
+
+[[test]]
+name = "legacy_immutable_binding_parity"
+path = "../tests/immutable_binding_parity.rs"
+
+[[test]]
+name = "legacy_native_object_execution"
+path = "../tests/native_object_execution.rs"

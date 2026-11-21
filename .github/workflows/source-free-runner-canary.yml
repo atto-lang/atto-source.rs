@@ -6,24 +6,48 @@ name: Source-free runner admission canary
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      expected_head:
+        description: 'Exact 40-character source branch head SHA; refuse drift'
+        required: true
+        type: string
 
 # No token permissions, secrets, code checkout, artifacts, caches, or networking.
 permissions: {}
 
 jobs:
   runner-admission:
-    runs-on: ubuntu-24.04
+    # A manual dispatch may select the same SOURCE-LOCAL private runner as
+    # ci.yml. Automated PR events always use hosted ubuntu-24.04.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && (vars.ATTO_PRIVATE_RUST_RUNNER_LABEL || 'atto-source-local-runner-not-configured') || 'ubuntu-24.04' }}
     timeout-minutes: 3
     steps:
       - name: Prove runner provisioning without checking out any source
         shell: bash
         env:
           EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          DISPATCH_EXPECTED_HEAD: ${{ inputs.expected_head || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_REF_TYPE: ${{ github.ref_type }}
+          SELECTED_RUNNER_LABEL: ${{ vars.ATTO_PRIVATE_RUST_RUNNER_LABEL }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          RUNNER_NAME_CONTEXT: ${{ runner.name }}
           EXPECTED_RUN_ID: ${{ github.run_id }}
           EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_PR_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            [[ "$DISPATCH_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+            test "$DISPATCH_EXPECTED_HEAD" = "$EXPECTED_PR_HEAD"
+            # Admission canary is meaningful only on the authorized source-local runner.
+            test "$SOURCE_REPOSITORY" = "atto-lang/atto-source.rs"
+            test "$SOURCE_REF_TYPE" = "branch"
+            test -n "$SELECTED_RUNNER_LABEL"
+            test "$RUNNER_ENVIRONMENT" = "self-hosted"
+            test -n "$RUNNER_NAME_CONTEXT"
+          fi
           [[ "$EXPECTED_RUN_ID" =~ ^[0-9]+$ ]]
           [[ "$EXPECTED_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           test -n "${RUNNER_NAME:-}"
