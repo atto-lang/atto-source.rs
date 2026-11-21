@@ -3358,7 +3358,7 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
-                if let Some(loan) = self.loans.get(&slot).copied() {
+                if let Some(loan) = self.loans.get(&local.slot).copied() {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
                     }
@@ -3384,7 +3384,7 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(pos, "E_IMMUTABLE",
                             "cannot reassign val/final/const field through borrow! mut"));
                     }
-                    let (slot, offset, fty) = (slot, f.slot, f.ty);
+                    let (slot, offset, fty) = (local.slot, f.slot, f.ty);
                     // A class-valued field write would install an untracked owned
                     // handle through an alias. Lower only copyable field storage.
                     if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
