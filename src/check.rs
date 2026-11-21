@@ -3765,6 +3765,15 @@ impl<'a> FnCx<'a> {
                 // A contextual constructor (Some/Ok/Err/None) needs the
                 // expected type before it can be checked and guest-lowered.
                 let result = self.consume_expected(inner, want)?;
+                if *explicit_cast && result.ty == Type::Int && want == Type::Float {
+                    // The backend already lowers IntToFloat to
+                    // f64.convert_i64_s. Explicit as admits binary64
+                    // rounding; : float must not introduce this conversion.
+                    return Ok(TE {
+                        e: TExpr::IntToFloat(Box::new(result)),
+                        ty: Type::Float,
+                    });
+                }
                 if result.ty != want {
                     let action = if *explicit_cast { "convert" } else { "ascribe" };
                     let code = if *explicit_cast { "E_UNSUPPORTED_CAST" } else { "E_TYPE" };
