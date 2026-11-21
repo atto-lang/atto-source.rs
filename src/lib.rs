@@ -15,6 +15,8 @@ pub mod record_struct_layout;
 pub mod closed_record_guest;
 /// Executable bounded scalar Tuple.of/Array.of with checked constant indexes.
 pub mod fixed_sequence_guest;
+/// Scalar-literal persistent Vector copy-update preflight; no dynamic node-sharing ABI.
+pub mod persistent_vector_guest;
 /// Bounded immutable scalar Map.of allocation and statically proven key projection.
 pub mod scalar_map_guest;
 pub mod check;
@@ -141,6 +143,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    // Expand only proven constant-element immutable Vector functional updates.
+    persistent_vector_guest::lower(&mut program)?;
     // Contextual literal typing is checked before executable scalar lowering.
     // It never grants a guest allocation; unsupported values remain rejected.
     let collection_ir = collection_types::analyze(&program)?;
