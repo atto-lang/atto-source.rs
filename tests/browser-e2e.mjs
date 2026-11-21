@@ -171,6 +171,7 @@ try{
     ['231-v2-dynamic-select-mutate.atto', '2\n'],
     ['232-v2-nb-select-snapshot.atto', ''],
     ['233-v2-try-select-empty.atto', ''],
+    ['234-v2-select-single-winner.atto', '0\n1\n'],
   ]) {
     const src = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const output = await run(src, 'main() -> 42');
