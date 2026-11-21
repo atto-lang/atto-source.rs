@@ -1,0 +1,11 @@
+// expect-exit: 42
+// Each sibling captures the definition-site immutable value, not a shadow.
+pub fnc main(): int {
+    val n = 3;
+    val add = |x| : int -> x + n;
+    val multiply = |x| : int -> x * n;
+    block {
+        val n = 100;
+        return add(9) + multiply(10);
+    }
+}

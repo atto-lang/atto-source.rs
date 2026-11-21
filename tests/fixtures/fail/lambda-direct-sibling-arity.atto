@@ -1,0 +1,7 @@
+// expect-error: E_ARITY
+// The second independently lifted lambda has its own checked arity.
+pub fnc main(): int {
+    val answer = || -> 42;
+    val double = |n| : int -> n * 2;
+    return answer() + double();
+}
