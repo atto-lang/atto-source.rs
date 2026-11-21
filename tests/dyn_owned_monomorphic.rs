@@ -1,6 +1,7 @@
 //! The first browser Dyn<I> slice is closed-world monomorphic only.
 //! These are compiler/guest-byte tests, not proof of a polymorphic vtable ABI.
 use atto_compiler::compile;
+const EXIT: &str = "stdio.println(display(erased));\n  return 0;";
 
 const POSITIVE: &str = r#"
 define pub interface Printable as
@@ -48,8 +49,7 @@ fn inferred_owned_erasure_is_also_accepted() {
 #[test]
 fn moved_source_owner_is_unusable() {
     let src = POSITIVE.replace(
-        "stdio.println(display(erased));
-  return 0;",
+        EXIT,
         "stdio.println(concrete.describe()); return 0;");
     error(&src, "E_MOVED");
 }
@@ -58,25 +58,20 @@ fn moved_source_owner_is_unusable() {
 fn no_interface_forgery_or_concrete_member_leak() {
     error(&POSITIVE.replace("Dyn<Printable>(take! concrete)", "Dyn<Printable>(42)"),
         "E_DYN_OWNERSHIP");
-    error(&POSITIVE.replace("stdio.println(display(erased));
-  return 0;", "stdio.println(erased.secret()); return 0;"),
+    error(&POSITIVE.replace(EXIT, "stdio.println(erased.secret()); return 0;"),
         "E_DYN_INTERFACE");
-    error(&POSITIVE.replace("stdio.println(display(erased));
-  return 0;", "return erased.secret;"),
+    error(&POSITIVE.replace(EXIT, "return erased.secret;"),
         "E_DYN_INTERFACE");
-    error(&POSITIVE.replace("stdio.println(display(erased));
-  return 0;",
+    error(&POSITIVE.replace(EXIT,
         "val Greeting leaked = erased; return leaked.secret();"), "E_DYN_INTERFACE");
-    error(&POSITIVE.replace("stdio.println(display(erased));
-  return 0;",
+    error(&POSITIVE.replace(EXIT,
         "return send_to_other_tenant(erased);"), "E_DYN_INTERFACE");
 }
 
 #[test]
 fn no_implicit_dyn_conversion_at_call_sites() {
     let src = POSITIVE.replace(
-        "stdio.println(display(erased));
-  return 0;", "stdio.println(display(concrete)); return 0;");
+        EXIT, "stdio.println(display(concrete)); return 0;");
     // This is refused at the interface call-site regardless of the move.
     error(&src, "E_DYN_INTERFACE");
 }
@@ -98,6 +93,8 @@ end
 
 #[test]
 fn unnamed_or_borrowed_erasure_is_not_silently_lowered() {
+    error(&POSITIVE.replace("val Dyn<Printable> erased = Dyn<Printable>(take! concrete);",
+        "val Greeting erased = Dyn<Printable>(take! concrete);"), "E_DYN_OWNERSHIP");
     error(&POSITIVE.replace("Dyn<Printable>(take! concrete)",
         "Dyn<Printable>(borrow! concrete)"), "E_DYN_OWNERSHIP");
     error(&POSITIVE.replace("Dyn<Printable>(take! concrete)",
