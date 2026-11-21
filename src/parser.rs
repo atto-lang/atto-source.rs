@@ -3962,3 +3962,32 @@ fn describe(t: &Tok) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod canonical_trap_bang_result_guard_tests {
+    use super::*;
+    use crate::lexer::lex;
+
+    #[test]
+    fn canonical_trap_bang_never_reuses_legacy_option_ast() {
+        // Source-level parser admission only: this deliberately blocks
+        // unchecked Result semantics before guest Wasm/LLVM emission.
+        for source in [
+            "trap! 7",
+            "trap! Some(7)",
+            "trap! parse_id(\"42\")",
+        ] {
+            let tokens = lex(source).expect("canonical lexer must admit trap! spelling");
+            let mut parser = Parser::new(tokens);
+            let err = parser.parse_unary().expect_err("Result trap! must fail closed");
+            assert_eq!(err.code, "E_TRAP_BANG_RESULT_UNVERIFIED", "{err}");
+        }
+    }
+
+    #[test]
+    fn bare_trap_retains_separate_legacy_option_lowering() {
+        let tokens = lex("trap 7").expect("legacy lexical spelling");
+        let expression = Parser::new(tokens).parse_unary().expect("legacy unary trap");
+        assert!(matches!(expression.kind, ExprKind::Trap(_)));
+    }
+}
