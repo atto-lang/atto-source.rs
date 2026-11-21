@@ -13,6 +13,7 @@ const positives = [
   ['return (40 + 2) : int;', 42n],
   ['return (40 + 2) as int;', 42n],
   ['return (true ? 42 : 7) as int;', 42n],
+  ['return true ? (42 : int) : 7;', 42n],
   ['val x = (40 + 2) : int; return x;', 42n],
   ['val x = (40 + 2) as int; return x;', 42n],
 ];
