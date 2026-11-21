@@ -3,6 +3,8 @@
 # preview header correction (comments only) from atto-lang.github.io PR #153 at faca5186d4d672ff5eaf843146e0baae3387a068
 # boolean-operators website correction merged in ca3d55cd43470cd49cd6206b0e87f256112f84b9
 # callable-body-styles website correction merged in 67282439d97dcb76ec17b30cfa1177aad12c3ce7
+# result-option/result-option-end from atto-lang.github.io PR #218 candidate
+# site candidate head 8801f974ef4dbcbcef1ca172c9ca647f3f513ffd (not yet public)
 # site_root play/examples/preview
 actor-pipeline	7736f9710da491050fa5e71307eb933561791774
 actor-receiver-methods	aac346b631d1a0faf06b17d156c00c2ab54f39a2
@@ -33,8 +35,8 @@ mutable-state	6a1c000a200af65e09cd67e6dd73e01ca49d10a3
 mutex-locks	31b08b6bebdbd0c243a98679e1a2968b7aea0ed9
 namespaces	a11b92a93b82c2955048fffad998a3254b647957
 nio-reactor	c6b816255d8a02c89d771fb8e63f207980fd2781
-result-option	e3391e739acc997d710b470e82e48501ee872c83
-result-option-end	4e064851cde91077617d4d3dd710c2eec2d47380
+result-option	f85d61802b1fb0ecea4c187bfac1080f2f45d080
+result-option-end	76b3f91f27711be7c77a6b23ee0a3ef937631d73
 routine	e2d2b8421f96bc2747ffdfb6a80c740376ee00ab
 rx-interop	eb58878db01df3e86e6d2e2110ebfd025799f421
 rx-observable	e05fbef46066b7418a3c8362a8ef0cbd6cbdb8e8
