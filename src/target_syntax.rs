@@ -1149,16 +1149,19 @@ fn validate_callback(
                     }
                 }
             }
-            if !write {
-                if matches!(toks.get(i+3).map(|t| &t.tok),
-                    Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
-                    return Err(diagnostic(toks, i+3, "E_READONLY",
-                        "critical-read cannot mutate actor state"));
-                }
-                if at(toks, i+3, &Tok::Dot) || at(toks, i+3, &Tok::LParen) {
-                    return Err(diagnostic(toks, i+3, "E_UNSUPPORTED",
-                        "state field method calls need a full effect and borrow checker"));
-                }
+            // Nested/dynamic paths and field method calls have no authenticated
+            // layout, alias or transitive effect summary at this stage. This
+            // applies to critical-write too: otherwise the lexical write-set
+            // check would miss e.g. s.other.child = 1 or s.other[0] = 1.
+            if [Tok::Dot, Tok::LParen, Tok::LBracket].iter()
+                .any(|tok| at(toks, i + 3, tok)) {
+                return Err(diagnostic(toks, i + 3, "E_UNSUPPORTED",
+                    "nested, indexed or callable actor state fields require typed effect proofs"));
+            }
+            if !write && matches!(toks.get(i+3).map(|t| &t.tok),
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
+                return Err(diagnostic(toks, i+3, "E_READONLY",
+                    "critical-read cannot mutate actor state"));
             }
         }
     }
@@ -1197,6 +1200,20 @@ fn validate_receiver_body(
             return Err(diagnostic(toks, i, "E_DUPLICATE",
                 "method body cannot shadow its receiver binding"));
         }
+        // The discarded '_' receiver cannot be used as a guest identity.
+        if receiver.binding == "_" && word_at(toks, i, "_") &&
+            (at(toks, i + 1, &Tok::Dot) || at(toks, i + 1, &Tok::LParen)) {
+            return Err(diagnostic(toks, i, "E_UNBOUND",
+                "discarded receiver '_' is not a callable or addressable binding"));
+        }
+        // This is a syntax-only target frontend. Never silently accept a
+        // receiver escape/capture as a plain expression or message payload.
+        if receiver.binding != "_" && word_at(toks, i, &receiver.binding) &&
+            !(i > 0 && at(toks, i - 1, &Tok::Dot)) &&
+            !at(toks, i + 1, &Tok::Dot) {
+            return Err(diagnostic(toks, i, "E_ESCAPE",
+                "passing or returning the actor receiver needs typed capability proofs"));
+        }
         if word_at(toks, i, "handle_state") &&
             !(i >= 2 && word_at(toks, i-2, &receiver.binding) && at(toks, i-1, &Tok::Dot)) {
             return Err(diagnostic(toks, i, "E_SEALED",
@@ -1225,12 +1242,14 @@ fn validate_receiver_body(
                     return Err(diagnostic(toks, i, "E_ARITY",
                         "actor runtime operation called with wrong argument count"));
                 }
-                i = close + 1;
+                // Inspect nested arguments too: otherwise send(this.state.x)
+                // bypasses the sealed-state scanner entirely.
+                i += 4;
                 continue;
             }
             resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
                 member, count_args(toks, i+3, close)?, false, toks[i].pos)?;
-            i = close + 1;
+            i += 4;
             continue;
         }
         i += 1;
