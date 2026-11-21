@@ -20,3 +20,30 @@ export function readCompilerDiagnostic(memory, address) {
     'E_COMPILER_ABI: unterminated diagnostic');
   return decoder.decode(bytes.subarray(address, end));
 }
+
+
+// Reject diagnostic drift between native attoc and the wasm32-hosted Rust
+// compiler. Both invoke the same Diagnostic::render/Display implementation;
+// accepting a mere substring such as E_TOKEN could mask changed source
+// positions, incorrect error prose, or unexpected extra stderr output.
+export function verifyCompilerDiagnosticParity(stderr, sourceLabel, wasmDiagnostic, expectedCode) {
+  assert.match(expectedCode, /^E_[A-Z0-9_]+$/, 'invalid expected diagnostic code');
+  assert.ok(typeof sourceLabel === 'string' && sourceLabel.length > 0 &&
+    !/[\r\n\0]/.test(sourceLabel), 'invalid native source label');
+  assert.ok(wasmDiagnostic && wasmDiagnostic.ok === false,
+    'wasm compiler must return an explicit diagnostic result');
+  for (const [name, value] of [['line', wasmDiagnostic.line], ['column', wasmDiagnostic.col]]) {
+    assert.ok(Number.isSafeInteger(value) && value >= 0,
+      'E_COMPILER_ABI: invalid diagnostic ' + name);
+  }
+  const message = wasmDiagnostic.message;
+  assert.ok(typeof message === 'string' &&
+    /^E_[A-Z0-9_]+: [^\r\n\0]*$/.test(message),
+    'E_COMPILER_ABI: invalid diagnostic format');
+  assert.ok(message.startsWith(expectedCode + ': '),
+    'wasm32 compiler returned a different diagnostic code');
+  assert.equal(stderr, sourceLabel + ': ' + wasmDiagnostic.line +
+    ':' + wasmDiagnostic.col + ': ' + message + '\n',
+    'native attoc and wasm32 compiler diagnostics are not byte-identical');
+  return {code: expectedCode, line: wasmDiagnostic.line, col: wasmDiagnostic.col, message};
+}
