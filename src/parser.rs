@@ -1449,6 +1449,9 @@ impl Parser {
                 ExprKind::Bool(_) => Ok(Type::Bool),
                 ExprKind::Float(_) => Ok(Type::Float),
                 ExprKind::Str(_) => Ok(Type::Str),
+                // The checker verifies the ascribed type before codegen;
+                // inferred callable returns may use the declared expectation.
+                ExprKind::Ascribe(_, ty, _) => Ok(*ty),
                 ExprKind::Var(name) => params.iter().find(|p| p.name == *name)
                     .map(|p| p.ty).ok_or_else(fail),
                 ExprKind::Unary(UnOp::Neg | UnOp::Plus, e) => {
