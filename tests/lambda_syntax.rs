@@ -170,7 +170,7 @@ fn ignored_placeholder_formals_preserve_arity_without_binding_a_name() {
     let ExprKind::Lambda { params, .. } = &init.kind else {
         panic!("expected a lambda AST");
     };
-    assert_eq!(params, &["_", "_"]);
+    assert_eq!(params.iter().map(String::as_str).collect::<Vec<_>>(), vec!["_", "_"]);
 
     let duplicate_named = main_with("|n, n| -> n");
     let err = Parser::new(lexer::lex(&duplicate_named).unwrap())
