@@ -3388,6 +3388,10 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
+                if self.borrowed_slots.contains(&local.slot) && !self.loans.contains_key(&local.slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "cannot mutate through an expired borrowed class alias"));
+                }
                 if let Some(loan) = self.loans.get(&local.slot).copied() {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
@@ -3479,6 +3483,17 @@ impl<'a> FnCx<'a> {
                             "cannot write a field overlapping an active loan"));
                     }
                     let checked = self.consume_expected(value, fty)?;
+                    // RHS may execute nested calls and take! the owner, or
+                    // introduce an overlapping loan. Revalidate AFTER effects.
+                    if self.moved.contains(&slot) {
+                        return Err(Diagnostic::new(pos, "E_MOVED",
+                            "class field assignment RHS moved its owner"));
+                    }
+                    if self.loans.values().any(|loan| loan.owner == slot &&
+                        (loan.field.is_none() || loan.field == Some(offset))) {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            "class field assignment RHS created an overlapping loan"));
+                    }
                     if checked.ty != fty {
                         return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
                     }
