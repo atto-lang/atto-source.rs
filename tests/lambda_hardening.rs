@@ -134,7 +134,7 @@ fn unsupported_unused_callables_fail_closed_but_fixed_arrays_compile() {
     // misclassify it as a forbidden generic heap array or first-class closure.
     let bounded = "pub fnc main(): int { val xs = [1,2,3]; return 0; }";
     let wasm = atto_compiler::compile(bounded).expect("bounded fixed array must compile");
-    assert!(wasm.starts_with(b"\\0asm"));
+    assert!(wasm.starts_with(b"\0asm"));
     assert_eq!(atto_compiler::compile(bounded).unwrap(), wasm);
 }
 
