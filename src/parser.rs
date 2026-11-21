@@ -10,6 +10,10 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+/// Guard the much heavier recursive lambda-type / lambda-body frames on
+/// small Rust test-worker stacks before generic parser depth is exhausted.
+const MAX_LAMBDA_TYPE_DEPTH: u32 = 48;
+const MAX_LAMBDA_NESTING: u32 = 32;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -239,6 +243,9 @@ pub struct Parser {
     cond: u32,
     /// A ternary's middle arm must leave ':' to its ternary separator.
     ascription_colon: bool,
+    /// Explicit lambda nesting is independently bounded to avoid stack
+    /// exhaustion before generic parser recursion counters can fire.
+    lambda_nesting: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
     /// Canonically interned nominal Array<T, layout=...> type parameters.
@@ -314,6 +321,7 @@ impl Parser {
             height: 0,
             cond: 0,
             ascription_colon: true,
+            lambda_nesting: 0,
             type_names: Vec::new(),
             array_types: Vec::new(),
             in_generator: false,
@@ -3670,6 +3678,10 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        if self.depth >= MAX_LAMBDA_TYPE_DEPTH {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda type nesting exceeds the safe compiler stack budget"));
+        }
         self.enter()?;
         let result = (|| {
             let mut name = match self.peek().clone() {
@@ -3707,6 +3719,17 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        if self.lambda_nesting >= MAX_LAMBDA_NESTING {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda expressions exceed the safe compiler stack budget"));
+        }
+        self.lambda_nesting += 1;
+        let parsed = self.parse_lambda_inner();
+        self.lambda_nesting -= 1;
+        parsed
+    }
+
+    fn parse_lambda_inner(&mut self) -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
