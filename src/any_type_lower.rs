@@ -33,6 +33,7 @@ fn scalar_lit(t: &Tok) -> Option<&'static str> {
         _ => None,
     }
 }
+
 // A leading '-' is a unary operator token, not part of the numeric token.
 // Admit only signed numeric literals here, never general computed expressions.
 // Tok::Int(None) represents 2^63 and is valid only with this leading '-'.
