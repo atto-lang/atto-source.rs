@@ -398,6 +398,8 @@ struct MethodInfo {
 
 struct ClassInfo {
     name: String,
+    /// Explicit Error-rooted nominal ancestry, not a message-string alias.
+    error_parent: bool,
     /// Distinct protected-state nominal declaration (single Worker-local profile).
     state_container: bool,
     fields: Vec<FieldInfo>,
@@ -931,7 +933,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for (name, pos, kind) in decl_names {
         if matches!(
             name,
-            "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "int" | "bool" | "boolean"
+            "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "Error" | "int" | "bool" | "boolean"
         ) || is_reserved_collection_or_loan_name(name) {
             return Err(Diagnostic::new(
                 pos,
@@ -954,6 +956,45 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 "E_DUPLICATE",
                 format!("'{}' is already declared as a type", f.name),
             ));
+        }
+    }
+    // The first legal inheritance edge is explicit 'extends Error'; do not
+    // infer inheritance from an identifier or silently flatten a subclass.
+    // Until the guest exception value carries a verified nominal type tag,
+    // only field-free subclasses may be declared, and actually throwing one
+    // must fail before output. A later runtime can remove this member gate
+    // after object layout, field lifetime and subtype preservation are proved.
+    for c in &p.classes {
+        if c.error_parent && (c.state_container || !c.fields.is_empty()
+            || c.ctor.is_some() || !c.methods.is_empty())
+        {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED",
+                format!("Error subclass '{}' is nominally recognized, but subclass fields, constructors and methods require subtype-preserving exception layout and lifecycle lowering", c.name)));
+        }
+    }
+    // Resolve the *declared* effect identity against the full class table,
+    // independent of whether Foo appears before or after the function.
+    // A class without an explicit Error parent is not an Error subtype.
+    for f in &p.funcs {
+        if let Some(effects) = f.declared_effects {
+            for (kind, nominal) in [
+                ("throws", effects.throws_nominal),
+                ("raises", effects.raises_nominal),
+                ("panics", effects.panics_nominal),
+            ] {
+                if let Some(id) = nominal {
+                    let (name, pos) = p.type_names.get(id as usize).ok_or_else(|| {
+                        Diagnostic::new(f.pos, "E_UNKNOWN_TYPE",
+                            "checked effect refers to an invalid nominal type index")
+                    })?;
+                    let verified = p.classes.iter().any(|c|
+                        c.name == *name && c.error_parent && !c.state_container);
+                    if !verified {
+                        return Err(Diagnostic::new(*pos, "E_TYPE",
+                            format!("'{kind} {name}' requires a declared class '{name} extends Error'; non-Error classes and unknown types are forbidden")));
+                    }
+                }
+            }
         }
     }
     let class_names: Vec<String> = p.classes.iter().map(|c| c.name.clone()).collect();
@@ -1104,6 +1145,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         };
         classes.push(ClassInfo {
             name: c.name.clone(),
+            error_parent: c.error_parent,
             state_container: c.state_container,
             fields,
             methods,
@@ -1696,6 +1738,16 @@ fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
     for (index, f) in declared.iter().enumerate() {
         let Some(contract) = f.declared_effects else { continue; };
         let actual = effects[index];
+        // A nominally narrowed declaration is not a generic Error channel.
+        // The current effect solver is channel-granular and does not yet
+        // prove that *every* transitive escaping error has subtype Foo.
+        // Fail closed whenever a narrowed channel actually escapes.
+        if (contract.throws_nominal.is_some() && actual.throws)
+            || (contract.raises_nominal.is_some() && actual.raises)
+        {
+            return Err(Diagnostic::new(f.pos, "E_EFFECT",
+                format!("function '{}' has a nominal Error effect bound but escaping exception subtype propagation is not yet verified", f.name)));
+        }
         if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
             let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
                 (true, true) => "throws(Error), raises(Error)",
@@ -2537,6 +2589,18 @@ impl<'a> FnCx<'a> {
         if self.cleanup_depth > 0 {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 format!("'{what}' inside a defer/recover body would replace the pending failure")));
+        }
+        // Never re-tag a Foo exception as an untyped built-in Error string:
+        // the existing Wasm EH tag carries only message bytes. In particular,
+        // simply accepting 'raise! new Foo()' here would lose subtype identity
+        // across calls, recover and future supervisor CONTROL boundaries.
+        if let ExprKind::Call(name, _) | ExprKind::New(name, _) = &error.kind {
+            if self.g.class(name).is_some_and(|id|
+                self.g.classes[id as usize].error_parent)
+            {
+                return Err(Diagnostic::new(error.pos, "E_UNSUPPORTED",
+                    format!("nominal Error subclass '{name}' requires subtype-preserving Wasm exception payload and recover/supervisor lowering before guest emission")));
+            }
         }
         let args = match &error.kind {
             ExprKind::Call(name, args) | ExprKind::New(name, args) if name == "Error" => args,
