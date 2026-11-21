@@ -1,5 +1,9 @@
 //! Lambda parser acceptance and fail-closed backend contract.
-use atto_compiler::{ast::{ExprKind, LambdaBody, Stmt}, lexer, parser::Parser};
+use atto_compiler::{
+    ast::{ExprKind, LambdaBody, Stmt},
+    lexer,
+    parser::Parser,
+};
 
 fn parse(source: &str) -> atto_compiler::ast::Program {
     Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap()
@@ -22,18 +26,30 @@ fn colon_annotated_rx_pipeline_and_arrays_parse() {
         }
     "#;
     let p = parse(source);
-    let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else { panic!("expected binding") };
-    let ExprKind::MethodCall(base, method, _) = &init.kind else { panic!("expected take") };
+    let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else {
+        panic!("expected binding")
+    };
+    let ExprKind::MethodCall(base, method, _) = &init.kind else {
+        panic!("expected take")
+    };
     assert_eq!(method, "take");
-    let ExprKind::MethodCall(base, method, args) = &base.kind else { panic!("expected map") };
+    let ExprKind::MethodCall(base, method, args) = &base.kind else {
+        panic!("expected map")
+    };
     assert_eq!(method, "map");
-    let ExprKind::Lambda { params, return_type, body } = &args[0].kind else { panic!("expected lambda") };
+    let ExprKind::Lambda { params, return_type, body } = &args[0].kind else {
+        panic!("expected lambda")
+    };
     assert_eq!(params, &["n"]);
     assert_eq!(return_type.as_deref(), Some("int"));
     assert!(matches!(body, LambdaBody::Statement(_)));
-    let ExprKind::MethodCall(_, method, args) = &base.kind else { panic!("expected filter") };
+    let ExprKind::MethodCall(_, method, args) = &base.kind else {
+        panic!("expected filter")
+    };
     assert_eq!(method, "filter");
-    let ExprKind::Lambda { return_type, .. } = &args[0].kind else { panic!("expected lambda") };
+    let ExprKind::Lambda { return_type, .. } = &args[0].kind else {
+        panic!("expected lambda")
+    };
     assert_eq!(return_type.as_deref(), Some("bool"));
 }
 
@@ -141,22 +157,19 @@ fn explicit_pipe_lambdas_compile_to_real_wasm_and_recover_after_rejection() {
     assert!(first.starts_with(b"\0asm\x01\0\0\0"), "real Wasm module required");
     assert_eq!(first, atto_compiler::compile(valid).unwrap(), "Wasm must be reproducible");
 
-    for forbidden in [
-        "_ : int -> 5",
-        "_ -> 5",
-        "value : int -> value + 5",
-        "value -> value + 5",
-    ] {
-        let invalid = format!(
-            "pub fnc main(): int {{ val fnc_value = {forbidden}; return 42; }}"
-        );
-        let err = atto_compiler::compile(&invalid)
-            .expect_err("delimiter-free function expressions cannot emit Wasm");
+    for forbidden in ["_ : int -> 5", "_ -> 5", "value : int -> value + 5", "value -> value + 5"] {
+        let invalid = format!("pub fnc main(): int {{ val fnc_value = {forbidden}; return 42; }}");
+        let err = atto_compiler::compile(&invalid).expect_err("delimiter-free function expressions cannot emit Wasm");
         assert!(err.code.starts_with("E_"), "structured error: {forbidden}");
-        assert!(err.pos.line > 0 && err.pos.col > 0,
-            "diagnostic location must be populated: {forbidden}");
-        assert_eq!(atto_compiler::compile(valid).unwrap(), first,
-            "one rejected source must not corrupt the next valid compiler call");
+        assert!(
+            err.pos.line > 0 && err.pos.col > 0,
+            "diagnostic location must be populated: {forbidden}"
+        );
+        assert_eq!(
+            atto_compiler::compile(valid).unwrap(),
+            first,
+            "one rejected source must not corrupt the next valid compiler call"
+        );
     }
 }
 
@@ -170,11 +183,15 @@ fn ignored_placeholder_formals_preserve_arity_without_binding_a_name() {
     let ExprKind::Lambda { params, .. } = &init.kind else {
         panic!("expected a lambda AST");
     };
-    assert_eq!(params.iter().map(String::as_str).collect::<Vec<_>>(), vec!["_", "_"]);
+    assert_eq!(
+        params.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["_", "_"]
+    );
 
     let duplicate_named = main_with("|n, n| -> n");
     let err = Parser::new(lexer::lex(&duplicate_named).unwrap())
-        .parse_program().unwrap_err();
+        .parse_program()
+        .unwrap_err();
     assert_eq!(err.code, "E_DUPLICATE");
 
     // A discard cannot be referenced; otherwise the last of two positions
