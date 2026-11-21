@@ -123,15 +123,17 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_DUPLICATE",
                             "compiler-generated lambda name collides with a declaration"));
                     }
-                    // Only expression-body sibling lambdas have the bounded
-                    // call-graph preflight below. Statement/block bodies for
-                    // later siblings require a full lexical call walk.
-                    if !direct.is_empty()
+                    // Only expression-body multi-lambda functions have the
+                    // bounded call-graph preflight below. A statement/block
+                    // body anywhere among siblings could invoke a forward
+                    // direct lambda; without a full statement call walk,
+                    // lowering could accidentally bind a global homonym.
+                    if lambda_names.len() > 1
                         && !matches!(&init.kind, ExprKind::Lambda {
                             body: LambdaBody::Expression(_), ..
                         }) {
                         return Err(error(*pos, "E_UNSUPPORTED",
-                            "multiple direct lambdas with statement or block bodies need verified lexical call scanning"));
+                            "multi-lambda statement or block bodies need verified lexical call scanning"));
                     }
                     let mut free = BTreeSet::new();
                     if let ExprKind::Lambda { body: LambdaBody::Expression(expression), .. } = &init.kind {

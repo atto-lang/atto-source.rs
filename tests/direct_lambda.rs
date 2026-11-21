@@ -161,6 +161,19 @@ fn sibling_lambdas_get_independent_definition_site_capture_snapshots() {
 }
 
 #[test]
+fn statement_body_cannot_bypass_sibling_call_preflight() {
+    let src = r#"
+        fnc later(int n): int { return n * 100; }
+        pub fnc main(): int {
+            val first = (|n| : int -> return later(n) + 1;);
+            val later = |n| : int -> n + 1;
+            return first(1) + later(1);
+        }
+    "#;
+    let d = atto_compiler::compile(src).expect_err("mixed-bodied lambda call graph needs scanning");
+    assert_eq!(d.code, "E_UNSUPPORTED", "{d}");
+}
+#[test]
 fn lambda_forward_reference_must_not_resolve_to_an_unrelated_global_function() {
     // The previous source-order scanner only knew already-visited bindings.
     // A future local lambda could accidentally become a global direct call.
