@@ -416,6 +416,7 @@ fnc __chan_close(int c): void {
 // ready-case scan, the chosen read, or the cursor update: only one case commits.
 fnc __plan_from_list(int cases, int dynamic): int {
   val n = __load(cases, 0);
+  if n <= 0 then __panic(10); fi
   if n > 256 then __panic(10); fi
   val p = __alloc(2096);
   __store(p, 0, n);
