@@ -16,6 +16,11 @@ assert.match(manifest, /^name\s*=\s*"atto-compiler-browser"\s*$/m,
   'root Cargo package must remain the canonical browser compiler');
 assert.match(manifest, /^name\s*=\s*"atto_compiler"\s*$/m,
   'root library must preserve the compiler ABI crate name');
+assert.match(manifest, /^crate-type\s*=\s*\[\s*"cdylib"\s*,\s*"rlib"\s*\]\s*$/m,
+  'root compiler must keep both Wasm and host-linkable Rust library outputs');
+assert.match(manifest, /^name\s*=\s*"attoc"\s*$/m,
+  'root executable must be named attoc');
+
 assert.equal((manifest.match(/^\[\[bin\]\]\s*$/gm) ?? []).length, 1,
   'root Cargo package must expose exactly one executable target');
 assert.match(manifest, /^path\s*=\s*"src\/bin\/attoc\.rs"\s*$/m,
@@ -24,6 +29,9 @@ assert.equal((manifest.match(/^\[lib\]\s*$/gm) ?? []).length, 1,
   'root Cargo package must declare a single compiler library');
 assert.match(nativeManifest, /^path\s*=\s*"src\/main\.rs"\s*$/m,
   'native Cranelift binary must remain in the dedicated native package');
+assert.match(nativeManifest, /^name\s*=\s*"oresc"\s*$/m,
+  'native package CLI must remain oresc until a separately reviewed rename');
+
 assert.equal((nativeManifest.match(/^\[\[bin\]\]\s*$/gm) ?? []).length, 1,
   'native Cranelift package must expose exactly one executable target');
 assert.ok(!existsSync(join(root, 'browser/Cargo.toml')),
