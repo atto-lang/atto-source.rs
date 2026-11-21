@@ -9,6 +9,8 @@ pub suspends fnc main(): int {
   ]);
   val Option<SelectResult> none = try select fair from plan;
   writech left, 42;
+  writech right, 17;
+  // With both cases ready, a try-miss must leave FAIR cursor at slot zero.
   val Option<SelectResult> some = try select fair from plan;
-  return some.unwrap().value;
+  return some.unwrap().value + some.unwrap().index;
 }
