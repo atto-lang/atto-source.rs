@@ -23,7 +23,9 @@ fn unsupported_or_conflicting_generic_inference_fails_before_wasm_emission() {
     for (source, expected) in [
         ("fnc calculate<T>(int x): T { return (x + 3) as T; } pub fnc main(): int { val x = calculate(5); return 0; }", "E_INFER"),
         ("fnc calculate<T>(int x): T { return (x + 3) as T; } pub fnc main(): int { val x = calculate<float>(5) : int; return 0; }", "E_TYPE"),
-        ("fnc calculate<T>(int x): T { return (x + 3) as T; } pub fnc main(): int { val x = calculate<Array<int>>(5); return 0; }", "E_UNSUPPORTED_TYPE"),
+        // The existing nominal Array<T> source preflight rejects before the
+        // bounded scalar generic specializer: rejection remains fail-closed.
+        ("fnc calculate<T>(int x): T { return (x + 3) as T; } pub fnc main(): int { val x = calculate<Array<int>>(5); return 0; }", "E_UNSUPPORTED"),
         ("fnc calculate<T>(int x): T { return (x + 3) as T; } pub fnc main(): int { return 0; }", "E_UNSUPPORTED"),
         ("fnc calculate<T>(int x): T { return (x + 3) as T; } pub fnc main(): int { val x = calculate<bool>(5); return 0; }", "E_UNSUPPORTED_CAST"),
     ] {
