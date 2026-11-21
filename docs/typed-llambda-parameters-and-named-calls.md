@@ -30,9 +30,20 @@ pub fnc main(): int {
 * `const fnc` at module scope is a statically named, noncapturing, immutable
   declaration lowered to the existing ordinary function ABI. All parameter
   types and the result must be explicit, and currently must be scalar.
-* A local `const fnc` is a closed direct-call constant with typed parameters;
-  it cannot capture runtime locals. This is **not** a general first-class
-  callable or escaping closure.
+* A local `const fnc` is a closed direct-call lambda with mandatory
+  `|...|` delimiters. Parameter types may be explicit or inferred from the
+  first verified scalar-literal direct invocation. Example:
+  `const fnc v = |_| : int -> 5; return v(41);` infers one `int` input;
+  `const fnc v = || : int -> 5; return v();` has zero inputs. The `: int`
+  annotates the *result*, never an implicit parameter type.
+  The local constant may not capture runtime locals or escape as a value.
+  Unused or uninferrable callables still fail closed. This is **not** a
+  general first-class callable or escaping closure.
+* Module-scope `const fnc` declarations still require explicit parameter
+  annotations (use `|int _|` for an ignored `int` input); their ABI is fixed
+  before call-site analysis. A zero-argument `||` needs no input annotation.
+* Delimiter-free lambda heads (`_ : int -> 5`, `_ -> 5`, `x -> x + 5`) are
+  syntax errors, not alternative lambda spellings.
 
 ## Named calls
 
