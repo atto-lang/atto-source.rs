@@ -519,14 +519,8 @@ mod tests {
             "fnc evaluate(): int { let calculate: int = 1; return calculate; } ",
             "fnc evaluate(): int { const calculate: int = 1; return calculate; } ",
         ] {
-            let source = format!(
-                "{generic}{fragment}pub fnc main(): int {{ return calculate<int>(5); }}"
-            );
-            assert_eq!(
-                lower(lex(&source).unwrap()).unwrap_err().code,
-                "E_DUPLICATE",
-                "{fragment}"
-            );
+            let source = format!("{generic}{fragment}pub fnc main(): int {{ return calculate<int>(5); }}");
+            assert_eq!(lower(lex(&source).unwrap()).unwrap_err().code, "E_DUPLICATE", "{fragment}");
         }
     }
 
