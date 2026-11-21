@@ -1,0 +1,58 @@
+// Pure AttoLang virtual-NIC admission core.
+// Ethernet byte counts exclude the 4-byte FCS and include the 14-byte header.
+// Host byte transport, DMA and OS TAP attachment are deliberately out of scope.
+
+pub fnc valid_mac(int mac): bool {
+  return mac >= 0 and mac <= 281474976710655;
+}
+
+pub fnc mac_is_group(int mac): bool {
+  if !valid_mac(mac) then
+    return false;
+  fi
+  let int first_octet = mac / 1099511627776;
+  return first_octet != (first_octet / 2) * 2;
+}
+
+pub fnc valid_vlan_id(int vlan): bool {
+  return vlan >= 1 and vlan <= 4094;
+}
+
+pub fnc valid_ethernet_frame(int bytes, int mtu): bool {
+  if mtu < 576 or mtu > 9216 then
+    return false;
+  fi
+  return bytes >= 60 and bytes <= mtu + 14;
+}
+
+pub fnc valid_descriptor_ring(int used, int capacity): bool {
+  return capacity >= 1 and capacity <= 4096 and used >= 0 and used <= capacity;
+}
+
+pub fnc can_receive(int bytes, int mtu, int used, int capacity, bool link_up): bool {
+  if !link_up or !valid_ethernet_frame(bytes, mtu) then
+    return false;
+  fi
+  return valid_descriptor_ring(used, capacity) and used < capacity;
+}
+
+pub fnc can_transmit(int bytes, int mtu, int used, int capacity, bool link_up): bool {
+  return can_receive(bytes, mtu, used, capacity, link_up);
+}
+
+pub fnc next_ring_slot(int current, int capacity): int {
+  if capacity < 1 or capacity > 4096 or current < 0 or current >= capacity then
+    return -1;
+  fi
+  if current + 1 == capacity then
+    return 0;
+  fi
+  return current + 1;
+}
+
+pub fnc available_descriptors(int used, int capacity): int {
+  if !valid_descriptor_ring(used, capacity) then
+    return -1;
+  fi
+  return capacity - used;
+}

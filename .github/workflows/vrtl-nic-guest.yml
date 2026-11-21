@@ -1,0 +1,41 @@
+name: Executed Atto virtual NIC guest conformance
+on:
+  push:
+    branches: [feat/vrtl-nic-guest-conformance-v1]
+    paths:
+      - 'tests/virtual_hardware/**'
+      - '.github/workflows/vrtl-nic-guest.yml'
+      - 'src/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+  pull_request:
+    paths:
+      - 'tests/virtual_hardware/**'
+      - '.github/workflows/vrtl-nic-guest.yml'
+      - 'src/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  executed-atto-nic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Report exact compiler commit and source tree
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+      - name: Install pinned compiler toolchain
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup default 1.85.1
+      - name: Build real Atto compiler
+        run: cargo build --locked --release --bin attoc
+      - name: Execute SHA-verified virtual NIC Atto guests
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/virtual_hardware/nic-guest-execution.mjs
