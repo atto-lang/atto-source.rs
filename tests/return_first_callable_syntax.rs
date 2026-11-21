@@ -448,6 +448,7 @@ fn nominal_foo_raise_has_independent_compiled_guest_oracles() {
         include_str!("fixtures/pass/nominal-foo-raise-catch-bypass.atto"),
         include_str!("fixtures/pass/nominal-foo-delegated-recover.atto"),
         include_str!("fixtures/pass/nominal-foo-trap-bypass.atto"),
+        include_str!("fixtures/pass/nominal-foo-transitive-callee.atto"),
     ] {
         assert!(fixture.contains("raise! new "));
         assert!(fixture.contains("err.is_type("));
