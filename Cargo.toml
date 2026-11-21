@@ -23,3 +23,9 @@ strip = true
 [[bin]]
 name = "attoc"
 path = "src/bin/attoc.rs"
+
+# Explicitly retain the disjoint field loan integration suite when the
+# canonical browser Cargo package enables autotests = false (PR #448).
+[[test]]
+name = "disjoint_field_loan_guest"
+path = "tests/disjoint_field_loan_guest.rs"
