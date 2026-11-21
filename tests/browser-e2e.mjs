@@ -200,6 +200,20 @@ try{
   assert.equal(await run(sourceAwait,'main() -> 0'),
     'actor[1] receive(41) -> 42\nmain() -> 0');
   console.log('PASS browser: terminal source await joins acknowledged actor shutdown asynchronously');
+  // Distinct terminal READY source request: the Rust/Wasm compiler emits
+  // actor_ready instead of actor_join and the host waits for actual Worker
+  // initialization (not an invented synchronous readiness result).
+  const sourceReady=sourceAwait.replace('await worker.get_done();',
+    'await worker.get_ready();');
+  assert.equal(await run(sourceReady,'main() -> 0'),
+    'actor[1] receive(41) -> 42\\nmain() -> 0');
+  console.log('PASS browser: compiled terminal get_ready awaits child READY then closes its structured scope');
+  assert.match(await run(sourceReady.replace('get_ready()','get_ready(42)'),'E_ARITY'),/E_ARITY/);
+  assert.match(await run(sourceReady.replace('  await worker.get_ready();',
+    '  await worker.get_ready(); stdio.println(99);'),'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  assert.match(await run(sourceReady.replace('  await worker.get_ready();',
+    '  val task = worker.get_ready();'),'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  console.log('PASS browser: wrong arity, nonterminal and unawaited READY Future have no guest fallback');
   assert.ok(requests.some(x=>x.path==='/actor-lifecycle.mjs'),
     'real lifecycle module fetched by browser Worker');
   const panicAwait=sourceAwait.replace('msg + 1','msg + 9223372036854775807');
