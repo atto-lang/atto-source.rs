@@ -46,6 +46,35 @@ try {
     assert.equal(output,stdout,name+': wrong actual guest stdout');
     console.log('REAL_WASM_SELECT_PLAN_PASS '+name);
   }
+
+  // All three must compile successfully, then reject an actor DATA-port
+  // capability inside the actual WebAssembly guest with panic 10.
+  for (const name of [
+    '236-v2-select-pipe-owned-at-construction.atto',
+    '237-v2-select-pipe-claimed-after-plan.atto',
+    '238-v2-dynamic-select-put-pipe-owned.atto',
+  ]) {
+    const guest=join(tmp,'denied.wasm');
+    const compiled=spawnSync(compiler,[resolve('tests/fixtures/panic',name),'-o',guest],
+      {encoding:'utf8',timeout:30000,maxBuffer:128*1024});
+    assert.equal(compiled.status,0,name+': source did not compile: '+compiled.stderr);
+    const bytes=readFileSync(guest);
+    assert.ok(WebAssembly.validate(bytes),name+': invalid Wasm');
+    const mod=new WebAssembly.Module(bytes);
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64']);
+    for (const imp of WebAssembly.Module.imports(mod)) {
+      assert.equal(imp.module,'atto',name+': forbidden host import module');
+      assert.ok(allowed.has(imp.name),name+': forbidden host import');
+    }
+    const instance=new WebAssembly.Instance(mod,{atto:{
+      print_i64(){},print_bool(){},print_str(){},print_newline(){},print_f64(){},
+    }});
+    assert.throws(()=>instance.exports.main(),WebAssembly.RuntimeError,
+      name+': actor DATA capability was not denied by guest runtime');
+    assert.equal(instance.exports.panic_code.value,10,
+      name+': wrong actor capability panic code');
+    console.log('REAL_WASM_SELECT_PLAN_OWNERSHIP_DENIED '+name);
+  }
 } finally {
   rmSync(tmp,{recursive:true,force:true});
 }
