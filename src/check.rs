@@ -694,6 +694,21 @@ impl FnCx<'_> {
                 self.imports.push(Import::ActorJoin);
                 Ok(TStmt::AwaitActor(actor))
             }
+            ExprKind::MethodCall(receiver, method, args) if method == "get_ready" => {
+                if !args.is_empty() {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "get_ready() takes no arguments"));
+                }
+                let actor = self.value(receiver)?;
+                if !matches!(actor.ty, Type::Actor(_)) {
+                    return Err(type_err(pos, "get_ready() requires a typed actor handle"));
+                }
+                // The browser host exposes a stable READY Promise, but the
+                // guest compiler cannot emit a nonterminal Future/continuation.
+                // Recognize the canonical API; NEVER emit a fake ready guest.
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "await actor.get_ready() needs scheduler-backed source Future suspension; host readiness alone is not guest support"))
+            }
             _ => Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "only terminal 'await actor.get_done()' is admitted; arbitrary suspension requires async frames")),
         }
@@ -950,6 +965,14 @@ impl FnCx<'_> {
                 self.imports.push(Import::ActorSend);
                 Ok(TE { e: TExpr::ActorSend(Box::new(value), Box::new(message)),
                     ty: Type::SendResult })
+            }
+            (Type::Actor(_), "get_ready") => {
+                if !args.is_empty() {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "get_ready() takes no arguments"));
+                }
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "get_ready() is an actor initialization Future, not a scalar; source Future lowering is not implemented"))
             }
             (Type::Actor(_), "get_done") =>
                 Err(Diagnostic::new(pos, "E_UNSUPPORTED",
