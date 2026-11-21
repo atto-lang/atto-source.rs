@@ -2377,6 +2377,16 @@ impl<'a> Checker<'a> {
         let (recv, ty) = self.value(base, None)?;
         let recv = self.spill(recv);
         match &ty {
+            Ty::Option(item) if **item == Ty::SelectResult => match name {
+                "unwrap" => {
+                    self.plain_args(name, args, 0, pos)?;
+                    let value = self.spill(recv);
+                    self.c().pre.push(IrStmt::If(eq(value.clone(), Ir::Const(0)),
+                        vec![IrStmt::Panic(6)], vec![]));
+                    Ok((load(value, 0), Ty::SelectResult, false))
+                }
+                _ => Err(type_err(pos, "Option<SelectResult> supports unwrap() in this bounded select-plan profile")),
+            },
             Ty::PipeSetupError => {
                 // A nominal error object, represented as a versioned v2
                 // integer code inside Result's Err payload. It grants no
