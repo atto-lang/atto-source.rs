@@ -1,0 +1,17 @@
+// v2 guest DynamicSelectPlan<int>: remove and replace a slot.
+// expect-exit: 42
+// expect-stdout: 2\n
+pub suspends fnc main(): int {
+  val first = Channel<int>.bounded(1);
+  val second = Channel<int>.bounded(1);
+  writech second, 22;
+  val DynamicSelectPlan<int> plan = DynamicSelectPlan<int>.from_list([
+    SelectCase.read(first), SelectCase.read(second)
+  ]);
+  val bool removed = plan.remove(0);
+  plan.put(0, SelectCase.read(first));
+  val Option<SelectResult> got = try select first from plan;
+  val SelectResult selected = got.unwrap();
+  stdio.println(plan.size());
+  return selected.value + 20;
+}

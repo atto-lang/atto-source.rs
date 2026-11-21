@@ -1,0 +1,20 @@
+// v2 guest nb select pins descriptor generation and makes one channel read.
+// expect-exit: 42
+// expect-stdout:
+pub suspends fnc main(): int {
+  val left = Channel<int>.bounded(1);
+  val right = Channel<int>.bounded(1);
+  val DynamicSelectPlan<int> plan = DynamicSelectPlan<int>.from_list([
+    SelectCase.read(left), SelectCase.read(right)
+  ]);
+  val Future<Option<SelectResult>> pending = nb select fair from plan;
+  val bool removed = plan.remove(0);
+  plan.put(0, SelectCase.read(left));
+  val worker = task {
+    writech right, 42;
+    return 0;
+  };
+  val Option<SelectResult> got = await pending;
+  await worker;
+  return got.unwrap().value;
+}

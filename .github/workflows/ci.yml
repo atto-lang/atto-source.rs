@@ -35,6 +35,7 @@ jobs:
           # Native attoc compiles checked .atto; Node only instantiates its guest.
           cargo build --locked --bin attoc
           node tests/node-v2-pipe-guest.mjs
+          node tests/node-v2-select-plans-guest.mjs
       - name: Build actual Wasm compiler
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
