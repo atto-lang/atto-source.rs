@@ -438,6 +438,36 @@ mod tests {
     }
 
     #[test]
+    fn template_type_variable_does_not_rewrite_runtime_bindings_or_values() {
+        for source in [
+            "fnc calculate<T>(int x): T { val T = 5; return x as T; } pub fnc main(): int { return calculate<int>(5); }",
+            "fnc calculate<T>(int x): T { return T; } pub fnc main(): int { return calculate<int>(5); }",
+            "fnc calculate<T>(int x): T { return x.T as T; } pub fnc main(): int { return calculate<int>(5); }",
+        ] {
+            assert_eq!(lower(lex(source).unwrap()).unwrap_err().code, "E_GENERIC_SCOPE", "{source}");
+        }
+    }
+
+    #[test]
+    fn member_and_nested_generic_invocations_are_explicitly_rejected() {
+        for (source, expected) in [
+            ("fnc calculate<T>(int x): T { return x as T; } pub fnc main(): int { return obj.calculate<int>(5); }", "E_GENERIC_SCOPE"),
+            ("fnc calculate<T>(int x): T { return x as T; } pub fnc main(): int { return calculate<int>(calculate<int>(5)); }", "E_UNSUPPORTED"),
+        ] {
+            assert_eq!(lower(lex(source).unwrap()).unwrap_err().code, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn type_first_formal_parameter_can_use_the_generic_type_variable() {
+        let source = "fnc identity<T>(T x): T { return x; } pub fnc main(): int { return identity<int>(5); }";
+        let lowered = lower(lex(source).unwrap()).unwrap();
+        let words: Vec<_> = lowered.iter().filter_map(word).collect();
+        assert!(words.contains(&"__atto_generic_0_int"));
+        assert!(!words.contains(&"T"));
+    }
+
+    #[test]
     fn nested_generic_method_never_becomes_an_unchecked_free_function() {
         let src = "define class C as pub fnc calculate<T>(int x): T { return x as T; } end pub fnc main(): int { return 0; }";
         assert_eq!(lower(lex(src).unwrap()).unwrap_err().code, "E_UNSUPPORTED");
