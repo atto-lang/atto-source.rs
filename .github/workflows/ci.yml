@@ -35,14 +35,29 @@ jobs:
           rustup component add clippy --toolchain 1.85.1
           rustup default 1.85.1
           rustc --version
+      - name: Build native attoc host
+        run: cargo build --locked --release --bin attoc
+      - name: Build actual Rust wasm32 compiler within public 1 MiB artifact budget
+        env:
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: z
+        run: |
+          set -euo pipefail
+          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+          artifact=target/wasm32-unknown-unknown/release/atto_compiler.wasm
+          test -s "$artifact"
+          test "$(wc -c < "$artifact")" -le 1048576 || { echo "E_COMPILER_SIZE: browser compiler exceeds public 1 MiB budget" >&2; exit 1; }
+          sha256sum "$artifact"
+      - name: Prove real attoc versus wasm32 compiler and compiled guest baseline
+        env:
+          ATTOC: target/release/attoc
+          ATTO_WASM_COMPILER: target/wasm32-unknown-unknown/release/atto_compiler.wasm
+        run: node scripts/verify-real-browser-compiler.mjs
       - name: Test native compiler core over the fixture corpus
         env:
           RUST_MIN_STACK: "16777216"
         run: cargo test --locked --verbose
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Build native attoc host
-        run: cargo build --locked --release --bin attoc
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc
@@ -55,10 +70,6 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/bitwise_guest.mjs
-      - name: Build actual Wasm compiler
-        run: |
-          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
-          sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
       - name: Compile exact bitwise preview inside browser Wasm compiler and compare native guest bytes
         env:
           ATTOC: target/release/attoc

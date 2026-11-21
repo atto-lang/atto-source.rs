@@ -3,22 +3,30 @@
 //! Syntax check: attoc --check input.atto
 //! Linked package: attoc --package-root DIR --entry src/main.atto [-o out.wasm]
 //! Discovered package: attoc --package path/to/main.atto [-o out.wasm]
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
-use std::io::Write;
 
 // The .atto source must never be removed when a user accidentally chooses it
 // (or its symlink/hardlink alias) as the Wasm destination.
 fn same_file(left: &Path, right: &Path) -> bool {
-    if left == right { return true; }
-    if let (Ok(a), Ok(b)) = (left.canonicalize(), right.canonicalize()) {
-        if a == b { return true; }
+    if left == right {
+        return true;
+    }
+    if matches!(
+        (left.canonicalize(), right.canonicalize()),
+        (Ok(a), Ok(b)) if a == b
+    ) {
+        return true;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if let (Ok(a), Ok(b)) = (left.metadata(), right.metadata()) {
-            if a.dev() == b.dev() && a.ino() == b.ino() { return true; }
+        if matches!(
+            (left.metadata(), right.metadata()),
+            (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino()
+        ) {
+            return true;
         }
     }
     false
@@ -26,10 +34,12 @@ fn same_file(left: &Path, right: &Path) -> bool {
 
 fn input_source_path(input: &Input) -> std::path::PathBuf {
     match input {
-        Input::Single(file) | Input::Check(file) | Input::Discovered(file) =>
-            Path::new(file).to_path_buf(),
-        Input::Package { root, entry } | Input::LockedPackage { root, entry, .. } =>
-            Path::new(root).join(entry),
+        Input::Single(file) | Input::Check(file) | Input::Discovered(file) => {
+            Path::new(file).to_path_buf()
+        }
+        Input::Package { root, entry } | Input::LockedPackage { root, entry, .. } => {
+            Path::new(root).join(entry)
+        }
     }
 }
 
@@ -37,8 +47,10 @@ fn input_source_path(input: &Input) -> std::path::PathBuf {
 // This is deliberately before source reading, parsing and code generation.
 fn clear_previous_output(input: &Input, output: &str) -> std::io::Result<()> {
     if same_file(&input_source_path(input), Path::new(output)) {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
-            "output resolves to the Atto source file"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output resolves to the Atto source file",
+        ));
     }
     match std::fs::remove_file(output) {
         Ok(()) => Ok(()),
@@ -49,22 +61,25 @@ fn clear_previous_output(input: &Input, output: &str) -> std::io::Result<()> {
 
 // Creation is exclusive: a planted output symlink cannot be followed between
 // the initial stale-file cleanup and successful compiler output publication.
-fn publish_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
-    // Do not unlink a pre-existing output if create_new fails (e.g. an
-    // adversary created a destination between preflight cleanup and publish).
-    // Such a file is not ours; an unsuccessful exclusive open must never
-    // destroy it. Only clean up after ownership of the new file is acquired.
+fn write_fresh_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
+    // The destination belongs to us only after create_new succeeds. In
+    // particular, never delete another process's file when exclusive open
+    // fails after the preflight stale-output cleanup.
     let mut file = std::fs::OpenOptions::new()
-        .write(true).create_new(true).open(output)?;
+        .write(true)
+        .create_new(true)
+        .open(output)?;
     let result = file.write_all(bytes).and_then(|_| file.sync_all());
     if result.is_err() {
-        // A partial write is not an artifact; do not keep a publishable .wasm.
-        // This path assumes the output directory is not concurrently mutable
-        // by another principal (same-directory TOCTOU needs a stronger host
-        // isolation contract).
+        // This cleanup is only permitted after our exclusive file creation.
+        // An adversarially writable output directory is NOT a security boundary.
         let _ = std::fs::remove_file(output);
     }
     result
+}
+
+fn publish_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
+    write_fresh_wasm(output, bytes)
 }
 
 enum Input {
@@ -169,7 +184,6 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             } else {
-                use std::io::Write;
                 if std::io::stdout().write_all(&bytes).is_err() {
                     eprintln!("cannot write compiled Wasm to stdout");
                     return ExitCode::from(2);
