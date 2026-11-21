@@ -219,6 +219,13 @@ try{
     '222-v2-checked-output-occupied-rollback.atto',
     '223-v2-checked-input-occupied-rollback.atto',
     '224-v2-checked-channel-occupied-rollback.atto',
+    // READY/DONE are distinct Futures, await spawn resumes, and checked
+    // actor bang is exercised by the actual browser-compiled Wasm guest.
+    '230-v2-actor-ready-future-pipe.atto',
+    '231-v2-await-spawn-ready-pipe.atto',
+    '232-v2-direct-actor-pipe-bang.atto',
+    '233-v2-direct-actor-rpipe-bang.atto',
+    '234-v2-direct-actor-bang-duplicate-denied.atto',
   ]) {
     const guest = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const observed = await run(guest, 'main() -> 42');
