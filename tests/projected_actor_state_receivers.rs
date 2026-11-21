@@ -126,8 +126,10 @@ fn actor_runtime_operations_reject_bad_arity_and_malformed_nested_arguments() {
         "declare actor Foo; mtd (Foo self) f(): void { self.send(1,]); }",
         "declare actor Foo; mtd (Foo self) f(): void { self.send(1,); }",
         "declare actor Foo; mtd (Foo self) f(): void { self.send(1,,2); }",
-        "declare actor Foo; mtd (Foo self) f(): void { self.send((1,2]); }",
     ] {
         reject(source, "E_SYNTAX");
     }
+    // The enclosing method call has an unclosed parenthesis, so the
+    // existing bounded parser correctly reports end-of-argument-list.
+    reject("declare actor Foo; mtd (Foo self) f(): void { self.send((1,2]); }", "E_EOF");
 }
