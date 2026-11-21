@@ -1,0 +1,19 @@
+// expect-exit: 42
+// Legacy trap returns Option only for throw; raised Error must escape to recover.
+// Canonical trap! is separately gated on checked Result<T,Error> lowering.
+fnc int <- checked_value(int value)
+raises Error ::
+  if value > 3 then
+    raise! Error("raise cannot become None");
+  fi
+  return value * 2;
+end
+
+pub fnc main(): int raises(Error) {
+  recover |err, cursor| -> {
+    if err.is_raise then return 42; fi
+    return 0;
+  };
+  val Option<int> ignored = trap checked_value(4);
+  return 17;
+}
