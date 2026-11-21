@@ -63,14 +63,14 @@ fn equivalent_record_permutations_intern_one_static_shape() {
 }
 
 #[test]
-fn quoted_utf8_record_fields_are_static_but_not_struct_identifiers() {
+fn identifier_record_fields_are_static_and_nonidentifier_struct_fields_reject() {
     let values =
-        bindings(r#"let Record headers = {"content-type": "text/plain", status_code: 200};"#)
+        bindings(r#"let Record headers = {content_type: "text/plain", status_code: 200};"#)
             .unwrap();
     assert_eq!(
         values[0].value.ty,
         T::Record(vec![
-            named("content-type", T::String),
+            named("content_type", T::String),
             named("status_code", T::Int),
         ])
     );
@@ -78,21 +78,21 @@ fn quoted_utf8_record_fields_are_static_but_not_struct_identifiers() {
     let p = registry
         .closed_record(&[
             named("status_code", T::Int),
-            named("content-type", T::String),
-            named("über field", T::Bool),
+            named("content_type", T::String),
+            named("ueber_field", T::Bool),
         ])
         .unwrap();
     assert_eq!(p.source_to_slot, vec![1, 0, 2]);
     assert_eq!(
-        registry.shape(p.shape_id).unwrap().slot("content-type"),
+        registry.shape(p.shape_id).unwrap().slot("content_type"),
         Some(0)
     );
     assert_eq!(
-        registry.shape(p.shape_id).unwrap().slot("über field"),
+        registry.shape(p.shape_id).unwrap().slot("ueber_field"),
         Some(2)
     );
     assert_eq!(
-        registry.nominal_struct("app::Header", &[named("content-type", T::String),]),
+        registry.nominal_struct("app::Header", &[named("content_type", T::String),]),
         Err(Error::InvalidStructField)
     );
 }
@@ -182,12 +182,12 @@ fn no_unicode_normalization_or_implicit_case_folding() {
 }
 
 #[test]
-fn duplicate_bare_and_quoted_labels_fail_at_parser_boundary() {
+fn mixed_record_and_quoted_map_items_fail_at_parser_boundary() {
     assert_eq!(
         bindings(r#"let Record r = {name: 1, "name": 2};"#)
             .unwrap_err()
             .code,
-        "E_DUPLICATE"
+        "E_LITERAL_KIND"
     );
 }
 
