@@ -10,17 +10,21 @@ class FakeActorWorker {
     this.messages = [];
     this.terminated = 0;
     this.received = 0;
+    this.incarnation = null;
   }
   emit(data) {
-    this.onmessage?.({data});
+    this.onmessage?.({data:{incarnation:this.incarnation,...data}});
   }
   postMessage(msg) {
     this.messages.push(msg);
     if (msg.kind === 'init') {
+      this.incarnation=msg.incarnation;
       if (!this.options.hold_ready) queueMicrotask(() => this.emit({kind:'ready'}));
       return;
     }
     if (msg.kind === 'message') {
+      if (msg.incarnation!==this.incarnation)
+        throw new Error('E_FAKE_INCAR_MISMATCH');
       if (this.options.panic) {
         queueMicrotask(() => this.emit({kind:'error',message:'E_ACTOR_PANIC_1'}));
       } else if (!this.options.hold_reply) {
@@ -29,6 +33,8 @@ class FakeActorWorker {
       }
       return;
     }
+    if (msg.kind === 'close' && msg.incarnation!==this.incarnation)
+      throw new Error('E_FAKE_INCAR_MISMATCH');
     if (msg.kind === 'close' && !this.options.hold_done) {
       const processed = this.received + (this.options.bad_done_count ? 1 : 0);
       queueMicrotask(() => this.emit({kind:'done',processed}));
@@ -195,4 +201,60 @@ test('readiness waiter does not close or cancel the actor', async () => {
   assert.equal(settled.processed,1);
   assert.equal(actor.state,'completed');
   assert.strictEqual(actor.get_ready(),actor.get_ready());
+});
+
+test('stale READY from another incarnation cannot satisfy initialization', async () => {
+  const worker=new FakeActorWorker({hold_ready:true});
+  const actor=new ActorSession(worker,10,new Uint8Array(),{timeout_ms:300});
+  assert.equal(worker.messages[0].incarnation,actor.incarnation);
+  assert.ok(Number.isSafeInteger(actor.incarnation)&&actor.incarnation>0);
+  worker.emit({kind:'ready',incarnation:actor.incarnation+1});
+  await assert.rejects(actor.get_ready(),/E_ACTOR_INCAR_MISMATCH/);
+  await assert.rejects(actor.get_done(),/E_ACTOR_INCAR_MISMATCH/);
+  assert.equal(actor.state,'failed');
+  worker.emit({kind:'ready'});
+  assert.equal(actor.state,'failed','late correct READY cannot resurrect rejected actor');
+});
+
+test('stale reply cannot deliver a different incarnation DATA acknowledgement', async () => {
+  const worker=new FakeActorWorker({hold_reply:true});
+  const actor=new ActorSession(worker,11,new Uint8Array(),{timeout_ms:300});
+  assert.equal(actor.admit(11n),ACTOR_ADMISSION.OK);
+  const drain=actor.drain_and_close();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(actor.state,'draining');
+  assert.equal(worker.messages.filter(m=>m.kind==='message').length,1);
+  assert.equal(worker.messages.find(m=>m.kind==='message').incarnation,actor.incarnation);
+  worker.emit({kind:'reply',incarnation:actor.incarnation+1,value:12n});
+  await assert.rejects(drain,/E_ACTOR_INCAR_MISMATCH/);
+  await assert.rejects(actor.get_done(),/E_ACTOR_INCAR_MISMATCH/);
+  assert.equal(actor.processed,0);
+  assert.equal(actor.state,'failed');
+});
+
+test('stale DONE cannot retire a live actor incarnation', async () => {
+  const worker=new FakeActorWorker({hold_done:true});
+  const actor=new ActorSession(worker,12,new Uint8Array(),{timeout_ms:300});
+  const drain=actor.drain_and_close();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(actor.state,'closing');
+  const close=worker.messages.find(m=>m.kind==='close');
+  assert.equal(close.incarnation,actor.incarnation);
+  worker.emit({kind:'done',incarnation:actor.incarnation+1,processed:0});
+  await assert.rejects(drain,/E_ACTOR_INCAR_MISMATCH/);
+  await assert.rejects(actor.get_done(),/E_ACTOR_INCAR_MISMATCH/);
+  assert.equal(actor.state,'failed');
+});
+
+test('sequential sessions cannot share incarnation identity', async () => {
+  const firstWorker=new FakeActorWorker();
+  const secondWorker=new FakeActorWorker();
+  const first=new ActorSession(firstWorker,0,new Uint8Array(),{timeout_ms:300});
+  const second=new ActorSession(secondWorker,0,new Uint8Array(),{timeout_ms:300});
+  assert.notEqual(first.incarnation,second.incarnation);
+  await Promise.all([first.get_ready(),second.get_ready()]);
+  assert.deepEqual((await first.drain_and_close()).kind,'completed');
+  assert.deepEqual((await second.drain_and_close()).kind,'completed');
+  assert.equal(first.state,'completed');
+  assert.equal(second.state,'completed');
 });
