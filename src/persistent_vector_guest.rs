@@ -15,7 +15,7 @@ const MAX_SCALARS: usize = 8;
 // limit: copying large scalar strings or thousands of snapshots must not
 // amplify compiler memory unboundedly before the Wasm output-size check.
 const MAX_KNOWN_VECTORS: usize = 128;
-const MAX_COPIED_SCALARS: usize = 1024;
+const MAX_COPIED_SCALARS: usize = 512;
 
 fn error(at: Pos, code: &'static str, reason: impl Into<String>) -> Diagnostic {
     Diagnostic::new(at, code, reason)
