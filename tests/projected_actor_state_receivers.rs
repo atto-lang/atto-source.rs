@@ -113,3 +113,21 @@ fn projected_mutability_does_not_distinguish_method_overloads() {
             mtd (Counter mut self.state.counter) f(): void {}",
         "E_DUPLICATE");
 }
+
+#[test]
+fn actor_runtime_operations_reject_bad_arity_and_malformed_nested_arguments() {
+    for source in [
+        "declare actor Foo; mtd (Foo self) f(): void { self.send(); }",
+        "declare actor Foo; mtd (Foo self) f(): void { self.end(1); }",
+    ] {
+        reject(source, "E_ARITY");
+    }
+    for source in [
+        "declare actor Foo; mtd (Foo self) f(): void { self.send(1,]); }",
+        "declare actor Foo; mtd (Foo self) f(): void { self.send(1,); }",
+        "declare actor Foo; mtd (Foo self) f(): void { self.send(1,,2); }",
+        "declare actor Foo; mtd (Foo self) f(): void { self.send((1,2]); }",
+    ] {
+        reject(source, "E_SYNTAX");
+    }
+}
