@@ -28,18 +28,18 @@ export class ActorSession {
     this.done_timer = null;
     this.drain_task = null;
 
-    this.ready = new Promise((resolve, reject) => {
+    this._ready_task = new Promise((resolve, reject) => {
       this.resolve_ready = resolve;
       this.reject_ready = reject;
     });
-    this.done = new Promise((resolve, reject) => {
+    this._done_task = new Promise((resolve, reject) => {
       this.resolve_done = resolve;
       this.reject_done = reject;
     });
     // Register handlers now: admission-only programs may never request the task.
     // A failed actor must not create an unhandled rejection in that case.
-    this.ready.catch(() => {});
-    this.done.catch(() => {});
+    this._ready_task.catch(() => {});
+    this._done_task.catch(() => {});
 
     worker.onmessage = ({ data }) => this.on_message(data);
     worker.onerror = () => this.fail('E_ACTOR_WORKER');
@@ -64,8 +64,13 @@ export class ActorSession {
     return ACTOR_ADMISSION.OK;
   }
 
+  get_ready() {
+    // Stable, shareable initialization observer; never cancels the actor.
+    return this._ready_task;
+  }
+
   get_done() {
-    return this.done;
+    return this._done_task;
   }
 
   is_terminal() {
@@ -170,7 +175,7 @@ export class ActorSession {
     if (this.drain_task) return this.drain_task;
     this.closed = true;
     this.drain_task = (async () => {
-      await this.ready;
+      await this.get_ready();
       this.state = 'draining';
       try {
         for (const payload of this.queue) {
