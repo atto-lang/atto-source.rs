@@ -50,13 +50,20 @@ fn clear_previous_output(input: &Input, output: &str) -> std::io::Result<()> {
 // Creation is exclusive: a planted output symlink cannot be followed between
 // the initial stale-file cleanup and successful compiler output publication.
 fn publish_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true).create_new(true).open(output)?;
-        file.write_all(bytes)?;
-        file.sync_all()
-    })();
-    if result.is_err() { let _ = std::fs::remove_file(output); }
+    // Do not unlink a pre-existing output if create_new fails (e.g. an
+    // adversary created a destination between preflight cleanup and publish).
+    // Such a file is not ours; an unsuccessful exclusive open must never
+    // destroy it. Only clean up after ownership of the new file is acquired.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true).create_new(true).open(output)?;
+    let result = file.write_all(bytes).and_then(|_| file.sync_all());
+    if result.is_err() {
+        // A partial write is not an artifact; do not keep a publishable .wasm.
+        // This path assumes the output directory is not concurrently mutable
+        // by another principal (same-directory TOCTOU needs a stronger host
+        // isolation contract).
+        let _ = std::fs::remove_file(output);
+    }
     result
 }
 
@@ -174,5 +181,43 @@ fn main() -> ExitCode {
             eprintln!("{label}: {d}");
             ExitCode::from(1)
         }
+    }
+}
+
+
+#[cfg(test)]
+mod output_publish_tests {
+    use super::publish_wasm;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch_dir() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "atto-attoc-exclusive-{}-{}", std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).expect("create isolated temporary test directory");
+        path
+    }
+
+    #[test]
+    fn failed_exclusive_create_does_not_unlink_existing_output() {
+        let dir = scratch_dir();
+        let destination = dir.join("protected.wasm");
+        std::fs::write(&destination, b"existing owner data").unwrap();
+        let error = publish_wasm(destination.to_str().unwrap(), b"\\0asm").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"existing owner data");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fresh_exclusive_publish_writes_complete_output() {
+        let dir = scratch_dir();
+        let destination = dir.join("compiled.wasm");
+        publish_wasm(destination.to_str().unwrap(), b"\\0asm\\x01\\0\\0\\0").unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(),
+                   b"\\0asm\\x01\\0\\0\\0");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
