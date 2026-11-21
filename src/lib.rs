@@ -9,6 +9,8 @@
 pub mod ast;
 /// Checked actor-relative Ref32 offset layout; host/runtime model only, not guest allocation.
 pub mod ref_layout;
+/// Four-byte CONTROL-plane generation12/slot20 word codec, not an actor reference or guest heap.
+pub mod control_ref32;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
