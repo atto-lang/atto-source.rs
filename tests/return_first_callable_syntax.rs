@@ -313,7 +313,7 @@ fn return_first_effect_boundary_and_canonical_exception_bangs_fail_closed() {
 
 
 #[test]
-fn triggered_return_first_raise_has_recover_and_catch_bypass_guest_targets() {
+fn triggered_return_first_raise_has_recover_catch_and_trap_guest_targets() {
     for fixture in [
         include_str!("fixtures/pass/return-first-raise-recover-guest.atto"),
         include_str!("fixtures/pass/return-first-raise-bypasses-catch.atto"),
