@@ -280,7 +280,7 @@ fn validate_resolved_type(root: &LiteralType) -> Result<(), Error> {
                 pending.push(v);
             }
             LiteralType::Tuple(items) => pending.extend(items),
-            LiteralType::Int | LiteralType::Bool | LiteralType::Float | LiteralType::String => {}
+            LiteralType::Int | LiteralType::Bool | LiteralType::Float | LiteralType::String | LiteralType::Symbol => {}
         }
     }
     Ok(())
