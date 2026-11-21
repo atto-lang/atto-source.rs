@@ -52,6 +52,20 @@ const caretXorRuntime = new WebAssembly.Instance(caretXorModule, { atto: {} });
 assert.equal(caretXorRuntime.exports.main(), 6n, 'return marker and XOR are unambiguous');
 assert.equal(caretXorRuntime.exports.panic_code.value, 0);
 
+// Standalone statement-leading ^ is return, never a side-effect-only prefix.
+const prefixReturn = compile('pub fnc main(): int { ^ 42; }');
+assert.equal(prefixReturn.ok, true, prefixReturn.diagnostic || 'prefix caret return');
+const prefixGuest = new WebAssembly.Instance(new WebAssembly.Module(prefixReturn.guest), { atto: {} });
+assert.equal(prefixGuest.exports.main(), 42n, 'prefix caret must exit the callable');
+assert.equal(prefixGuest.exports.panic_code.value, 0);
+
+// A valid boundary shift must preserve the signed-i64 bit pattern.
+const boundaryShift = compile('pub fnc main(): int { return 1 <<< 63; }');
+assert.equal(boundaryShift.ok, true, boundaryShift.diagnostic || 'shift 63 admission');
+const boundaryGuest = new WebAssembly.Instance(new WebAssembly.Module(boundaryShift.guest), { atto: {} });
+assert.equal(boundaryGuest.exports.main(), -9223372036854775808n);
+assert.equal(boundaryGuest.exports.panic_code.value, 0);
+
 // The same wasm32-hosted compiler must lower signed i64 division to f64,
 // not silently truncate the quotient and not emit an int-returning guest.
 const divisionSource = `fnc half(int numerator, int denominator): float {
@@ -76,12 +90,24 @@ assert.match(rejectedTruncation.diagnostic, /E_TYPE|E_RETURN_TYPE/);
 const rejectedShift = compile('pub fnc main(): int { return 1 <<< 64; }');
 assert.equal(rejectedShift.ok, false, 'invalid constant shift must not emit Wasm');
 assert.match(rejectedShift.diagnostic, /E_SHIFT_DISTANCE/);
+const rejectedNegativeShift = compile('pub fnc main(): int { return 1 >>> -1; }');
+assert.equal(rejectedNegativeShift.ok, false, 'negative shift must not emit Wasm');
+assert.match(rejectedNegativeShift.diagnostic, /E_SHIFT_DISTANCE/);
+const rejectedBooleanCaret = compile('pub fnc main(): int { val b = true ^^ false; return 42; }');
+assert.equal(rejectedBooleanCaret.ok, false, 'bool ^^ must not be bitwise integer XOR');
+assert.match(rejectedBooleanCaret.diagnostic, /E_TYPE/);
+
 
 const runtimeShift = compile('pub fnc main(): int { let distance: int = 64; return 1 <<< distance; }');
 assert.equal(runtimeShift.ok, true, runtimeShift.diagnostic || 'dynamic checked shift compile');
 const checkedShift = new WebAssembly.Instance(new WebAssembly.Module(runtimeShift.guest), { atto: {} });
 assert.throws(() => checkedShift.exports.main(), WebAssembly.RuntimeError);
 assert.equal(checkedShift.exports.panic_code.value, 7, 'must not mask dynamic shift by 63');
+const runtimeNegativeShift = compile('pub fnc main(): int { let distance: int = -1; return 1 >>> distance; }');
+assert.equal(runtimeNegativeShift.ok, true, runtimeNegativeShift.diagnostic || 'negative computed shift admission');
+const negativeShift = new WebAssembly.Instance(new WebAssembly.Module(runtimeNegativeShift.guest), { atto: {} });
+assert.throws(() => negativeShift.exports.main(), WebAssembly.RuntimeError);
+assert.equal(negativeShift.exports.panic_code.value, 7, 'negative dynamic count must not mask to 63');
 
 const compiled = compile(source);
 assert.equal(compiled.ok, true, compiled.diagnostic || 'preview must compile');
