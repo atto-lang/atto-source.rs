@@ -52,6 +52,68 @@ fn statically_known_string_and_bool_tags_select_matching_type_arms() {
 }
 
 #[test]
+fn signed_numeric_any_literals_compile_as_checked_monomorphic_guests() {
+    // The published playground example previously rejected the two-token -42.
+    let negative_site = SITE.replace("val value: Any = 42;", "val value: Any = -42;");
+    assert_ne!(negative_site, SITE, "the published fixture changed unexpectedly");
+    pass(&negative_site);
+
+    for number in ["-42", "-0", "-9_223_372_036_854_775_808", "-0b101010"] {
+        let source = format!(r#"
+            fnc classify(Any value): int {{
+                match value over
+                    on is int when value > 0 -> {{ return 1; }}
+                    on is int -> {{ return 42; }}
+                    on _ -> {{ return 0; }}
+                end
+            }}
+            pub fnc main(): int {{
+                val value: Any = {number};
+                if value is int && value eq {number} then
+                    return classify(value);
+                fi
+                return 0;
+            }}
+        "#);
+        pass(&source);
+    }
+
+    pass(r#"
+        fnc classify(Any value): int {
+            match value over
+                on is float -> { return 42; }
+                on _ -> { return 0; }
+            end
+        }
+        pub fnc main(): int {
+            val value: Any = -3.5;
+            return classify(value);
+        }
+    "#);
+}
+
+#[test]
+fn signed_any_literal_proof_still_rejects_computation_and_unsafe_shapes() {
+    for expr in ["-true", "-\"text\"", "-42 + 1", "-42 * 2", "-(42)", "--42"] {
+        let source = format!(r#"
+            fnc classify(Any value): int {{ return 42; }}
+            pub fnc main(): int {{
+                val value: Any = {expr};
+                return classify(value);
+            }}
+        "#);
+        err(&source, "E_UNSUPPORTED_TYPE");
+    }
+    err(r#"
+        fnc classify(Any value): int { return 42; }
+        pub fnc main(): int {
+            val value: Any = -9223372036854775809;
+            return classify(value);
+        }
+    "#, "E_INTEGER_RANGE");
+}
+
+#[test]
 fn non_literal_or_escaping_any_cannot_masquerade_as_scalar_wasm() {
     err(r#"
         fnc read(Any v): int { return 42; }
