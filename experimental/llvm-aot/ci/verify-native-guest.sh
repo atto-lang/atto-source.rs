@@ -59,6 +59,37 @@ if "$compiler" "$work/negative.atto" -o "$work/negative.exe"; then
   exit 1
 fi
 test ! -e "$work/negative.exe"
+
+# A hostile clang wrapper may exit zero after writing a 20-byte ELF magic
+# prefix and marking it executable. That is NOT a valid native artifact.
+# Both a previously published output and its bytes must survive rejection.
+mkdir -p "$work/fakebin"
+cat > "$work/fakebin/clang" <<'FAKE_CLANG'
+#!/usr/bin/env bash
+set -euo pipefail
+output=''
+while (($#)); do
+  if [[ "$1" == "-o" ]]; then
+    shift
+    output="$1"
+    break
+  fi
+  shift
+done
+test -n "$output"
+cat > /dev/null
+printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\003\000\076\000' > "$output"
+chmod 700 "$output"
+exit 0
+FAKE_CLANG
+chmod 700 "$work/fakebin/clang"
+printf 'preserve-native-output\n' > "$work/forged.exe"
+if PATH="$work/fakebin:$PATH" "$compiler" "$work/positive.atto" -o "$work/forged.exe"; then
+  echo 'LLVM_ADAPTER_UNSAFE: forged ELF header accepted' >&2
+  exit 1
+fi
+test "$(cat "$work/forged.exe")" = 'preserve-native-output'
+
 clang -std=c11 -O2 -pthread -Wall -Wextra -Werror -c \
   "$root/experimental/llvm-aot/runtime/actor_runtime.c" -o "$work/actor_runtime.o"
 sha256sum "$compiler" "$work/positive.ll" "$work/positive.exe"
