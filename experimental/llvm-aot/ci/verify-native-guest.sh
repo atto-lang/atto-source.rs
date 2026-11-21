@@ -147,6 +147,31 @@ if [[ "$overflow_status" != 132 ]]; then
   exit 1
 fi
 
+# Compile the SAME checked native actor through an instrumented C/LLVM link.
+# The wrapper adds sanitizers without modifying the Rust frontend or LLVM IR
+# emitter. Native actor execution is mandatory; a C-only sanitizer compile is
+# not sufficient evidence of a working guest ABI.
+real_clang="$(command -v clang)"
+mkdir -p "$work/sanitizer-bin"
+cat > "$work/sanitizer-bin/clang" <<'SANITIZED_CLANG'
+#!/usr/bin/env bash
+set -euo pipefail
+exec "${ATTO_REAL_CLANG:?}" -fsanitize=address,undefined -fno-omit-frame-pointer "$@"
+SANITIZED_CLANG
+chmod 700 "$work/sanitizer-bin/clang"
+ATTO_REAL_CLANG="$real_clang" PATH="$work/sanitizer-bin:$PATH" \
+  "$compiler" "$actor_src" -o "$work/actor-asan-ubsan.exe"
+readelf -Ws "$work/actor-asan-ubsan.exe" > "$work/actor-sanitizers.txt"
+grep -Fq '__asan_init' "$work/actor-sanitizers.txt" || {
+  echo "LLVM_ADAPTER_SANITIZER_MISSING: no linked ASan runtime" >&2
+  exit 1
+}
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+  timeout -k 3 20 "$work/actor-asan-ubsan.exe" > "$work/actor-sanitized-out.txt"
+LC_ALL=C sort "$work/actor-sanitized-out.txt" > "$work/actor-sanitized-sorted.txt"
+cmp "$work/actor-expected.txt" "$work/actor-sanitized-sorted.txt"
+
 # SHA-identical security negatives originally authored in atto-source.llvm.
 # Reject unsafe state access, mutation through read loans, escaping references,
 # suspension with outstanding state loans, and unlinked actor code. Each
