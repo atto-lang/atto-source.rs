@@ -91,12 +91,12 @@ jobs:
           rustup default 1.85.1
           rustc --version
       - name: Install dedicated native Cranelift MSRV toolchain
-        # Locked cranelift-codegen 0.136.4 requires rustc >= 1.96.0.
+        # Locked cranelift-codegen 0.136.4 requires rustc >= 1.96.0; use patched 1.96.1.
         # Keep browser Wasm on separately pinned 1.85.1 for ABI/toolchain parity.
         run: |
-          rustup toolchain install 1.96.0 --profile minimal
-          rustup component add clippy rustfmt --toolchain 1.96.0
-          rustc +1.96.0 --version
+          rustup toolchain install 1.96.1 --profile minimal
+          rustup component add clippy rustfmt --toolchain 1.96.1
+          rustc +1.96.1 --version
       - name: Check formatting on the entire browser compiler crate
         run: cargo fmt --all -- --check
       - name: Syntax-check the conditional native and browser guest oracles
@@ -112,19 +112,19 @@ jobs:
         env:
           RUST_MIN_STACK: "16777216"
         run: cargo test --locked --all-targets --verbose
-      - name: Test separate native Cranelift compiler package with Rust 1.96.0
+      - name: Test separate native Cranelift compiler package with Rust 1.96.1
         working-directory: native
         env:
           RUST_MIN_STACK: "16777216"
-        run: cargo +1.96.0 test --locked --all-targets --verbose
+        run: cargo +1.96.1 test --locked --all-targets --verbose
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Check formatting in separate native Cranelift package
         working-directory: native
-        run: cargo +1.96.0 fmt --all -- --check
+        run: cargo +1.96.1 fmt --all -- --check
       - name: Strict native Cranelift Clippy all targets
         working-directory: native
-        run: cargo +1.96.0 clippy --locked --all-targets -- -D warnings
+        run: cargo +1.96.1 clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
