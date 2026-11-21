@@ -100,6 +100,19 @@ try{
     assert.match(source, /raise! Error\(/);
     assert.equal(await run(source, 'main() -> 42'), 'main() -> 42', name);
   }
+  // These guests can only return 42 after the recover callback confirms
+  // an exact module-private Foo/Bar EH tag, never a user-controlled string.
+  for (const name of [
+    'nominal-foo-raise-recover.atto',
+    'nominal-foo-raise-vs-bar.atto',
+    'nominal-foo-raise-catch-bypass.atto',
+    'nominal-foo-delegated-recover.atto',
+  ]) {
+    const source = await readFile(new URL('./fixtures/pass/' + name, import.meta.url), 'utf8');
+    assert.match(source, /raise! new (Foo|Bar)\(\)/);
+    assert.match(source, /err\.is_type\((Foo|Bar)\)/);
+    assert.equal(await run(source, 'main() -> 42'), 'main() -> 42', name);
+  }
   for (const lookalike of ['·', '∙', '‿', '‧', '●']) {
     const invalid = `int${lookalike} answer() begin return 42; end\npub fnc main(): int { return answer(); }`;
     assert.match(await run(invalid, 'E_TOKEN'), /^E_TOKEN:/,
