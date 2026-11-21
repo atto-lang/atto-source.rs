@@ -83,6 +83,10 @@ try{
   // These are compiled by the real wasm32 Rust frontend INSIDE Chromium,
   // then executed as new guest Wasm. A lexer-only unit test is insufficient.
   const bulletSource = await readFile(new URL('./fixtures/pass/return-first-bullet-and-arrow.atto', import.meta.url), 'utf8');
+  // Real compiler + real guest: now exercises raises Error :: and raise!
+  // on a proven non-raising branch. A triggered raise needs a separate oracle.
+  assert.match(bulletSource, /raises Error ::/);
+  assert.match(bulletSource, /raise! Error\("too large"\)/);
   assert.equal(await run(bulletSource, 'main() -> 42'), 'main() -> 42');
   for (const lookalike of ['·', '∙', '‿', '‧', '●']) {
     const invalid = `int${lookalike} answer() begin return 42; end\npub fnc main(): int { return answer(); }`;
