@@ -1835,12 +1835,15 @@ impl Parser {
         Ok(Stmt::Return(value, pos))
     }
 
-    /// True only for an identity-await pipeline and subsequent named stages.
-    /// This does not make arbitrary directional bindings or a second I/O
-    /// read legal. The first argument is always the left pipeline value.
+    /// True only for a verified inline await stage, optional checked scalar
+    /// literal transform, and subsequent named stages. This does not make
+    /// arbitrary directional bindings or a second I/O read legal.
     fn checked_await_pipe_value(e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Await(_) => true,
+            ExprKind::Binary(BinOp::Add | BinOp::Sub, left, right)
+                if matches!(right.kind, ExprKind::Int(Some(_))) =>
+                    Self::checked_await_pipe_value(left),
             ExprKind::Call(_, args) => args.first()
                 .is_some_and(Self::checked_await_pipe_value),
             _ => false,
