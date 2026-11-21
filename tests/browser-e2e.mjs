@@ -88,6 +88,16 @@ try{
   assert.match(bulletSource, /raises Error ::/);
   assert.match(bulletSource, /raise! Error\("too large"\)/);
   assert.equal(await run(bulletSource, 'main() -> 42'), 'main() -> 42');
+  // Two distinct real guest oracles: recovery with is_raise=true and
+  // catch bypass (a broken ordinary-catch route produces 17, not 42).
+  for (const name of [
+    'return-first-raise-recover-guest.atto',
+    'return-first-raise-bypasses-catch.atto',
+  ]) {
+    const source = await readFile(new URL('./fixtures/pass/' + name, import.meta.url), 'utf8');
+    assert.match(source, /raise! Error\("too large"\)/);
+    assert.equal(await run(source, 'main() -> 42'), 'main() -> 42', name);
+  }
   for (const lookalike of ['·', '∙', '‿', '‧', '●']) {
     const invalid = `int${lookalike} answer() begin return 42; end\npub fnc main(): int { return answer(); }`;
     assert.match(await run(invalid, 'E_TOKEN'), /^E_TOKEN:/,
