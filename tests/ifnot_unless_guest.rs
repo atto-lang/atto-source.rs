@@ -33,6 +33,9 @@ fn negated_conditional_heads_are_reserved_and_have_all_three_legal_forms() {
 
 #[test]
 fn invalid_conditionals_fail_closed_before_any_guest() {
+    // Rejection must not poison compiler state or change a later valid guest.
+    let valid = "pub fnc main(): int { return ifnot true then 7 else 42 fi; }";
+    let stable_guest = compile(valid).expect("baseline negated value conditional must lower");
     for (body, expected) in [
         ("return ifnot false then 7 fi;", "E_VALUE_ARM"),
         ("return unless true then 7 fi;", "E_VALUE_ARM"),
@@ -55,5 +58,7 @@ fn invalid_conditionals_fail_closed_before_any_guest() {
             Ok(_) => panic!("unexpected executable guest: {body}"),
         };
         assert_eq!(error.code, expected, "{body}: {error}");
+        assert_eq!(compile(valid).unwrap(), stable_guest,
+            "rejected conditional must not contaminate subsequent Wasm: {body}");
     }
 }
