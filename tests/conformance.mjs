@@ -454,7 +454,7 @@ const chains = {
 const guestDepthLimitedChains = new Set(['add', 'mul', 'cmp', 'eq', 'concat', 'float']);
 for (const [name, make] of Object.entries(chains)) {
   check(`limits/chain-${name}-within-budget`, () => {
-    const r = compile(make(guestDepthLimitedChains.has(name) ? 64 : 250));
+    const r = compile(make(name === 'cmp' ? 16 : guestDepthLimitedChains.has(name) ? 64 : 250));
     assert.equal(r.ok, true, r.message);
     runGuest(r.wasm);
   });
@@ -477,12 +477,19 @@ const memberChains = {
   'member-chain-typed': n => `pub fnc main(): int { val a = 1; return a${'.b'.repeat(n)}; }`,
 };
 check('limits/method-chain-within-budget-executes', () => {
-  const r = compile(memberChains['method-chain-runs'](64));
+  const r = compile(memberChains['method-chain-runs'](16));
   assert.equal(r.ok, true, r.message);
   assert.equal(runGuest(r.wasm).value, 1n);
 });
 check('limits/member-chain-within-budget-is-a-diagnostic-not-a-trap', () => {
-  assert.equal(compile(memberChains['member-chain-typed'](64)).code, 'E_TYPE');
+  assert.equal(compile(memberChains['member-chain-typed'](16)).code, 'E_TYPE');
+});
+check('limits/recursive-guest-and-member-chains-must-reject-sixty-four-links', () => {
+  for (const make of [chains.cmp, ...Object.values(memberChains)]) {
+    const r = compile(make(64));
+    assert.equal(r.code, 'E_NESTING');
+    assert.equal(r.ok, false);
+  }
 });
 check('limits/member-and-method-chains-beyond-guest-budget-reject', () => {
   for (const make of Object.values(memberChains)) {
