@@ -41,6 +41,11 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute actual compiled Mutex<int> ready-path guest and reject unsafe lease cases
+        env:
+          ATTOC: target/release/attoc
+          ATTO_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node tests/mutex_fast_guest_execution.mjs
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc

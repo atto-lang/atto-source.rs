@@ -1,0 +1,11 @@
+susp fnc increment(Mutex<int> counter): int {
+  using await counter.lock_async() as lease {
+    lease.value += 1;
+    return lease.value;
+  }
+}
+pub susp fnc main(): int {
+  val counter = new Mutex<int>(0);
+  stdio.println(await increment(counter));
+  return 0;
+}

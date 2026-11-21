@@ -1,0 +1,5 @@
+// COMPILE-NEGATIVE: E_NEW_REQUIRED, even without .lock_async() in the file.
+pub fnc main(): int {
+  val counter = Mutex<int>(0);
+  return 0;
+}

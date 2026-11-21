@@ -840,13 +840,12 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
                 Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus) =>
                     return Err(diagnostic(toks, i, "E_OWNERSHIP",
                         "immutable class mtd cannot mutate instance fields")),
-                Some(Tok::LParen) => {
+                Some(Tok::LParen)
                     if !headers.receivers.iter().any(|other|
                         other.owner == receiver.owner && other.name == method &&
-                        !other.mutable) {
-                        return Err(diagnostic(toks, i, "E_UNSUPPORTED",
-                            "immutable mtd may call only checked immutable class mtd"));
-                    }
+                        !other.mutable) => {
+                    return Err(diagnostic(toks, i, "E_UNSUPPORTED",
+                        "immutable mtd may call only checked immutable class mtd"));
                 }
                 _ => {}
             }

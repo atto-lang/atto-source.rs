@@ -1,0 +1,12 @@
+// The task is never driven: compile must not evaluate its would-overflow body.
+susp fnc increment(Mutex<int> counter): int {
+  using counter.lock_async() as lease {
+    lease.value += 1;
+    return lease.value;
+  }
+}
+pub fnc main(): int {
+  val counter = new Mutex<int>(9223372036854775807);
+  val pending = increment(counter);
+  return 0;
+}

@@ -1,0 +1,5 @@
+// COMPILE-NEGATIVE: E_LOCK_UNSUPPORTED. Nested generic class also needs runtime.
+pub fnc main(): int {
+  val counter = new Mutex<Result<int,string>>(0);
+  return 0;
+}

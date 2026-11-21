@@ -65,6 +65,24 @@ pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
+/// Fail-closed scoped Mutex admission until verified lease/await guest lowering.
+pub mod mutex_using_preview_gate;
+/// Narrow executable single-task Mutex<int> uncontended guest profile.
+/// Other lock sites remain blocked until real typed async scheduling exists.
+pub mod mutex_fast_guest;
+/// Affine MutexLease<int> proof and typed guard protocol for the ready-only
+/// guest fast path. This is NOT a general contended scheduler/async ABI.
+pub(crate) mod mutex_lease_hir_v1;
+/// Trusted, bounded TaskScope/Mutex coordination kernel.
+/// Compiled into the Rust host crate, but intentionally private and NOT
+/// connected to guest Wasm imports, task admission, or the active scheduler.
+/// Do not expose this to untrusted guest source; unverified task+mutex still
+/// fails closed until physical quiescence and actor/TenantVM ABI are proved.
+// Browser compiler instances cannot host the privileged TenantVM scheduler.
+// Never make a std::sync host-arbiter part of the wasm32 compiler artifact.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+mod mutex_wait_queue_v1;
 /// File-scoped namespace headers derived from a package-relative source path.
 pub mod namespace;
 pub mod tuple_binding_admission;
@@ -118,6 +136,18 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // The only admitted lock execution is a checked, closed-world,
+    // single-task uncontended fast path. All other scoped Mutex use remains
+    // fail-closed before general parser or guest emission.
+    if let Some(program) = mutex_fast_guest::try_lower(&original_tokens)? {
+        let bytes = wasm::emit(&program);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line:1,col:1 },
+                "E_OUTPUT_LIMIT", "generated guest module exceeds size limit"));
+        }
+        return Ok(bytes);
+    }
+    mutex_using_preview_gate::reject_unimplemented(&original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;

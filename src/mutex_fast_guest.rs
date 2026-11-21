@@ -1,0 +1,501 @@
+//! Executable, closed-world, single-task Mutex<int> *uncontended fast path*.
+//!
+//! This admission profile is deliberately narrower than the normative Mutex
+//! contract. A source file must have exactly one suspending scalar increment()
+//! function and one main(); the mutex is created locally, never escapes, is
+//! awaited at most twice sequentially, and no other task, actor, FFI or handle can run or
+//! alias it. The proof permits lock elision on the ready path. The generated
+//! Wasm still performs i64 mutation, snapshots the result and clears its
+//! private per-instance lease flag BEFORE returning from the helper.
+//!
+//! General Mutex<T>, contended lock_async, cancellation, exception unwinding,
+//! task scheduling and TenantVM transfer have no implementation here. Any
+//! deviation returns a diagnostic WITHOUT generating a guest module.
+//! This is a typed, deliberately bounded source profile, not textual macro
+//! substitution and not a claim of scheduler/async ABI parity.
+
+use crate::ast::Type;
+use crate::mutex_lease_hir_v1::CheckedReadyLease;
+use crate::check::{Import, TE, TExpr, TFunc, TProgram, TStmt};
+use crate::diag::{Diagnostic, Pos};
+use crate::lexer::{Tok, Token};
+
+type R<T> = Result<T, Diagnostic>;
+fn error(pos: Pos, code: &'static str, reason: &str) -> Diagnostic {
+    Diagnostic::new(pos, code, reason)
+}
+struct Cursor<'a> { tokens: &'a [Token], index: usize }
+impl<'a> Cursor<'a> {
+    fn new(tokens: &'a [Token]) -> Self { Self { tokens, index: 0 } }
+    fn at(&self) -> &Tok {
+        &self.tokens[self.index.min(self.tokens.len().saturating_sub(1))].tok
+    }
+    fn pos(&self) -> Pos {
+        self.tokens[self.index.min(self.tokens.len().saturating_sub(1))].pos
+    }
+    fn advance(&mut self) { if !matches!(self.at(), Tok::Eof) { self.index += 1; } }
+    fn take(&mut self, want: Tok) -> bool {
+        if *self.at() == want { self.advance(); true } else { false }
+    }
+    fn word(&mut self, want: &str) -> bool {
+        if matches!(self.at(), Tok::Ident(name) if name == want) {
+            self.advance(); true
+        } else { false }
+    }
+    fn expect(&mut self, want: Tok, desc: &str) -> R<()> {
+        if self.take(want) { Ok(()) } else { Err(error(self.pos(), "E_LOCK_UNSUPPORTED", desc)) }
+    }
+    fn require(&mut self, want: &str) -> R<()> {
+        if self.word(want) { Ok(()) } else {
+            Err(error(self.pos(), "E_LOCK_UNSUPPORTED", "unsupported mutex fast-path token"))
+        }
+    }
+    fn name(&mut self) -> R<String> {
+        match self.at() {
+            Tok::Ident(n) if !matches!(n.as_str(),"await"|"return"|"using"|"susp"|"suspends") => {
+                let name = n.clone(); self.advance(); Ok(name)
+            },
+            _ => Err(error(self.pos(), "E_LOCK_UNSUPPORTED", "expected a legal local name")),
+        }
+    }
+    fn int(&mut self) -> R<i64> {
+        let pos = self.pos();
+        let negative = self.take(Tok::Minus);
+        match self.at() {
+            Tok::Int(Some(n)) if (!negative && *n <= i64::MAX as u64)
+                || (negative && *n <= i64::MAX as u64 + 1) => {
+                let n = *n;
+                self.advance();
+                if negative && n == i64::MAX as u64 + 1 { Ok(i64::MIN) }
+                else if negative { Ok(-(n as i64)) } else { Ok(n as i64) }
+            },
+            _ => Err(error(pos, "E_INTEGER_RANGE", "mutex scalar must be a signed int literal")),
+        }
+    }
+    fn mutex_int(&mut self) -> R<()> {
+        self.require("Mutex")?;
+        self.expect(Tok::Lt, "expected Mutex<int>")?;
+        self.require("int")?;
+        self.expect(Tok::Gt, "expected closing Mutex<int>")?;
+        Ok(())
+    }
+    fn effect(&mut self) -> bool { self.word("susp") || self.word("suspends") }
+    fn call(&mut self, method: &str, arg: &str) -> R<()> {
+        self.require(method)?;
+        self.expect(Tok::LParen, "expected call argument list")?;
+        self.require(arg)?;
+        self.expect(Tok::RParen, "expected ')' after call")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct Increment { name: String, delta: i64 }
+fn parse_increment(p: &mut Cursor<'_>) -> R<Increment> {
+    let pos = p.pos();
+    // Exporting increment would allow an unverified host or second actor
+    // to invoke it after main; the lock-elision proof needs a private helper.
+    if p.word("pub") { return Err(error(pos,"E_LOCK_UNSUPPORTED","mutex fast-path increment must be private")); }
+    if !p.effect() {
+        return Err(error(pos,"E_AWAIT_EFFECT","lock_async requires a suspending callable"));
+    }
+    p.require("fnc")?;
+    let function = p.name()?;
+    if function == "main" { return Err(error(pos,"E_LOCK_UNSUPPORTED","expected private increment function")); }
+    p.expect(Tok::LParen, "expected '(' after function name")?;
+    p.mutex_int()?;
+    let handle = p.name()?;
+    p.expect(Tok::RParen, "expected ')' after mutex loan")?;
+    p.expect(Tok::Colon, "expected declared int return")?;
+    p.require("int")?;
+    p.expect(Tok::LBrace, "expected function body")?;
+
+    p.require("using")?;
+    let _explicit_await = p.word("await");
+    p.require(&handle)?;
+    p.expect(Tok::Dot, "expected lock_async member call")?;
+    p.require("lock_async")?;
+    p.expect(Tok::LParen, "expected no-argument lock_async")?;
+    p.expect(Tok::RParen, "expected no-argument lock_async")?;
+    p.require("as")?;
+    let lease = p.name()?;
+    if lease == handle { return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","lease cannot shadow its owner")); }
+    p.expect(Tok::LBrace, "expected lexical lock scope")?;
+
+    p.require(&lease)?;
+    p.expect(Tok::Dot, "expected guarded lease.value")?;
+    p.require("value")?;
+    p.expect(Tok::PlusAssign, "expected checked += under guard")?;
+    let delta = p.int()?;
+    p.expect(Tok::Semi, "expected ';' after guarded update")?;
+
+    p.require("return")?;
+    p.require(&lease)?;
+    p.expect(Tok::Dot, "lease escape is prohibited; return a copied scalar value")?;
+    p.require("value")?;
+    p.expect(Tok::Semi, "expected ';' after return")?;
+    p.expect(Tok::RBrace, "expected end of scoped guard")?;
+    p.expect(Tok::RBrace, "expected end of increment function")?;
+    Ok(Increment { name: function, delta })
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MainKind { ReturnObserved, PrintAndZero, LazyAndZero, TwoSequential }
+#[derive(Debug)]
+struct Main { initial: i64, kind: MainKind }
+
+fn parse_main(p: &mut Cursor<'_>, increment: &str) -> R<Main> {
+    let pos = p.pos();
+    p.require("pub")?;
+    let is_susp = p.effect();
+    p.require("fnc")?;
+    p.require("main")?;
+    p.expect(Tok::LParen, "expected main()")?;
+    p.expect(Tok::RParen, "expected main()")?;
+    p.expect(Tok::Colon, "expected int return")?;
+    p.require("int")?;
+    p.expect(Tok::LBrace, "expected main body")?;
+    p.require("val")?;
+    let owner = p.name()?;
+    p.expect(Tok::Assign, "expected local mutex constructor")?;
+    if !p.word("new") {
+        return Err(error(p.pos(),"E_NEW_REQUIRED",
+            "Mutex<T> is a resource class; construct with new Mutex<int>(value)"));
+    }
+    p.mutex_int()?;
+    p.expect(Tok::LParen, "expected new Mutex<int>(value)")?;
+    let initial = p.int()?;
+    p.expect(Tok::RParen, "expected closing mutex factory")?;
+    p.expect(Tok::Semi, "expected ';' after mutex construction")?;
+
+    let kind = if p.word("return") {
+        if !is_susp { return Err(error(pos,"E_AWAIT_EFFECT","await requires a suspending main")); }
+        p.require("await")?;
+        p.call(increment, &owner)?;
+        p.expect(Tok::Semi, "expected ';' after result")?;
+        MainKind::ReturnObserved
+    } else if p.word("stdio") {
+        if !is_susp { return Err(error(pos,"E_AWAIT_EFFECT","await requires a suspending main")); }
+        p.expect(Tok::Dot, "expected stdio.println")?;
+        p.require("println")?;
+        p.expect(Tok::LParen, "expected println(argument)")?;
+        p.require("await")?;
+        p.call(increment, &owner)?;
+        p.expect(Tok::RParen, "expected ')' after println")?;
+        p.expect(Tok::Semi, "expected ';' after println")?;
+        p.require("return")?;
+        let zero = p.int()?;
+        if zero != 0 { return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","stdout profile main must return 0")); }
+        p.expect(Tok::Semi, "expected ';' after return")?;
+        MainKind::PrintAndZero
+    } else if p.word("val") {
+        let temp = p.name()?;
+        if temp == owner { return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","task and owner names must differ")); }
+        p.expect(Tok::Assign, "expected exact task/value binding")?;
+        if p.word("await") {
+            if !is_susp { return Err(error(pos,"E_AWAIT_EFFECT","await requires a suspending main")); }
+            // Two sequential completed acquisitions prove cleanup of the
+            // first lease before the next checked admission. No parallel task
+            // or scheduling construct is permitted in this fast-path profile.
+            p.call(increment, &owner)?;
+            p.expect(Tok::Semi, "expected ';' after observed value")?;
+            p.require("return")?;
+            p.require("await")?;
+            p.call(increment, &owner)?;
+            p.expect(Tok::Semi, "expected ';' after second await")?;
+            MainKind::TwoSequential
+        } else {
+            // An unawaited callable invocation constructs a lazy task, so
+            // creating and dropping it has no runtime side effects here.
+            if is_susp { return Err(error(pos,"E_LOCK_UNSUPPORTED","lazy-only profile requires plain main")); }
+            p.call(increment, &owner)?;
+            p.expect(Tok::Semi, "expected ';' after lazy task")?;
+            p.require("return")?;
+            let zero = p.int()?;
+            if zero != 0 { return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","lazy profile must return 0")); }
+            p.expect(Tok::Semi, "expected ';' after return")?;
+            MainKind::LazyAndZero
+        }
+    } else {
+        return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","unsupported mutex single-task main body"));
+    };
+    p.expect(Tok::RBrace, "expected closing main body")?;
+    p.expect(Tok::Eof, "extra top-level declarations prevent lock elision")?;
+    Ok(Main { initial, kind })
+}
+
+fn lit(v: i64) -> TE { TE { ty: Type::Int, e: TExpr::I64(v) } }
+fn call_increment() -> TE { TE { ty: Type::Int, e: TExpr::Call(0, vec![]) } }
+
+fn lower(inc: Increment, main: Main) -> R<TProgram> {
+    if matches!(main.kind, MainKind::LazyAndZero) {
+        // Preserve construction of the actor/task-local protected value:
+        // the lazy call is not evaluated, but Mutex<int>(initial) still
+        // initializes a real per-instance payload and lease flag.
+        return Ok(TProgram {
+            funcs: vec![TFunc { name:"main".into(),params:vec![],ret:Type::Int,
+                locals:vec![],body:vec![
+                    TStmt::GlobalSet(0,lit(main.initial)),
+                    TStmt::GlobalSet(1,lit(0)),
+                    TStmt::Return(Some(lit(0))),
+                ] }],
+            generators:vec![],main:0,imports:vec![],data:vec![],heap:false,
+            globals:vec![Type::Int,Type::Int],actors:vec![],strings:false,
+            guest_eh:false,raise_tag:false,catch_depth:false,
+        });
+    }
+
+    // Construct one checked HIR proof for the unique, task-local Mutex<int>
+    // owner and its borrowed affine lease. The proof rejects any possible
+    // guarded overflow before we emit the ordinary typed Wasm instructions.
+    // The parser has already proved no aliases, FFI, exceptions, suspension
+    // in the critical body, unknown mutations or concurrently runnable task.
+    let acquisitions = if matches!(main.kind, MainKind::TwoSequential) { 2 } else { 1 };
+    let checked_lease = CheckedReadyLease::prove(main.initial, inc.delta, acquisitions)?;
+    let increment_body = checked_lease.lower_one_guard();
+    let (imports,main_tail) = match main.kind {
+        MainKind::ReturnObserved => (vec![],vec![TStmt::Return(Some(call_increment()))]),
+        MainKind::PrintAndZero => (
+            vec![Import::PrintI64,Import::PrintNewline],
+            vec![TStmt::Expr(TE {ty:Type::Void,e:TExpr::Print {
+                value:Box::new(call_increment()),newline:true,
+            }}),TStmt::Return(Some(lit(0)))],
+        ),
+        MainKind::TwoSequential => (vec![],vec![
+            TStmt::Expr(call_increment()),
+            TStmt::Return(Some(call_increment())),
+        ]),
+        MainKind::LazyAndZero => unreachable!(),
+    };
+    let mut main_body = vec![TStmt::GlobalSet(0,lit(main.initial)),TStmt::GlobalSet(1,lit(0))];
+    main_body.extend(main_tail);
+    Ok(TProgram {
+        funcs: vec![
+            TFunc {name:inc.name,params:vec![],ret:Type::Int,
+                locals:vec![Type::Int],body:increment_body},
+            TFunc {name:"main".into(),params:vec![],ret:Type::Int,
+                locals:vec![],body:main_body},
+        ],
+        generators:vec![],main:1,imports,data:vec![],heap:false,
+        globals:vec![Type::Int,Type::Int],actors:vec![],strings:false,
+        guest_eh:false,raise_tag:false,catch_depth:false,
+    })
+}
+
+fn guarded_diagnostic(tokens: &[Token]) -> Option<Diagnostic> {
+    for (i, token) in tokens.iter().enumerate() {
+        if !matches!(&token.tok, Tok::Ident(name) if name == "using") { continue; }
+        // The nearest enclosing function declaration must carry the
+        // suspension effect. Contextual "using lock_async" is itself await.
+        if let Some(j) = (0..i).rev().find(|&j| matches!(
+            &tokens[j].tok,Tok::Ident(word) if word=="fnc"
+        )) {
+            let marked = j > 0 && matches!(
+                &tokens[j-1].tok,Tok::Ident(word) if word=="susp" || word=="suspends"
+            );
+            if !marked {
+                return Some(error(token.pos,"E_AWAIT_EFFECT",
+                    "contextual lock_async requires a suspending callable"));
+            }
+        }
+
+        let Some(open) = tokens.iter().enumerate().skip(i).find_map(|(j,t)|
+            (t.tok == Tok::LBrace).then_some(j)) else { continue };
+        let lease = tokens[i..open].windows(2).find_map(|w| match (&w[0].tok,&w[1].tok) {
+            (Tok::Ident(as_kw),Tok::Ident(name)) if as_kw=="as" => Some(name.as_str()),
+            _ => None,
+        });
+        let mut depth = 1usize;
+        for (j,tok) in tokens.iter().enumerate().skip(open+1) {
+            match &tok.tok {
+                Tok::LBrace => depth += 1,
+                Tok::RBrace => { depth -= 1; if depth == 0 { break; } },
+                Tok::Ident(name) if matches!(name.as_str(),"await"|"select"|"readch"|"yield") =>
+                    return Some(error(tok.pos,"E_GUARD_SUSPEND",
+                        "await/select/readch/yield inside a live MutexLease")),
+                Tok::Ident(name) if name == "return" => {
+                    if let (Some(l),Some(next)) = (lease,tokens.get(j+1)) {
+                        if matches!(&next.tok,Tok::Ident(x) if x==l)
+                            && !tokens.get(j+2).is_some_and(|t| t.tok==Tok::Dot) {
+                            return Some(error(tok.pos,"E_GUARD_ESCAPE",
+                                "opaque mutex lease cannot escape its lexical scope"));
+                        }
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+    None
+}
+
+/// Disambiguate nominal generic *type references* from construction calls.
+/// Lexer tokens exclude comments and strings; nesting is bounded by source
+/// admission. The function performs no allocation and never grants a runtime
+/// capability. In particular, `Mutex<int>` in a parameter is NOT a call.
+fn check_mutex_constructors(tokens: &[Token]) -> R<bool> {
+    // Track whether at least one canonical nominal class construction is
+    // present. The ordinary source parser must not get another chance to
+    // turn an unsupported Mutex<T> into an impostor user-defined class.
+    const MAX_GENERIC_SCAN: usize = 128;
+    let mut constructed = false;
+    for (i, token) in tokens.iter().enumerate() {
+        if !matches!(&token.tok, Tok::Ident(name) if name == "Mutex")
+            || !tokens.get(i + 1).is_some_and(|t| t.tok == Tok::Lt) {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut closing = None;
+        for (j, t) in tokens.iter().enumerate().skip(i + 1) {
+            if j - i > MAX_GENERIC_SCAN {
+                return Err(error(token.pos, "E_LOCK_UNSUPPORTED",
+                    "Mutex<T> type-argument nesting exceeds bounded admission"));
+            }
+            match &t.tok {
+                Tok::Lt => depth += 1,
+                Tok::Gt => {
+                    if depth == 0 { break; }
+                    depth -= 1;
+                    if depth == 0 { closing = Some(j); break; }
+                }
+                Tok::Semi | Tok::Eof | Tok::LBrace | Tok::RBrace => break,
+                _ => {}
+            }
+        }
+        let Some(end) = closing else { continue; };
+        if !tokens.get(end + 1).is_some_and(|t| t.tok == Tok::LParen) {
+            continue; // a type annotation, not construction
+        }
+        if i == 0 || !matches!(&tokens[i - 1].tok,
+            Tok::Ident(name) if name == "new") {
+            return Err(error(token.pos, "E_NEW_REQUIRED",
+                "Mutex<T> is an opaque resource class: use new Mutex<T>(value)"));
+        }
+        constructed = true;
+    }
+    Ok(constructed)
+}
+
+/// A narrow scanner selects only source using the reserved intrinsic and
+/// scoped lock_async spelling. It never claims general Mutex<T> support.
+pub fn try_lower(tokens: &[Token]) -> R<Option<TProgram>> {
+    let has_mutex = tokens.windows(2).any(|w| matches!(
+        (&w[0].tok,&w[1].tok),(Tok::Ident(name),Tok::Lt) if name=="Mutex"
+    ));
+    // Constructor validity is independent of whether this source contains
+    // lock_async(). In particular, a bare Mutex<Result<int,E>>(0) or
+    // Mutex<int>(0) in an unrelated function must not fall through to the
+    // ordinary parser as a legal value-struct/function call.
+    let constructs_mutex = check_mutex_constructors(tokens)?;
+    let lock_async = tokens.windows(3).any(|w| matches!(
+        (&w[0].tok,&w[1].tok,&w[2].tok),
+        (Tok::Dot,Tok::Ident(name),Tok::LParen) if name=="lock_async"
+    ));
+    if constructs_mutex && !lock_async {
+        return Err(error(tokens[0].pos, "E_LOCK_UNSUPPORTED",
+            "new Mutex<T>(...) is not a guest allocation without verified scoped lock_async lowering"));
+    }
+    if !has_mutex || !lock_async { return Ok(None); }
+    if let Some(diagnostic) = guarded_diagnostic(tokens) {
+        return Err(diagnostic);
+    }
+    // This restricted parser owns *all* candidate source; never fall back to
+    // the generic language parser and silently erase guard/await effects.
+    let mut p = Cursor::new(tokens);
+    let increment = parse_increment(&mut p)?;
+    let main = parse_main(&mut p,&increment.name)?;
+    lower(increment,main).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const SOURCE: &str = r#"
+susp fnc increment(Mutex<int> counter): int {
+  using await counter.lock_async() as lease {
+    lease.value += 1;
+    return lease.value;
+  }
+}
+pub susp fnc main(): int {
+  val counter = new Mutex<int>(0);
+  return await increment(counter);
+}
+"#;
+    fn parse(source: &str) -> R<Option<TProgram>> {
+        try_lower(&crate::lexer::lex(source).unwrap())
+    }
+    #[test]
+    fn guarded_scalar_lowering_keeps_runtime_state_and_cleanup() {
+        let program = parse(SOURCE).unwrap().unwrap();
+        assert_eq!(program.globals,vec![Type::Int,Type::Int]);
+        assert_eq!(program.funcs.len(),2);
+        assert_eq!(program.main,1);
+        assert!(matches!(program.funcs[0].body[4],TStmt::GlobalSet(1,_)));
+        assert!(matches!(program.funcs[0].body[5],TStmt::Return(_)));
+        let wasm = crate::compile(SOURCE).unwrap();
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+        assert_eq!(wasm,crate::compile(SOURCE).unwrap());
+    }
+    #[test]
+    fn resource_class_requires_new_keyword() {
+        let old = SOURCE.replace("new Mutex<int>(0)", "Mutex<int>(0)");
+        assert_eq!(crate::compile(&old).unwrap_err().code,"E_NEW_REQUIRED");
+        assert_eq!(try_lower(&crate::lexer::lex(&old).unwrap()).unwrap_err().code,
+            "E_NEW_REQUIRED");
+    }
+    #[test]
+    fn constructor_policy_is_independent_of_lock_async_calls() {
+        for src in [
+            "pub fnc main(): int { val m = Mutex<int>(0); return 0; }",
+            "pub fnc main(): int { val m = Mutex<Result<int,string>>(0); return 0; }",
+            "pub fnc main(): int { val m = Mutex<List<Map<int,bool>>>(0); return 0; }",
+        ] {
+            assert_eq!(crate::compile(src).unwrap_err().code, "E_NEW_REQUIRED", "{src}");
+        }
+        // Pure type references are not constructors and therefore cannot be
+        // given the misleading 'missing new' diagnostic by this lexical gate.
+        let param = crate::lexer::lex(
+            "pub fnc test(Mutex<int> mutex): int { return 0; }"
+        ).unwrap();
+        assert_eq!(check_mutex_constructors(&param).unwrap(), false);
+        let commented = crate::lexer::lex(
+            "// Mutex<int>(0)\\n pub fnc main(): int { return 42; }"
+        ).unwrap();
+        assert_eq!(check_mutex_constructors(&commented).unwrap(), false);
+    }
+    #[test]
+    fn canonical_but_unlowered_resource_creation_cannot_fall_through() {
+        for src in [
+            "pub fnc main(): int { val m = new Mutex<int>(0); return 0; }",
+            "pub fnc main(): int { val m = new Mutex<Result<int,string>>(0); return 0; }",
+            "pub fnc main(): int { val m = new Mutex<List<Map<int,bool>>>(0); return 0; }",
+        ] {
+            assert_eq!(crate::compile(src).unwrap_err().code, "E_LOCK_UNSUPPORTED", "{src}");
+        }
+    }
+    #[test]
+    fn implicit_and_explicit_acquisition_are_semantically_identical() {
+        let other = SOURCE.replace("using await counter.lock_async()", "using counter.lock_async()");
+        assert_eq!(crate::compile(SOURCE).unwrap(),crate::compile(&other).unwrap());
+    }
+    #[test]
+    fn no_spoofed_scope_and_no_extra_top_level() {
+        let extra = format!("{} pub fnc other(): int {{return 1;}}",SOURCE);
+        assert_eq!(parse(&extra).unwrap_err().code,"E_LOCK_UNSUPPORTED");
+        let invalid = SOURCE.replace("return lease.value;", "return lease;");
+        // A lease escaping its lexical scope is a precise ownership error,
+        // not an unsupported-profile fallback. It must never emit guest Wasm.
+        assert_eq!(parse(&invalid).unwrap_err().code,"E_GUARD_ESCAPE");
+    }
+    #[test]
+    fn ready_await_inside_lease_is_a_compile_error() {
+        let bad = SOURCE.replace("lease.value += 1;", "lease.value += await 42;");
+        assert_eq!(parse(&bad).unwrap_err().code,"E_GUARD_SUSPEND");
+    }
+    #[test]
+    fn constant_overflow_rejects_before_emission() {
+        let bad = SOURCE.replace("new Mutex<int>(0)", "new Mutex<int>(9223372036854775807)");
+        assert_eq!(parse(&bad).unwrap_err().code,"E_OVERFLOW");
+    }
+}
