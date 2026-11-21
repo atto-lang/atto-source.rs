@@ -196,7 +196,10 @@ mtd (Foo mut this.state.counter) f(): void {
     reject("declare actor Foo; mtd (Foo this) f(): void { let int this = 1; }", "E_DUPLICATE");
     reject("declare actor Foo; mtd (Foo this) f(): void { this.unknown(); }", "E_UNBOUND");
     reject("declare actor Foo; mtd (Foo actor) f(): void {}", "E_SYNTAX");
-    reject("define class Foo as end mtd (Foo this) f(): void {}", "E_UNSUPPORTED");
+    let class_src = "define class Foo as end mtd (Foo this) f(): void {}";
+    assert_eq!(parse(class_src).receivers[0].binding, "this");
+    assert_eq!(compile(class_src).unwrap_err().code, "E_UNSUPPORTED",
+        "named class receiver must not silently lower with implicit self");
 }
 
 #[test]
