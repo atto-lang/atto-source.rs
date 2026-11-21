@@ -125,15 +125,22 @@ fn conditional_or_still_parses_as_or_and_not_as_lambda() {
 }
 
 #[test]
-fn unsupported_callable_and_array_execution_fails_closed() {
+fn unused_callable_execution_still_fails_closed() {
     for source in [
         "pub fnc main(): int { val f = |n| : int -> n * 2; return 0; }",
         "pub fnc main(): int { val f = (|n| -> return n;); return 0; }",
-        "pub fnc main(): int { val xs = [1,2,3]; return 0; }",
     ] {
-        let err = atto_compiler::compile(source).expect_err("must never emit Wasm");
+        let err = atto_compiler::compile(source).expect_err("unused callable must never emit Wasm");
         assert_eq!(err.code, "E_UNSUPPORTED", "{source}: {err}");
     }
+}
+
+#[test]
+fn bounded_static_array_literal_now_emits_real_deterministic_guest() {
+    let source = "pub fnc main(): int { val xs = [1,2,3]; return 0; }";
+    let bytes = atto_compiler::compile(source).expect("bounded Array guest must compile");
+    assert!(bytes.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert_eq!(bytes, atto_compiler::compile(source).unwrap());
 }
 
 #[test]
