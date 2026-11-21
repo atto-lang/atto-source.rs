@@ -407,6 +407,141 @@ fnc __chan_close(int c): void {
   __chan_close_internal(c);
 }
 
+// ----------------------------------------------------------- select plans
+// Experimental Channel<int> list-source profile. All operations below are
+// compiled into the guest's own Wasm memory, not simulated by JavaScript.
+// Plan layout: slots, live, FAIR cursor, version, dynamic, reserved (48 bytes),
+// followed by up to 256 stable, zero-based read-case channel pointers.
+// A zero slot is a removed case. No guest scheduling/yield happens during the
+// ready-case scan, the chosen read, or the cursor update: only one case commits.
+fnc __plan_from_list(int cases, int dynamic): int {
+  val n = __load(cases, 0);
+  if n > 256 then __panic(10); fi
+  val p = __alloc(2096);
+  __store(p, 0, n);
+  __store(p, 8, n);
+  __store(p, 32, dynamic);
+  let i = 0;
+  while i < n do
+    __store(p, 48 + 8 * i, __load(cases, 8 + 8 * i));
+    i = i + 1;
+  done
+  return p;
+}
+
+// Return Option<SelectResult>. Each SelectResult occupies [index, value].
+// The case-to-read handoff is atomic within this cooperative guest runtime.
+// FAIR only advances when a read commits; first is stable lexical priority.
+fnc __plan_try(int p, int fair): int {
+  val n = __load(p, 0);
+  if n == 0 then return 0; fi
+  let k = 0;
+  while k < n do
+    let i = k;
+    if fair != 0 then
+      i = (__load(p, 16) + k) % n;
+    fi
+    val ch = __load(p, 48 + 8 * i);
+    if ch != 0 then
+      // Forbid consuming a pipeline-owned channel without a DATA grant.
+      if __load(ch, 56) != 0 then __panic(10); fi
+      if __load(ch, 64) != 0 then __panic(10); fi
+      if __load(ch, 8) > 0 then
+        val option = __chan_try(ch);
+        if option != 0 then
+          val winner = __alloc(16);
+          __store(winner, 0, i);
+          __store(winner, 8, __load(option, 0));
+          if fair != 0 then
+            __store(p, 16, (i + 1) % n);
+          fi
+          return __some(winner);
+        fi
+      fi
+      // Closed/drained channels cannot silently spin forever as ready cases.
+      if __load(ch, 32) != 0 then __panic(9); fi
+    fi
+    k = k + 1;
+  done
+  return 0;
+}
+
+fnc __plan_size(int p): int {
+  return __load(p, 8);
+}
+
+fnc __plan_version(int p): int {
+  return __load(p, 24);
+}
+
+fnc __plan_remove(int p, int key): int {
+  if __load(p, 32) == 0 then __panic(10); fi
+  if key < 0 then __panic(10); fi
+  if key >= __load(p, 0) then __panic(10); fi
+  if __load(p, 48 + 8 * key) == 0 then return 0; fi
+  __store(p, 48 + 8 * key, 0);
+  __store(p, 8, __load(p, 8) - 1);
+  __store(p, 24, __load(p, 24) + 1);
+  return 1;
+}
+
+fnc __plan_put(int p, int key, int ch): void {
+  if __load(p, 32) == 0 then __panic(10); fi
+  if key < 0 then __panic(10); fi
+  if key >= __load(p, 0) then __panic(10); fi
+  if ch == 0 then __panic(10); fi
+  if __load(p, 48 + 8 * key) == 0 then
+    __store(p, 8, __load(p, 8) + 1);
+  fi
+  __store(p, 48 + 8 * key, ch);
+  __store(p, 24, __load(p, 24) + 1);
+}
+
+// A pending nb select pins the ordered descriptor snapshot. Later put/remove
+// changes the live plan version, not the waiter's already captured channels.
+// Copies belong to the same guest memory/isolate: no cross-tenant capability.
+fnc __plan_snapshot(int p): int {
+  val copy = __alloc(2096);
+  let i = 0;
+  while i < 48 do
+    __store(copy, i, __load(p, i));
+    i = i + 8;
+  done
+  i = 0;
+  while i < __load(p, 0) do
+    __store(copy, 48 + 8 * i, __load(p, 48 + 8 * i));
+    i = i + 1;
+  done
+  __store(copy, 32, 0);
+  return copy;
+}
+
+suspends fnc __plan_wait_opt(int p, int fair): int {
+  loop do
+    val got = __plan_try(p, fair);
+    if got != 0 then return got; fi
+    __suspend();
+  done
+}
+
+suspends fnc __plan_wait(int p, int fair): int {
+  val result = await __plan_wait_opt(p, fair);
+  return __load(result, 0);
+}
+
+fnc __plan_nb(int p, int fair): int {
+  val generation = __load(p, 24);
+  val snapshot = __plan_snapshot(p);
+  return task {
+    val answer = await __plan_wait_opt(snapshot, fair);
+    // A stale pending plan must not advance the current plan's FAIR cursor.
+    if __load(p, 24) == generation then
+      __store(p, 16, __load(snapshot, 16));
+    fi
+    return answer;
+  };
+}
+
 // ------------------------------------------------------------------ actors
 // Actor instance (56-byte prefix): 0 mailbox channel, 8 downstream target,
 // 16 next sequence, 24 downstream kind (0 actor, 1 bounded channel),
