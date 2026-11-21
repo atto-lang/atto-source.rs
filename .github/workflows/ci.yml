@@ -15,7 +15,7 @@ jobs:
   real-compiler:
     # Source-local, administrator-provisioned, unique-label private runner.
     # Pull-request and push events continue using hosted ubuntu-24.04.
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && vars.ATTO_PRIVATE_RUST_RUNNER_LABEL || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && (vars.ATTO_PRIVATE_RUST_RUNNER_LABEL || 'atto-source-local-runner-not-configured') || 'ubuntu-24.04' }}
     steps:
       - name: Reject manual dispatch SHA drift before checking out private source
         if: github.event_name == 'workflow_dispatch'
@@ -47,9 +47,17 @@ jobs:
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
-          rustup component add clippy --toolchain 1.85.1
+          rustup component add clippy rustfmt --toolchain 1.85.1
           rustup default 1.85.1
           rustc --version
+      - name: Check formatting on the entire browser compiler crate
+        run: cargo fmt --all -- --check
+      - name: Syntax-check the conditional native and browser guest oracles
+        run: |
+          node --check tests/ifnot_unless_guest.mjs
+          node --check tests/ifnot_unless_browser_compiler.mjs
+      - name: Test ifnot/unless Rust compiler grammar and fail-closed diagnostics
+        run: cargo test --locked --test ifnot_unless_guest
       - name: Test native compiler core over the fixture corpus
         env:
           RUST_MIN_STACK: "16777216"
