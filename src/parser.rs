@@ -789,6 +789,7 @@ impl Parser {
             let method_public = self.eat_word("pub");
             self.eat_word("fnc");
             self.eat_word("method");
+            self.eat_word("mtd");
             if self.is_word("handle_state") {
                 return Err(Diagnostic::new(self.pos(), "E_STATE",
                     "handle_state is compiler-owned and cannot be overridden"));
@@ -1036,7 +1037,7 @@ impl Parser {
             let public = visibility == FieldVisibility::Public;
             let word = self.word_at(0).map(str::to_owned);
             if visibility == FieldVisibility::Package
-                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "receive"))
+                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "mtd" | "receive"))
                     || *self.peek_at(1) == Tok::LParen)
             {
                 return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
@@ -1131,7 +1132,7 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
-                Some("fnc" | "method") => {
+                Some("fnc" | "method" | "mtd") => {
                     self.advance();
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
@@ -1345,7 +1346,7 @@ impl Parser {
         })
     }
 
-    /// Method head after any `fnc`/`method`/`static fnc` keyword.
+    /// Method head after `mtd`/`fnc`/legacy `method`/`static fnc` keywords.
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
