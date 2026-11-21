@@ -11,10 +11,10 @@ raises Foo ::
   return value * 2;
 end
 
-pub fnc main(): int raises Foo ::
+pub fnc main(): int raises Foo {
   recover |err, cursor| -> {
     if err.is_type(Foo) then return 42; fi
     return 17;
   };
   return risky(4);
-end
+}
