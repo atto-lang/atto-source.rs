@@ -1,0 +1,11 @@
+// expect-error: E_SHARE_ALIAS
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val owned = new Parcel();
+  val reader = borrow! owned;
+  val frozen = share! owned;
+  return reader.value + frozen.value;
+}

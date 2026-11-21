@@ -1,0 +1,13 @@
+// expect-error: E_SHARE
+// java: rejects
+// An outer unique owner cannot be converted repeatedly across loop iterations.
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val owned = new Parcel();
+  while false {
+    val frozen = share! owned;
+  }
+  return 42;
+}

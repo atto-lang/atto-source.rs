@@ -1,0 +1,11 @@
+// expect-error: E_SHARE
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val owned = new Parcel();
+  val frozen = share! owned;
+  val stolen = take! frozen;
+  return stolen.value;
+}

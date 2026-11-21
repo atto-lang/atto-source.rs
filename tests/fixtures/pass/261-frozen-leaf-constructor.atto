@@ -1,0 +1,16 @@
+// expect-exit: 42
+// java: rejects
+// Mutable constructor initialization is complete before freezing the leaf.
+define class Point as
+  pub mut int x = 0;
+  pub mut int y = 0;
+  constructor(int a, int b) {
+    self.x = a;
+    self.y = b;
+  }
+end
+pub fnc main(): int {
+  val owned = new Point(40, 2);
+  val view = share! owned;
+  return view.x + view.y;
+}

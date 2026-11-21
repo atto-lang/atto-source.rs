@@ -1,0 +1,10 @@
+// expect-error: E_SHARE
+// java: rejects
+// Shareable class allocation must be first bound to a named owned place.
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val frozen = share! new Parcel();
+  return frozen.value;
+}
