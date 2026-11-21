@@ -1964,6 +1964,9 @@ impl<'a> Checker<'a> {
         }
         let src = self.plain_args(name, args, 1, pos)?[0];
         if let Ex::List(items) = &src.kind {
+            if items.is_empty() {
+                return Err(type_err(src.pos, "SelectPlan requires at least one SelectCase.read(Channel<int>)"));
+            }
             if items.len() > 256 {
                 return Err(err(src.pos, "E_SOURCE_LIMIT", "SelectPlan supports at most 256 read cases"));
             }
