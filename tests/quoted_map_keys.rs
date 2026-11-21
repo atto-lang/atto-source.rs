@@ -10,7 +10,7 @@ fn parse(s: &str)->Result<Program,atto_compiler::Diagnostic>{
 }
 fn admitted(src: &str) {
     let bytes=compile(src).expect("bounded scalar Map must generate real Wasm");
-    assert!(bytes.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(bytes,compile(src).expect("deterministic Map guest"));
 }
 fn reject(src: &str,code: &str){
