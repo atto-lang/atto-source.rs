@@ -183,3 +183,34 @@ fn explicit_void_lambda_rejects_value_return_and_void_formal() {
         "E_TYPE",
     );
 }
+
+#[test]
+fn closed_const_lambda_infers_ignored_formal_at_direct_call() {
+    // The user-requested |_| spelling remains a ONE-parameter callable,
+    // and : int declares the RESULT rather than inventing a parameter type.
+    // A literal direct call is sufficient to infer its safe scalar ABI.
+    ok("pub fnc main(): int { const fnc v = |_| : int -> 5; return v(41); }");
+    ok("pub fnc main(): int { const fnc v = |_| : int -> 5; return v(true); }");
+    ok("pub fnc main(): int { const fnc v = || : int -> 5; return v(); }");
+    ok("pub fnc main(): int { const fnc v = |x| : int -> x + 1; return v(41); }");
+    // A module-scope constant cannot infer parameter ABI from a future call.
+    ok("const fnc v = || : int -> 5; pub fnc main(): int { return v(); }");
+    ok("const fnc v = |int _| : int -> 5; pub fnc main(): int { return v(41); }");
+    bad("pub fnc main(): int { const fnc v = |_| : int -> 5; return 0; }", "E_UNSUPPORTED");
+    bad("pub fnc main(): int { const fnc v = |_| : int -> 5; return v(missing); }", "E_INFER");
+    bad("pub fnc main(): int { const fnc v = |_| : int -> 5; return v(); }", "E_ARITY");
+    bad("pub fnc main(): int { val runtime = 41; const fnc v = |_| : int -> runtime; return v(42); }", "E_CONST");
+}
+
+#[test]
+fn bare_lambda_heads_never_emit_a_wasm_artifact() {
+    for expression in ["_ : int -> 5", "_ -> 5", "x : int -> x + 5", "x -> x + 5"] {
+        let source = format!(
+            "pub fnc main(): int {{ const fnc v = {expression}; return 0; }}"
+        );
+        assert!(
+            atto_compiler::compile(&source).is_err(),
+            "delimiter-free lambda compiled: {expression}"
+        );
+    }
+}
