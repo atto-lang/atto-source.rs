@@ -11,7 +11,7 @@ fn bitwise_operations_compile_and_emit_wasm() {
         "12 & 10", "12 | 10", "12 ^^ 10", "~12",
         "8 <<< 2", "32 >>> 2", "-8 ashr 1",
         "1 + 2 <<< 3", "64 >>> 1 + 1",
-        "1 <<< 64", "-1 >>> 1",
+        "1 <<< 63", "-1 >>> 1",
         "12 & 10 | 2 ^^ 6", "(1 | 2) <<< 1",
     ] {
         let bytes = compile(&source(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
@@ -95,4 +95,16 @@ fn existing_io_and_boolean_operators_are_unchanged() {
     compile("pub fnc main(): int { if true && false || true then return 1; fi return 0; }").unwrap();
     assert!(compile(&source("1 << 2")).is_err()); // Not a bit shift
     assert!(compile(&source("8 >> 2")).is_err()); // Not a bit shift
+}
+
+#[test]
+fn shift_distances_are_checked_not_masked() {
+    for expr in ["1 <<< 64", "1 >>> 64", "1 ashr 65",
+                 "1 <<< -1", "1 >>> -1"] {
+        let err = compile(&source(expr)).expect_err("invalid literal shift count");
+        assert_eq!(err.code, "E_SHIFT_DISTANCE", "{expr}: {err}");
+    }
+    for expr in ["1 <<< 0", "1 <<< 63", "-1 >>> 63", "-8 ashr 63"] {
+        compile(&source(expr)).unwrap_or_else(|err| panic!("{expr}: {err}"));
+    }
 }
