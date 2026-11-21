@@ -41,6 +41,21 @@ fn select_plans_reject_unsafe_or_unimplemented_forms_without_emitting_guest() {
 }
 
 #[test]
+fn select_plans_compile_pipeline_ownership_denials_as_real_guests() {
+    // The actual traps are checked by Node and Chromium. This gate proves
+    // these security fixtures do not silently fail at parse/type checking.
+    for (name, source) in [
+        ("claimed-at-construction", include_str!("fixtures/panic/236-v2-select-pipe-owned-at-construction.atto")),
+        ("claimed-after-plan", include_str!("fixtures/panic/237-v2-select-pipe-claimed-after-plan.atto")),
+        ("claimed-on-put", include_str!("fixtures/panic/238-v2-dynamic-select-put-pipe-owned.atto")),
+    ] {
+        let guest = atto_compiler::compile(source)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(guest.starts_with(b"\0asm\x01\0\0\0"), "{name}: expected a real Wasm guest");
+    }
+}
+
+#[test]
 fn standalone_plan_select_statements_compile_but_discarding_nb_is_denied() {
     let prefix = r#"pub suspends fnc main(): int {
         val ch = Channel<int>.bounded(1);
