@@ -194,3 +194,56 @@ test('native Rust attoc and the wasm32 Rust compiler agree on executed guest res
     await rm(scratch, {recursive:true,force:true});
   }
 });
+
+test('pipe-delimited const fnc compiles through real Rust/Wasm and native Rust, executes and recovers', async () => {
+  const valid = [
+    ['ignored-int', 'pub fnc main(): int { const fnc v = |_| : int -> 5; return v(41); }', 5n],
+    ['ignored-bool', 'pub fnc main(): int { const fnc v = |_| : int -> 5; return v(true); }', 5n],
+    ['zero-arg', 'pub fnc main(): int { const fnc v = || : int -> 5; return v(); }', 5n],
+    ['typed-module', 'const fnc v = |int _| : int -> 5; pub fnc main(): int { return v(41); }', 5n],
+    ['local-named', 'pub fnc main(): int { const fnc v = |int x| : int -> x + 1; return v(x: 41); }', 42n],
+  ];
+  const invalid = [
+    'pub fnc main(): int { const fnc v = _ : int -> 5; return 0; }',
+    'pub fnc main(): int { const fnc v = _ -> 5; return 0; }',
+    'pub fnc main(): int { const fnc v = x : int -> x + 5; return 0; }',
+    'pub fnc main(): int { const fnc v = |_| : int -> 5; return v(); }',
+  ];
+  const scratch = await mkdtemp(join(tmpdir(), 'atto-pipe-const-real-'));
+  try {
+    for (const [label, source, expectedExit] of valid) {
+      const result = compileViaBrowserAbi(source);
+      assert.equal(result.ok, true, label + ': ' + (result.message ?? 'compiler failed'));
+      const browserModule = new WebAssembly.Module(result.bytes);
+      assert.deepEqual(WebAssembly.Module.imports(browserModule), [], label);
+      assert.equal(new WebAssembly.Instance(browserModule, {}).exports.main(), expectedExit, label);
+      const repeat = compileViaBrowserAbi(source);
+      assert.equal(repeat.ok, true, label + ' nonrepeatable');
+      assert.equal(hash(result.bytes), hash(repeat.bytes), label + ' nondeterministic output');
+      const input = join(scratch, label + '.atto');
+      const output = join(scratch, label + '.wasm');
+      await writeFile(input, source);
+      const native = spawnSync(nativeCli, [input, '-o', output], { encoding: 'utf8', timeout: 30000 });
+      assert.equal(native.status, 0, label + ': native compiler: ' + (native.stderr || native.error));
+      const nativeModule = new WebAssembly.Module(await readFile(output));
+      assert.deepEqual(WebAssembly.Module.imports(nativeModule), [], label + ' native');
+      assert.equal(new WebAssembly.Instance(nativeModule, {}).exports.main(), expectedExit, label + ' native');
+    }
+
+    for (const [i, source] of invalid.entries()) {
+      const rejected = compileViaBrowserAbi(source);
+      assert.equal(rejected.ok, false, 'rejected bare/invalid head ' + i);
+      assert.match(rejected.message, /E_[A-Z0-9_]+/);
+      // compileViaBrowserAbi asserts result_length() is zero on all failures.
+      const input = join(scratch, 'invalid-' + i + '.atto');
+      const output = join(scratch, 'invalid-' + i + '.wasm');
+      await writeFile(input, source);
+      const native = spawnSync(nativeCli, [input, '-o', output], { encoding: 'utf8', timeout: 30000 });
+      assert.notEqual(native.status, 0, 'native accepted invalid const lambda ' + i);
+      const recovered = compileViaBrowserAbi(valid[0][1]);
+      assert.equal(recovered.ok, true, 'Rust/Wasm compiler did not recover after rejection ' + i);
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
