@@ -119,5 +119,20 @@ fn explicit_pipes_are_required_in_const_function_expressions() {
                 "bare lambda head was accepted: {prefix} {expr}"
             );
         }
+        let module_source = format!("const fnc v = {expr}; pub fnc main(): int {{ return 0; }}");
+        assert!(
+            Parser::new(lexer::lex(&module_source).unwrap()).parse_program().is_err(),
+            "module-level bare lambda head accepted: {expr}"
+        );
+    }
+    for bare_call in [
+        "values.map(_ : int -> 5)",
+        "values.map(_ -> 5)",
+    ] {
+        let source = main_with(bare_call);
+        assert!(
+            Parser::new(lexer::lex(&source).unwrap()).parse_program().is_err(),
+            "bare lambda head accepted as a call argument: {bare_call}"
+        );
     }
 }
