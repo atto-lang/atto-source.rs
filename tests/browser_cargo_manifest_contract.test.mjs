@@ -51,7 +51,7 @@ test('explicit Cargo test inventory includes every expected browser target', () 
 test('duplicate, missing and injected Cargo targets fail closed', () => {
   const original = inventory(manifest);
   assert.throws(() => inventory(manifest.replace(
-    'path = "src/bin/attoc.rs"', 'path = "invalid"\n# missing attoc target'
+    'path = "src/bin/attoc.rs"', '# missing attoc bin path'
   )), /every bin must declare/);
   assert.throws(() => inventory(manifest + '\n[[bin]]\nname = "attoc"\npath = "src/bin/other.rs"\n'),
     /duplicate binary name/);
