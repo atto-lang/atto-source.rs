@@ -9,7 +9,7 @@ const PREVIEW: &str = include_str!("playground_previews/actor-named-state-permis
 #[test]
 fn verified_playground_example_is_a_real_target_parser_fixture() {
     let headers = parse_target_declarations(&lex(PREVIEW).unwrap()).unwrap();
-    assert_eq!(headers.actors, ["Meter"]);
+    assert_eq!(headers.actors, vec!["Meter".to_string()]);
     assert_eq!(headers.receivers.len(), 5);
     assert_eq!(headers.receivers.iter().map(|x| x.binding.as_str()).collect::<Vec<_>>(),
         ["this", "self", "this", "node", "this"]);
