@@ -2,11 +2,12 @@
 // This executes the actual wasm32-hosted Rust compiler, never a JS interpreter.
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {readFile, mkdtemp, writeFile, rm} from 'node:fs/promises';
+import {access, readFile, mkdtemp, writeFile, rm} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import {readWasmCompilerFailure, verifyCompilerDiagnosticParity} from '../scripts/compiler-diagnostic.mjs';
 
 const root = new URL('.', import.meta.url);
 const compilerPath = fileURLToPath(new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm', root));
@@ -26,22 +27,29 @@ for (const name of required) assert.ok(name in api, 'missing browser compiler AB
 
 function compileBrowser(text) {
   const input = encoder.encode(text);
-  assert.ok(input.length <= api.input_capacity(), 'source exceeds browser compiler buffer');
-  new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+  const capacity = api.input_capacity();
+  assert.ok(Number.isSafeInteger(capacity) && capacity > 0 && capacity <= 65536,
+    'unexpected browser compiler input capacity');
+  assert.ok(input.length <= capacity, 'source exceeds browser compiler buffer');
+  const ptr = api.input_ptr();
+  assert.ok(Number.isSafeInteger(ptr) && ptr >= 0 &&
+    ptr + input.length <= api.memory.buffer.byteLength, 'source input pointer bounds');
+  new Uint8Array(api.memory.buffer, ptr, input.length).set(input);
   const rc = api.compile(input.length);
+  assert.ok(rc === 0 || rc === 1, 'unexpected browser compiler return status');
   if (rc !== 0) {
-    assert.equal(api.result_length(), 0, 'failure must not expose stale guest bytes');
-    const mem = new Uint8Array(api.memory.buffer);
-    const start = api.error_ptr();
-    let end = start;
-    while (end < mem.length && end < start + 1024 && mem[end] !== 0) end++;
-    const diagnostic = decoder.decode(mem.subarray(start, end));
-    assert.match(diagnostic, /^E_[A-Z_]+:/, 'structured compiler diagnostic');
-    assert.ok(api.error_line_number() >= 1 && api.error_column_number() >= 1, 'located diagnostic');
-    return {ok:false, code:diagnostic.split(':')[0], diagnostic};
+    // Share strict bounded UTF-8 / NUL diagnostics with the canonical
+    // real Rust/Wasm smoke test, including line and column metadata.
+    const failure = readWasmCompilerFailure(api);
+    assert.match(failure.message, /^E_[A-Z0-9_]+: /, 'structured compiler diagnostic');
+    assert.ok(failure.line >= 1 && failure.col >= 1, 'located diagnostic');
+    return {...failure, code:failure.message.split(':')[0], diagnostic:failure.message};
   }
-  const guest = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
-  assert.ok(guest.length > 8, 'nonempty guest returned');
+  const outputPtr = api.result_ptr(), outputLen = api.result_length();
+  assert.ok(Number.isSafeInteger(outputPtr) && Number.isSafeInteger(outputLen) &&
+    outputPtr >= 0 && outputLen > 8 && outputLen <= 1048576 &&
+    outputPtr + outputLen <= api.memory.buffer.byteLength, 'guest output bounds');
+  const guest = new Uint8Array(api.memory.buffer, outputPtr, outputLen).slice();
   assert.ok(WebAssembly.validate(guest), 'guest emitted by wasm32 compiler validates');
   return {ok:true, guest};
 }
@@ -84,6 +92,7 @@ const negatives = [
   ['do unless true { return 7; }', 'E_SYNTAX'],
   ['do ifnot false { return 7; }', 'E_SYNTAX'],
   ['ifnot false { return 7; } fi return 42;', 'E_SYNTAX'],
+  ['return unless true then return 7 else 9 fi;', 'E_SYNTAX'],
 ];
 
 const temp = await mkdtemp(join(tmpdir(), 'atto-conditional-browser-'));
@@ -155,15 +164,32 @@ try {
     assert.equal(trace, traceExpected, label+': predicate re-evaluated or arm run unexpectedly');
     assert.equal(guest.exports.panic_code.value, 0, label+': unexpected panic');
   }
-  for (const [body, code] of negatives) {
+  // Each invalid source is rejected by BOTH real compilers. Native attoc must
+  // erase a pre-existing output and the full code, position and error prose
+  // must be byte-for-byte identical to the wasm32 compiler diagnostic.
+  for (const [i, [body, code]] of negatives.entries()) {
     const source = 'pub fnc main(): int { '+body+' }\n';
+    const label = 'negative-'+i;
+    const filename = join(temp, label+'.atto');
+    const output = join(temp, label+'.wasm');
+    await writeFile(filename, source);
+    await writeFile(output, 'STALE_GUEST_MUST_NOT_SURVIVE');
+    const native = spawnSync(attoc, [filename, '-o', output],
+      {encoding:'utf8',timeout:30000,maxBuffer:1048576,shell:false});
+    assert.ifError(native.error);
+    assert.equal(native.signal, null, label+': native compiler terminated by signal');
+    assert.equal(native.status, 1, label+': invalid source should exit with status 1');
+    assert.equal(native.stdout, '', label+': rejected source emitted stdout');
+    await assert.rejects(access(output), {code:'ENOENT'},
+      label+': rejected source retained stale or new Wasm output');
     const reject = compileBrowser(source);
-    assert.equal(reject.ok, false, body+': unexpected executable artifact');
-    assert.equal(reject.code, code, body+': wrong error code');
+    assert.equal(reject.ok, false, body+': browser emitted unexpected guest');
+    assert.equal(reject.code, code, body+': wrong browser diagnostic code');
+    verifyCompilerDiagnosticParity(native.stderr, filename, reject, code);
   }
   // A failed browser compile must never poison a subsequent valid guest.
   await run('pub fnc main(): int { return 42; }\n', 42n, 'recovery');
-  console.log('PASS: 22 native/wasm32 byte-identical guests, exact website 42, 4 side-effect evaluations, 13 negatives, recovery');
+  console.log('PASS: 22 native/wasm32 byte-identical guests, exact website 42, 4 side-effect evaluations, 14 dual-compiler negatives, recovery');
 } finally {
   await rm(temp, {recursive:true,force:true});
 }
