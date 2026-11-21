@@ -19,7 +19,8 @@ fnc display(Dyn<Printable> item): string {
 pub fnc main(): int {
   val Greeting concrete = new Greeting();
   val Dyn<Printable> erased = Dyn<Printable>(take! concrete);
-  return display(erased).length;
+  stdio.println(display(erased));
+  return 0;
 }
 "#;
 
@@ -47,8 +48,9 @@ fn inferred_owned_erasure_is_also_accepted() {
 #[test]
 fn moved_source_owner_is_unusable() {
     let src = POSITIVE.replace(
-        "return display(erased).length;",
-        "return concrete.describe().length;");
+        "stdio.println(display(erased));
+  return 0;",
+        "stdio.println(concrete.describe()); return 0;");
     error(&src, "E_MOVED");
 }
 
@@ -56,20 +58,25 @@ fn moved_source_owner_is_unusable() {
 fn no_interface_forgery_or_concrete_member_leak() {
     error(&POSITIVE.replace("Dyn<Printable>(take! concrete)", "Dyn<Printable>(42)"),
         "E_DYN_OWNERSHIP");
-    error(&POSITIVE.replace("return display(erased).length;", "return erased.secret().length;"),
+    error(&POSITIVE.replace("stdio.println(display(erased));
+  return 0;", "stdio.println(erased.secret()); return 0;"),
         "E_DYN_INTERFACE");
-    error(&POSITIVE.replace("return display(erased).length;", "return erased.secret;"),
+    error(&POSITIVE.replace("stdio.println(display(erased));
+  return 0;", "return erased.secret;"),
         "E_DYN_INTERFACE");
-    error(&POSITIVE.replace("return display(erased).length;",
+    error(&POSITIVE.replace("stdio.println(display(erased));
+  return 0;",
         "val Greeting leaked = erased; return leaked.secret();"), "E_DYN_INTERFACE");
-    error(&POSITIVE.replace("return display(erased).length;",
+    error(&POSITIVE.replace("stdio.println(display(erased));
+  return 0;",
         "return send_to_other_tenant(erased);"), "E_DYN_INTERFACE");
 }
 
 #[test]
 fn no_implicit_dyn_conversion_at_call_sites() {
     let src = POSITIVE.replace(
-        "return display(erased).length;", "return display(concrete).length;");
+        "stdio.println(display(erased));
+  return 0;", "stdio.println(display(concrete)); return 0;");
     // This is refused at the interface call-site regardless of the move.
     error(&src, "E_DYN_INTERFACE");
 }
