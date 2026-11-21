@@ -14,6 +14,7 @@ const cases=[
   ['232-v2-nb-select-snapshot.atto',42n,''],
   ['233-v2-try-select-empty.atto',42n,''],
   ['234-v2-select-single-winner.atto',42n,'0\n1\n'],
+  ['235-v2-blocking-select-generation.atto',42n,''],
 ];
 try {
   for (const [name,exit,stdout] of cases) {
