@@ -1,0 +1,10 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Person as
+  pub let int age = 30;
+end
+pub fnc main(): int {
+  let person = new Person();
+  val age_ref = borrow! mut person.age;
+  return 0;
+}

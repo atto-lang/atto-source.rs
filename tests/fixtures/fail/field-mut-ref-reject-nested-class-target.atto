@@ -1,0 +1,13 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Nested as
+  pub let int score = 7;
+end
+define class Person as
+  pub let Nested child;
+end
+pub fnc main(): int {
+  let person = new Person();
+  let child_ref = borrow! mut person.child;
+  return 0;
+}

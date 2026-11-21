@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+define class Person as
+  pub let int age = 30;
+end
+pub fnc main(): int {
+  let person = new Person();
+  block {
+    let age_ref = borrow! mut person.age;
+    age_ref = 42;
+  }
+  return person.age;
+}

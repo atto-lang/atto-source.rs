@@ -1,0 +1,18 @@
+// expect-exit: 42
+// expect-stdout: Alice
+// expect-stdout: 42
+// java: rejects
+// An authenticated mutable age loan writes real class storage, not a snapshot.
+define class Person as
+  pub let string name = "Alice";
+  pub let int age = 30;
+end
+pub fnc main(): int {
+  let person = new Person();
+  let age_ref = borrow! mut person.age;
+  person.name = "Alice";
+  stdio.println(person.name);
+  age_ref = 42;
+  stdio.println(age_ref);
+  return person.age;
+}
