@@ -33,7 +33,7 @@ const tests=[
   ['fail','return-first-bullet-lookalike.atto','E_TOKEN'],
   ['fail','return-first-lookalike-middle-dot','E_TOKEN',
     'int· answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
-  ['fail','return-first-lookalike-undertie','E_TOKEN',
+  ['fail','return-first-lookalike-hyphenation-point','E_TOKEN',
     'int‧ answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
   ['fail','return-first-lookalike-black-circle','E_TOKEN',
     'int● answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
