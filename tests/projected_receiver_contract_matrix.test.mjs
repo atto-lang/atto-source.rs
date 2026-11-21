@@ -56,7 +56,7 @@ test('native attoc enforces all 38 parser-stage contract cases without guest art
         // Diagnostic::Display formats "file:line:column: E_CODE: message".
         // Compare the *exact* leading diagnostic code, not a substring in
         // descriptive text (which could mask an unrelated failure).
-        const match = diag.match(/:(\d+):(\d+): (E_[A-Z0-9_]+):/);
+        const match = diag.match(/:\s*(\d+):(\d+): (E_[A-Z0-9_]+):/);
         assert.ok(match, item.id + ': missing positioned diagnostic: ' + diag);
         assert.ok(Number(match[1]) >= 1 && Number(match[2]) >= 1,
           item.id + ': invalid diagnostic source position: ' + diag);
