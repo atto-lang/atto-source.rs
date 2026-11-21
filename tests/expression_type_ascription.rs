@@ -41,11 +41,23 @@ fn mismatched_ascriptions_and_unlowered_casts_fail_closed() {
     for (expr, expected) in [
         ("42 : bool", "E_TYPE"),
         ("42 as bool", "E_UNSUPPORTED_CAST"),
-        ("42 as float", "E_UNSUPPORTED_CAST"),
+        ("42 : float", "E_TYPE"),
+        ("42.0 as int", "E_UNSUPPORTED_CAST"),
         ("42 : void", "E_TYPE"),
     ] {
         let err = compile(&source(expr)).unwrap_err();
         assert_eq!(err.code, expected, "{expr}: {err}");
+    }
+}
+
+#[test]
+fn explicit_int_to_float_conversion_compiles_to_real_wasm() {
+    for src in [
+        "pub fnc main(): int { val converted = 42 as float; if converted eq 42.0 then return 42; fi return 0; }",
+        "pub fnc main(): int { val converted = (40 + 2) as float; if converted eq 42.0 then return 42; fi return 0; }",
+    ] {
+        let bytes = compile(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        assert!(bytes.starts_with(b"\\0asm"));
     }
 }
 
