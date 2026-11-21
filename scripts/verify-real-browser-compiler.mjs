@@ -16,6 +16,7 @@ const decoder=new TextDecoder('utf-8',{fatal:true});
 // Explicit contract-backed, independent positive and negative programs.
 // Do not let a repeated success fixture masquerade as broader guest coverage.
 const tests=[
+  ['pass','01-answer.atto',42n],
   ['pass','02-spec-ch16-add.atto',42n],
   ['pass','03-arrow-return.atto',42n],
   ['pass','04-binding-forms.atto',52n],
