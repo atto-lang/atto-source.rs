@@ -21,7 +21,7 @@ jobs:
     # The repository administrator, not PR source, provisions the dedicated
     # runner and sets ATTO_PRIVATE_RUST_RUNNER_LABEL to its unique label.
     # Automatic pull_request and push jobs never choose this private runner.
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && vars.ATTO_PRIVATE_RUST_RUNNER_LABEL || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && (vars.ATTO_PRIVATE_RUST_RUNNER_LABEL || 'atto-source-local-runner-not-configured') || 'ubuntu-24.04' }}
     steps:
       - name: Reject manual dispatch SHA drift before checking out private source
         if: github.event_name == 'workflow_dispatch'
@@ -32,12 +32,19 @@ jobs:
           DISPATCH_HEAD: ${{ github.sha }}
           SOURCE_REPOSITORY: ${{ github.repository }}
           SOURCE_REF_TYPE: ${{ github.ref_type }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          RUNNER_NAME: ${{ runner.name }}
+          SELECTED_RUNNER_LABEL: ${{ vars.ATTO_PRIVATE_RUST_RUNNER_LABEL }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]]
           test "$SOURCE_REPOSITORY" = "atto-lang/atto-source.rs"
           test "$SOURCE_REF_TYPE" = "branch"
+          # The manual route must never silently execute on a hosted pool.
+          test -n "$SELECTED_RUNNER_LABEL"
+          test "$RUNNER_ENVIRONMENT" = "self-hosted"
+          test -n "$RUNNER_NAME"
           test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
