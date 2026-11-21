@@ -62,7 +62,7 @@ fn duplicate_arity_is_not_resolved_by_receiver_style() {
     let source = r#"
         define class Calculator as
             fnc get() -> int :: 5 end
-            get() -> int { return 6; }
+            mtd get() -> int { return 6; }
         end
         pub fnc main(): int { return 0; }
     "#;
@@ -106,10 +106,60 @@ fn inline_mtd_compiles_as_instance_call_without_mutability_or_arity_changes() {
 
 #[test]
 fn mtd_does_not_bypass_static_fnc_or_package_visibility_gates() {
-    for source in [
-        "define class C as static mtd f(): int { return 42; } end pub fnc main(): int { return 0; }",
-        "define class C as pub[pkg] mtd f(): int { return 42; } end pub fnc main(): int { return 0; }",
+    for (source, code) in [
+        ("define class C as static mtd f(): int { return 42; } end pub fnc main(): int { return 0; }", "E_SYNTAX"),
+        ("define class C as pub[pkg] mtd f(): int { return 42; } end pub fnc main(): int { return 0; }", "E_UNSUPPORTED"),
     ] {
-        assert!(atto_compiler::compile(source).is_err(), "unsupported mtd form must fail closed: {source}");
+        let diagnostic = atto_compiler::compile(source).expect_err("unsupported mtd form must fail closed");
+        assert_eq!(diagnostic.code, code, "{source}: {diagnostic}");
     }
+}
+
+#[test]
+fn inline_mtd_state_container_retains_critical_lease_and_reserved_hook_guards() {
+    // A method prefix must not turn protected state into ordinary class fields.
+    let source = r#"
+        define state container Flag as
+            state { let bool enabled: true; }
+            pub mtd read_enabled(): bool {
+                return handle_state(critical-read |s| -> s.enabled);
+            }
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let program = Parser::new(lex(source).unwrap()).parse_program().unwrap();
+    assert!(program.classes[0].state_container);
+    assert_eq!(program.classes[0].methods.len(), 1);
+    assert_eq!(program.classes[0].methods[0].name, "read_enabled");
+    let wasm = atto_compiler::compile(source).expect("mtd state method must retain ordinary state-container lowering");
+    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+
+    let override_source = r#"
+        define state container Flag as
+            state { let bool enabled: true; }
+            mtd handle_state(): bool { return true; }
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let diagnostic = Parser::new(lex(override_source).unwrap())
+        .parse_program().expect_err("compiler-owned handle_state cannot be shadowed through mtd");
+    assert_eq!(diagnostic.code, "E_STATE");
+}
+
+#[test]
+fn explicit_inline_actor_mtd_still_satisfies_nominal_method_contracts() {
+    let source = r#"
+        define interface IPing as ping(): int; end
+        define actor Worker implements IPing as
+            pub mtd ping(): int { return 42; }
+            receive(ActorMail<int> mail): void {
+                stdio.println(self.ping());
+            }
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let program = Parser::new(lex(source).unwrap()).parse_program().unwrap();
+    assert_eq!(program.actors[0].methods[0].name, "ping");
+    assert!(atto_compiler::compile(source).is_ok(),
+        "mtd must lower exactly like an inline actor method, without skipping interface checks");
 }
