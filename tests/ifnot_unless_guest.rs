@@ -4,7 +4,12 @@ use atto_compiler::{compile, lexer::lex, parser::Parser};
 
 #[test]
 fn negated_conditional_heads_are_reserved_and_have_all_three_legal_forms() {
-    // Keep the website's complete combined example executable here before\n    // it can ever be promoted into the public browser's runnable tier.\n    let source = include_str!("fixtures/ifnot-unless-guard-play.atto");\n    let guest = compile(source).expect("full playground example must lower to a genuine Wasm guest");\n    assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);\n    for body in [
+    // Keep the website's complete combined example executable here before
+    // it can ever be promoted into the public browser's runnable tier.
+    let source = include_str!("fixtures/ifnot-unless-guard-play.atto");
+    let guest = compile(source).expect("full playground example must lower to a genuine Wasm guest");
+    assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    for body in [
         "do ifnot false then return 7; fi return 42;",
         "do unless true then return 7; else return 42; fi",
         "ifnot false { return 7; } return 42;",
