@@ -33,6 +33,8 @@ pub mod lexer;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+/// Source-local scalar generic specialization before typed browser lowering.
+pub mod scalar_generic;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
@@ -237,6 +239,9 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     };
     // Do not silently erase the 'value' modifier and emit identity-bearing objects.
     value_class_admission::preflight(&source_tokens)?;
+    // Generic instantiation must precede visibility/export discovery: generated
+    // functions are private checked specializations, never ambient exports.
+    let source_tokens = scalar_generic::lower(source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
     collection_layout::reject_unlowered(&visibility.tokens)?;
     let lowered_modules = module_lower::lower_with_manifest(visibility.tokens)?;
