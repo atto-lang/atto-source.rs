@@ -1,0 +1,32 @@
+name: Maybe and keyword try exact-head Rust/Wasm gate
+on:
+  push:
+    branches:
+      - 'hardening/**'
+      - 'ci/**'
+  pull_request:
+    paths:
+      - 'src/parser.rs'
+      - 'tests/try_keyword_end.rs'
+      - 'tests/fixtures/**'
+      - '.github/workflows/maybe-try-exact-head.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust-maybe-try:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout local repository only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Record exact commit and Git tree
+        run: |
+          printf 'commit=%s\n' "$(git rev-parse HEAD)"
+          printf 'tree=%s\n' "$(git rev-parse HEAD^{tree})"
+      - name: Targeted Wasm parser/conformance fixture tests
+        run: cargo test --locked --test try_keyword_end --test fixtures
+      - name: Full Rust/Wasm compiler tests
+        run: cargo test --locked

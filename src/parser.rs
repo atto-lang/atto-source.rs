@@ -87,7 +87,7 @@ const RESERVED: &[&str] = &[
     "continue",
     "switch",
     "match",
-    "maybe",
+    // maybe is contextual: functions, parameters and locals may use the name.
     "matches",
     "over",
     "default",
@@ -2239,6 +2239,16 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
+                // Disambiguate the planned block construct without globally
+                // reserving a perfectly valid user variable named 'maybe'.
+                // Both Ok(...) and Some(...) fallible binders are still
+                // unsupported until a typed value/cleanup CFG is implemented.
+                if self.is_word("maybe")
+                    && matches!(self.word_at(1), Some("Ok" | "Some"))
+                    && *self.peek_at(2) == Tok::LParen
+                {
+                    return Err(unsupported(pos, "'return maybe' value matching"));
+                }
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
                     // return values, including an exhaustive match.
@@ -2315,6 +2325,13 @@ impl Parser {
             // failure/cleanup CFG rather than falling through to an identifier.
             Some("do") if self.word_at(1) == Some("maybe") => {
                 Err(unsupported(pos, "'do maybe' value matching"))
+            }
+            // A local/function named maybe is ordinary source. Only the
+            // structurally recognizable bare maybe block is unsupported.
+            Some("maybe") if !matches!(self.word_at(1), Some("Ok" | "Some")) => {
+                let expr = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(expr))
             }
             Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
@@ -3999,7 +4016,7 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "nb" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
