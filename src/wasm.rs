@@ -174,6 +174,14 @@ impl Emit<'_> {
                     self.op(0x1A);
                 }
             }
+            TStmt::AwaitActor(actor) => {
+                self.expr(actor);
+                self.call(self.l.import(Import::ActorJoin));
+            }
+            TStmt::AwaitActorReady(actor) => {
+                self.expr(actor);
+                self.call(self.l.import(Import::ActorReady));
+            }
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
@@ -466,6 +474,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintNewline => Sig(vec![], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![I32]),
+            Import::ActorJoin => Sig(vec![I32], vec![]),
+            Import::ActorReady => Sig(vec![I32], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());

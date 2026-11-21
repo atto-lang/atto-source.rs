@@ -686,6 +686,52 @@ check('actor/send-and-completion-negative-controls', () => {
   }
 });
 
+
+check('actor/terminal-await-get-done-registers-real-join', () => {
+  const source = [
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  val admission = worker.send(41);',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  const result=compile(source);
+  assert.ok(result.ok,result.message);
+  const module=new WebAssembly.Module(result.wasm);
+  assert.deepEqual(WebAssembly.Module.imports(module).map(x=>x.name),
+    ['actor_spawn','actor_send','actor_join']);
+  let joined=0, sent=null;
+  const guest=new WebAssembly.Instance(module,{atto:{
+    actor_spawn:() => 1,
+    actor_send:(handle,payload) => {sent=[handle,payload];return 0;},
+    actor_join:handle => {joined=handle;},
+  }});
+  assert.equal(guest.exports.main(),0n);
+  assert.deepEqual(sent,[1,41n]);
+  assert.equal(joined,1,'guest registers explicit terminal join in host');
+  // This test verifies the ABI registration; actual async shutdown must be
+  // proved by the Chromium worker test, not fabricated by the Wasm guest.
+});
+
+check('actor/terminal-await-fail-closed-outside-structured-scope', () => {
+  const head='define actor Worker as receive(msg: int) -> int { return msg; } end\n';
+  for(const [src,expected] of [
+    ['pub fnc main(): int { val w=spawn Worker(); await w.get_done(); }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); await w.get_done(); stdio.println(1); }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); if true then await w.get_done(); fi }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); await w.send(1); }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); await w.get_done(1); }','E_ARITY'],
+    ['fnc helper(): void { val w=spawn Worker(); await w.get_done(); }\npub fnc main(): void { helper(); }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); val task=w.get_done(); }','E_UNSUPPORTED'],
+  ]) {
+    const result=compile(head+src);
+    assert.equal(result.ok,false,src);
+    assert.equal(result.code,expected,result.message);
+    assert.equal('wasm' in result,false,'unsupported suspension must never emit guest bytes');
+  }
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);

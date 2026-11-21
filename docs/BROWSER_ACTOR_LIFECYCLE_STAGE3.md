@@ -1,0 +1,144 @@
+# AttoLang browser actor lifecycle — Stage 3 private subset
+
+**Status:** experimental, source-owned implementation only; not public release
+authorization. Independent review and exact-head CI are mandatory.
+
+## Language boundary
+
+The existing stage-2 send(int) returns Result<void, SendError> for
+**mailbox admission only**. It never proves that the handler ran. Stage 3
+additionally admits only the terminal await actor.get_done() statement as the
+final direct statement of a void main():
+
+    define actor Worker as
+      receive(msg: int) -> int { return msg + 1; }
+    end
+
+    pub fnc main(): void {
+      val worker = spawn Worker();
+      val accepted: Result<void, SendError> = worker.send(41);
+      await worker.get_done();
+    }
+
+The compiler emits the atto.actor_join(i32 handle) -> void import to register
+the terminal structured join. This import does **not** block Wasm or claim
+completion. The guest returns from its only admitted await position, then
+the browser host drains the admitted queue, explicitly closes the actor,
+and suspends using a JavaScript Promise until the child Worker sends done.
+The browser result is reported only after verified terminal acknowledgment.
+
+Arbitrary await expressions, statements after the terminal join, nested
+awaits, non-void main joins, get_done as an unawaited task value and
+non-actor joins fail closed without producing guest bytes. The compiler
+does not yet preserve general suspended Wasm frames, continuation locals,
+Task<T> or full Result<T,E> generic types. No general async/await claim.
+
+## Host lifecycle state machine
+
+Each actor owns a dedicated Worker and Wasm instance. Its host task exposes
+a genuine asynchronous get_done() Promise with one terminal resolution.
+States: starting -> ready -> draining -> closing -> completed, or failed /
+cancelled.
+
+- admit(i64) linearizes into a host-owned FIFO queue (32 messages maximum)
+  before any child delivery; status 0=Ok, otherwise Err(closed/full/invalid).
+  Object/class/pointer transport remains forbidden.
+- drain_and_close() closes admission, waits for child readiness, sends each
+  queued message and waits for its reply before sending the next.
+- The parent then sends {kind:close} and waits for the child's terminal
+  {kind:done,processed:N}. Both sides must agree on N. Worker termination or
+  postMessage alone never resolves the completion task.
+- Receive traps report E_ACTOR_PANIC_<code> where available. Worker/protocol/
+  clone errors, missing done, stalled handler, or cancellation reject the task.
+  Timeouts and cancellation terminate the child. Late messages cannot
+  resurrect an already terminal task or convert failure to success.
+- Actor completion is scoped to one browser program invocation: all spawned
+  workers are drained/closed before reporting successful main completion.
+  Terminal source await explicitly registers a join for its actor.
+- actor_join and actor_send cannot execute inside actor receive handlers.
+  Compiler transitive host-effect checks remain active for helper call graphs.
+
+## Evidence requirements and deferred semantics
+
+Source-owned CI executes native Rust, builds the real wasm32 compiler, runs
+native-vs-Wasm conformance, Node lifecycle/race tests and Chromium source to
+compiler Wasm to guest Wasm to dedicated actor Worker scenarios. Tests must
+prove terminal join succeeds only after child acknowledgement, and rejects on
+actor panic, cancellation, timeout, stale acknowledgments, or protocol faults.
+
+**Not implemented:** supervisor priority CONTROL path, actor-owned arena
+reclamation, separate Wasm stacks, general task suspension, resource capability
+revocation, true cross-tenant OS sandboxing, production scheduling, Java/LLVM
+or five-backend parity, public playground artifact approval. A Web Worker is
+not an OS security sandbox.
+
+Do not transfer source/compiled artifacts or publish to Pages without separate
+independent source/disclosure approval and public Pages protections, as
+recorded in https://github.com/atto-lang/atto-lang.github.io/issues/5 .
+
+## READY observer parity refinement (2026-11-20)
+
+The browser host's `ActorSession` now exposes `get_ready()` as the stable,
+shareable, zero-argument initialization observer. It returns the same Promise
+on repeated calls; `get_done()` remains an independent, stable completion
+observer. The host session keeps the actual promises internally as
+`_ready_task` and `_done_task`, **not** public `.ready`/`.done`
+property aliases. Mailbox registration and bounded admission happen during
+plain spawn, before the worker sends READY. `drain_and_close()` awaits the
+explicit readiness method internally, but callers do not have to await READY
+just to hold or later connect a typed actor reference.
+
+A startup failure, cancellation or timeout rejects `get_ready()`; late
+READY events cannot resurrect an actor that already failed. A successful
+READY remains observable even after `get_done()` has settled. READY does
+not prove any message was delivered or that the actor exited.
+
+**Stage-3.1 terminal READY source lowering (candidate; not yet CI-proven):**
+the Rust guest compiler now admits `await actor.get_ready()` **only** as the
+last statement in a `void main()`. It emits an `atto.actor_ready(i32)` Wasm
+import DISTINCT from `atto.actor_join(i32)` for terminal DONE. The host
+records the READY barrier during the synchronous Wasm call, and actually
+awaits the worker's READY acknowledgement before reporting success and
+closing the structured scope. The child worker can link the full guest
+module but always rejects attempted use of `actor_ready` within its own
+receiver execution domain (`E_ACTOR_NESTED_READY`). Invalid handles fail
+closed. Neither a synchronous import return nor host promise creation is
+mistaken for a completed Future.
+
+**Important scope limit:** there is no resumable Wasm continuation after
+terminal `await get_ready()`. Arbitrary source suspensions, `await spawn`,
+nonterminal `await get_ready()`, Future-valued expressions and continuous
+`pipe!/rpipe!` are still rejected before guest emission. Automatic
+structured-scope drain after the terminal await is distinct from READY
+itself. Tests require exact guest import identity, real Web Worker READY
+acknowledgement, startup failure and typed no-artifact negatives. The
+source/guest changes are staged, **not** a published compiler update or
+proof of all-backend actor parity.
+
+Canonical target specification:
+https://github.com/atto-lang/atto-spec/pull/148
+and 11-backend fixtures:
+https://github.com/atto-lang/atto-platform-conformance/pull/237 .
+
+## Worker incarnation fence (2026-11-20 candidate)
+
+Every `ActorSession` is assigned a monotonically increasing, parent-worker
+local incarnation ID when its child Worker is registered. The initialization
+message includes that ID; child READY, per-message DATA reply, error, and DONE
+acknowledgments repeat it. The parent compares it before affecting any
+pending future, delivery receipt or terminal outcome. The parent also includes
+it in subsequent DATA and close commands and the child rejects mismatches.
+
+The exact committed host/session and child-worker modules passed **15+6
+isolated-V8 protocol checks** covering stale READY, DATA reply and DONE
+acknowledgments. Full `node --test`, native `cargo test`, Wasm guest emission
+and actual Chromium browser guest execution on the current source head are
+**not** verified: the source CI and token-free private Actions mirror both
+failed before runner allocation. The private mirror is a test artifact, not a
+release build, and contains exact SHA-verified source blobs.
+
+A monotonic incarnation counter is an internal stale-event fence, not a
+cryptographic capability. It does not authorize communication between
+TenantVMs or replace sender/recipient capability validation, supervisor
+CONTROL authentication, generation checking on external endpoints, or
+platform sandboxing.
