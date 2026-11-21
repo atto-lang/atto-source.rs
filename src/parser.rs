@@ -69,6 +69,8 @@ const RESERVED: &[&str] = &[
     "let",
     "mut",
     "if",
+    "ifnot",
+    "unless",
     "guard",
     "then",
     "else",
@@ -256,6 +258,9 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    /// Keyword-delimited statement bodies own their surrounding fi tokens.
+    /// A nested braced if must never consume an enclosing fi as a legacy suffix.
+    active_keyword_if: u32,
     state_method: bool,
     state_binder: Option<String>,
 }
@@ -327,6 +332,7 @@ impl Parser {
             array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            active_keyword_if: 0,
             state_method: false,
             state_binder: None,
         }
@@ -1303,7 +1309,7 @@ impl Parser {
     /// Normalize name-first and return-first headers to one callable signature.
     /// The left arrow is a single lexical token and never a value operator.
     fn parse_named_callable_header(
-        &mut self, what: &'static str,
+        &mut self, what: &'static str, allow_inline_self: bool,
     ) -> R<CallableHeader> {
         let return_first = self.is_return_first_header();
         let prefixed_type = if return_first {
@@ -1322,8 +1328,26 @@ impl Parser {
             return Err(unsupported(self.pos(), "generic named callables"));
         }
         self.expect(Tok::LParen, "'('")?;
-        if what == "a method name" && self.is_word("self") {
-            return Err(unsupported(self.pos(), "explicit 'self' receivers"));
+        // A leading *standalone* self is the preexisting implicit readonly
+        // instance receiver, never an additional caller-visible value slot.
+        // Keep the value formal `self peer` separate: the second identifier
+        // means it is a typed parameter, not the receiver declaration.
+        if what == "a method name" && self.is_word("self")
+            && matches!(self.peek_at(1), Tok::Comma | Tok::RParen)
+        {
+            if !allow_inline_self {
+                return Err(unsupported(self.pos(), "static methods cannot declare self receivers"));
+            }
+            self.advance();
+            if self.eat(&Tok::Comma) && *self.peek() == Tok::RParen {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "inline self receiver needs a following value formal after ','"));
+            }
+        } else if what == "a method name" && self.is_word("mut")
+            && self.word_at(1) == Some("self")
+        {
+            // The current Method AST has no checked receiver-mutation proof.
+            return Err(unsupported(self.pos(), "mutable inline self receiver needs ownership proof"));
         }
         let params = self.parse_params()?;
         if what == "a method name" && *self.peek() == Tok::LParen {
@@ -1349,7 +1373,7 @@ impl Parser {
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
-        } = self.parse_named_callable_header("a method name")?;
+        } = self.parse_named_callable_header("a method name", !is_static)?;
         // For an explicit inferred result, the comma/end body still has a
         // checked tail return, never a silently discarded terminal expression.
         let body = self.parse_callable_body(arrow_type, colon_type, return_first,
@@ -1624,7 +1648,7 @@ impl Parser {
         };
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
-        } = self.parse_named_callable_header("a function name")?;
+        } = self.parse_named_callable_header("a function name", false)?;
         let declared_effects = self.parse_effect_clauses()?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
@@ -2091,6 +2115,15 @@ impl Parser {
         parsed
     }
 
+    fn parse_if_stmts_until(&mut self, stops: &[&str]) -> R<Vec<Stmt>> {
+        let prior = self.active_keyword_if;
+        self.active_keyword_if = prior.checked_add(1).ok_or_else(|| Diagnostic::new(
+            self.pos(), "E_NESTING", "keyword-delimited conditional nesting overflow"))?;
+        let parsed = self.parse_stmts_until(stops);
+        self.active_keyword_if = prior;
+        parsed
+    }
+
     fn parse_loop_body(&mut self) -> R<Vec<Stmt>> {
         if *self.peek() == Tok::LBrace {
             self.parse_block()
@@ -2241,7 +2274,11 @@ impl Parser {
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
-            Some("if") => self.parse_if(),
+            Some("if" | "ifnot" | "unless") => self.parse_if(false),
+            Some("do") if matches!(self.word_at(1), Some("if" | "ifnot" | "unless")) => {
+                self.advance();
+                self.parse_if(true)
+            }
             Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
@@ -2669,10 +2706,30 @@ impl Parser {
         })
     }
 
-    fn parse_if(&mut self) -> R<Stmt> {
+    fn parse_if(&mut self, procedural: bool) -> R<Stmt> {
         let pos = self.pos();
-        self.expect_word("if")?;
-        let cond = self.parse_cond_head()?;
+        let negated = matches!(self.word_at(0), Some("ifnot" | "unless"));
+        // The imperative do-form is explicit for newly introduced keywords.
+        // Legacy bare keyword-delimited 'if' remains supported for migration.
+        if !matches!(self.word_at(0), Some("if" | "ifnot" | "unless")) {
+            return Err(self.expected("'if', 'ifnot' or 'unless'"));
+        }
+        self.advance();
+        let predicate = self.parse_cond_head()?;
+        let cond = if negated {
+            Expr { kind: ExprKind::Unary(UnOp::Not, Box::new(predicate)), pos }
+        } else {
+            predicate
+        };
+        let braced = *self.peek() == Tok::LBrace;
+        if braced && procedural {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "'do' conditionals use 'then ... fi'; remove 'do' to use braces"));
+        }
+        if !braced && negated && !procedural {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "imperative negated conditions require 'do ifnot/unless ... then ... fi' or braces"));
+        }
         let mut arms = Vec::new();
         let mut otherwise = None;
         if *self.peek() == Tok::LBrace {
@@ -2702,7 +2759,7 @@ impl Parser {
                 return Err(self.expected("'then'"));
             }
             let stops = ["elif", "elseif", "else", "fi"];
-            arms.push((cond, self.parse_stmts_until(&stops)?));
+            arms.push((cond, self.parse_if_stmts_until(&stops)?));
             loop {
                 let is_elif = self.eat_word("elif")
                     || self.eat_word("elseif")
@@ -2718,16 +2775,16 @@ impl Parser {
                     if !(self.eat_word("then") || self.eat_word("do")) {
                         return Err(self.expected("'then'"));
                     }
-                    arms.push((c, self.parse_stmts_until(&stops)?));
+                    arms.push((c, self.parse_if_stmts_until(&stops)?));
                 } else if self.eat_word("else") {
-                    otherwise = Some(self.parse_stmts_until(&["fi"])?);
+                    otherwise = Some(self.parse_if_stmts_until(&["fi"])?);
                     break;
                 } else {
                     break;
                 }
             }
         }
-        if !self.eat_word("fi") {
+        if !braced && !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
@@ -2739,9 +2796,68 @@ impl Parser {
                 ),
             ));
         }
+        // Only historical positive 'if' accepts a trailing fi after braces
+        // for compatibility. The canonical braced negated forms never need fi,
+        // and an outer keyword-delimited if must retain its own fi token.
+        if braced && !negated && !procedural && self.active_keyword_if == 0 {
+            self.eat_word("fi");
+        }
         // each elif arm nests one level deeper in the lowered if/else chain
         self.height -= arms.len() as u32 - 1;
         Ok(Stmt::If { arms, otherwise, pos })
+    }
+
+    /// The initial negated head is lowered once to the ordinary lazy ternary.
+    /// Subsequent elif predicates are not inverted. A value conditional always
+    /// requires a typed else arm; only one expression per arm is admitted.
+    fn parse_if_expr(&mut self) -> R<Expr> {
+        let pos = self.pos();
+        let negated = matches!(self.word_at(0), Some("ifnot" | "unless"));
+        if !matches!(self.word_at(0), Some("if" | "ifnot" | "unless")) {
+            return Err(self.expected("a value conditional"));
+        }
+        self.advance();
+        let mut arms = Vec::new();
+        loop {
+            let predicate = self.parse_cond_head()?;
+            let condition = if negated && arms.is_empty() {
+                Expr { kind: ExprKind::Unary(UnOp::Not, Box::new(predicate)), pos }
+            } else {
+                predicate
+            };
+            self.expect_word("then")?;
+            if matches!(self.word_at(0), Some("else" | "elif" | "elseif" | "fi")) {
+                return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                    "value conditional arm requires an expression"));
+            }
+            let value = self.parse_expr()?;
+            arms.push((condition, value));
+            if !(self.eat_word("elif") || self.eat_word("elseif")) { break; }
+            if arms.len() >= 128 {
+                return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                    "value conditional exceeds 128 arms"));
+            }
+            self.grow(1)?;
+        }
+        if !self.eat_word("else") {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "value conditional requires an else expression"));
+        }
+        if self.is_word("fi") {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "value conditional else arm requires an expression"));
+        }
+        let mut value = self.parse_expr()?;
+        self.expect_word("fi")?;
+        let height_links = arms.len() as u32 - 1;
+        for (condition, first) in arms.into_iter().rev() {
+            value = Expr {
+                kind: ExprKind::Ternary(Box::new(condition), Box::new(first), Box::new(value)),
+                pos,
+            };
+        }
+        self.height -= height_links;
+        Ok(value)
     }
 
     /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
@@ -3909,6 +4025,7 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "if" | "ifnot" | "unless" => return self.parse_if_expr(),
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }

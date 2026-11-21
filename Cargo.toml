@@ -23,3 +23,9 @@ strip = true
 [[bin]]
 name = "attoc"
 path = "src/bin/attoc.rs"
+
+# Keep conditional grammar conformance in the canonical browser Cargo suite
+# after PR #448 disables implicit integration test discovery.
+[[test]]
+name = "ifnot_unless_guest"
+path = "tests/ifnot_unless_guest.rs"
