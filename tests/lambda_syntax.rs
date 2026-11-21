@@ -190,6 +190,6 @@ fn ignored_placeholder_formals_preserve_arity_without_binding_a_name() {
         return callback(1, 2);
     }";
     let first = atto_compiler::compile(valid).expect("ignored parameters must lower safely");
-    assert!(first.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(first.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(first, atto_compiler::compile(valid).unwrap());
 }
