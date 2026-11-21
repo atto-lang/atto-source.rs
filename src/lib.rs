@@ -54,6 +54,8 @@ pub mod shape_lower;
 pub mod value_class_admission;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
+/// Fail-closed owned Dyn<I> monomorphic specialization; no polymorphic ABI.
+pub mod dyn_lower;
 /// Source-located actor/struct conformance admission; never an executable ABI.
 pub mod nominal_contract_admission;
 /// Checked actor-local interface receiver lowering; never external ActorRef dispatch.
@@ -246,7 +248,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     collection_layout::reject_unlowered(&visibility.tokens)?;
     let lowered_modules = module_lower::lower_with_manifest(visibility.tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(
-        nominal_lower::lower(lowered_modules.tokens)?)?)?)?;
+        nominal_lower::lower(dyn_lower::lower(lowered_modules.tokens)?)?)?)?)?;
     // Only the checked, bounded Copy-scalar Tuple profile can reach guest
     // lowering. Non-scalar tuple graphs/borrows fail closed before parser.
     let toks = tuple_binding_lower::lower(toks)?;
