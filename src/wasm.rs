@@ -148,6 +148,8 @@ struct Layout {
     catch_depth: Option<u32>,
     /// Module-private escalated-failure tag (index 1) exists.
     raise_tag: bool,
+    /// Per-direct-Error-subclass private EH tags (indices 2+n).
+    nominal_raises: Vec<u32>,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -442,6 +444,14 @@ impl Emit<'_> {
                 self.i32c(1);
                 self.set(kind);
             }
+            for (ordinal, _) in self.l.nominal_raises.iter().enumerate() {
+                self.op(0x07); // catch private nominal exception tag
+                uleb(&mut self.code, 2 + ordinal as u64);
+                self.landing();
+                self.set(msg); // owned Foo pointer widened to i64
+                self.i32c((2 + ordinal) as i32);
+                self.set(kind);
+            }
             self.close();
             self.depth_restore(saved);
             self.run_defers(&defers);
@@ -472,8 +482,22 @@ impl Emit<'_> {
                     self.close();
                 }
             }
+            // Delegated recoveries preserve the exact Foo tag and owned
+            // exception pointer; generic Error cannot impersonate a Foo.
+            for (ordinal, _) in self.l.nominal_raises.iter().enumerate() {
+                self.get(kind);
+                self.i32c((2 + ordinal) as i32);
+                self.op(0x46); // i32.eq
+                self.open(0x04, 0x40, Frame::Other);
+                self.get(msg);
+                self.op(0x08);
+                uleb(&mut self.code, 2 + ordinal as u64);
+                self.close();
+            }
             if self.l.raise_tag {
                 self.get(kind);
+                self.i32c(1);
+                self.op(0x46); // only generic raise tag 1
                 self.open(0x04, 0x40, Frame::Other);
                 self.get(msg);
                 self.op(0x08);
@@ -584,6 +608,18 @@ impl Emit<'_> {
                 self.expr(message);
                 self.op(0x08); // throw escalated tag 1: never matched by catch/trap
                 uleb(&mut self.code, 1);
+            }
+            TStmt::RaiseNominal { obj, class_index } => {
+                // The exception carries the owned object's handle, not its
+                // name or a forged Error string. This field-free profile
+                // never crosses actor/worker memories.
+                let ordinal = self.l.nominal_raises.iter()
+                    .position(|index| index == class_index)
+                    .expect("checked Error subclass tag");
+                self.expr(obj);
+                self.op(0xAD); // i64.extend_i32_u
+                self.op(0x08); // throw module-private Foo tag
+                uleb(&mut self.code, 2 + ordinal as u64);
             }
             TStmt::UnwindFrame { .. } => {}
             TStmt::Defer { flag, args, .. } => {
@@ -830,6 +866,23 @@ impl Emit<'_> {
                 }
             }
             TExpr::EnumVal(i) => self.i32c(*i as i32),
+            TExpr::ErrorIsType { kind_slot, tag } => {
+                self.get(*kind_slot);
+                self.i32c(*tag as i32);
+                self.op(0x46); // i32.eq against trusted private tag
+            }
+            TExpr::ErrorMessage { kind_slot, message_slot } => {
+                // Foo tags 2+n carry object handles, not offset/length strings.
+                // Field-free subclasses inherit an empty message for now.
+                self.get(*kind_slot);
+                self.i32c(2);
+                self.op(0x4F); // i32.ge_u
+                self.open(0x04, I64, Frame::Other);
+                self.i64c(0);
+                self.op(0x05);
+                self.get(*message_slot);
+                self.close();
+            }
             TExpr::Trap { value, value_tmp, some_tmp, none_tmp } => {
                 // The only caught signal is our private ordinary-throw tag.
                 // WebAssembly engine traps, arithmetic panic, cancellation,
@@ -1449,6 +1502,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())
         ),
         raise_tag: p.raise_tag,
+        nominal_raises: p.nominal_raises.clone(),
     };
     let mut types = Types(Vec::new());
 
@@ -1655,11 +1709,13 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
 
     if let Some(tag_ty) = guest_error_tag_type {
-        // Legacy WebAssembly EH: section 13 is ordered between memory (5)
-        // and globals (6). One private tag: (i64 error_message) -> ().
-        // Tag 1 (same signature) is the escalated `raise` failure.
-        let count = 1 + u8::from(p.raise_tag);
-        let mut tags = vec![count];
+        // Tag 0 ordinary throw; tag 1 generic raise; 2+n nominal Foo.
+        // All use i64 payloads; Foo has an owned object handle, not a string.
+        // No host or external module can forge these private tag identities.
+        let count = 1 + usize::from(p.raise_tag || !p.nominal_raises.is_empty())
+            + p.nominal_raises.len();
+        let mut tags = Vec::new();
+        uleb(&mut tags, count as u64);
         for _ in 0..count {
             tags.push(0); // attribute=exception
             uleb(&mut tags, tag_ty as u64);
