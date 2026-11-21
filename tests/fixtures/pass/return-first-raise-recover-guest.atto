@@ -1,0 +1,19 @@
+// expect-exit: 42
+// Triggered raise! must reach an eligible recover, retaining raise identity.
+fnc int <- risky(int value)
+raises Error ::
+  if value > 3 then
+    raise! Error("too large");
+  fi
+  return value * 2;
+end
+
+pub fnc main(): int raises(Error) {
+  recover (|int seed| -> |err, cursor| -> {
+    if err.is_raise then
+      return seed + 1;
+    fi
+    return 0;
+  })(41);
+  return risky(4);
+}
