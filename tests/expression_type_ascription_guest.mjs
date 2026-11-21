@@ -14,13 +14,16 @@ const positives = [
   ['return (40 + 2) as int;', 42n],
   ['return (true ? 42 : 7) as int;', 42n],
   ['return true ? (42 : int) : 7;', 42n],
+  ['val converted = 42 as float; if converted eq 42.0 then return 42; fi return 0;', 42n],
+  ['val converted = (40 + 2) as float; if converted eq 42.0 then return 42; fi return 0;', 42n],
   ['val x = (40 + 2) : int; return x;', 42n],
   ['val x = (40 + 2) as int; return x;', 42n],
 ];
 const negatives = [
   ['return 42 : bool;', 'E_TYPE'],
   ['return 42 as bool;', 'E_UNSUPPORTED_CAST'],
-  ['return 42 as float;', 'E_UNSUPPORTED_CAST'],
+  ['return 42 : float;', 'E_TYPE'],
+  ['return 42.0 as int;', 'E_UNSUPPORTED_CAST'],
 ];
 const work = await mkdtemp(join(tmpdir(), 'atto-ascription-'));
 try {
