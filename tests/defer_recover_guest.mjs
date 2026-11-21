@@ -13,6 +13,30 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
   {
+    name: 'canonical throw bang typed Error reaches catch and finally',
+    src: `fnc fail(): int throws(Error) { throw! Error("bang throw"); }
+      pub fnc main(): int {
+        try { return fail(); }
+        catch (Error e) { stdio.println("caught bang"); return 7; }
+        finally { stdio.println("finally"); }
+      }`,
+    stdout: 'caught bang\\nfinally\\n', value: 7n,
+  },
+  {
+    name: 'canonical raise bang bypasses catch and reaches recover',
+    src: `fnc fail(): int raises(Error) { raise! Error("bang raise"); }
+      fnc f(): int {
+        recover |err, cursor| -> {
+          stdio.println(err.message);
+          return 9;
+        };
+        try { return fail(); }
+        catch (Error e) { stdio.println("UNEXPECTED catch"); return -1; }
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'bang raise\\n', value: 9n,
+  },
+  {
     name: 'annotated caught throw is safe in defer and preserves normal result',
     src: `fnc fail(): int throws(Error) { throw Error("inner"); }
       fnc safe(): int raises(Error) {
