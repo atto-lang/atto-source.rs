@@ -102,6 +102,8 @@ jobs:
           rustup toolchain install 1.96.1 --profile minimal
           rustup component add clippy rustfmt --toolchain 1.96.1
           rustc +1.96.1 --version
+      - name: Focused explicit-pipe lambda parser and deterministic Wasm regressions
+        run: cargo test --locked --test lambda_syntax
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
       - name: Build actual Rust wasm32 compiler within public 1 MiB artifact budget

@@ -1,5 +1,9 @@
 //! Lambda parser acceptance and fail-closed backend contract.
-use atto_compiler::{ast::{ExprKind, LambdaBody, Stmt}, lexer, parser::Parser};
+use atto_compiler::{
+    ast::{ExprKind, LambdaBody, Stmt},
+    lexer,
+    parser::Parser,
+};
 
 fn parse(source: &str) -> atto_compiler::ast::Program {
     Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap()
@@ -22,18 +26,30 @@ fn colon_annotated_rx_pipeline_and_arrays_parse() {
         }
     "#;
     let p = parse(source);
-    let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else { panic!("expected binding") };
-    let ExprKind::MethodCall(base, method, _) = &init.kind else { panic!("expected take") };
+    let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else {
+        panic!("expected binding")
+    };
+    let ExprKind::MethodCall(base, method, _) = &init.kind else {
+        panic!("expected take")
+    };
     assert_eq!(method, "take");
-    let ExprKind::MethodCall(base, method, args) = &base.kind else { panic!("expected map") };
+    let ExprKind::MethodCall(base, method, args) = &base.kind else {
+        panic!("expected map")
+    };
     assert_eq!(method, "map");
-    let ExprKind::Lambda { params, return_type, body } = &args[0].kind else { panic!("expected lambda") };
+    let ExprKind::Lambda { params, return_type, body } = &args[0].kind else {
+        panic!("expected lambda")
+    };
     assert_eq!(params, &["n"]);
     assert_eq!(return_type.as_deref(), Some("int"));
     assert!(matches!(body, LambdaBody::Statement(_)));
-    let ExprKind::MethodCall(_, method, args) = &base.kind else { panic!("expected filter") };
+    let ExprKind::MethodCall(_, method, args) = &base.kind else {
+        panic!("expected filter")
+    };
     assert_eq!(method, "filter");
-    let ExprKind::Lambda { return_type, .. } = &args[0].kind else { panic!("expected lambda") };
+    let ExprKind::Lambda { return_type, .. } = &args[0].kind else {
+        panic!("expected lambda")
+    };
     assert_eq!(return_type.as_deref(), Some("bool"));
 }
 
@@ -79,4 +95,80 @@ fn parsed_but_unlowered_lambda_fails_closed() {
     let err = atto_compiler::compile(src).unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED");
     assert!(err.message.contains("lambdas"), "{err}");
+}
+
+#[test]
+fn lambda_expression_heads_must_be_pipe_delimited() {
+    // This is parser-only evidence; closure execution is checked separately.
+    // Keep valid explicit parameter pipes while rejecting all bare heads.
+    for (expr, count) in [
+        ("|_| : int -> 5", 1usize),
+        ("|| : int -> 5", 0usize),
+        ("|x| : int -> x + 5", 1usize),
+        ("|x| -> x + 5", 1usize),
+        ("|left,right| : int -> left + right", 2usize),
+    ] {
+        let p = parse(&main_with(expr));
+        let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else {
+            panic!("expected lambda binding: {expr}");
+        };
+        let ExprKind::Lambda { params, .. } = &init.kind else {
+            panic!("expected lambda AST: {expr}");
+        };
+        assert_eq!(params.len(), count, "{expr}");
+    }
+
+    for expr in [
+        "_ : int -> 5",
+        "_ -> 5",
+        "x : int -> x + 5",
+        "x -> x + 5",
+        "values.map(_ : int -> 5)",
+        "values.map(_ -> 5)",
+        "_ => int -> 5",
+        "values.map(_ => int -> 5)",
+    ] {
+        let src = main_with(expr);
+        let parsed = Parser::new(lexer::lex(&src).unwrap()).parse_program();
+        assert!(parsed.is_err(), "bare lambda head was accepted: {expr}");
+    }
+}
+
+#[test]
+fn explicit_pipe_lambdas_compile_to_real_wasm_and_recover_after_rejection() {
+    // Keep the proven browser ABI: one direct lambda per lexical function,
+    // and a scalar literal on the first direct call for inferred parameters.
+    // The public playground executes this compiled source as an actual guest.
+    let valid = r#"
+        fnc five_discarding_one(): int {
+            val constant = |_| : int -> 5;
+            return constant(99);
+        }
+        fnc seven_from_no_args(): int {
+            val constant = || -> 7;
+            return constant();
+        }
+        pub fnc main(): int {
+            val twice = |n| : int -> n * 2;
+            return five_discarding_one() + seven_from_no_args() + twice(15);
+        }
+    "#;
+    let first = atto_compiler::compile(valid).expect("all three explicit pipe heads must lower");
+    assert!(first.starts_with(b"\0asm\x01\0\0\0"), "real Wasm module required");
+    assert_eq!(first, atto_compiler::compile(valid).unwrap(), "Wasm must be reproducible");
+
+    for forbidden in ["_ : int -> 5", "_ -> 5", "value : int -> value + 5", "value -> value + 5"] {
+        let invalid = format!("pub fnc main(): int {{ val fnc_value = {forbidden}; return 42; }}");
+        let err = atto_compiler::compile(&invalid).expect_err("delimiter-free function expressions cannot emit Wasm");
+        assert!(err.code.starts_with("E_"), "structured error: {forbidden}");
+        assert!(
+            err.pos.line > 0 && err.pos.col > 0,
+            "diagnostic location must be populated: {forbidden}"
+        );
+        assert_eq!(
+            atto_compiler::compile(valid).unwrap(),
+            first,
+            "one rejected source must not corrupt the next valid compiler call"
+        );
+    }
 }
