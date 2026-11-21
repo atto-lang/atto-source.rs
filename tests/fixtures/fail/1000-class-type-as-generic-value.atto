@@ -1,0 +1,9 @@
+// expect-error: E_TYPE_NOT_VALUE
+// java: rejects
+define class Parcel as end
+
+fnc identity<T>(T item): T { return item; }
+pub fnc main(): int {
+  val erased = identity(Parcel);
+  return 0;
+}
