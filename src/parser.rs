@@ -210,6 +210,7 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
 fn constant_map_key(value: &Expr) -> Option<String> {
     match &value.kind {
         ExprKind::Str(s) => Some(format!("str:{s}")),
+        ExprKind::Symbol(s) => Some(format!("symbol:{s}")),
         ExprKind::Bool(b) => Some(format!("bool:{b}")),
         ExprKind::Int(Some(v)) => Some(format!("int:{v}")),
         ExprKind::Int(None) => Some("int:9223372036854775808".into()),
@@ -2697,10 +2698,33 @@ impl Parser {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
-        let r = self.parse_ternary();
+        let result = (|| {
+            let left = self.parse_ternary()?;
+            if *self.peek() == Tok::ColonColon {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "'::' is a callable-header separator, not a RecordEntry operator"));
+            }
+            if !self.eat(&Tok::FatArrow) {
+                return Ok(left);
+            }
+            // Outside brace-map key position, => constructs a nominal Entry.
+            // Bracket literals ALWAYS retain Array/List meaning, including
+            // the case where the array/list is the Map/Entry key.
+            // The checked Hash/Eq gate rejects unsupported key collections.
+            let key = left;
+            self.grow(1)?;
+            let val = self.parse_ternary()?;
+            self.height -= 1;
+            if *self.peek() == Tok::FatArrow {
+                return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                    "Entry arrows are non-associative; group nested Entries explicitly"));
+            }
+            let pos = key.pos;
+            Ok(Expr { kind: ExprKind::Entry(Box::new(key), Box::new(val)), pos })
+        })();
         self.cond = saved;
         self.leave();
-        r
+        result
     }
 
     fn parse_ternary(&mut self) -> R<Expr> {
@@ -3512,7 +3536,7 @@ impl Parser {
                     self.expect(Tok::Colon, "':' after quoted Map key")?;
                     Expr { kind: ExprKind::Str(decoded), pos: key_pos }
                 } else {
-                    let key = self.parse_expr()?;
+                    let key = self.parse_ternary()?;
                     if !self.eat(&Tok::FatArrow) {
                         return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
                             "expected '=>' for expression Map key"));
@@ -3563,6 +3587,10 @@ impl Parser {
             Tok::Str(s) => {
                 self.advance();
                 ExprKind::Str(s)
+            }
+            Tok::Symbol(name) => {
+                self.advance();
+                ExprKind::Symbol(name)
             }
             Tok::Float(bits) => {
                 self.advance();
@@ -3737,6 +3765,7 @@ fn describe(t: &Tok) -> String {
         Tok::Ident(s) => format!("'{s}'"),
         Tok::Int(_) => "an integer".into(),
         Tok::Str(_) => "a string".into(),
+        Tok::Symbol(_) => "a Symbol literal".into(),
         Tok::Eof => "end of input".into(),
         other => {
             let s = match other {
