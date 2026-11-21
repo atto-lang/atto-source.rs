@@ -1,6 +1,6 @@
 // v2 guest: try select does not wait, consume or advance FAIR on a miss.
 // expect-exit: 42
-// expect-stdout:
+// No stdout; empty expectation is represented by absence of the directive.
 pub suspends fnc main(): int {
   val left = Channel<int>.bounded(1);
   val right = Channel<int>.bounded(1);
