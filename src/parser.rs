@@ -10,6 +10,10 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+/// Guard the much heavier recursive lambda-type / lambda-body frames on
+/// small Rust test-worker stacks before generic parser depth is exhausted.
+const MAX_LAMBDA_TYPE_DEPTH: u32 = 48;
+const MAX_LAMBDA_NESTING: u32 = 32;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -237,6 +241,11 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
+    /// A ternary's middle arm must leave ':' to its ternary separator.
+    ascription_colon: bool,
+    /// Explicit lambda nesting is independently bounded to avoid stack
+    /// exhaustion before generic parser recursion counters can fire.
+    lambda_nesting: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
     /// Canonically interned nominal Array<T, layout=...> type parameters.
@@ -311,6 +320,8 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
+            ascription_colon: true,
+            lambda_nesting: 0,
             type_names: Vec::new(),
             array_types: Vec::new(),
             in_generator: false,
@@ -1446,6 +1457,9 @@ impl Parser {
                 ExprKind::Bool(_) => Ok(Type::Bool),
                 ExprKind::Float(_) => Ok(Type::Float),
                 ExprKind::Str(_) => Ok(Type::Str),
+                // The checker verifies the ascribed type before codegen;
+                // inferred callable returns may use the declared expectation.
+                ExprKind::Ascribe(_, ty, _) => Ok(*ty),
                 ExprKind::Var(name) => params.iter().find(|p| p.name == *name)
                     .map(|p| p.ty).ok_or_else(fail),
                 ExprKind::Unary(UnOp::Neg | UnOp::Plus, e) => {
@@ -3103,7 +3117,29 @@ impl Parser {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
-        let r = self.parse_ternary();
+        let r = (|| -> R<Expr> {
+            let mut expr = self.parse_ternary()?;
+            let mut links = 0u32;
+            loop {
+                let pos = self.pos();
+                let is_cast = if self.eat_word("as") {
+                    true
+                } else if self.ascription_colon && self.eat(&Tok::Colon) {
+                    false
+                } else {
+                    break;
+                };
+                let want = self.parse_type()?;
+                if want == Type::Void {
+                    return Err(Diagnostic::new(pos, "E_TYPE", "a value expression cannot be ascribed void"));
+                }
+                self.grow(1)?;
+                links += 1;
+                expr = Expr { kind: ExprKind::Ascribe(Box::new(expr), want, is_cast), pos };
+            }
+            self.height -= links;
+            Ok(expr)
+        })();
         self.cond = saved;
         self.leave();
         r
@@ -3145,7 +3181,14 @@ impl Parser {
             Tok::Question => {
                 let pos = self.pos();
                 self.advance();
-                let a = self.parse_expr()?;
+                // The first ':' belongs to `?:`, not an expression ascription.
+                // `as T` remains available in the middle arm; `: T` can be
+                // written inside an explicitly parenthesized subexpression.
+                let old = self.ascription_colon;
+                self.ascription_colon = false;
+                let a = self.parse_expr();
+                self.ascription_colon = old;
+                let a = a?;
                 self.expect(Tok::Colon, "':'")?;
                 self.enter()?;
                 let b = self.parse_ternary();
@@ -3303,7 +3346,9 @@ impl Parser {
                 Tok::Le => BinOp::Le,
                 Tok::Gt => BinOp::Gt,
                 Tok::Ge => BinOp::Ge,
-                Tok::Ident(s) if s == "as" || s == "matches" => return Err(unsupported(pos, &format!("'{s}'"))),
+                // `as T` is consumed by parse_expr after the complete
+                // value expression, not rejected here as a comparison.
+                Tok::Ident(s) if s == "matches" => return Err(unsupported(pos, &format!("'{s}'"))),
                 _ => break,
             };
             self.advance();
@@ -3633,6 +3678,10 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        if self.depth >= MAX_LAMBDA_TYPE_DEPTH {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda type nesting exceeds the safe compiler stack budget"));
+        }
         self.enter()?;
         let result = (|| {
             let mut name = match self.peek().clone() {
@@ -3670,6 +3719,17 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        if self.lambda_nesting >= MAX_LAMBDA_NESTING {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda expressions exceed the safe compiler stack budget"));
+        }
+        self.lambda_nesting += 1;
+        let parsed = self.parse_lambda_inner();
+        self.lambda_nesting -= 1;
+        parsed
+    }
+
+    fn parse_lambda_inner(&mut self) -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
@@ -3786,7 +3846,13 @@ impl Parser {
                 // Parenthesized *value* expressions reset the condition
                 // grammar, distinguishing (flags | mask) eq expected from the
                 // legacy unparenthesized condition separator: a | b.
-                let inner = self.parse_expr()?;
+                // Parentheses establish a new expression boundary, so a
+                // deliberate `(value : T)` remains legal even as a ternary arm.
+                let old = self.ascription_colon;
+                self.ascription_colon = true;
+                let inner = self.parse_expr();
+                self.ascription_colon = old;
+                let inner = inner?;
                 if *self.peek() == Tok::Comma {
                     return Err(unsupported(self.pos(), "tuples"));
                 }

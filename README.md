@@ -18,7 +18,7 @@ cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-typ
 ATTOC=target/release/attoc node tests/conformance.mjs
 ```
 
-The browser package explicitly enumerates **85** root Rust integration-test
+The browser package explicitly enumerates **88** root Rust integration-test
 targets. **38** legacy native/Cranelift tests under the same root `tests/`
 directory are intentionally **not** browser-package targets; their coverage
 must be separately reconciled with `native/tests/` and the native package's
