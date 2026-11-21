@@ -65,6 +65,9 @@ pub enum ReadMode {
     Nb,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanMode { Wait, Try, Nb }
+
 #[derive(Clone, Debug)]
 pub struct Arg {
     pub name: Option<String>,
@@ -134,6 +137,9 @@ pub enum Ex {
     Task(Vec<Stmt>),
     Spawn(String, Vec<Arg>),
     ReadCh(ReadMode, Box<Expr>),
+    /// A checked, atomic, one-winner channel selection from a reusable plan.
+    /// The FAIR cursor advances only when a case commits; Nb snapshots cases.
+    PlanSelect { mode: PlanMode, fair: bool, plan: Box<Expr> },
     Match(Box<Expr>, Vec<Arm>),
     /// `value is T`
     Is(Box<Expr>, TyEx),
