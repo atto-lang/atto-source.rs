@@ -69,3 +69,18 @@ fn ternary_separator_remains_distinct_from_type_ascription() {
     assert!(no.starts_with(b"\0asm"));
     assert_eq!(compile(&source("true ? 42 : bool")).unwrap_err().code, "E_SYNTAX");
 }
+
+#[test]
+fn generic_calls_and_value_match_select_do_not_publish_fake_guests() {
+    // These are language-design targets, not yet executable in the
+    // bounded browser Rust/Wasm frontend. No syntax normalization may
+    // accidentally turn them into something with unrelated semantics.
+    for src in [
+        "pub fnc main(): int { return calculate<int>(5) as int; }",
+        "pub fnc main(): int { return (match status over on _ -> 42 end) : int; }",
+        "pub fnc main(): int { return (select over when readch ch -> 42 end) as int; }",
+    ] {
+        let err = compile(src).expect_err("unsupported browser construct must fail closed");
+        assert_eq!(err.code, "E_UNSUPPORTED", "{src}: {err}");
+    }
+}
