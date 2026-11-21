@@ -4,12 +4,31 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      expected_head:
+        description: 'Exact 40-character source PR head SHA; reject drift'
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
   real-compiler:
-    runs-on: ubuntu-24.04
+    # Optional SOURCE-LOCAL runner only for an administrator-triggered dispatch.
+    # The repository administrator, not PR source, provisions the dedicated
+    # runner and sets ATTO_PRIVATE_RUST_RUNNER_LABEL to its unique label.
+    # Automatic pull_request and push jobs never choose this private runner.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && vars.ATTO_PRIVATE_RUST_RUNNER_LABEL || 'ubuntu-24.04' }}
     steps:
+      - name: Reject manual dispatch SHA drift before checking out private source
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          DISPATCH_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
@@ -62,8 +81,13 @@ jobs:
         env:
           RUST_MIN_STACK: "16777216"
         run: cargo test --locked --all-targets --verbose
+      - name: Check formatting on the entire canonical browser Cargo crate
+        run: cargo fmt --all -- --check
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Independently test the separate native Cranelift package
+        working-directory: native
+        run: cargo test --locked --all-targets --verbose
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc
