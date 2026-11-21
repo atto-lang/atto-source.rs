@@ -74,5 +74,5 @@ fn same_cli_still_emits_a_real_wasm_module_for_supported_scalar_code() {
     assert!(result.status.success(), "scalar compile failed: {result:?}");
     let wasm = std::fs::read(&output).expect("successful compile writes Wasm");
     assert!(wasm.len() >= 8, "short compiled output");
-    assert_eq!(&wasm[..4], b"\\0asm", "not a WebAssembly module");
+    assert_eq!(&wasm[..4], b"\0asm", "not a WebAssembly module");
 }
