@@ -1560,13 +1560,20 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
-    audit_cleanup_call_effects(&funcs, &p.funcs)?;
+    audit_cleanup_call_effects(&funcs, p)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
-    let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
+    let nominal_raises: Vec<u32> = p.classes.iter().enumerate()
+        .filter_map(|(i, c)| c.error_parent.then_some(i as u32)).collect();
+    if nominal_raises.len() > 128 {
+        return Err(Diagnostic::new(Pos::default(), "E_SOURCE_LIMIT",
+            "more than 128 nominal Error subclasses would exhaust the bounded guest EH tag budget"));
+    }
+    let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s|
+        matches!(s, TStmt::Raise(_) | TStmt::RaiseNominal { .. })));
     let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     Ok(TProgram {
         funcs,
@@ -1580,6 +1587,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         strings,
         guest_eh,
         raise_tag,
+        nominal_raises,
         catch_depth,
     })
 }
@@ -1612,6 +1620,7 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
     match &value.e {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_)
         | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
+        | TExpr::ErrorIsType { .. } | TExpr::ErrorMessage { .. }
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
         | TExpr::CollectionAlloc(_)
         | TExpr::Spawn(_) => EscapeEffects::default(),
@@ -1665,6 +1674,8 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
             TStmt::Throw(value) => expr_escape_effects(value, effects)
                 .union(EscapeEffects { throws: true, raises: false }),
             TStmt::Raise(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: false, raises: true }),
+            TStmt::RaiseNominal { obj, .. } => expr_escape_effects(obj, effects)
                 .union(EscapeEffects { throws: false, raises: true }),
             TStmt::CollectionStore { array: obj, value, .. } |
             TStmt::FieldSet { obj, value, .. } |
@@ -2371,6 +2382,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
+        TExpr::ErrorIsType { .. } | TExpr::ErrorMessage { .. } |
         TExpr::AdtPropagate { .. } => false,
     }
 }
@@ -2394,7 +2406,8 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
-        TStmt::Raise(_) | TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
+        TStmt::Raise(_) | TStmt::RaiseNominal { .. } |
+        TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
         TStmt::Defer { .. } | TStmt::Recover { .. } | TStmt::RecoverNext => false,
     })
 }
@@ -2415,7 +2428,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
-        TStmt::Raise(e) => any_in(e, f),
+        TStmt::Raise(e) | TStmt::RaiseNominal { obj: e, .. } => any_in(e, f),
         TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
             || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
             || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
@@ -2454,7 +2467,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
 fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Throw(_) => true,
-        TStmt::Raise(_) | TStmt::Try { .. } | TStmt::UnwindFrame { .. } => true,
+        TStmt::Raise(_) | TStmt::RaiseNominal { .. } |
+        TStmt::Try { .. } | TStmt::UnwindFrame { .. } => true,
         TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b))
             || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
         TStmt::Loop { body, update, .. } =>
@@ -2838,10 +2852,7 @@ impl<'a> FnCx<'a> {
                 let _ = pos;
                 TStmt::RecoverNext
             }
-            Stmt::Raise(error, pos) => {
-                let msg = self.guest_error_message(error, "raise", *pos)?;
-                TStmt::Raise(msg)
-            }
+            Stmt::Raise(error, pos) => self.guest_raise(error, *pos)?,
             Stmt::Try { body, catch, finally, pos } => {
                 self.unwind_frame(*pos, "try")?;
                 let saved = self.temp(Type::Bool, *pos)?;
@@ -5084,7 +5095,8 @@ pub fn check_target_actor_interface(program: &Program) -> R<()> {
 /// nested blocks: a finally block must never replace the pending outcome.
 fn exits_anywhere(body: &[TStmt]) -> bool {
     stmt_exists(body, &|s| matches!(s,
-        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Raise(_) | TStmt::RecoverNext))
+        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Raise(_) |
+        TStmt::RaiseNominal { .. } | TStmt::RecoverNext))
 }
 
 /// Whether any statement in `body` (recursively) satisfies `f`.
