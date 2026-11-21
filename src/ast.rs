@@ -190,6 +190,10 @@ pub struct ClassDecl {
     pub name: String,
     pub pos: Pos,
     pub public: bool,
+    /// Explicit nominal inheritance edge. The browser compiler currently
+    /// admits only 'extends Error' (not arbitrary class inheritance).
+    /// This identity must never be inferred from the class name.
+    pub error_parent: bool,
     /// Distinct nominal protected-state declaration, never an ordinary class.
     /// Only a restricted Worker-local scalar backend has executable lowering.
     pub state_container: bool,
@@ -259,6 +263,13 @@ pub struct DeclaredEffects {
     pub throws: bool,
     pub raises: bool,
     pub panics: bool,
+    /// None means the built-in Error; Some(i) is a declared nominal subtype
+    /// name indexed by Program::type_names. The checker validates ancestry
+    /// independently of source order, before any Wasm guest is emitted.
+    /// Runtime subtype-tag lowering is a separate required admission gate.
+    pub throws_nominal: Option<u32>,
+    pub raises_nominal: Option<u32>,
+    pub panics_nominal: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
