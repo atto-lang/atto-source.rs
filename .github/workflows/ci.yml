@@ -96,6 +96,7 @@ jobs:
         run: |
           node --check tests/ifnot_unless_guest.mjs
           node --check tests/ifnot_unless_browser_compiler.mjs
+          node --check tests/inline_self_browser_compiler.mjs
       - name: Test ifnot/unless Rust compiler grammar and fail-closed diagnostics
         run: cargo test --locked --test ifnot_unless_guest
       - name: Prove readonly inline-self arity and deterministic Wasm regression
@@ -142,6 +143,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/ifnot_unless_browser_compiler.mjs
+      - name: Execute readonly inline-self real browser compiler and native guest parity
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/inline_self_browser_compiler.mjs
       - name: Compile exact bitwise preview inside browser Wasm compiler and compare native guest bytes
         env:
           ATTOC: target/release/attoc
