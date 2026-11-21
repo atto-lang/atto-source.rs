@@ -138,3 +138,42 @@ fn callback_body_arithmetic_preserves_effect_and_type_safety() {
         assert_eq!(diag.code,code,"{src}: {diag}");
     }
 }
+
+#[test]
+fn newline_must_not_hide_a_second_callback_operation() {
+    for tail in [
+        "\n + 2",
+        "\n - 2",
+        "\n * 2",
+        "\n / 2",
+        "\n == 42",
+        "\n .value",
+        "\n (42)",
+        "\n [42]",
+    ] {
+        for effect in ["susp", "suspends"] {
+            let src = format!(
+                "pub susp fnc main(): int {{ val p=task {{return 41;}}; \
+                 return p |> {effect} |f| -> await f + 1{tail}; }}"
+            );
+            let diag = compile(&src)
+                .expect_err("newline may not silently terminate an unfinished callback");
+            assert_eq!(diag.code, "E_UNSUPPORTED", "{src}: {diag}");
+        }
+    }
+}
+
+#[test]
+fn explicit_multiline_pipeline_stage_after_arithmetic_remains_executable() {
+    let src = r#"
+fnc add_one(int n): int { return n + 1; }
+pub susp fnc main(): int {
+    val p = task { return 40; };
+    return p |> susp |f| -> await f + 1
+        |> add_one;
+}
+"#;
+    let wasm = compile(src).expect("explicit pipeline continuation is unambiguous");
+    assert!(has(&wasm, b"task_await"));
+    assert!(has(&wasm, b"cooperate"));
+}
