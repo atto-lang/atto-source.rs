@@ -1,0 +1,18 @@
+// v2 guest: selection of one ready case must not consume a losing case.
+// expect-exit: 42
+// expect-stdout: 0\n1\n
+pub suspends fnc main(): int {
+  val left = Channel<int>.bounded(1);
+  val right = Channel<int>.bounded(1);
+  writech left, 20;
+  writech right, 22;
+  val SelectPlan plan = SelectPlan.from_list([
+    SelectCase.read(left), SelectCase.read(right)
+  ]);
+  val Option<SelectResult> first = try select first from plan;
+  // The losing right case must still be readable from the *same* plan.
+  val Option<SelectResult> second = try select fair from plan;
+  stdio.println(first.unwrap().index);
+  stdio.println(second.unwrap().index);
+  return first.unwrap().value + second.unwrap().value;
+}
