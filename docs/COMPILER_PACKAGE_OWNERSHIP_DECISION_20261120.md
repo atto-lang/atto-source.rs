@@ -77,6 +77,42 @@ Verify executed steps, current source/tree SHA, binary hash/size, guest
 byte equality and execution, checked overflow, negative diagnostics
 and **no stale executable artifacts**. Restore native coverage separately.
 
+## Source-local exact-head CI admission (no source export)
+
+If hosted Actions is not admitting source-private jobs, the **same** `ci.yml`
+now supports an administrator-only operational path patterned after the
+already existing [SelectPlan #470](https://github.com/atto-lang/atto-source.rs/pull/470)
+source-local runner admission. This is an **unexecuted configuration option**,
+not proof that a runner has been provisioned or tests have passed.
+
+1. A repository administrator must approve and register a **dedicated,
+   isolated, preferably ephemeral self-hosted runner in
+   `atto-lang/atto-source.rs` itself**, with a unique private label, and
+   configure repository Actions variable `ATTO_PRIVATE_RUST_RUNNER_LABEL`
+   to exactly that label. Do not point it at a carrier in another organization.
+2. Open **Actions → Portable Atto frontend and browser Wasm conformance →
+   Run workflow**, select the exact source PR branch, and provide its
+   full **40-character current HEAD SHA** as the required `expected_head`
+   input. The job compares `expected_head` with immutable dispatch
+   `github.sha` **before checkout**; mismatch fails closed.
+3. Automatic `pull_request` and `push` jobs always use
+   `ubuntu-24.04`, never the repository-configured private runner label.
+   Checkout pins the head SHA with `persist-credentials: false` and
+   `contents: read` only. The workflow retains the exact-head tree
+   check, Cargo target inventory, Rust 1.85.1 native and wasm32 builds,
+   `cargo fmt --all -- --check`, Cargo/Clippy, native-package tests,
+   real compiler and compiled guest tests, browser E2E and receipts.
+4. Independently inspect the actual run ID, steps, exit codes, generated
+   compiler artifact, source HEAD/tree, and any required security review.
+   A failed zero-step job, a synthetic-only canary, or a run on an earlier
+   SHA is **NOT_EXECUTED**, not a release pass.
+
+The variable and runner must be provisioned by a human administrator; the
+GitHub connector cannot provision/approve runner infrastructure or enforce
+private-main branch protection. A stepful test run **alone** cannot bypass
+[#442](https://github.com/atto-lang/atto-source.rs/issues/442) or
+[#446](https://github.com/atto-lang/atto-source.rs/issues/446).
+
 ## Security/release conditions
 
 [Runner admission #440](https://github.com/atto-lang/atto-source.rs/issues/440),
