@@ -1744,7 +1744,8 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
 /// safely within cleanup; an escaping raise can never be suppressed by
 /// an ordinary catch/trap. Unreachable-code precision remains deliberately
 /// conservative until the CFG effect solver is complete.
-fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
+fn audit_cleanup_call_effects(funcs: &[TFunc], program: &Program) -> R<()> {
+    let declared = &program.funcs;
     let mut effects = vec![EscapeEffects::default(); funcs.len()];
     loop {
         let mut changed = false;
@@ -1764,15 +1765,48 @@ fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
     for (index, f) in declared.iter().enumerate() {
         let Some(contract) = f.declared_effects else { continue; };
         let actual = effects[index];
-        // A nominally narrowed declaration is not a generic Error channel.
-        // The current effect solver is channel-granular and does not yet
-        // prove that *every* transitive escaping error has subtype Foo.
-        // Fail closed whenever a narrowed channel actually escapes.
-        if (contract.throws_nominal.is_some() && actual.throws)
-            || (contract.raises_nominal.is_some() && actual.raises)
-        {
+        // This first subtype-effect proof accepts only a direct field-free
+        // Error-subclass raise or a typed call whose (possibly recursive)
+        // callee declares the exact same nominal upper bound. A bare Error
+        // raise, unknown callee, or a different subtype fails closed. The
+        // existing boolean solver still proves the throws/raises channel.
+        if contract.throws_nominal.is_some() && actual.throws {
             return Err(Diagnostic::new(f.pos, "E_EFFECT",
-                format!("function '{}' has a nominal Error effect bound but escaping exception subtype propagation is not yet verified", f.name)));
+                "nominal throws requires typed ordinary catch/EH subtype lowering"));
+        }
+        if let Some(expected_nominal) = contract.raises_nominal {
+            if actual.raises {
+                let expected_name = &program.type_names[expected_nominal as usize].0;
+                let expected_class = program.classes.iter()
+                    .position(|c| c.name == *expected_name)
+                    .expect("prevalidated Error subclass");
+                let invalid_site = stmt_exists(&funcs[index].body, &|s| match s {
+                    TStmt::Raise(_) => true,
+                    TStmt::RaiseNominal { class_index, .. } =>
+                        *class_index as usize != expected_class,
+                    _ => false,
+                });
+                let invalid_callee = any_in_stmts(&funcs[index].body, &|e| {
+                    if let TExpr::Call(callee, _) = &e.e {
+                        let idx = *callee as usize;
+                        if !effects.get(idx).is_some_and(|esc| esc.raises) {
+                            return false;
+                        }
+                        // Compiler-generated class constructors/methods have
+                        // no checked throws/raises contract in this subset.
+                        let Some(target) = declared.get(idx) else { return true; };
+                        let Some(target_nominal) = target.declared_effects
+                            .and_then(|x| x.raises_nominal) else { return true; };
+                        let Some((target_name, _)) = program.type_names.get(target_nominal as usize)
+                            else { return true; };
+                        target_name != expected_name
+                    } else { false }
+                });
+                if invalid_site || invalid_callee {
+                    return Err(Diagnostic::new(f.pos, "E_EFFECT",
+                        format!("function '{}' declares raises {} but an escaping raise has another or unverified nominal subtype", f.name, expected_name)));
+                }
+            }
         }
         if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
             let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
@@ -2311,7 +2345,7 @@ fn body_check(
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
-        TStmt::Raise(_) | TStmt::RecoverNext => true,
+        TStmt::Raise(_) | TStmt::RaiseNominal { .. } | TStmt::RecoverNext => true,
         TStmt::Try { body, catch, finally, .. } =>
             finally.as_ref().is_some_and(|f| returns(f))
                 || (returns(body) && catch.as_ref().is_none_or(|c| returns(c))),
