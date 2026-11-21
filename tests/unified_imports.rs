@@ -215,3 +215,43 @@ fn canonical_pkg_imports_remain_unlinked_in_executable_relative_file_compiler() 
         assert_eq!(failure.code, "E_UNSUPPORTED", "{failure}");
     }
 }
+
+
+#[test]
+fn canonical_atto_libraries_must_not_load_from_guest_filesystem() {
+    use atto_compiler::compile_with_imports;
+    use std::path::Path;
+
+    for spec in [
+        "atto.core/numeric",
+        "atto.core/numeric.atto",
+        "atto.alloc/byte_region",
+        "atto.std/fs",
+        "atto.runtime.actor",
+        "./atto.core/numeric.atto",
+        "../atto.std/fs.atto",
+        "./vendor/atto.alloc/byte_region.atto",
+    ] {
+        let src = format!(
+            "import * as library from \"{spec}\"; pub fnc main(): int {{ return 0; }}"
+        );
+        let mut loaded = false;
+        let err = compile_with_imports(&src, Path::new("project/main.atto"), |_| {
+            loaded = true;
+            panic!("reserved library names must be denied before host file I/O")
+        })
+        .expect_err("unsupported library/profile must not emit Wasm");
+        assert_eq!(err.code, "E_STDLIB_UNLINKED", "{spec}: {err}");
+        assert!(!loaded, "{spec} touched the external source loader");
+    }
+
+    // The normal one-hop local source import remains a separate capability,
+    // not a blanket ban on every relative file import.
+    let regular = r#"import * as helpers from "./helpers.atto"; pub fnc main(): int { return helpers.answer(); }"#;
+    let mut called = false;
+    let _ = compile_with_imports(regular, Path::new("project/main.atto"), |_| {
+        called = true;
+        Ok("pub fnc answer(): int { return 42; }".to_string())
+    });
+    assert!(called, "ordinary relative source import should still reach the loader");
+}
