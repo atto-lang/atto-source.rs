@@ -36,6 +36,8 @@ pub struct TypedActor {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedReceiver {
     pub actor: usize,
+    /// Lexical source name, not a dispatch, ownership, or ABI distinction.
+    pub binding: String,
     pub method: String,
     pub arity: usize,
     pub params: Vec<TypedParam>,
@@ -116,7 +118,7 @@ impl TypedActorModule {
             // them. Preserve the distinct unsupported-type diagnostic rather
             // than misreporting an already-known family as unknown.
             _ if name.starts_with("Option<") || name.starts_with("Result<")
-                || name.starts_with("Generator<") =>
+                || name.starts_with("Generator<") || name.starts_with("ActorMail<") =>
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                     format!("generic receiver signature type '{name}' is not supported"))),
             _ => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE",
@@ -125,6 +127,12 @@ impl TypedActorModule {
     }
 
     fn lower_one(&self, h: &ReceiverHeader) -> Result<TypedReceiver, Diagnostic> {
+        // A plain mutable bit cannot represent field-specific write rights.
+        // Reject instead of erasing the footprint in an executable typed ABI.
+        if h.state_write.is_some() {
+            return Err(Diagnostic::new(h.pos, "E_UNSUPPORTED",
+                "projected actor-state receiver requires typed field and effect proofs"));
+        }
         let actor = self.actor_index(&h.owner, h.pos)?;
         let mut params = Vec::with_capacity(h.params.len());
         for p in &h.params {
@@ -139,7 +147,7 @@ impl TypedActorModule {
             return Err(type_error(h.pos, "internal receiver arity mismatch"));
         }
         Ok(TypedReceiver {
-            actor, method: h.name.clone(), arity: params.len(), params, returns,
+            actor, binding: h.binding.clone(), method: h.name.clone(), arity: params.len(), params, returns,
             mutable: h.mutable, public: h.public, pos: h.pos,
             body_lowered: false,
         })

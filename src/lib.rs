@@ -72,6 +72,13 @@ pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
 pub mod tuple_ownership_ir;
 pub mod target_typed;
+/// Restricted canonical actor-state field and sequential live-loan oracle;
+/// not executable guest admission or CFG/NLL verification.
+pub mod target_state_effects;
+/// Restricted source-grounded flat actor-state guard MIR export, never guest admission.
+pub mod actor_state_mir_v0;
+/// Source-derived fixed-diamond CFG, explicitly not full typed MIR.
+pub mod actor_state_cfg_v1;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;
@@ -296,6 +303,10 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     }
     let program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
+        // Field projections must match a real parsed concrete actor schema.
+        // This is an early fail-closed preflight only. Guest lowering still
+        // requires typed body/effect and CFG lifetime proofs.
+        let _ = target_state_effects::validate_source_actor_state_projections(&headers)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
             // receiver headers into equivalent in-class method tokens, then

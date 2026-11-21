@@ -1,0 +1,12 @@
+// Host-only bounded source-bound guard MIR fixture. NOT an executable guest.
+declare actor Meter;
+define actor Meter as
+    let int counter = 0;
+    let int xyz = 0;
+end
+mtd (Meter mut this.state.counter) update(): void {
+    this.handle_state(critical-write |s| -> {
+        s.counter += 1;
+        s.xyz;
+    });
+}

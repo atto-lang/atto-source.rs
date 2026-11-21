@@ -1,0 +1,15 @@
+// Bounded diamond CFG V1 host oracle only; no actor guest lowering.
+declare actor Meter;
+define actor Meter as
+    let int counter = 0;
+    let int xyz = 0;
+end
+mtd (Meter mut this.state.{counter, xyz}) update(): void {
+    this.handle_state(critical-write |s| -> {
+        if true then
+            s.counter += 1;
+        else
+            s.xyz = 2;
+        fi
+    });
+}

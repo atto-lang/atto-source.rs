@@ -684,6 +684,66 @@ impl Emit<'_> {
         self.close();
     }
 
+    /// Emit left-associative typed operators without recursive descent
+    /// through a 250-link left spine. Operations remain checked and eager,
+    /// emitted in identical source order (no tree reassociation).
+    fn emit_binary_chain(&mut self, source: &TE) {
+        let mut spine = Vec::new();
+        let mut base = source;
+        while let TExpr::Bin(op, left, right) = &base.e {
+            spine.push((op, left.ty, right.as_ref()));
+            base = left.as_ref();
+        }
+        self.expr(base);
+        for (op, left_ty, right) in spine.into_iter().rev() {
+            self.expr(right);
+            self.emit_binary_op(op, left_ty);
+        }
+    }
+
+    fn emit_binary_op(&mut self, op: &BinOp, left_ty: Type) {
+                let int = left_ty == Type::Int;
+                if left_ty == Type::Float {
+                    self.op(match op {
+                        BinOp::Add => 0xA0,
+                        BinOp::Sub => 0xA1,
+                        BinOp::Mul => 0xA2,
+                        BinOp::Div => 0xA3,
+                        BinOp::Eq => 0x61,
+                        BinOp::Ne => 0x62,
+                        BinOp::Lt => 0x63,
+                        BinOp::Gt => 0x64,
+                        BinOp::Le => 0x65,
+                        BinOp::Ge => 0x66,
+                        BinOp::And | BinOp::Or |
+                        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                        BinOp::Shl | BinOp::LShr | BinOp::AShr =>
+                            unreachable!("bitwise operations require int"),
+                    });
+                    return;
+                }
+                match op {
+                    BinOp::Add => self.call(self.l.helper(H_ADD)),
+                    BinOp::Sub => self.call(self.l.helper(H_SUB)),
+                    BinOp::Mul => self.call(self.l.helper(H_MUL)),
+                    BinOp::BitAnd => self.op(0x83), // i64.and
+                    BinOp::BitOr => self.op(0x84),  // i64.or
+                    BinOp::BitXor => self.op(0x85), // i64.xor
+                    BinOp::Shl => self.op(0x86),    // i64.shl (count mod 64)
+                    BinOp::AShr => self.op(0x87),   // i64.shr_s
+                    BinOp::LShr => self.op(0x88),   // i64.shr_u
+                    BinOp::And => self.op(0x71), // i32.and
+                    BinOp::Or => self.op(0x72),  // i32.or
+                    BinOp::Lt => self.op(0x53),
+                    BinOp::Le => self.op(0x57),
+                    BinOp::Gt => self.op(0x55),
+                    BinOp::Ge => self.op(0x59),
+                    BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
+                    BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
+                    BinOp::Div => unreachable!("division not admitted by checker"),
+                }
+    }
+
     fn expr(&mut self, v: &TE) {
         match &v.e {
             TExpr::I64(n) => self.i64c(*n),
@@ -738,52 +798,7 @@ impl Emit<'_> {
                 self.expr(a);
                 self.op(0x45);
             }
-            TExpr::Bin(op, a, b) => {
-                // Canonical AttoLang conditions are eager: both operands
-                // execute in source order even when the left decides truth.
-                self.expr(a);
-                self.expr(b);
-                let int = a.ty == Type::Int;
-                if a.ty == Type::Float {
-                    self.op(match op {
-                        BinOp::Add => 0xA0,
-                        BinOp::Sub => 0xA1,
-                        BinOp::Mul => 0xA2,
-                        BinOp::Div => 0xA3,
-                        BinOp::Eq => 0x61,
-                        BinOp::Ne => 0x62,
-                        BinOp::Lt => 0x63,
-                        BinOp::Gt => 0x64,
-                        BinOp::Le => 0x65,
-                        BinOp::Ge => 0x66,
-                        BinOp::And | BinOp::Or |
-                        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
-                        BinOp::Shl | BinOp::LShr | BinOp::AShr =>
-                            unreachable!("bitwise operations require int"),
-                    });
-                    return;
-                }
-                match op {
-                    BinOp::Add => self.call(self.l.helper(H_ADD)),
-                    BinOp::Sub => self.call(self.l.helper(H_SUB)),
-                    BinOp::Mul => self.call(self.l.helper(H_MUL)),
-                    BinOp::BitAnd => self.op(0x83), // i64.and
-                    BinOp::BitOr => self.op(0x84),  // i64.or
-                    BinOp::BitXor => self.op(0x85), // i64.xor
-                    BinOp::Shl => self.op(0x86),    // i64.shl (count mod 64)
-                    BinOp::AShr => self.op(0x87),   // i64.shr_s
-                    BinOp::LShr => self.op(0x88),   // i64.shr_u
-                    BinOp::And => self.op(0x71), // i32.and
-                    BinOp::Or => self.op(0x72),  // i32.or
-                    BinOp::Lt => self.op(0x53),
-                    BinOp::Le => self.op(0x57),
-                    BinOp::Gt => self.op(0x55),
-                    BinOp::Ge => self.op(0x59),
-                    BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
-                    BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                    BinOp::Div => unreachable!("division not admitted by checker"),
-                }
-            }
+            TExpr::Bin(_, _, _) => self.emit_binary_chain(v),
             TExpr::Ternary(c, a, b) => {
                 self.expr(c);
                 self.open(0x04, vt(v.ty).expect("ternary value type"), Frame::Other);

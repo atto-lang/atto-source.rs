@@ -13,19 +13,44 @@ pub struct ReceiverParam {
     pub pos: Pos,
 }
 
+/// A declaration-only permission footprint for sealed actor state. The
+/// syntax frontend does not authenticate field layout, effects or guest ABI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReceiverStateWrite {
+    Whole,
+    Fields(Vec<String>),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceiverHeader {
     pub owner: String,
+    /// Source-local receiver name; unrelated to actor identity, dispatch or ABI.
+    pub binding: String,
     pub name: String,
     pub arity: usize,
     pub params: Vec<ReceiverParam>,
     pub return_type: String,
     pub mutable: bool,
+    /// None for legacy/readonly receivers; Some for projected actor-state rights.
+    /// Must never be silently erased when linking or compiling method bodies.
+    pub state_write: Option<ReceiverStateWrite>,
     pub public: bool,
     pub pos: Pos,
 }
 /// Source token offsets for an out-of-line receiver, retained so executable
 /// class mtd declarations can be lowered by the production method parser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateFieldUse {
+    pub owner: String,
+    pub method: String,
+    pub arity: usize,
+    pub field: String,
+    pub write: bool,
+    pub pos: Pos,
+}
+
+/// An observed direct syntactic field access inside a validated critical
+/// callback. This is intentionally NOT a complete, trusted effect summary.
 #[derive(Clone, Debug)]
 pub struct ReceiverSite {
     pub declaration_start: usize,
@@ -74,6 +99,9 @@ pub struct TargetHeaders {
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
+    /// Bounded field accesses observed in guarded receiver bodies only.
+    /// Calls, aliases, closure captures and transitive effects remain unverified.
+    pub state_field_uses: Vec<StateFieldUse>,
 }
 struct Cursor<'a> { toks: &'a [Token], i: usize }
 impl Cursor<'_> {
@@ -187,7 +215,7 @@ impl Cursor<'_> {
         }
         if !self.take(&Tok::Lt) { return Ok(name); }
         let arity = match name.as_str() {
-            "Option" | "Generator" | "ActorRef" => 1,
+            "Option" | "Generator" | "ActorRef" | "ActorMail" => 1,
             "Result" => 2,
             _ => return Err(self.err("E_UNSUPPORTED_TYPE",
                 "target generic type must be Option, Result, Generator or ActorRef")),
@@ -334,23 +362,62 @@ impl Cursor<'_> {
     }
     fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize, usize)> {
         self.expect(&Tok::LParen, "expected '(' before receiver")?;
-        // Both the explicit typed spelling and the nominal receiver spelling
-        // are accepted: (mut self: Foo), (self: Foo), (Foo self),
-        // (Foo) and (Foo _). All variants have one nominal owner.
-        let (owner, mutable) = if self.take_word("mut") {
-            self.expect_word("self")?;
-            self.expect(&Tok::Colon, "expected ':' after self")?;
-            (self.ident()?, true)
+        // The receiver binding is lexical. It is not an actor capability, a
+        // mutable place, an ABI field, or an implicit alias named "self".
+        // Preserve legacy typed spelling (self: Foo) as well as type-first
+        // (Foo this), (Foo mut this.state.{counter, xyz}).
+        let (owner, binding, mutable, state_write) = if self.take_word("mut") {
+            let binding = if self.take_word("self") { "self".to_string() }
+                else { self.ident()? };
+            self.expect(&Tok::Colon, "expected ':' after receiver binding")?;
+            (self.ident()?, binding, true, None)
         } else if self.take_word("self") {
             self.expect(&Tok::Colon, "expected ':' after self")?;
-            (self.ident()?, false)
+            (self.ident()?, "self".to_string(), false, None)
         } else {
-            let owner = self.ident()?;
-            // Explicit name or compiler-owned implicit receiver.
-            if !self.take_word("self") {
-                self.take_word("_");
+            let first = self.ident()?;
+            if self.take(&Tok::Colon) {
+                // Typed named alias: (this: Foo); not an ABI-visible parameter.
+                (self.ident()?, first, false, None)
+            } else if self.take_word("mut") {
+                let binding = if self.take_word("self") { "self".to_string() }
+                    else { self.ident()? };
+                self.expect(&Tok::Dot, "expected '.state' after mutable receiver")?;
+                self.expect_word("state")?;
+                let scope = if self.take(&Tok::Dot) {
+                    let fields = if self.take(&Tok::LBrace) {
+                        // A nonempty bounded field set. Actual actor layout
+                        // and effects are independently verified after parsing.
+                        let mut fields = vec![self.ident()?];
+                        while self.take(&Tok::Comma) {
+                            if fields.len() >= 32 {
+                                return Err(self.err("E_SOURCE_LIMIT",
+                                    "state receiver projection exceeds 32 fields"));
+                            }
+                            fields.push(self.ident()?);
+                        }
+                        self.expect(&Tok::RBrace, "expected '}' after state fields")?;
+                        fields
+                    } else { vec![self.ident()?] };
+                    let mut seen = std::collections::HashSet::new();
+                    if fields.iter().any(|field| !seen.insert(field)) {
+                        return Err(self.err("E_DUPLICATE",
+                            "duplicate mutable state field in receiver projection"));
+                    }
+                    ReceiverStateWrite::Fields(fields)
+                } else { ReceiverStateWrite::Whole };
+                (first, binding, true, Some(scope))
+            } else if self.take_word("self") {
+                (first, "self".to_string(), false, None)
+            } else if self.take_word("_") {
+                (first, "_".to_string(), false, None)
+            } else if matches!(self.tok(), Tok::Ident(_)) {
+                // Explicit receiver variable (Foo this), (Foo actor), etc.
+                (first, self.ident()?, false, None)
+            } else {
+                // Existing implicit-receiver form (Foo) binds self.
+                (first, "self".to_string(), false, None)
             }
-            (owner, false)
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
         let method_start = self.i;
@@ -362,6 +429,10 @@ impl Cursor<'_> {
         } else { None };
         let name = self.ident()?;
         let params = self.params()?;
+        if params.iter().any(|p| p.name == binding) {
+            return Err(self.err("E_DUPLICATE",
+                "receiver binding conflicts with an explicit method parameter"));
+        }
         let arity = params.len();
         let arrow_type = !return_first && *self.tok() == Tok::Arrow;
         let colon_type = !return_first && *self.tok() == Tok::Colon;
@@ -380,7 +451,7 @@ impl Cursor<'_> {
         let start = self.i;
         self.body(arrow_type, colon_type, return_first)?;
         let end = self.i;
-        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end, method_start))
+        Ok((ReceiverHeader { owner, binding, name, arity, params, return_type, mutable, state_write, public, pos }, start, end, method_start))
     }
 
     /// Use production parsing for one declaration; unlike a token-only scan,
@@ -683,6 +754,11 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 format!("receiver owner '{}' is not declared in this source namespace",
                     receiver.owner)));
         }
+        if receiver.state_write.is_some() && !out.actors.contains(&receiver.owner) &&
+            !out.definitions.iter().any(|a| a.name == receiver.owner) {
+            return Err(Diagnostic::new(receiver.pos, "E_ACTOR",
+                "projected .state receiver permissions require an actor owner"));
+        }
         // For classes, mtd adds a *second implementation*: same owner/name/
         // arity alongside an inline method is a duplicate. For actors, mtd
         // remains a signature-only declaration paired with an inline actor
@@ -721,7 +797,8 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
         }
     }
     for (i, start, end) in spans {
-        validate_receiver_body(toks, &out, i, start, end)?;
+        let state_uses = validate_receiver_body(toks, &out, i, start, end)?;
+        out.state_field_uses.extend(state_uses);
     }
     for (start, end) in function_spans {
         validate_spawned_actor_calls(toks, &out, start, end)?;
@@ -800,6 +877,14 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
         }
     }
     for (receiver, site) in headers.receivers.iter().zip(&headers.receiver_sites) {
+        if receiver.binding != "self" && receiver.binding != "_" {
+            return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
+                "named class receiver bindings need checked production method lowering"));
+        }
+        if receiver.state_write.is_some() {
+            return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
+                "projected state receiver requires checked actor state effects; cannot lower as a class"));
+        }
         if receiver.mutable {
             return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
                 "mutable class mtd receivers require a verified mutable-self ownership ABI"));
@@ -960,27 +1045,58 @@ fn close_paren(toks: &[Token], start: usize, limit: usize) -> R<usize> {
     }
     Err(diagnostic(toks, start, "E_EOF", "unterminated argument list"))
 }
-fn count_args(toks: &[Token], open: usize, close: usize) -> usize {
-    if close == open + 1 { return 0; }
-    let (mut n, mut round, mut square, mut braces) = (1, 0, 0, 0);
-    for token in toks.iter().take(close).skip(open + 1) {
-        match token.tok {
-            Tok::LParen => round += 1,
-            Tok::RParen => round -= 1,
-            Tok::LBracket => square += 1,
-            Tok::RBracket => square -= 1,
-            Tok::LBrace => braces += 1,
-            Tok::RBrace => braces -= 1,
-            Tok::Comma if round == 0 && square == 0 && braces == 0 => n += 1,
+fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
+    if close == open + 1 { return Ok(0); }
+    let mut expected_close: Vec<Tok> = Vec::new();
+    let mut count = 1usize;
+    for i in open + 1..close {
+        let token = &toks[i].tok;
+        let closing = match token {
+            Tok::LParen => Some(Tok::RParen),
+            Tok::LBracket => Some(Tok::RBracket),
+            Tok::LBrace => Some(Tok::RBrace),
+            _ => None,
+        };
+        if let Some(close_tok) = closing {
+            if expected_close.len() >= 128 {
+                return Err(diagnostic(toks, i, "E_NESTING", "argument delimiters exceed depth 128"));
+            }
+            expected_close.push(close_tok);
+            continue;
+        }
+        match token {
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                if expected_close.pop().as_ref() != Some(token) {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "unmatched or incorrectly nested argument delimiter"));
+                }
+            }
+            Tok::Comma if expected_close.is_empty() => {
+                if i == open + 1 || i + 1 == close ||
+                    matches!(&toks[i-1].tok, Tok::Comma) {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "empty or trailing top-level method argument"));
+                }
+                count += 1;
+                if count > MAX_PARAMS {
+                    return Err(diagnostic(toks, i, "E_SOURCE_LIMIT",
+                        "too many method arguments"));
+                }
+            }
             _ => {}
         }
     }
-    n
+    if !expected_close.is_empty() {
+        return Err(diagnostic(toks, close, "E_SYNTAX",
+            "unclosed nested argument delimiter"));
+    }
+    Ok(count)
 }
+
 fn validate_callback(
     toks: &[Token], symbols: &TargetHeaders, receiver: &ReceiverHeader,
     open: usize, limit: usize,
-) -> R<usize> {
+) -> R<(usize, Vec<StateFieldUse>)> {
     let close = close_paren(toks, open, limit)?;
     let mut k = open + 1;
     if !word_at(toks, k, "critical") || !at(toks, k+1, &Tok::Minus) ||
@@ -1002,7 +1118,7 @@ fn validate_callback(
         Some(Tok::Ident(name)) if !is_reserved(name) => name.as_str(),
         _ => return Err(diagnostic(toks, binder_pos, "E_SEALED", "invalid state callback binder")),
     };
-    if binder == "self" || binder == "_" {
+    if binder == receiver.binding || binder == "_" || binder == "self" {
         return Err(diagnostic(toks, binder_pos, "E_SEALED",
             "state callback must bind a distinct state variable"));
     }
@@ -1017,6 +1133,7 @@ fn validate_callback(
     }
     // The v1 gate is conservative. A full borrow checker must subsequently
     // prove reference lifetimes, effect purity, and field types before codegen.
+    let mut uses = Vec::new();
     for i in k..close {
         if ["await", "select", "yield", "suspends", "spawn", "rt", "defer"].iter()
             .any(|w| word_at(toks, i, w)) {
@@ -1024,7 +1141,8 @@ fn validate_callback(
                 "suspension, spawning and deferred effects are forbidden during critical access"));
         }
         if word_at(toks, i, "handle_state") ||
-            (word_at(toks, i, "self") && at(toks, i+1, &Tok::Dot)) {
+            (word_at(toks, i, &receiver.binding) &&
+                !(i > 0 && at(toks, i - 1, &Tok::Dot))) {
             return Err(diagnostic(toks, i, "E_BORROW",
                 "nested actor state access or self capture is forbidden in critical callback"));
         }
@@ -1037,67 +1155,177 @@ fn validate_callback(
                 return Err(diagnostic(toks, i+2, "E_SEALED",
                     "state field member access requires a field name"));
             }
-            if !write {
-                if matches!(toks.get(i+3).map(|t| &t.tok),
-                    Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
-                    return Err(diagnostic(toks, i+3, "E_READONLY",
+            let next = i + 3;
+            let postfix_mutation = matches!(toks.get(next).map(|t| &t.tok),
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus));
+            // The lexer combines +=, but it leaves other compound writes
+            // split into operator and '=' tokens. Treat bitwise writes as
+            // mutations too: otherwise a critical-read callback could admit
+            // 's.field &= mask', or a narrow critical-write ceiling could
+            // admit 's.other |= mask' without a mutation check.
+            let split_compound = matches!(toks.get(next).map(|t| &t.tok),
+                Some(Tok::Minus | Tok::Star | Tok::Slash | Tok::Plus |
+                     Tok::Amp | Tok::Pipe | Tok::Caret)) &&
+                at(toks, next + 1, &Tok::Assign);
+            // For <<= and >>=, the tokenizer emits Lt+Le / Gt+Ge;
+            // for spaced or triple-shift forms it may emit multiple angle
+            // tokens plus Assign. Bound the lookahead to 3 shift tokens and
+            // demand a trailing '=' to avoid rejecting ordinary shifts.
+            let first_angle = toks.get(next).map(|t| &t.tok);
+            let second_angle = toks.get(next + 1).map(|t| &t.tok);
+            let third_angle = toks.get(next + 2).map(|t| &t.tok);
+            let shift_compound = match first_angle {
+                Some(Tok::Lt) => {
+                    matches!(second_angle, Some(Tok::Le)) ||
+                    (matches!(second_angle, Some(Tok::Lt)) &&
+                        (at(toks, next + 2, &Tok::Assign) ||
+                            (matches!(third_angle, Some(Tok::Lt)) &&
+                                at(toks, next + 3, &Tok::Assign))))
+                }
+                Some(Tok::Gt) => {
+                    matches!(second_angle, Some(Tok::Ge)) ||
+                    (matches!(second_angle, Some(Tok::Gt)) &&
+                        (at(toks, next + 2, &Tok::Assign) ||
+                            (matches!(third_angle, Some(Tok::Gt)) &&
+                                at(toks, next + 3, &Tok::Assign))))
+                }
+                _ => false,
+            };
+            let prefix_mutation = i > 0 && matches!(toks.get(i - 1).map(|t| &t.tok),
+                Some(Tok::PlusPlus | Tok::MinusMinus));
+            let mutates = postfix_mutation || split_compound ||
+                shift_compound || prefix_mutation;
+            // Nested/dynamic paths and field method calls have no authenticated
+            // layout, alias or transitive effect summary at this stage. This
+            // applies to critical-write too: otherwise the lexical write-set
+            // check would miss e.g. s.other.child = 1 or s.other[0] = 1.
+            if [Tok::Dot, Tok::LParen, Tok::LBracket].iter()
+                .any(|tok| at(toks, next, tok)) {
+                return Err(diagnostic(toks, next, "E_UNSUPPORTED",
+                    "nested, indexed or callable actor state fields require typed effect proofs"));
+            }
+            if mutates {
+                if !write {
+                    return Err(diagnostic(toks, next, "E_READONLY",
                         "critical-read cannot mutate actor state"));
                 }
-                if at(toks, i+3, &Tok::Dot) || at(toks, i+3, &Tok::LParen) {
-                    return Err(diagnostic(toks, i+3, "E_UNSUPPORTED",
-                        "state field method calls need a full effect and borrow checker"));
+                if let Some(ReceiverStateWrite::Fields(allowed)) = &receiver.state_write {
+                    if let Some(Tok::Ident(field)) = toks.get(i+2).map(|t| &t.tok) {
+                        if !allowed.contains(field) {
+                            return Err(diagnostic(toks, i+2, "E_MUTABILITY",
+                                "guarded actor state write exceeds receiver field permission set"));
+                        }
+                    }
                 }
+            }
+            if uses.len() >= 4096 {
+                return Err(diagnostic(toks, i, "E_SOURCE_LIMIT",
+                    "too many actor-state field observations"));
+            }
+            if let Some(Tok::Ident(field)) = toks.get(i+2).map(|t| &t.tok) {
+                uses.push(StateFieldUse {
+                    owner: receiver.owner.clone(),
+                    method: receiver.name.clone(),
+                    arity: receiver.arity,
+                    field: field.clone(),
+                    write: mutates,
+                    pos: toks[i+2].pos,
+                });
             }
         }
     }
     // Prevent the callback from smuggling a second actor's receiver semantics.
     let _ = symbols;
-    Ok(close)
+    Ok((close, uses))
 }
 fn validate_receiver_body(
     toks: &[Token], symbols: &TargetHeaders, which: usize,
     start: usize, end: usize,
-) -> R<()> {
+) -> R<Vec<StateFieldUse>> {
     let receiver = &symbols.receivers[which];
     // Class receivers are parsed but not actor-sealed. No class mtd emits
     // guest code until its linker, type checker and dispatch are implemented.
     if symbols.classes.iter().any(|c| c == &receiver.owner) {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let mut state_uses = Vec::new();
     // Bare -> Type bodies start with a statement rather than a delimiter;
     // do not skip the first token and bypass sealed-state validation.
     let mut i = if at(toks, start, &Tok::LBrace) || at(toks, start, &Tok::ColonColon) {
         start + 1
     } else { start };
     while i < end.saturating_sub(1) {
-        if word_at(toks, i, "handle_state") &&
-            !(i >= 2 && word_at(toks, i-2, "self") && at(toks, i-1, &Tok::Dot)) {
-            return Err(diagnostic(toks, i, "E_SEALED",
-                "actor state access must be 'self.handle_state(...)'"));
+        // The old implicit name is not an alternate alias for a renamed
+        // receiver; otherwise the parser would silently admit an unbound self.
+        if receiver.binding != "self" && word_at(toks, i, "self") {
+            return Err(diagnostic(toks, i, "E_UNBOUND",
+                "self is not bound when the receiver has a different name"));
         }
-        if word_at(toks, i, "self") && at(toks, i+1, &Tok::Dot) {
+        // Do not allow the receiver name to be rebound inside the method.
+        if (word_at(toks, i, "let") || word_at(toks, i, "val") ||
+            word_at(toks, i, "const")) &&
+            (word_at(toks, i+1, &receiver.binding) ||
+                (matches!(toks.get(i+1).map(|t| &t.tok), Some(Tok::Ident(_))) &&
+                    word_at(toks, i+2, &receiver.binding))) {
+            return Err(diagnostic(toks, i, "E_DUPLICATE",
+                "method body cannot shadow its receiver binding"));
+        }
+        // The discarded '_' receiver cannot be used as a guest identity.
+        if receiver.binding == "_" && word_at(toks, i, "_") &&
+            (at(toks, i + 1, &Tok::Dot) || at(toks, i + 1, &Tok::LParen)) {
+            return Err(diagnostic(toks, i, "E_UNBOUND",
+                "discarded receiver '_' is not a callable or addressable binding"));
+        }
+        // This is a syntax-only target frontend. Never silently accept a
+        // receiver escape/capture as a plain expression or message payload.
+        if receiver.binding != "_" && word_at(toks, i, &receiver.binding) &&
+            !(i > 0 && at(toks, i - 1, &Tok::Dot)) &&
+            !at(toks, i + 1, &Tok::Dot) {
+            return Err(diagnostic(toks, i, "E_ESCAPE",
+                "passing or returning the actor receiver needs typed capability proofs"));
+        }
+        if word_at(toks, i, "handle_state") &&
+            !(i >= 2 && word_at(toks, i-2, &receiver.binding) && at(toks, i-1, &Tok::Dot)) {
+            return Err(diagnostic(toks, i, "E_SEALED",
+                "actor state access requires the declared receiver binding"));
+        }
+        if word_at(toks, i, &receiver.binding) && at(toks, i+1, &Tok::Dot) {
             let member = match toks.get(i+2).map(|t| &t.tok) {
                 Some(Tok::Ident(s)) => s.as_str(),
                 _ => return Err(diagnostic(toks, i+2, "E_SEALED", "invalid actor member access")),
             };
             if !at(toks, i+3, &Tok::LParen) {
                 return Err(diagnostic(toks, i, "E_SEALED",
-                    "direct actor fields are sealed; use self.handle_state"));
+                    "direct actor fields are sealed; use receiver.handle_state"));
             }
             if member == "handle_state" {
-                let closed = validate_callback(toks, symbols, receiver, i+3, end)?;
+                let (closed, uses) = validate_callback(toks, symbols, receiver, i+3, end)?;
+                state_uses.extend(uses);
                 i = closed + 1;
                 continue;
             }
             let close = close_paren(toks, i+3, end)?;
+            // Actor runtime capability operations are distinct from guest
+            // state mutation. They may be used from an immutable receiver.
+            if matches!(member, "send" | "end" | "get_done") {
+                let required = if member == "send" { 1 } else { 0 };
+                if count_args(toks, i+3, close)? != required {
+                    return Err(diagnostic(toks, i, "E_ARITY",
+                        "actor runtime operation called with wrong argument count"));
+                }
+                // Inspect nested arguments too: otherwise send(this.state.x)
+                // bypasses the sealed-state scanner entirely.
+                i += 4;
+                continue;
+            }
             resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
-                member, count_args(toks, i+3, close), false, toks[i].pos)?;
-            i = close + 1;
+                member, count_args(toks, i+3, close)?, false, toks[i].pos)?;
+            i += 4;
             continue;
         }
         i += 1;
     }
-    Ok(())
+    Ok(state_uses)
 }
 fn validate_spawned_actor_calls(
     toks: &[Token], symbols: &TargetHeaders, start: usize, end: usize,

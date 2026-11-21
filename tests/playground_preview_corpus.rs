@@ -13,7 +13,17 @@ fn all_published_previews_compile_or_reject_with_a_diagnostic() {
     let files: Vec<_> = fs::read_dir(dir).unwrap().map(|e| {
         e.unwrap().file_name().to_string_lossy().into_owned()
     }).filter(|s| s.ends_with(".atto")).collect();
-    assert_eq!(files.len(), entries.len(), "no missing or untracked .atto files");
+    // Actor-state permission syntax is kept as an unpublished compiler
+    // regression sample. It must not silently inflate the 43 public previews
+    // nor become untracked executable guest parity evidence.
+    const EXPERIMENTAL: &str = "actor-named-state-permissions.atto";
+    assert!(files.iter().any(|f| f == EXPERIMENTAL),
+        "unpublished actor-state sample missing");
+    assert!(!entries.iter().any(|entry| entry.starts_with("actor-named-state-permissions\t")),
+        "experimental actor-state sample must not be counted as published");
+    let published_count = files.iter().filter(|f| f.as_str() != EXPERIMENTAL).count();
+    assert_eq!(published_count, entries.len(),
+        "no missing or untracked published .atto files");
     let mut seen = std::collections::BTreeSet::new();
     for entry in entries {
         let (name, sha) = entry.split_once('\t').expect("name and Git blob SHA-1");

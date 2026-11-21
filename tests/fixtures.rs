@@ -74,3 +74,22 @@ fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
     assert!(atto_compiler::compile(&elif(250)).is_ok());
     assert_eq!(atto_compiler::compile(&elif(300)).unwrap_err().code, "E_NESTING");
 }
+
+#[test]
+fn default_stack_checks_admitted_binary_spines_without_clone_overflow() {
+    // Cargo runs each test on the default small worker stack.  This case
+    // previously aborted inside the unconditional whole-Program clone before
+    // the iterative binary checker could run.
+    let chain = |n: usize| format!(
+        "pub fnc main(): int {{ return {}; }}",
+        vec!["1"; n].join(" + ")
+    );
+    let bytes = atto_compiler::compile(&chain(250)).expect(
+        "a parser-admitted 250-term addition must compile on the default stack"
+    );
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(
+        atto_compiler::compile(&chain(3_000)).unwrap_err().code,
+        "E_NESTING"
+    );
+}
