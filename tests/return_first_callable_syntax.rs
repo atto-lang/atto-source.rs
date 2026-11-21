@@ -436,3 +436,15 @@ fn nominal_error_runtime_payload_must_not_silently_degrade_to_string_tag() {
         "declaring Foo must not silently authorize a generic Error");
     assert_eq!(err.code, "E_EFFECT", "{err}");
 }
+
+
+#[test]
+fn builtin_error_identity_cannot_be_shadowed_by_class_or_function() {
+    for src in [
+        "define class Error as end\npub fnc main(): int { return 42; }",
+        "fnc Error(): int { return 1; }\npub fnc main(): int { return Error(); }",
+    ] {
+        let err = compile(src).expect_err("reserved built-in Error identity must not be forged");
+        assert_eq!(err.code, "E_DUPLICATE", "{src}: {err}");
+    }
+}
