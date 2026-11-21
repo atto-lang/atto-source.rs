@@ -168,6 +168,15 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         } else { i += 1; }
     }
     if templates.is_empty() { return Ok(tokens); }
+    // The current scalar profile has no lexical resolution between methods,
+    // actor scopes and source-local generic callables. Refuse mixed nominal
+    // source rather than redirecting a method invocation into a free function.
+    if tokens.windows(2).any(|w|
+        word(&w[0]) == Some("define") &&
+        matches!(word(&w[1]), Some("class" | "actor" | "state" | "module" | "enum"))) {
+        return Err(error(templates[0].pos, "E_UNSUPPORTED",
+            "scalar generics mixed with nominal declarations need scope-aware resolution"));
+    }
     let mut base = Vec::new();
     let mut begin = 0;
     for template in &templates {
