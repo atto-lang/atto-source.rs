@@ -275,6 +275,18 @@ try{
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
     'the explicit suspends lambda stage must cooperatively await exactly once');
   console.log('PASS integration: explicit suspends identity-await stage executes real guest Future<int> and named transform');
+  const callbackAdd='pub susp fnc main(): int { val future=task { return 41; }; return future |> susp |f| -> await f + 1; }';
+  assert.match(await run(callbackAdd,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'checked callback arithmetic must suspend only at the awaited Future');
+  const callbackSub='pub suspends fnc main(): int { val future=task { return 43; }; return future |> suspends |f| -> await f - 1; }';
+  assert.match(await run(callbackSub,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'subtraction callback must preserve exactly one suspended await');
+  console.log('PASS integration: inline susp callback computes checked i64 values in actual guest Wasm');
+  const callbackOverflow='pub susp fnc main(): int { val future=task { return 9223372036854775807; }; return future |> susp |f| -> await f + 1; }';
+  assert.match(await run(callbackOverflow,'E_PANIC'),/E_PANIC: integer overflow/);
+  console.log('PASS integration: checked arithmetic inside suspended callback traps overflow');
 
   const captured='fnc transform_result(int x): int { return x + 1; } pub suspends fnc main(): int { val future=task { return 41; }; future |> susp |f| -> await f |> transform_result >> val result: int; stdio.println(result); return result; }';
   assert.match(await run(captured,'main() -> 42'),/^42\nmain\(\) -> 42$/);
