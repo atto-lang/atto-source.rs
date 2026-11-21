@@ -18,6 +18,7 @@ pub enum LiteralType {
     Bool,
     Float,
     String,
+    Symbol,
     /// A polymorphic element slot in an empty collection; never a dynamic Any.
     Bottom,
     /// The built-in open Record supertype. Access requires a shape/presence guard.
@@ -113,6 +114,7 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
         "bool" => LiteralType::Bool,
         "float" => LiteralType::Float,
         "string" => LiteralType::String,
+        "Symbol" => LiteralType::Symbol,
         "Record" => LiteralType::OpenRecord,
         "Array" => LiteralType::Array(Box::new(LiteralType::Bottom)),
         "List" => LiteralType::List(Box::new(LiteralType::Bottom)),
@@ -232,6 +234,8 @@ fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagno
         (Array(a), Array(b)) => Ok(Array(Box::new(common(*a, *b, at)?))),
         (Map(ka,va), Map(kb,vb)) => Ok(Map(
             Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
+        (Entry(ka,va), Entry(kb,vb)) => Ok(Entry(
+            Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
         (Tuple(a), Tuple(b)) if a.len() == b.len() =>
             Ok(Tuple(a.into_iter().zip(b).map(|(x,y)| common(x,y,at))
                 .collect::<Result<Vec<_>,_>>()?)),
@@ -268,6 +272,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
+        ExprKind::Symbol(_) => Symbol,
         ExprKind::Var(name) if name == "None" => match expected {
             Some(Option(item)) if **item != Bottom => Option(item.clone()),
             _ => return Err(diag(e.pos, "E_TYPE_INFERENCE",
@@ -399,6 +404,26 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             Record(typed_fields)
         }
+        // Standalone key => value is nominal Entry<K,V> in source typing.
+        // It does not allocate an Entry guest object or alias a Pair/Map.
+        ExprKind::Entry(key,value) => {
+            let (wanted_k,wanted_v) = match expected {
+                Some(Entry(k,v)) => (Some(k.as_ref()),Some(v.as_ref())),
+                None => (None,None),
+                _ => return Err(diag(e.pos,"E_TYPE",
+                    "standalone Entry cannot implicitly convert to Pair, Map or Record")),
+            };
+            let k=inferred(key,wanted_k,depth+1)?;
+            let v=inferred(value,wanted_v,depth+1)?;
+            if !matches!(k.ty,Int | Bool | String | Symbol) {
+                return Err(diag(key.pos,"E_MAP_KEY",
+                    "Entry key requires a scalar stable Hash/Eq witness"));
+            }
+            let pair=Entry(Box::new(k.ty.clone()),Box::new(v.ty.clone()));
+            children.push(k);
+            children.push(v);
+            pair
+        }
         // Typed Entry-only Map factory. The type witness is compiler-owned:
         // no dynamic Map type erasure or invented implicit widening.
         ExprKind::Call(factory, args) if factory.starts_with("@builtin/Map.of_entries<") => {
@@ -448,7 +473,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             let key_ty = if wanted_k == Bottom { keys } else { wanted_k };
             let val_ty = if wanted_v == Bottom { vals } else { wanted_v };
-            if !matches!(key_ty, Int | Bool | String | Bottom) {
+            if !matches!(key_ty, Int | Bool | String | Symbol | Bottom) {
                 return Err(diag(e.pos, "E_MAP_KEY",
                     "this profile permits only scalar hashable map key types"));
             }
@@ -507,7 +532,8 @@ pub fn static_record_field_type(
 
 fn starts_literal(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
-        ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_)) ||
+        ExprKind::Map(_) | ExprKind::Entry(_, _) | ExprKind::Symbol(_) |
+        ExprKind::EmptyBraces | ExprKind::Tuple(_)) ||
         matches!(&e.kind, ExprKind::Call(name, _) if
             matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of" |
                 "@builtin/Pair.of" | "@builtin/Entry.of")) ||
