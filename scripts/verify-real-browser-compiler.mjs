@@ -7,6 +7,7 @@ import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {verifyScalarGuestValue,verifyCheckedPanicGuest} from './compiler-smoke-guest-oracle.mjs';
 import {readCompilerDiagnostic} from './compiler-diagnostic.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const native=resolve(process.env.ATTOC||join(root,'target/release/attoc'));
@@ -74,25 +75,6 @@ function wasmCompile(api,source){
   assert.ok(WebAssembly.validate(guest),'compiler emitted invalid guest');
   return {ok:true,guest};
 }
-function guestValue(bytes){
-  const mod=new WebAssembly.Module(bytes);
-  assert.deepEqual(WebAssembly.Module.imports(mod),[],'scalar guest unexpectedly imports');
-  const exp=new WebAssembly.Instance(mod,{}).exports;
-  assert.equal(typeof exp.main,'function','guest main missing');
-  const n=exp.main();assert.equal(typeof n,'bigint','main must return i64');
-  if('panic_code' in exp)assert.ok(exp.panic_code instanceof WebAssembly.Global&&
-    (exp.panic_code.value===0||exp.panic_code.value===0n),'guest panicked');
-  return n;
-}
-function guestPanic(bytes,expectedCode){
-  const mod=new WebAssembly.Module(bytes);
-  assert.deepEqual(WebAssembly.Module.imports(mod),[],'panic guest unexpectedly imports host capabilities');
-  const exp=new WebAssembly.Instance(mod,{}).exports;
-  assert.equal(typeof exp.main,'function','panic guest main missing');
-  assert.ok(exp.panic_code instanceof WebAssembly.Global,'panic code export missing');
-  assert.throws(()=>exp.main(),WebAssembly.RuntimeError,'checked i64 overflow must trap');
-  assert.equal(Number(exp.panic_code.value),expectedCode,'wrong source-language panic code');
-}
 const tmp=mkdtempSync(join(tmpdir(),'atto-real-rust-wasm-'));
 try{
   const {api,digest}=wasmInstance(),nativeHash=sha(file(native)),rows=[];
@@ -119,12 +101,12 @@ try{
       const binary=file(output);
       assert.deepEqual(wasm.guest,binary,'native/wasm32 compiler guest bytes differ');
       if(kind==='pass'){
-        assert.equal(guestValue(binary),oracle,'native guest result');
-        assert.equal(guestValue(wasm.guest),oracle,'wasm32 guest result');
+        assert.equal(verifyScalarGuestValue(binary,oracle),oracle,'native guest result');
+        assert.equal(verifyScalarGuestValue(wasm.guest,oracle),oracle,'wasm32 guest result');
         rows.push({fixture:name,result:'REAL_GUEST',value:String(oracle),source_sha256:sha(content),guest_sha256:sha(binary)});
       }else{
-        guestPanic(binary,oracle);
-        guestPanic(wasm.guest,oracle);
+        verifyCheckedPanicGuest(binary,oracle);
+        verifyCheckedPanicGuest(wasm.guest,oracle);
         rows.push({fixture:name,result:'REAL_CHECKED_PANIC',panic_code:oracle,source_sha256:sha(content),guest_sha256:sha(binary)});
       }
     }else{
