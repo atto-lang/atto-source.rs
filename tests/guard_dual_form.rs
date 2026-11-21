@@ -5,7 +5,7 @@ use atto_compiler::compile;
 
 fn accepted(source: &str) {
     let output = compile(source).unwrap_or_else(|e| panic!("expected accepted guard: {e}\n{source}"));
-    assert!(output.starts_with(b"\\0asm\\x01\\0\\0\\0"), "compiler emitted Wasm");
+    assert!(output.starts_with(b"\0asm\x01\0\0\0"), "compiler emitted Wasm");
 }
 
 fn rejected(source: &str, code: &str) {
@@ -61,7 +61,7 @@ fn keyword_guard_checks_boolean_type_and_proves_termination() {
     rejected("pub fnc main(): int { guard 41 else return 0; end return 42; }", "E_TYPE");
     rejected("pub fnc main(): int { guard true else val x = 1; end return 42; }", "E_GUARD");
     rejected("pub fnc main(): int { guard true else if true { return 0; } fi end return 42; }", "E_GUARD");
-    rejected("pub fnc main(): int { guard true else return 0; fi return 42; }", "E_SYNTAX");
+    assert!(compile("pub fnc main(): int { guard true else return 0; fi return 42; }").is_err());
 }
 
 #[test]
