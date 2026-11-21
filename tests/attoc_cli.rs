@@ -203,3 +203,41 @@ fn exactly_source_cap_input_is_not_rejected_by_bounded_reader() {
         String::from_utf8_lossy(&result.stderr));
     assert!(std::fs::read(out).unwrap().starts_with(b"\\0asm\\x01\\0\\0\\0"));
 }
+
+
+#[cfg(target_os = "linux")]
+#[test]
+fn fifo_input_cannot_block_compilation_or_preserve_a_stale_guest() {
+    // GNU coreutils are available in the Ubuntu CI runner. A missing reader
+    // preflight would block on File::open(FIFO), so enforce a hard timeout.
+    let temp = CliTemporaryDir::new();
+    let fifo = temp.0.join("incoming.atto");
+    let wasm = temp.0.join("old.wasm");
+    let created = Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(created.success(), "could not create test FIFO");
+    std::fs::write(&wasm, b"STALE_GUEST_MUST_NOT_SURVIVE").unwrap();
+    let result = Command::new("timeout")
+        .args(["4s", env!("CARGO_BIN_EXE_attoc")])
+        .arg(fifo.to_str().unwrap())
+        .arg("-o")
+        .arg(wasm.to_str().unwrap())
+        .output()
+        .expect("GNU timeout must be installed on the Linux CI runner");
+    assert_eq!(result.status.code(), Some(2),
+        "non-regular source was accepted or blocked past timeout: {}",
+        String::from_utf8_lossy(&result.stderr));
+    assert!(result.stdout.is_empty());
+    assert!(!wasm.exists(), "old Wasm guest survived rejected FIFO input");
+
+    use std::os::unix::fs::symlink;
+    let alias = temp.0.join("incoming-alias.atto");
+    symlink(&fifo, &alias).unwrap();
+    let aliased = Command::new("timeout")
+        .args(["4s", env!("CARGO_BIN_EXE_attoc")])
+        .arg(alias.to_str().unwrap())
+        .output()
+        .expect("timeout must be installed");
+    assert_eq!(aliased.status.code(), Some(2),
+        "source symlink to FIFO caused blocking open");
+    assert!(aliased.stdout.is_empty());
+}
