@@ -53,6 +53,10 @@ pub enum BinOp {
     Pipe,
     /// `a rpipe b` links b as source into a as sink, without reversing evaluation.
     Rpipe,
+    /// Checked atomic Result<PipeHandle,PipeSetupError> pipeline syntax. These
+    /// never silently use the legacy two-actor/trap-path graph publisher.
+    CheckedPipe,
+    CheckedRpipe,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
