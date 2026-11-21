@@ -74,7 +74,7 @@ fn failed_recompile_and_unreadable_source_remove_previous_wasm() {
     assert!(good.status.success(), "{}", String::from_utf8_lossy(&good.stderr));
     assert!(good.stdout.is_empty());
     let bytes = std::fs::read(&out).unwrap();
-    assert!(bytes.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
 
     let bad = attoc(&[invalid, "-o", output]);
     assert_eq!(bad.status.code(), Some(1), "{}", String::from_utf8_lossy(&bad.stderr));
@@ -131,7 +131,7 @@ fn preexisting_nonsource_artifacts_are_replaced_not_appended() {
     let result = attoc(&["tests/fixtures/pass/01-answer.atto", "-o", target.to_str().unwrap()]);
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     let bytes = std::fs::read(&target).unwrap();
-    assert!(bytes.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert!(!bytes.windows(b"NOT A COMPILED WASM GUEST".len())
         .any(|w| w == b"NOT A COMPILED WASM GUEST"));
 }
