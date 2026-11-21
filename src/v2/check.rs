@@ -2396,8 +2396,10 @@ impl<'a> Checker<'a> {
                 "unwrap" => {
                     self.plain_args(name, args, 0, pos)?;
                     let value = self.spill(recv);
+                    // Distinguish an empty Option unwrap (13) from scheduler
+                    // deadlock (6), actor admission (10), and span faults (12).
                     self.c().pre.push(IrStmt::If(eq(value.clone(), Ir::Const(0)),
-                        vec![IrStmt::Panic(6)], vec![]));
+                        vec![IrStmt::Panic(13)], vec![]));
                     Ok((load(value, 0), Ty::SelectResult, false))
                 }
                 _ => Err(type_err(pos, "Option<SelectResult> supports unwrap() in this bounded select-plan profile")),
