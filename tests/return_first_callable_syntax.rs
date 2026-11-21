@@ -231,23 +231,25 @@ fn return_first_out_of_line_class_method_compiles_through_checked_guest_lowering
 #[test]
 fn return_first_colon_colon_is_explicit_statement_body_and_needs_a_newline() {
     for decl in [
-        "fnc int <- answer() ::\\n  return 42;\\nend",
-        "int• answer() ::\\n  return 42;\\nend",
-        "fnc int • answer() ::\\n  return 42;\\nend",
+        "fnc int <- answer() ::\n  return 42;\nend",
+        "int• answer() ::\n  return 42;\nend",
+        "fnc int • answer() ::\n  return 42;\nend",
     ] {
-        let src = format!("{decl}\\npub fnc main(): int {{ return answer(); }}");
+        let src = format!("{decl}\npub fnc main(): int {{ return answer(); }}");
         let wasm = compile(&src).unwrap_or_else(|err| panic!("{decl}: {err}"));
         assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
     }
     for (decl, expected) in [
         ("int <- answer() :: return 42; end", "E_SYNTAX"),
-        ("int <- answer() ::\\n  return 42;", "E_EOF"),
-        ("int <- answer() ::\\n :: return 42; end", "E_SYNTAX"),
-        ("int <- answer() ::\\n { return 42; }", "E_SYNTAX"),
-        ("int <- answer() ::\\n  42; end", "E_RETURN"),
+        ("int <- answer() ::\n :: return 42; end", "E_SYNTAX"),
+        ("int <- answer() ::\n { return 42; }", "E_SYNTAX"),
+        ("int <- answer() ::\n  42; end", "E_RETURN"),
     ] {
-        let src = format!("{decl}\\npub fnc main(): int {{ return 0; }}");
+        let src = format!("{decl}\npub fnc main(): int {{ return 0; }}");
         let err = compile(&src).expect_err("invalid return-first :: body");
         assert_eq!(err.code, expected, "{decl}: {err}");
     }
+    let missing_end = compile("int <- answer() ::\n  return 42;")
+        .expect_err("end delimiter is required");
+    assert_eq!(missing_end.code, "E_EOF", "{missing_end}");
 }
