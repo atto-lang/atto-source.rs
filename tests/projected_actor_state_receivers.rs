@@ -279,3 +279,33 @@ fn discarded_receiver_and_unproven_receiver_escapes_are_rejected() {
         "E_UNBOUND");
     reject("declare actor Foo; mtd (Foo this) f(): void { this.send(this); }", "E_ESCAPE");
 }
+
+#[test]
+fn guarded_state_rejects_prefix_and_split_compound_mutations() {
+    let mut expressions = vec![
+        "s.counter -= 1;",
+        "s.counter *= 2;",
+        "s.counter /= 3;",
+        "++s.counter;",
+        "--s.counter;",
+        "s.counter++;",
+        "s.counter--;",
+    ];
+    for expr in expressions.drain(..) {
+        let readonly = format!(
+            "declare actor Foo; mtd (Foo this) f(): void {{ \
+             this.handle_state(critical-read |s| -> {{ {expr} }}); }}"
+        );
+        reject(&readonly, "E_READONLY");
+    }
+    for expr in ["++s.other;", "--s.other;", "s.other -= 1;", "s.other *= 2;"] {
+        let outside = format!(
+            "declare actor Foo; mtd (Foo mut this.state.counter) f(): void {{ \
+             this.handle_state(critical-write |s| -> {{ {expr} }}); }}"
+        );
+        reject(&outside, "E_MUTABILITY");
+    }
+    let allowed = "declare actor Foo; mtd (Foo mut this.state.counter) f(): void { \
+        this.handle_state(critical-write |s| -> { ++s.counter; s.counter -= 1; }); }";
+    assert_eq!(parse(allowed).receivers.len(), 1);
+}
