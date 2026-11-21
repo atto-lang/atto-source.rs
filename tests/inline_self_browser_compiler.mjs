@@ -7,6 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import {readWasmCompilerFailure, verifyCompilerDiagnosticParity} from '../scripts/compiler-diagnostic.mjs';
 
 const here = new URL('.', import.meta.url);
 const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc', here));
@@ -22,30 +23,23 @@ for (const key of ['memory','input_ptr','input_capacity','compile','result_ptr',
   assert.ok(key in api, 'missing real compiler export: '+key);
 }
 const encoder = new TextEncoder();
-const decoder = new TextDecoder('utf8', {fatal: true});
 function browserCompile(source) {
   const input = encoder.encode(source);
   const ptr = api.input_ptr(), capacity = api.input_capacity();
-  assert.ok(Number.isSafeInteger(ptr) && Number.isSafeInteger(capacity) && ptr >= 0 && capacity > 0);
+  assert.ok(Number.isSafeInteger(ptr) && Number.isSafeInteger(capacity) && ptr >= 0 && capacity > 0 && capacity <= 65536,
+    'invalid compiler input pointer/capacity');
   assert.ok(input.length <= capacity && ptr + input.length <= api.memory.buffer.byteLength,
     'source too large for browser compiler input memory');
   new Uint8Array(api.memory.buffer, ptr, input.length).set(input);
   const rc = api.compile(input.length);
+  assert.ok(rc === 0 || rc === 1, 'invalid browser compiler status');
   if (rc !== 0) {
-    assert.equal(api.result_length(), 0, 'failed compile returned stale guest bytes');
-    const bytes = new Uint8Array(api.memory.buffer);
-    const start = api.error_ptr();
-    assert.ok(Number.isSafeInteger(start) && start >= 0 && start < bytes.length,
-      'invalid compiler diagnostic pointer');
-    let end = start;
-    while (end < bytes.length && end - start < 512 && bytes[end] !== 0) end++;
-    assert.ok(end < bytes.length && end - start < 512 && bytes[end] === 0,
-      'unterminated compiler diagnostic');
-    const message = decoder.decode(bytes.subarray(start, end));
-    assert.match(message, /^E_[A-Z_]+:/, 'structured compiler error required');
-    assert.ok(api.error_line_number() >= 1 && api.error_column_number() >= 1,
-      'compiler error requires source location');
-    return {ok:false, code: message.split(':')[0], message};
+    // Reject malformed / unterminated / invalid-UTF8 compiler diagnostics
+    // with the existing bounded, location-aware ABI contract.
+    const failure = readWasmCompilerFailure(api);
+    assert.match(failure.message, /^E_[A-Z0-9_]+: /, 'structured diagnostic required');
+    assert.ok(failure.line >= 1 && failure.col >= 1, 'diagnostic requires coordinates');
+    return {...failure, code: failure.message.split(':')[0]};
   }
   const resultPtr = api.result_ptr(), resultLength = api.result_length();
   assert.ok(Number.isSafeInteger(resultPtr) && resultPtr >= 0 &&
@@ -74,13 +68,14 @@ const rejects = [
 ];
 const temp = await mkdtemp(join(tmpdir(), 'atto-inline-self-parity-'));
 try {
-  async function nativeCompile(src, label) {
+  async function nativeCompile(src, label, plantStaleOutput = false) {
     const input = join(temp, label+'.atto');
     const output = join(temp, label+'.wasm');
     await writeFile(input, src, 'utf8');
-    const result = spawnSync(attoc, [input, '-o', output], {encoding:'utf8', timeout:30000, maxBuffer:1<<20});
+    if (plantStaleOutput) await writeFile(output, 'STALE_WASM_MUST_NOT_SURVIVE');
+    const result = spawnSync(attoc, [input, '-o', output], {encoding:'utf8', timeout:30000, maxBuffer:1<<20, shell:false});
     assert.equal(result.error, undefined, label+': native compiler process did not start');
-    return {result, output, bytes:result.status===0 ? await readFile(output) : null};
+    return {result, input, output, bytes:result.status===0 ? await readFile(output) : null};
   }
   function runGuest(bytes, want, label) {
     const module = new WebAssembly.Module(bytes);
@@ -108,11 +103,13 @@ try {
     const browser = browserCompile(src);
     assert.equal(browser.ok, false, label+': malformed receiver produced executable guest');
     if (expected) assert.equal(browser.code, expected, label+': wrong compiler diagnostic');
-    const built = await nativeCompile(src, 'negative-'+label);
+    const built = await nativeCompile(src, 'negative-'+label, true);
+    assert.equal(built.result.signal, null, label+': native compiler terminated by signal');
     assert.equal(built.result.status, 1, label+': native compiler accepted invalid receiver');
-    assert.match(built.result.stderr, new RegExp('\\b'+browser.code+'\\b'),
-      label+': browser/native diagnostic code mismatch');
-    await assert.rejects(stat(built.output), {code:'ENOENT'}, label+': rejected source emitted Wasm');
+    assert.equal(built.result.stdout, '', label+': native rejection emitted stdout');
+    verifyCompilerDiagnosticParity(built.result.stderr, built.input, browser, browser.code);
+    await assert.rejects(stat(built.output), {code:'ENOENT'},
+      label+': rejection retained stale or emitted new Wasm');
   }
   const recovery = source('pub fnc value(self, int n): int { return n; }', 'c.value(42)');
   const browser = browserCompile(recovery);
