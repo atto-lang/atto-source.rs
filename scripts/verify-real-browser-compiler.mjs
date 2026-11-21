@@ -86,7 +86,7 @@ try{
     const source=decoder.decode(content);
     const annotation=source.match(kind==='pass'
       ? /^\/\/ expect-exit:\s*(\d+)\s*$/m
-      : /^\/\/ expect-error:\s*(E_[A-Z0-9_]+)\s*$/m
+      : /^\/\/ expect-error:\s*(E_[A-Z0-9_]+)\s*$/m);
     assert.ok(annotation,'missing fixture expectation: '+name);
     assert.equal(annotation[1],String(oracle),'smoke expectation drift: '+name);
     const cp=spawnSync(native,[src,'-o',output],{cwd:root,encoding:'utf8',timeout:20000,maxBuffer:1048576,shell:false});
