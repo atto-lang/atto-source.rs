@@ -161,6 +161,45 @@ fn sibling_lambdas_get_independent_definition_site_capture_snapshots() {
 }
 
 #[test]
+fn mixed_lambda_expression_statement_and_block_bodies_emit_real_wasm() {
+    let source = r#"
+        pub fnc main(): int {
+            val five = (|n| : int -> return 5;);
+            val seven = |n| : int -> { return n + 7; };
+            val thirty = |n| : int -> n * 3;
+            return five(99) + seven(0) + thirty(10);
+        }
+    "#;
+    let p = checked(source);
+    assert_eq!(p.funcs.len(), 4);
+    assert_eq!(p.funcs[1].name, "$lambda_0");
+    assert_eq!(p.funcs[2].name, "$lambda_0_1");
+    assert_eq!(p.funcs[3].name, "$lambda_0_2");
+    let wasm = atto_compiler::compile(source).expect("mixed-body source compiler");
+    assert_eq!(wasm, atto_compiler::compile(source).unwrap());
+    assert!(wasm.starts_with(&[0, 97, 115, 109]));
+}
+
+#[test]
+fn nested_block_lambda_call_is_rejected_before_wasm_lowering() {
+    let source = r#"
+        fnc later(int n): int { return n * 100; }
+        pub fnc main(): int {
+            val first = |n| : int -> {
+                if n > 0 {
+                    return later(n);
+                }
+                return 0;
+            };
+            val later = |n| : int -> n + 1;
+            return first(1) + later(1);
+        }
+    "#;
+    let err = atto_compiler::compile(source).expect_err("nested forward-call bypass");
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+}
+
+#[test]
 fn statement_body_cannot_bypass_sibling_call_preflight() {
     let src = r#"
         fnc later(int n): int { return n * 100; }

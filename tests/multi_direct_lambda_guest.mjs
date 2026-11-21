@@ -14,10 +14,12 @@ const cases = [
   { path: 'pass/lambda-direct-three-binds.atto', result: 42n },
   { path: 'pass/lambda-direct-sibling-captures.atto', result: 42n },
   { path: 'pass/lambda-direct-sibling-shadow.atto', result: 42n },
+  { path: 'pass/lambda-direct-mixed-bodies.atto', result: 42n },
   { path: 'fail/lambda-direct-two-binds.atto', reject: 'E_UNSUPPORTED' },
   { path: 'fail/lambda-direct-sibling-call.atto', reject: 'E_UNSUPPORTED' },
   { path: 'fail/lambda-direct-forward-call.atto', reject: 'E_UNSUPPORTED' },
   { path: 'fail/lambda-direct-statement-call.atto', reject: 'E_UNSUPPORTED' },
+  { path: 'fail/lambda-direct-nested-statement-call.atto', reject: 'E_UNSUPPORTED' },
   { path: 'fail/lambda-direct-sibling-arity.atto', reject: 'E_ARITY' },
 ];
 // Also use the actual wasm32-built Rust compiler: compile the identical

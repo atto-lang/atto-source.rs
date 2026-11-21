@@ -98,10 +98,13 @@ executes with result `42`. An explicitly terminated lambda return must
 be parenthesized, as in `val double = (|n| -> return n * 2;);`.
 
 The local lambda is a compile-time declaration, not a runtime handle.
-Only expression bodies are allowed in a function containing multiple direct
-lambdas. Statement/block lambda bodies are still supported for a sole local
-direct lambda, but mixing these bodies with other local lambdas fails closed
-until a complete lexical statement call-graph scanner is verified.
+Multiple independent direct lambdas can now mix expression, statement, and
+block bodies. A depth-bounded lexical call-graph scanner walks nested
+if/while/for/match arms and try/defer/recover bodies before emitting any guest
+helper. Calls to another local lambda, forward references, and self-recursion
+remain unsupported even when hidden in a nested statement or cleanup.
+Only expression-body lambdas currently lift immutable scalar captures;
+statement/block bodies use the independent noncapturing type checker.
 
 Only direct calls are supported: callable values, aliases, escaped closures,
 mutable or heap-owning captures, reassignments, named calls to sibling/forward

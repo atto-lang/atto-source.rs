@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Mixed expression, statement, and block-bodied independent local lambdas.
+pub fnc main(): int {
+    val five = (|n| : int -> return 5;);
+    val seven = |n| : int -> { return n + 7; };
+    val thirty = |n| : int -> n * 3;
+    return five(99) + seven(0) + thirty(10);
+}

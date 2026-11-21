@@ -123,29 +123,31 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_DUPLICATE",
                             "compiler-generated lambda name collides with a declaration"));
                     }
-                    // Only expression-body multi-lambda functions have the
-                    // bounded call-graph preflight below. A statement/block
-                    // body anywhere among siblings could invoke a forward
-                    // direct lambda; without a full statement call walk,
-                    // lowering could accidentally bind a global homonym.
-                    if lambda_names.len() > 1
-                        && !matches!(&init.kind, ExprKind::Lambda {
-                            body: LambdaBody::Expression(_), ..
-                        }) {
-                        return Err(error(*pos, "E_UNSUPPORTED",
-                            "multi-lambda statement or block bodies need verified lexical call scanning"));
-                    }
                     let mut free = BTreeSet::new();
-                    if let ExprKind::Lambda { body: LambdaBody::Expression(expression), .. } = &init.kind {
-                        // Named calls to any same-function lambda—including
-                        // a later binding or self-reference—need closure graph
-                        // linking. Never silently bind the identical name to
-                        // a global function, which changes source meaning.
-                        if calls_any_named(expression, &lambda_names, 0)? {
+                    if let ExprKind::Lambda { body: lambda_body, .. } = &init.kind {
+                        // A complete, depth-bounded call graph preflight covers
+                        // expression, statement and block bodies, including
+                        // nested branches, handlers, cleanup and match arms.
+                        // Without it, an unlowered local sibling/forward call
+                        // might accidentally resolve to a top-level homonym.
+                        let local_call = match lambda_body {
+                            LambdaBody::Expression(expr) =>
+                                calls_any_named(expr, &lambda_names, 0)?,
+                            LambdaBody::Statement(stmt) =>
+                                calls_any_named_stmt(stmt, &lambda_names, 0)?,
+                            LambdaBody::Block(stmts) =>
+                                calls_any_named_statements(stmts, &lambda_names, 0)?,
+                        };
+                        if local_call {
                             return Err(error(*pos, "E_UNSUPPORTED",
                                 "local lambda calls and self-recursion require verified closure environment linking"));
                         }
-                        free_names(expression, &mut free, 0)?;
+                        // Capture lifting stays deliberately limited to
+                        // expression bodies. Statement and block bodies retain
+                        // the independent noncapturing type/effect checker.
+                        if let LambdaBody::Expression(expr) = lambda_body {
+                            free_names(expr, &mut free, 0)?;
+                        }
                     }
                     for p in params { free.remove(p); }
                     let mut captures = Vec::new();
@@ -492,6 +494,94 @@ fn calls_any_named(e: &Expr, names: &BTreeSet<String>, depth: usize) -> R<bool> 
         ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) => {}
     }
     Ok(false)
+}
+
+
+fn calls_any_named_statements(stmts: &[Stmt], names: &BTreeSet<String>, depth: usize) -> R<bool> {
+    if depth >= MAX_REWRITE_DEPTH {
+        return Err(error(Pos::default(), "E_NESTING", "lambda statement call scan limit exceeded"));
+    }
+    for stmt in stmts {
+        if calls_any_named_stmt(stmt, names, depth + 1)? { return Ok(true); }
+    }
+    Ok(false)
+}
+
+fn calls_any_named_stmt(s: &Stmt, names: &BTreeSet<String>, depth: usize) -> R<bool> {
+    if depth >= MAX_REWRITE_DEPTH {
+        return Err(error(stmt_pos(s), "E_NESTING", "lambda statement call scan limit exceeded"));
+    }
+    let next = depth + 1;
+    match s {
+        Stmt::Bind { init, .. } => calls_any_named(init, names, next),
+        Stmt::Assign { value, .. } => calls_any_named(value, names, next),
+        Stmt::FieldAssign { target, value, .. } =>
+            Ok(calls_any_named(target, names, next)?
+                || calls_any_named(value, names, next)?),
+        Stmt::StateWrite { body, .. } | Stmt::Block(body)
+        | Stmt::Loop { body, .. } => calls_any_named_statements(body, names, next),
+        Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _)
+        | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
+            calls_any_named(e, names, next),
+        Stmt::Return(Some(e), _) => calls_any_named(e, names, next),
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => Ok(false),
+        Stmt::Try { body, catch, finally, .. } => {
+            if calls_any_named_statements(body, names, next)? { return Ok(true); }
+            if let Some((_, handler)) = catch {
+                if calls_any_named_statements(handler, names, next)? { return Ok(true); }
+            }
+            if let Some(cleanup) = finally {
+                if calls_any_named_statements(cleanup, names, next)? { return Ok(true); }
+            }
+            Ok(false)
+        }
+        Stmt::Defer { body, args, .. } | Stmt::Recover { body, args, .. } => {
+            for arg in args {
+                if calls_any_named(arg, names, next)? { return Ok(true); }
+            }
+            calls_any_named_statements(body, names, next)
+        }
+        Stmt::If { arms, otherwise, .. } => {
+            for (cond, body) in arms {
+                if calls_any_named(cond, names, next)?
+                    || calls_any_named_statements(body, names, next)? {
+                    return Ok(true);
+                }
+            }
+            if let Some(body) = otherwise {
+                return calls_any_named_statements(body, names, next);
+            }
+            Ok(false)
+        }
+        Stmt::While { cond, body, .. } =>
+            Ok(calls_any_named(cond, names, next)?
+                || calls_any_named_statements(body, names, next)?),
+        Stmt::For { init, cond, update, body, .. } => {
+            if let Some(stmt) = init {
+                if calls_any_named_stmt(stmt, names, next)? { return Ok(true); }
+            }
+            if let Some(expr) = cond {
+                if calls_any_named(expr, names, next)? { return Ok(true); }
+            }
+            if let Some(stmt) = update {
+                if calls_any_named_stmt(stmt, names, next)? { return Ok(true); }
+            }
+            calls_any_named_statements(body, names, next)
+        }
+        Stmt::ForIn { source, body, .. } =>
+            Ok(calls_any_named(source, names, next)?
+                || calls_any_named_statements(body, names, next)?),
+        Stmt::Match { subject, arms, .. } => {
+            if calls_any_named(subject, names, next)? { return Ok(true); }
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    if calls_any_named(guard, names, next)? { return Ok(true); }
+                }
+                if calls_any_named_statements(&arm.body, names, next)? { return Ok(true); }
+            }
+            Ok(false)
+        }
+    }
 }
 
 // Collect only simple expression-body free variables. Other lambda bodies
