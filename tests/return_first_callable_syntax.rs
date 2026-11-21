@@ -420,9 +420,10 @@ fn nominal_error_runtime_payload_must_not_silently_degrade_to_string_tag() {
         end
         pub fnc main(): int { return risky(3); }
     "#;
-    let err = compile(raised).expect_err(
-        "unverified subtype-bearing Wasm EH must not produce a guest");
-    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+    let guest = compile(raised).expect("field-free Foo must have a private owned-handle EH tag");
+    assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    // A scalar success path is not a subtype proof. The independent guest
+    // fixtures below trigger Foo and inspect its exact private tag in recover.
 
     let incorrectly_narrowed = r#"
         define class Foo extends Error as end
@@ -437,6 +438,65 @@ fn nominal_error_runtime_payload_must_not_silently_degrade_to_string_tag() {
     assert_eq!(err.code, "E_EFFECT", "{err}");
 }
 
+
+
+#[test]
+fn nominal_foo_raise_has_independent_compiled_guest_oracles() {
+    for fixture in [
+        include_str!("fixtures/pass/nominal-foo-raise-recover.atto"),
+        include_str!("fixtures/pass/nominal-foo-raise-vs-bar.atto"),
+        include_str!("fixtures/pass/nominal-foo-raise-catch-bypass.atto"),
+        include_str!("fixtures/pass/nominal-foo-delegated-recover.atto"),
+    ] {
+        assert!(fixture.contains("raise! new "));
+        assert!(fixture.contains("err.is_type("));
+        let guest = compile(fixture).unwrap_or_else(|err|
+            panic!("nominal Foo/Bar candidate compiler rejection: {err}"));
+        assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn nominal_error_subtype_effect_guards_reject_forgery() {
+    for (source, code) in [
+        (r#"
+            define class Foo extends Error as end
+            fnc int <- risky(int value)
+            raises Foo ::
+              raise! Error("untyped base Error");
+            end
+            pub fnc main(): int { return 0; }
+        "#, "E_EFFECT"),
+        (r#"
+            define class Foo extends Error as end
+            define class Bar extends Error as end
+            fnc int <- risky(int value)
+            raises Foo ::
+              raise! new Bar();
+            end
+            pub fnc main(): int { return 0; }
+        "#, "E_EFFECT"),
+        (r#"
+            define class Foo extends Error as end
+            fnc int <- risky(int value)
+            throws Error ::
+              raise! new Foo();
+            end
+            pub fnc main(): int { return 0; }
+        "#, "E_EFFECT"),
+        (r#"
+            define class Plain as end
+            fnc int <- risky(int value)
+            raises Error ::
+              raise! new Plain();
+            end
+            pub fnc main(): int { return 0; }
+        "#, "E_TYPE"),
+    ] {
+        let err = compile(source).expect_err("unverified subtype must produce no Wasm");
+        assert_eq!(err.code, code, "{err}");
+    }
+}
 
 #[test]
 fn builtin_error_identity_cannot_be_shadowed_by_class_or_function() {
