@@ -32,3 +32,20 @@ fn llvm_adapter_does_not_enable_unreviewed_compiler_runtime_dependency() {
     assert!(!manifest.contains("build = "), "do not introduce arbitrary build scripts");
     assert!(!manifest.contains("default-run = "), "experimental compiler is never the root default");
 }
+
+#[test]
+fn llvm_target_parser_exposes_bounded_native_callable_spans() {
+    use atto_compiler::lexer::{lex, Tok};
+    use atto_compiler::target_syntax::parse_target_declarations;
+    // The lexical routine header is owned by the single canonical parser.
+    let tokens = lex("use namespace demo; pub fnc main(): int { return 42; }")
+        .expect("lexical fixture");
+    let headers = parse_target_declarations(&tokens).expect("target header fixture");
+    assert_eq!(headers.function_sites.len(), 1);
+    let site = &headers.function_sites[0];
+    assert!(site.declaration_start < site.body_start);
+    assert!(site.body_start < site.end && site.end <= tokens.len());
+    assert!(matches!(tokens[site.declaration_start].tok, Tok::Ident(ref v) if v == "pub"));
+    assert!(matches!(tokens[site.body_start].tok, Tok::LBrace));
+    assert!(matches!(tokens[site.end - 1].tok, Tok::RBrace));
+}
