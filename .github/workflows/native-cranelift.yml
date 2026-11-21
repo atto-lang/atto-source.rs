@@ -28,6 +28,8 @@ jobs:
       - name: Reject manual source-local dispatch drift before private checkout
         if: github.event_name == 'workflow_dispatch'
         shell: bash
+        # The native/ subtree does not exist until checkout.
+        working-directory: .
         env:
           EXPECTED_HEAD: ${{ inputs.expected_head }}
           EXPECTED_TREE: ${{ inputs.expected_tree }}
@@ -72,10 +74,11 @@ jobs:
           components: rustfmt, clippy
       - name: Validate native private-source export remains disabled
         shell: bash
+        working-directory: .
         run: |
           set -euo pipefail
-          bash ../tests/private-ci-export-policy-guard-test.sh
-          bash ../scripts/private-ci-export-policy-guard.sh ../.github/private-ci-approved-repositories.txt
+          bash tests/private-ci-export-policy-guard-test.sh
+          bash scripts/private-ci-export-policy-guard.sh .github/private-ci-approved-repositories.txt
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --all-targets
       - name: Export scalar CFG contract
