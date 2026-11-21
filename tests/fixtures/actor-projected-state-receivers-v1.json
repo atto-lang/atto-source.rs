@@ -472,6 +472,86 @@
         "src/worker.atto": "declare actor Foo;\nmtd (Foo this) foo(): int { return 41; }\nmtd (Foo this) bar(): void { this.send(this.foo()); this.send(this.send(42)); }\n"
       },
       "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_read_bitwise_and_compound",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_READONLY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.handle_state(critical-read |s| -> { s.counter &= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_read_bitwise_or_compound",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_READONLY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.handle_state(critical-read |s| -> { s.counter |= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_read_bitwise_xor_compound",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_READONLY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.handle_state(critical-read |s| -> { s.counter ^= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_read_left_shift_compound",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_READONLY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.handle_state(critical-read |s| -> { s.counter <<= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_read_right_shift_compound",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_READONLY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.handle_state(critical-read |s| -> { s.counter >>= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_read_unsigned_shift_compound",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_READONLY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.handle_state(critical-read |s| -> { s.counter >>>= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_write_bitwise_outside_projection",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_MUTABILITY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) f(): void { this.handle_state(critical-write |s| -> { s.other |= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_write_shift_outside_projection",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_MUTABILITY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) f(): void { this.handle_state(critical-write |s| -> { s.other <<= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
     }
   ]
 }
