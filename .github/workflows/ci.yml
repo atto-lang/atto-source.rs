@@ -79,6 +79,11 @@ jobs:
           set -euo pipefail
           bash tests/private-ci-export-policy-guard-test.sh
           bash scripts/private-ci-export-policy-guard.sh .github/private-ci-approved-repositories.txt
+      - name: Audit explicit browser Rust test targets and native-only exclusions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-browser-cargo-tests.mjs
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
