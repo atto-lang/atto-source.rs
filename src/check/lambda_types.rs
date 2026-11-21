@@ -51,7 +51,11 @@ pub fn check_noncapturing(
         depth: 0, statement_depth: 0,
     };
     for (name, ty) in names.iter().zip(types) {
-        ctx.bind(name, *ty, false, lambda.pos)?;
+        // `_` consumes one argument but must never create a readable local.
+        // In particular |_, _| is legal and referring to `_` stays unbound.
+        if name != "_" {
+            ctx.bind(name, *ty, false, lambda.pos)?;
+        }
     }
     let complete = match body {
         LambdaBody::Expression(e) => {
