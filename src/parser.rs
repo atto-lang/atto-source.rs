@@ -2242,25 +2242,34 @@ impl Parser {
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
-    /// A guard is an else-free early-exit check. Its failure branch runs only
-    /// when the predicate is false, and every path through that branch must
-    /// leave the enclosing function. Lower to an ordinary typed 'if !cond'
-    /// so the existing Rust/Wasm checker and emitter enforce bool typing,
-    /// checked effects, lexical scoping, and exactly-once predicate evaluation.
+    /// Both guard spellings execute the same terminal failure branch only
+    /// when the predicate is false: `guard cond { ... }` and
+    /// `guard cond else ... end`. Lower both to the existing typed 'if !cond'
+    /// path to preserve bool typing, effect/ownership checks, lexical scope,
+    /// cleanup and exactly-once predicate evaluation.
     fn parse_guard(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("guard")?;
         let predicate = self.parse_cond_head()?;
-        if *self.peek() != Tok::LBrace {
+        let failure = if *self.peek() == Tok::LBrace {
+            let failure = self.parse_block()?;
+            // Mixing the brace and keyword delimiters creates an ambiguous
+            // second branch. Keep the original explicit diagnostic.
+            if self.is_word("else") {
+                return Err(Diagnostic::new(self.pos(), "E_GUARD_ELSE_NOT_REQUIRED",
+                    "braced guard already contains its failure block; do not append 'else'"));
+            }
+            failure
+        } else if self.eat_word("else") {
+            // parse_stmts_until handles nested if/guard/loop boundaries rather
+            // than stealing their 'end' or the surrounding if's 'else'/'fi'.
+            let failure = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            failure
+        } else {
             return Err(Diagnostic::new(self.pos(), "E_GUARD",
-                "guard requires a braced failure branch"));
-        }
-        let failure = self.parse_block()?;
-        // The guard contract has no Swift-style else arm; diagnose it here.
-        if self.is_word("else") {
-            return Err(Diagnostic::new(self.pos(), "E_GUARD_ELSE_NOT_REQUIRED",
-                "guard already uses its braced body as the failure branch; remove 'else'"));
-        }
+                "guard requires '{ ... }' or 'else ... end' failure branch"));
+        };
         if !guard_failure_exits(&failure) {
             return Err(Diagnostic::new(pos, "E_GUARD",
                 "guard failure branch must exit the enclosing function on every path"));
