@@ -448,12 +448,23 @@ const chains = {
   float: n => M(`  val f = ${Array(n).fill('1.5').join(' * ')};\n  return 0;`),
   elif: n => M(`  val x = ${n - 1};\n  if x eq 0 then return 0;\n${Array.from({ length: n - 1 }, (_, i) => `  elif x eq ${i + 1} then return ${i + 1};\n`).join('')}  fi\n  return -1;`),
 };
+// Parser syntax depth (256) is not a promise that every recursive guest
+// layout/checker walk can safely execute to that same depth. Keep the
+// executable budget conservative and separately prove fail-closed admission.
+const guestDepthLimitedChains = new Set(['add', 'mul', 'cmp', 'eq', 'concat', 'float']);
 for (const [name, make] of Object.entries(chains)) {
   check(`limits/chain-${name}-within-budget`, () => {
-    const r = compile(make(250));
+    const r = compile(make(guestDepthLimitedChains.has(name) ? 64 : 250));
     assert.equal(r.ok, true, r.message);
     runGuest(r.wasm);
   });
+  if (guestDepthLimitedChains.has(name)) {
+    check(`limits/chain-${name}-above-guest-budget-fails-closed`, () => {
+      const r = compile(make(250));
+      assert.equal(r.code, 'E_NESTING');
+      assert.equal(r.ok, false);
+    });
+  }
   check(`limits/chain-${name}-over-budget-fails-closed`, () => {
     assert.equal(compile(make(300)).code, 'E_NESTING');
   });
@@ -466,12 +477,19 @@ const memberChains = {
   'member-chain-typed': n => `pub fnc main(): int { val a = 1; return a${'.b'.repeat(n)}; }`,
 };
 check('limits/method-chain-within-budget-executes', () => {
-  const r = compile(memberChains['method-chain-runs'](240));
+  const r = compile(memberChains['method-chain-runs'](64));
   assert.equal(r.ok, true, r.message);
   assert.equal(runGuest(r.wasm).value, 1n);
 });
 check('limits/member-chain-within-budget-is-a-diagnostic-not-a-trap', () => {
-  assert.equal(compile(memberChains['member-chain-typed'](240)).code, 'E_TYPE');
+  assert.equal(compile(memberChains['member-chain-typed'](64)).code, 'E_TYPE');
+});
+check('limits/member-and-method-chains-beyond-guest-budget-reject', () => {
+  for (const make of Object.values(memberChains)) {
+    const r = compile(make(240));
+    assert.equal(r.code, 'E_NESTING');
+    assert.equal(r.ok, false);
+  }
 });
 for (const [name, make] of Object.entries(memberChains)) {
   check(`limits/${name}-over-budget-fails-closed`, () => {
