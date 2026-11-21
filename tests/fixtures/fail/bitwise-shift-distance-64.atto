@@ -1,0 +1,3 @@
+// expect-error: E_SHIFT_DISTANCE
+// Literal shift distances outside 0..63 are compile-time errors.
+pub fnc main(): int { return 1 <<< 64; }
