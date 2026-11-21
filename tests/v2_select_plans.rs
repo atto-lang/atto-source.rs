@@ -60,3 +60,34 @@ fn standalone_plan_select_statements_compile_but_discarding_nb_is_denied() {
         assert_eq!(diagnostic.code, code, "{statement}: {diagnostic}");
     }
 }
+
+#[test]
+fn nonblocking_select_gets_a_guest_scheduler_even_when_main_is_not_suspends() {
+    // An unrelated suspends declaration explicitly opts in to v2, while the
+    // sync main creates a task through __plan_nb. Entry selection happens
+    // before the runtime prelude is lowered: this is a regression for a
+    // hidden task whose scheduler dependency was previously missed.
+    let source = r#"
+suspends fnc opt_in(): int { return 1; }
+pub fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  val plan = SelectPlan.from_list([SelectCase.read(ch)]);
+  val Future<Option<SelectResult>> pending = nb select first from plan;
+  writech ch, 42;
+  return 42;
+}
+"#;
+    let p = atto_compiler::v2::parse::Parser::new(
+        atto_compiler::lexer::lex(source).expect("source lexer")
+    ).parse_program().expect("source parser");
+    let runtime = include_str!("../src/v2/prelude.atto");
+    let prelude = atto_compiler::v2::parse::Parser::new(
+        atto_compiler::lexer::lex(runtime).expect("runtime lexer")
+    ).parse_program().expect("runtime parser");
+    let module = atto_compiler::v2::check::check(&p, &prelude)
+        .expect("v2 lowering must admit bounded plan");
+    assert_eq!(module.fns[module.main as usize].name, "atto.start",
+        "a nested __plan_nb task must trigger the scheduler at entry selection");
+    let wasm = atto_compiler::compile(source).expect("real Wasm compilation");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+}
