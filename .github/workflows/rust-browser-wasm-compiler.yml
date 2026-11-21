@@ -1,25 +1,12 @@
 name: Rust-to-Wasm browser compiler exact-head guest
 
 on:
+  # Always test code, test-only, manifest, and CI-script changes. Avoid
+  # a path-filter blind spot that would silently skip compiler regressions.
   pull_request:
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'tests/fixtures/pass/**'
-      - 'tests/fixtures/fail/**'
-      - 'tests/rust_browser_compiler_e2e.mjs'
-      - 'ci/verify-rust-browser-wasm.sh'
-      - '.github/workflows/rust-browser-wasm-compiler.yml'
   push:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'tests/rust_browser_compiler_e2e.mjs'
-      - 'ci/verify-rust-browser-wasm.sh'
-      - '.github/workflows/rust-browser-wasm-compiler.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
