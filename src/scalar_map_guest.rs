@@ -19,7 +19,9 @@ use crate::fixed_sequence_guest::{generated_class, item_field, scalar_type, PRIV
 
 const MAX_ENTRIES: usize = 4;
 const MAX_BINDINGS: usize = 32;
-const MAX_DEPTH: usize = 64;
+// Keep the static Map projection walker within the parser's admitted tree
+// height; ordinary scalar chains must not inherit a 64-node Map-only limit.
+const MAX_DEPTH: usize = crate::parser::MAX_TREE_HEIGHT as usize;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum StaticKey {
