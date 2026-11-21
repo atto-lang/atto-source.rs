@@ -232,3 +232,50 @@ fn typed_signature_preserves_binding_without_changing_nominal_method_identity() 
     assert_eq!(&self_sig, this_sig,
         "renaming a receiver does not change its typed method signature");
 }
+
+#[test]
+fn nested_receiver_arguments_cannot_bypass_sealed_state_checks() {
+    for (body, code) in [
+        ("this.send(this.state.counter);", "E_SEALED"),
+        ("this.send(this.unknown());", "E_UNBOUND"),
+        ("this.send(this);", "E_ESCAPE"),
+        ("return this;", "E_ESCAPE"),
+        ("this.send(this.send(this.state.counter));", "E_SEALED"),
+        ("this.send(this.handle_state(critical-write |s| -> { s.other = 1; }));",
+         "E_MUTABILITY"),
+        ("this.send(this.handle_state(critical-read |s| -> { s.counter = 1; }));",
+         "E_READONLY"),
+    ] {
+        let src = format!("declare actor Foo; mtd (Foo mut this.state.counter) f(): void {{ {body} }}");
+        reject(&src, code);
+    }
+    let allowed = "declare actor Foo; mtd (Foo this) foo(): int { return 4; }\n\
+        mtd (Foo this) bar(): void { this.send(this.foo()); this.send(this.send(41)); }";
+    assert_eq!(parse(allowed).receivers.len(), 2);
+}
+
+#[test]
+fn nested_critical_state_projections_fail_closed_in_both_modes() {
+    for mode in ["read", "write"] {
+        for body in [
+            "s.other.child = 1;",
+            "s.other[0] = 1;",
+            "s.other.method();",
+            "s.other.child;",
+        ] {
+            let src = format!(
+                "declare actor Foo; mtd (Foo mut this.state.counter) f(): void {{ \
+                 this.handle_state(critical-{mode} |s| -> {{ {body} }}); }}"
+            );
+            reject(&src, "E_UNSUPPORTED");
+        }
+    }
+}
+
+#[test]
+fn discarded_receiver_and_unproven_receiver_escapes_are_rejected() {
+    reject("declare actor Foo; mtd (Foo _) f(): void { _.send(1); }", "E_UNBOUND");
+    reject("declare actor Foo; mtd (Foo _) f(): void { _.handle_state(critical-read |s| -> { s.counter; }); }",
+        "E_UNBOUND");
+    reject("declare actor Foo; mtd (Foo this) f(): void { this.send(this); }", "E_ESCAPE");
+}
