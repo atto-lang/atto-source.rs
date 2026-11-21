@@ -25,6 +25,7 @@ pub mod collection_layout_type;
 // checker. Do not edit its SHA-pinned body for Clippy-only style changes.
 #[allow(clippy::needless_return)]
 pub mod copy_graph_v1;
+mod checked_const_i64;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;

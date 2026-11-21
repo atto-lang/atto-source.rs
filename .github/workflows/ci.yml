@@ -41,6 +41,10 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Verify const-overflow admission versus checked guest traps
+        env:
+          ATTOC: target/release/attoc
+        run: node --test tests/checked-const-overflow-guest.mjs
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc

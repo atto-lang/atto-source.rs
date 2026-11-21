@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
+use crate::checked_const_i64::{self, Scalar as ConstScalar};
 
 mod generator_lower;
 pub mod lambda_types;
@@ -474,6 +475,8 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Proven typed compile-time scalar bindings only; ordinary locals never enter.
+    const_scalars: BTreeMap<u32, ConstScalar>,
     /// Compiler-issued lexical protected state permissions.
     state_write_scope: bool,
     state_read_scope: bool,
@@ -1804,6 +1807,9 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
             ),
         ));
     }
+    if !actor && f.binding == FieldBinding::Const {
+        let _ = checked_const_i64::evaluate(&v, &BTreeMap::new(), init.pos)?;
+    }
     Ok(Some(v))
 }
 
@@ -2431,6 +2437,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            const_scalars: BTreeMap::new(),
             state_write_scope: false,
             state_read_scope: false,
             imports,
@@ -2631,6 +2638,7 @@ impl<'a> FnCx<'a> {
             for l in ended {
                 self.loans.remove(&l.slot);
                 self.moved.remove(&l.slot);
+                self.const_scalars.remove(&l.slot);
             }
         }
     }
@@ -2709,7 +2717,18 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
+                // Only an explicit const context may turn provable arithmetic
+                // overflow into E_CONST_OVERFLOW. Ordinary val/let/return
+                // expressions must compile to the checked Wasm trap helpers.
+                let constant = if *kind == BindKind::Const {
+                    checked_const_i64::evaluate(&v, &self.const_scalars, init.pos)?
+                } else {
+                    None
+                };
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                if let Some(constant) = constant {
+                    self.const_scalars.insert(slot, constant);
+                }
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
