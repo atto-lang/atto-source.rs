@@ -9,6 +9,10 @@ on:
         description: 'Exact 40-character source PR head SHA; reject drift'
         required: true
         type: string
+      expected_tree:
+        description: 'Exact 40-character Git tree SHA to verify checkout contents'
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -22,22 +26,47 @@ jobs:
         shell: bash
         env:
           EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_TREE: ${{ inputs.expected_tree }}
           DISPATCH_HEAD: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_REF_TYPE: ${{ github.ref_type }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          RUNNER_NAME: ${{ runner.name }}
+          SELECTED_RUNNER_LABEL: ${{ vars.ATTO_PRIVATE_RUST_RUNNER_LABEL }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]]
           test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"
+          test "$SOURCE_REPOSITORY" = "atto-lang/atto-source.rs"
+          test "$SOURCE_REF_TYPE" = "branch"
+          test -n "$SELECTED_RUNNER_LABEL"
+          test "$RUNNER_ENVIRONMENT" = "self-hosted"
+          test -n "$RUNNER_NAME"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Bind checkout to exact head/tree
+        shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_TREE: ${{ inputs.expected_tree || '' }}
+          SOURCE_EVENT: ${{ github.event_name }}
         run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          git rev-parse HEAD
-          git rev-parse HEAD^{tree}
+          ACTUAL_TREE=$(git rev-parse 'HEAD^{tree}')
+          [[ "$ACTUAL_TREE" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$SOURCE_EVENT" == "workflow_dispatch" ]]; then
+            [[ "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]]
+            test "$ACTUAL_TREE" = "$EXPECTED_TREE"
+          fi
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code HEAD --
+          test "$(git write-tree)" = "$ACTUAL_TREE"
+          printf 'EXACT_SOURCE_VERIFIED head=%s tree=%s\n' "$EXPECTED_HEAD" "$ACTUAL_TREE"
       - name: Verify byte-identical canonical AOT copy admission source
         shell: bash
         run: |
