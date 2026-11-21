@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {verifyScalarGuestValue,verifyCheckedPanicGuest} from './compiler-smoke-guest-oracle.mjs';
-import {readCompilerDiagnostic,verifyCompilerDiagnosticParity} from './compiler-diagnostic.mjs';
+import {readWasmCompilerFailure,verifyCompilerDiagnosticParity} from './compiler-diagnostic.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const native=resolve(process.env.ATTOC||join(root,'target/release/attoc'));
 const compiler=resolve(process.env.ATTO_WASM_COMPILER||
@@ -35,7 +35,6 @@ const tests=[
   ['fail','return-first-bullet-lookalike.atto','E_TOKEN'],
   ['fail','return-first-lookalike-middle-dot','E_TOKEN',
     'int· answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
-  // U+203F undertie and U+2027 hyphenation point are distinct lookalikes.
   ['fail','return-first-lookalike-undertie','E_TOKEN',
     'int‿ answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
   ['fail','return-first-lookalike-hyphenation-point','E_TOKEN',
@@ -77,9 +76,7 @@ function wasmCompile(api,source){
   const status=api.compile(bytes.length);
   assert.ok(status===0||status===1,'unexpected compile return status');
   if(status){
-    assert.equal(api.result_length(),0,'compiler published rejected guest bytes');
-    return {ok:false,message:readCompilerDiagnostic(api.memory,api.error_ptr()),
-      line:api.error_line_number(),col:api.error_column_number()};
+    return readWasmCompilerFailure(api);
   }
   const ptrOut=api.result_ptr(),len=api.result_length();
   assert.ok(len>=8&&len<=1048576&&ptrOut>=0&&ptrOut+len<=api.memory.buffer.byteLength,'guest result bounds');

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readCompilerDiagnostic, verifyCompilerDiagnosticParity} from '../scripts/compiler-diagnostic.mjs';
+import {readCompilerDiagnostic, readWasmCompilerFailure, verifyCompilerDiagnosticParity} from '../scripts/compiler-diagnostic.mjs';
 
 function memory() { return new WebAssembly.Memory({initial: 1, maximum: 1}); }
 
@@ -69,4 +69,33 @@ test('native and wasm32 diagnostics reject wrong codes and malformed ABI fields'
     message:'E_ARITY: bad\nline'},'E_ARITY'),/invalid diagnostic format/);
   assert.throws(()=>verifyCompilerDiagnosticParity(stderr,'bad\nlabel',diagnostic,
     'E_ARITY'),/invalid native source label/);
+});
+
+
+test('wasm32 rejection exposes exact diagnostic coordinates and never guest bytes', () => {
+  const mem=memory(), bytes=new Uint8Array(mem.buffer);
+  const message='E_TOKEN: unexpected Unicode delimiter';
+  bytes.set(new TextEncoder().encode(message+'\0'), 97);
+  const api={
+    memory:mem,
+    result_length:()=>0,
+    error_ptr:()=>97,
+    error_line_number:()=>2,
+    error_column_number:()=>4
+  };
+  assert.deepEqual(readWasmCompilerFailure(api),{
+    ok:false, message, line:2, col:4
+  });
+  assert.deepEqual(verifyCompilerDiagnosticParity(
+    'program.atto: 2:4: '+message+'\n',
+    'program.atto', readWasmCompilerFailure(api), 'E_TOKEN'
+  ),{code:'E_TOKEN',line:2,col:4,message});
+  assert.throws(()=>readWasmCompilerFailure({...api,result_length:()=>8}),
+    /rejected source produced guest bytes/);
+  assert.throws(()=>readWasmCompilerFailure({...api,error_column_number:undefined}),
+    /E_COMPILER_ABI/);
+  assert.throws(()=>readWasmCompilerFailure({...api,error_line_number:()=>NaN}),
+    /E_COMPILER_ABI/);
+  assert.throws(()=>readWasmCompilerFailure({...api,error_column_number:()=>-1}),
+    /E_COMPILER_ABI/);
 });
