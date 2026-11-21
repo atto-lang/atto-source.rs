@@ -86,15 +86,15 @@ fn parse_layout(value: &[Token], pos: Pos) -> Result<Layout, Diagnostic> {
         Token { tok: Tok::RParen, .. },
     ] = value {
         if name == "aosoa" {
-            return if *n >= 1 && *n <= MAX_AOSOA_LANES {
+            return if *n >= 1 && *n <= MAX_AOSOA_LANES && n.is_power_of_two() {
                 Ok(Layout::Aosoa(*n as u16))
             } else {
-                Err(error(pos, "E_LAYOUT_SIZE", "aosoa block size must be in 1..=1024"))
+                Err(error(pos, "E_LAYOUT_SIZE", "aosoa block size must be a power of two in 1..=1024"))
             };
         }
     }
     if matches!(value.first().map(|t| &t.tok), Some(Tok::Ident(name)) if name == "aosoa") {
-        return Err(error(pos, "E_LAYOUT_SIZE", "aosoa requires a constant positive integer block size in 1..=1024"));
+        return Err(error(pos, "E_LAYOUT_SIZE", "aosoa requires a constant power-of-two block size in 1..=1024"));
     }
     Err(error(pos, "E_LAYOUT_VALUE", "expected aos, soa or aosoa(<constant positive lanes>)"))
 }
@@ -223,6 +223,9 @@ mod tests {
             ("Array<Particle, layout=unknown>", "E_LAYOUT_VALUE"),
             ("Array<Particle, layout=aosoa(0)>", "E_LAYOUT_SIZE"),
             ("Array<Particle, layout=aosoa(1025)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(3)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(7)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(1023)>", "E_LAYOUT_SIZE"),
             ("Array<Particle, layout=aosoa(n)>", "E_LAYOUT_SIZE"),
             ("Array<Particle, xyz=1, layout=soa>", "E_GENERIC_NAME"),
             ("Array<layout=soa>", "E_GENERIC_ARITY"),
