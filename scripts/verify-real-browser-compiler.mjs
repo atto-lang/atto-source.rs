@@ -13,7 +13,23 @@ const compiler=resolve(process.env.ATTO_WASM_COMPILER||
   join(root,'target/wasm32-unknown-unknown/release/atto_compiler.wasm'));
 const sha=x=>createHash('sha256').update(x).digest('hex');
 const decoder=new TextDecoder('utf-8',{fatal:true});
-const tests=[['pass','01-answer.atto',42n],['fail','02-param-reassign.atto','E_IMMUTABLE'],['fail','23-no-main.atto','E_ENTRY'],['pass','01-answer.atto',42n]];
+// Explicit contract-backed, independent positive and negative programs.
+// Do not let a repeated success fixture masquerade as broader guest coverage.
+const tests=[
+  ['pass','01-answer.atto',42n],
+  ['pass','02-spec-ch16-add.atto',42n],
+  ['pass','03-arrow-return.atto',42n],
+  ['pass','04-binding-forms.atto',52n],
+  ['pass','06-precedence.atto',120n],
+  ['pass','19-recursion-fib.atto',55n],
+  ['fail','01-val-reassign.atto','E_IMMUTABLE'],
+  ['fail','02-param-reassign.atto','E_IMMUTABLE'],
+  ['fail','03-unknown-name.atto','E_UNBOUND'],
+  ['fail','09-call-arity.atto','E_ARITY'],
+  ['fail','23-no-main.atto','E_ENTRY']
+];
+assert.equal(new Set(tests.map(([kind,name])=>kind+'/'+name)).size,tests.length,
+  'smoke matrix contains duplicate source fixtures');
 function file(path){assert.ok(existsSync(path),'missing real compiler/fixture: '+path);return readFileSync(path)}
 function wasmInstance(){
   const bytes=file(compiler);
@@ -67,9 +83,15 @@ try{
   for(let i=0;i<tests.length;i++){
     const [kind,name,oracle]=tests[i],src=join(root,'tests/fixtures',kind,name);
     const content=file(src),output=join(tmp,String(i)+'.wasm');
+    const source=decoder.decode(content);
+    const annotation=source.match(kind==='pass'
+      ? /^\\/\\/ expect-exit:\\s*(\\d+)\\s*$/m
+      : /^\\/\\/ expect-error:\\s*(E_[A-Z0-9_]+)\\s*$/m);
+    assert.ok(annotation,'missing fixture expectation: '+name);
+    assert.equal(annotation[1],String(oracle),'smoke expectation drift: '+name);
     const cp=spawnSync(native,[src,'-o',output],{cwd:root,encoding:'utf8',timeout:20000,maxBuffer:1048576,shell:false});
     assert.ifError(cp.error);assert.equal(cp.signal,null,'native compiler terminated by signal');
-    const wasm=wasmCompile(api,decoder.decode(content));
+    const wasm=wasmCompile(api,source);
     if(kind==='pass'){
       assert.equal(cp.status,0,'native rejected '+name+': '+cp.stderr);
       assert.equal(wasm.ok,true,'wasm32 compiler rejected '+name);
