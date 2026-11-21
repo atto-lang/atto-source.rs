@@ -32,6 +32,7 @@ fi
 export CHROME_BIN
 
 rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+rustup component add rustfmt --toolchain 1.85.1
 cargo +1.85.1 fmt --all --check
 cargo +1.85.1 test --locked --test v2_select_plans
 cargo +1.85.1 test --locked
