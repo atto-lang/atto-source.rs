@@ -35,26 +35,8 @@ jobs:
           rustup component add clippy --toolchain 1.85.1
           rustup default 1.85.1
           rustc --version
-      - name: Test native compiler core over the fixture corpus
-        env:
-          RUST_MIN_STACK: "16777216"
-        run: cargo test --locked --verbose
-      - name: Strict Rust Clippy all targets
-        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
-      - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
-        env:
-          ATTOC: target/release/attoc
-        run: node tests/aot_no_fallback_guest.mjs
-      - name: Execute real native-compiled output I/O shorthand guest in Wasm
-        env:
-          ATTOC: target/release/attoc
-        run: node tests/io_shorthand_guest.mjs
-      - name: Execute bitwise operators in native-generated Wasm guests
-        env:
-          ATTOC: target/release/attoc
-        run: node tests/bitwise_guest.mjs
       - name: Build actual Rust wasm32 compiler within public 1 MiB artifact budget
         env:
           CARGO_PROFILE_RELEASE_OPT_LEVEL: z
@@ -70,6 +52,24 @@ jobs:
           ATTOC: target/release/attoc
           ATTO_WASM_COMPILER: target/wasm32-unknown-unknown/release/atto_compiler.wasm
         run: node scripts/verify-real-browser-compiler.mjs
+      - name: Test native compiler core over the fixture corpus
+        env:
+          RUST_MIN_STACK: "16777216"
+        run: cargo test --locked --verbose
+      - name: Strict Rust Clippy all targets
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/aot_no_fallback_guest.mjs
+      - name: Execute real native-compiled output I/O shorthand guest in Wasm
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/io_shorthand_guest.mjs
+      - name: Execute bitwise operators in native-generated Wasm guests
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/bitwise_guest.mjs
       - name: Compile exact bitwise preview inside browser Wasm compiler and compare native guest bytes
         env:
           ATTOC: target/release/attoc
