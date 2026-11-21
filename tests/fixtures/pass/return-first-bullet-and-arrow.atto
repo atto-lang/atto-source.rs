@@ -1,0 +1,14 @@
+// expect-exit: 42
+int• bullet_answer()
+begin
+  return 42;
+end
+
+fnc int <- arrow_answer()
+begin
+  return 42;
+end
+
+pub fnc main(): int {
+  return bullet_answer() + arrow_answer() - 42;
+}
