@@ -237,6 +237,8 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
+    /// A ternary's middle arm must leave ':' to its ternary separator.
+    ascription_colon: bool,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
     /// Canonically interned nominal Array<T, layout=...> type parameters.
@@ -311,6 +313,7 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
+            ascription_colon: true,
             type_names: Vec::new(),
             array_types: Vec::new(),
             in_generator: false,
@@ -3103,7 +3106,29 @@ impl Parser {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
-        let r = self.parse_ternary();
+        let r = (|| -> R<Expr> {
+            let mut expr = self.parse_ternary()?;
+            let mut links = 0u32;
+            loop {
+                let pos = self.pos();
+                let is_cast = if self.eat_word("as") {
+                    true
+                } else if self.ascription_colon && self.eat(&Tok::Colon) {
+                    false
+                } else {
+                    break;
+                };
+                let want = self.parse_type()?;
+                if want == Type::Void {
+                    return Err(Diagnostic::new(pos, "E_TYPE", "a value expression cannot be ascribed void"));
+                }
+                self.grow(1)?;
+                links += 1;
+                expr = Expr { kind: ExprKind::Ascribe(Box::new(expr), want, is_cast), pos };
+            }
+            self.height -= links;
+            Ok(expr)
+        })();
         self.cond = saved;
         self.leave();
         r
@@ -3145,7 +3170,14 @@ impl Parser {
             Tok::Question => {
                 let pos = self.pos();
                 self.advance();
-                let a = self.parse_expr()?;
+                // The first ':' belongs to `?:`, not an expression ascription.
+                // `as T` remains available in the middle arm; `: T` can be
+                // written inside an explicitly parenthesized subexpression.
+                let old = self.ascription_colon;
+                self.ascription_colon = false;
+                let a = self.parse_expr();
+                self.ascription_colon = old;
+                let a = a?;
                 self.expect(Tok::Colon, "':'")?;
                 self.enter()?;
                 let b = self.parse_ternary();
