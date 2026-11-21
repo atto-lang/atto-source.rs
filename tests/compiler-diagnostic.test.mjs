@@ -66,7 +66,7 @@ test('native and wasm32 diagnostics reject wrong codes and malformed ABI fields'
   assert.throws(()=>verifyCompilerDiagnosticParity(stderr,label,{...diagnostic,ok:true},
     'E_ARITY'),/explicit diagnostic result/);
   assert.throws(()=>verifyCompilerDiagnosticParity(stderr,label,{...diagnostic,
-    message:'E_ARITY: bad\\nline'},'E_ARITY'),/invalid diagnostic format/);
+    message:'E_ARITY: bad\nline'},'E_ARITY'),/invalid diagnostic format/);
   assert.throws(()=>verifyCompilerDiagnosticParity(stderr,'bad\nlabel',diagnostic,
     'E_ARITY'),/invalid native source label/);
 });
