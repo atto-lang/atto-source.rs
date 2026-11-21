@@ -78,7 +78,12 @@ test('actor worker rejects stale close and does not fabricate DONE',()=>{
 });
 
 test('missing or invalid incarnation cannot publish READY',()=>{
-  for(const bad of [undefined,0,-1,1.5,Number.MAX_SAFE_INTEGER+1,'2']) {
+  const missing=createChild();
+  const without=init();
+  delete without.incarnation;
+  missing.send(without);
+  assert.equal(missing.messages.at(-1).message,'E_ACTOR_INCAR_INVALID');
+  for(const bad of [null,0,-1,1.5,Number.MAX_SAFE_INTEGER+1,'2']) {
     const w=createChild();
     w.send(init(bad));
     assert.equal(w.messages.at(-1).kind,'error');
