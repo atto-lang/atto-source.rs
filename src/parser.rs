@@ -196,6 +196,7 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
         "Record" | "record" => Some("Record"),
         "Map" | "map" => Some("Map"),
         "List" | "list" => Some("List"),
+        "Vector" | "vector" => Some("Vector"),
         "Array" | "array" => Some("Array"),
         "Tuple" | "tuple" => Some("Tuple"),
         "Pair" | "pair" => Some("Pair"),
@@ -529,7 +530,7 @@ impl Parser {
                 }
                 let correct_arity = match builtin {
                     "Record" => !generic || closed_row.is_some(),
-                    "Array" | "List" => !generic || args.len() == 1,
+                    "Array" | "List" | "Vector" => !generic || args.len() == 1,
                     "Map" => !generic || args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
                     "Pair" | "Entry" => generic && args.len() == 2,
