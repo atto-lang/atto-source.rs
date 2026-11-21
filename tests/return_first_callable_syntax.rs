@@ -14,6 +14,9 @@ const INT_FORMS: &[&str] = &[
     "int <- calculate(int x) return x * 2; end",
     "int <- calculate(int x) begin return x * 2; end",
     "fnc int <- calculate(int x) begin return x * 2; end",
+    "fnc int <- calculate(int x) ::\n  return x * 2;\nend",
+    "int <- calculate(int x) ::\n  return x * 2;\nend",
+    "fnc int• calculate(int x) ::\n  return x * 2;\nend",
     "int• calculate(int x) { return x * 2; }",
     "fnc int• calculate(int x) begin return x * 2; end",
     "int• calculate(int x) return x * 2; end",
@@ -222,5 +225,29 @@ fn return_first_out_of_line_class_method_compiles_through_checked_guest_lowering
         let guest = compile(&src).unwrap_or_else(|e|
             panic!("return-first out-of-line class method {body}: {e}"));
         assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn return_first_colon_colon_is_explicit_statement_body_and_needs_a_newline() {
+    for decl in [
+        "fnc int <- answer() ::\\n  return 42;\\nend",
+        "int• answer() ::\\n  return 42;\\nend",
+        "fnc int • answer() ::\\n  return 42;\\nend",
+    ] {
+        let src = format!("{decl}\\npub fnc main(): int {{ return answer(); }}");
+        let wasm = compile(&src).unwrap_or_else(|err| panic!("{decl}: {err}"));
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+    for (decl, expected) in [
+        ("int <- answer() :: return 42; end", "E_SYNTAX"),
+        ("int <- answer() ::\\n  return 42;", "E_EOF"),
+        ("int <- answer() ::\\n :: return 42; end", "E_SYNTAX"),
+        ("int <- answer() ::\\n { return 42; }", "E_SYNTAX"),
+        ("int <- answer() ::\\n  42; end", "E_RETURN"),
+    ] {
+        let src = format!("{decl}\\npub fnc main(): int {{ return 0; }}");
+        let err = compile(&src).expect_err("invalid return-first :: body");
+        assert_eq!(err.code, expected, "{decl}: {err}");
     }
 }
