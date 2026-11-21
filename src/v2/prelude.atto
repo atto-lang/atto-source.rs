@@ -474,6 +474,38 @@ fnc __actor_link(int a, int b): int {
   return a;
 }
 
+// Checked two-actor DATA connection: only a fresh unicast pair of declared
+// actor ports may connect in this guest-memory prototype. No queue, port or
+// graph edge is mutated on Err. Handle + Result allocation happen BEFORE the
+// single publication of both endpoint owner slots. There is no scheduler
+// yield between preflight and commitment; bridge delivery uses the actor's
+// existing cooperative bounded mailbox and never a host blocking thread.
+// This is NOT an inter-TenantVM channel, nor a production capability token.
+// Err: 1 invalid alias, 3 closed, 4 source occupied, 5 sink occupied,
+// 7 sink already has output.
+fnc __actor_link_try(int src, int dst): int {
+  if src == 0 then return __box(1, 1); fi
+  if dst == 0 then return __box(1, 1); fi
+  if src == dst then return __box(1, 1); fi
+  if __load(__load(src, 0), 32) != 0 then return __box(1, 3); fi
+  if __load(__load(dst, 0), 32) != 0 then return __box(1, 3); fi
+  if __load(src, 8) != 0 then return __box(1, 4); fi
+  if __load(src, 48) != 0 then return __box(1, 4); fi
+  if __load(dst, 48) != 0 then return __box(1, 5); fi
+  if __load(dst, 8) != 0 then return __box(1, 7); fi
+  val handle = __alloc(32);
+  __store(handle, 0, src);
+  __store(handle, 8, 0); // no middle channel
+  __store(handle, 16, dst);
+  __store(handle, 24, 0); // no bridge task needed
+  val accepted = __box(0, handle);
+  // All potentially failing operations are complete. Publish in this
+  // uninterrupted guest turn only; no provisional edge on Err.
+  __store(dst, 48, src);
+  __store(src, 8, dst);
+  return accepted;
+}
+
 // Atomic preflight for the canonical 3-stage actor-Channel-actor DATA graph.
 // The compiler evaluates each lexical stage once and supplies source, channel,
 // sink in DATA order for both pipe and rpipe. No actor/channel route is
