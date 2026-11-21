@@ -75,6 +75,9 @@ pub mod target_typed;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;
+/// Explicitly opt-in experimental single-domain v2 guest compiler.
+/// Not selected by the default playground or project/package compiler.
+pub mod v2;
 
 pub use diag::{Diagnostic, Pos};
 
@@ -85,6 +88,23 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     compile_inner(source, None)
+}
+
+/// Explicit standalone v2 guest-memory compilation. Does NOT enable a
+/// legacy-error fallback, external imports, TenantVM execution or the
+/// public browser/Pages compiler. The mainline lexer keeps removed syntax
+/// operators disabled even when this experimental path is selected.
+pub fn compile_experimental_v2(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_SOURCE_LIMIT", format!("source exceeds {SOURCE_CAP} UTF-8 bytes")));
+    }
+    let wasm_bytes = v2::compile(lexer::lex(source)?)?;
+    if wasm_bytes.len() > wasm::MAX_OUTPUT {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+    }
+    Ok(wasm_bytes)
 }
 
 /// Compile with a caller-supplied logical, package-relative source file path.

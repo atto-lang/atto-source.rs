@@ -1,0 +1,33 @@
+// EXPERIMENTAL v2 guest-only READY and DONE Futures; not TenantVM parity.
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void { emit(mail.value); }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void { stdio.println(mail.value); }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  // A checked DATA graph is admitted immediately, without Future.all.
+  val channel = Channel<int>.bounded(1);
+  val Result<PipeHandle, PipeSetupError> connection =
+      producer pipe! channel pipe! consumer;
+  val int admitted = match connection over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if admitted != 1 then return 92; fi
+  val ready_future = producer.get_ready();
+  val finished = producer.get_done();
+  // Resumable nonterminal await: source statements continue after READY.
+  await ready_future;
+  await consumer.get_ready();
+  producer.send(40);
+  producer.send(2);
+  stop! producer;
+  await finished;
+  await consumer.get_done();
+  return 42;
+}

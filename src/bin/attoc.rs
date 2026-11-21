@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 enum Input {
     Single(String),
+    Experimental(String),
     Check(String),
     Discovered(String),
     Package { root: String, entry: String },
@@ -15,17 +16,20 @@ enum Input {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
+    eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --experimental-v2 <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
     ExitCode::from(2)
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if matches!(args.as_slice(), [flag] if flag == "--help" || flag == "-h") {
-        println!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
+        println!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --experimental-v2 <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
         return ExitCode::SUCCESS;
     }
     let (input, output) = match args.as_slice() {
+        [flag, entry] if flag == "--experimental-v2" => (Input::Experimental(entry.clone()), None),
+        [flag, entry, o, out] if flag == "--experimental-v2" && o == "-o" =>
+            (Input::Experimental(entry.clone()), Some(out.clone())),
         [flag, entry] if flag == "--check" => (Input::Check(entry.clone()), None),
         [i] if !i.starts_with('-') => (Input::Single(i.clone()), None),
         [i, o, out] if !i.starts_with('-') && o == "-o" => (Input::Single(i.clone()), Some(out.clone())),
@@ -47,6 +51,14 @@ fn main() -> ExitCode {
     };
     let check_only = matches!(&input, Input::Check(_));
     let (label, compiled) = match input {
+        Input::Experimental(path) => {
+            let result = std::fs::read_to_string(&path)
+                .map_err(|_| atto_compiler::Diagnostic::new(
+                    atto_compiler::Pos { line: 1, col: 1 },
+                    "E_SOURCE", "cannot read UTF-8 source"))
+                .and_then(|source| atto_compiler::compile_experimental_v2(&source));
+            (path, result)
+        }
         Input::Single(path) | Input::Check(path) => {
             let source = match std::fs::read(&path).map(String::from_utf8) {
                 Ok(Ok(s)) => s,
