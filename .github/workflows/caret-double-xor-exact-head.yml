@@ -55,7 +55,7 @@ jobs:
       - name: Compile real parser unit and negative/no-artifact fixtures
         env:
           RUST_MIN_STACK: '16777216'
-        run: cargo test --locked --test bitwise_ops --test fixtures
+        run: cargo test --locked --test bitwise_ops --test float_division_ops --test fixtures
       - name: Build production native attoc
         run: cargo build --locked --release --bin attoc
       - name: Execute generated Wasm and prove old caret leaves no artifacts
