@@ -1041,7 +1041,7 @@ fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
             }
             Tok::Comma if expected_close.is_empty() => {
                 if i == open + 1 || i + 1 == close ||
-                    matches!(toks[i-1].tok, Tok::Comma) {
+                    matches!(&toks[i-1].tok, Tok::Comma) {
                     return Err(diagnostic(toks, i, "E_SYNTAX",
                         "empty or trailing top-level method argument"));
                 }
