@@ -116,7 +116,7 @@ impl TypedActorModule {
             // them. Preserve the distinct unsupported-type diagnostic rather
             // than misreporting an already-known family as unknown.
             _ if name.starts_with("Option<") || name.starts_with("Result<")
-                || name.starts_with("Generator<") =>
+                || name.starts_with("Generator<") || name.starts_with("ActorMail<") =>
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                     format!("generic receiver signature type '{name}' is not supported"))),
             _ => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE",
