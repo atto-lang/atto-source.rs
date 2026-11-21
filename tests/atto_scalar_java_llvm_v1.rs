@@ -109,6 +109,7 @@ fn canonical_sources_keep_exact_java_llvm_git_blob_ids() {
         ("negative/removed-double-caret.atto", "7ee99948018e927cce74c9ad0edc1975e4251689"),
     ] {
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().expect("native compiler package must live below repository root")
             .join("contracts/atto-scalar-v1")
             .join(path);
         let hash = std::process::Command::new("git")
