@@ -35,3 +35,27 @@ fn select_plans_reject_unsafe_or_unimplemented_forms_without_emitting_guest() {
         assert_eq!(err.code, code, "{err}");
     }
 }
+
+#[test]
+fn standalone_plan_select_statements_compile_but_discarding_nb_is_denied() {
+    let prefix = r#"pub suspends fnc main(): int {
+        val ch = Channel<int>.bounded(1);
+        val plan = SelectPlan.from_list([SelectCase.read(ch)]);
+        writech ch, 42;
+    "#;
+    for statement in ["select fair from plan;", "try select first from plan;"] {
+        let source = format!("{prefix} {statement} return 42; }}");
+        let guest = atto_compiler::compile(&source)
+            .unwrap_or_else(|e| panic!("{statement}: {e}"));
+        assert!(guest.starts_with(b"\0asm\x01\0\0\0"));
+    }
+    for (statement, code) in [
+        ("nb select fair from plan;", "E_UNSUPPORTED"),
+        ("select { on readch(ch) as value { return value; } }", "E_UNSUPPORTED"),
+    ] {
+        let source = format!("{prefix} {statement} return 42; }}");
+        let diagnostic = atto_compiler::compile(&source)
+            .expect_err("an unverified select form must not emit an executable guest");
+        assert_eq!(diagnostic.code, code, "{statement}: {diagnostic}");
+    }
+}
