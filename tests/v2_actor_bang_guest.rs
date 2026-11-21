@@ -31,10 +31,22 @@ fn checked_bang_and_reverse_spelling_emit_guest_bytes() {
 }
 
 #[test]
-fn direct_bang_without_atomic_checked_abi_fails_before_graph_publication() {
-    bad("val p=spawn Producer(); val c=spawn Consumer(); val edge=p pipe! c; return 0;",
+fn direct_actor_bang_compiles_as_checked_result_instead_of_legacy_link() {
+    for label in [
+        include_str!("fixtures/pass/232-v2-direct-actor-pipe-bang.atto"),
+        include_str!("fixtures/pass/233-v2-direct-actor-rpipe-bang.atto"),
+        include_str!("fixtures/pass/234-v2-direct-actor-bang-duplicate-denied.atto"),
+    ] {
+        let wasm=compile(label).expect("checked direct actor bang must emit Wasm");
+        assert!(wasm.starts_with(b"\0asm"));
+    }
+}
+
+#[test]
+fn non_actor_or_incomplete_checked_graph_must_fail_without_wasm() {
+    bad("val p=spawn Producer(); val edge=p pipe! 42; return 0;",
         "E_UNSUPPORTED");
-    bad("val p=spawn Producer(); val c=spawn Consumer(); val edge=c rpipe! p; return 0;",
+    bad("val p=spawn Producer(); val ch=Channel<int>.bounded(1); val edge=p pipe! ch; return 0;",
         "E_UNSUPPORTED");
 }
 
