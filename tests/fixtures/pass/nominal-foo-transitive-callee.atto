@@ -1,0 +1,25 @@
+// expect-exit: 42
+// Distinct nominal Foo must cross two ordinary Wasm function calls and still
+// satisfy the checked raises Foo upper bound at every step.
+define class Foo extends Error as end
+
+fnc int <- risky(int value)
+raises Foo ::
+  if value > 3 then
+    raise! new Foo();
+  fi
+  return value;
+end
+
+fnc int <- middle(int value)
+raises Foo ::
+  return risky(value);
+end
+
+pub fnc main(): int raises Foo {
+  recover |err, cursor| -> {
+    if err.is_type(Foo) then return 42; fi
+    return 17;
+  };
+  return middle(4);
+}
