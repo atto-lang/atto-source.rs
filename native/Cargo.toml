@@ -106,3 +106,37 @@ path = "../tests/trace_sites.rs"
 [[test]]
 name = "legacy_unary_plus_parity"
 path = "../tests/unary_plus_parity.rs"
+
+# Root-native variants with the same basename as native/tests/ but distinct
+# Git blob contents: execute both, never treat filename equality as coverage.
+[[test]]
+name = "legacy_atto_immutable_parity"
+path = "../tests/atto_immutable_parity.rs"
+
+[[test]]
+name = "legacy_checked_i64_cli"
+path = "../tests/checked_i64_cli.rs"
+
+[[test]]
+name = "legacy_checked_i64_native"
+path = "../tests/checked_i64_native.rs"
+
+[[test]]
+name = "legacy_compiler_boundary_matrix"
+path = "../tests/compiler_boundary_matrix.rs"
+
+[[test]]
+name = "legacy_compiler_numeric_separators_batch4"
+path = "../tests/compiler_numeric_separators_batch4.rs"
+
+[[test]]
+name = "legacy_execution_domain_admission"
+path = "../tests/execution_domain_admission.rs"
+
+[[test]]
+name = "legacy_immutable_binding_parity"
+path = "../tests/immutable_binding_parity.rs"
+
+[[test]]
+name = "legacy_native_object_execution"
+path = "../tests/native_object_execution.rs"
