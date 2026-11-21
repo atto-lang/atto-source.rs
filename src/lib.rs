@@ -299,6 +299,10 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     }
     let program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
+        // Field projections must match a real parsed concrete actor schema.
+        // This is an early fail-closed preflight only. Guest lowering still
+        // requires typed body/effect and CFG lifetime proofs.
+        let _ = target_state_effects::validate_source_actor_state_projections(&headers)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
             // receiver headers into equivalent in-class method tokens, then

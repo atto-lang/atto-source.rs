@@ -208,6 +208,56 @@ impl<'a> LiveStateLoanModel<'a> {
     }
 }
 
+
+/// Result of cross-checking a receiver ceiling against actual parsed actor
+/// fields. These facts must still be re-authenticated by typed layout and
+/// body/effect checking; they do not authorize actor guest compilation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedActorProjection {
+    pub actor: String,
+    pub method: String,
+    pub ceiling: WriteCeiling,
+}
+
+/// Compiler-path preflight: resolve projected receiver field names against the
+/// *actual* actor declaration's fields, not caller-supplied field lists.
+/// Absent concrete actor definitions stay unlinked (and guest-blocked) instead
+/// of fabricating a layout from the receiver's permission declaration.
+pub fn validate_source_actor_state_projections(
+    headers: &crate::target_syntax::TargetHeaders,
+) -> Check<Vec<ParsedActorProjection>> {
+    let mut checked = Vec::new();
+    for receiver in &headers.receivers {
+        if receiver.state_write.is_none() {
+            continue;
+        }
+        let Some(actor) = headers.definitions.iter().find(|actor| actor.name == receiver.owner)
+        else {
+            // No implementation or state schema exists yet. Existing typed
+            // signature lowering refuses these projected receivers.
+            continue;
+        };
+        let names: Vec<&str> = actor.fields.iter().map(|field| field.name.as_str()).collect();
+        let schema = StateLayoutModel::new(&actor.name, &names, receiver.pos)?;
+        let ceiling = schema.receiver_ceiling(receiver)?;
+        if let WriteCeiling::Fields(fields) = &ceiling {
+            for id in fields {
+                if !actor.fields[*id].binding.rebindable() {
+                    return Err(error(receiver.pos, "E_MUTABILITY",
+                        format!("actor state field '{}' is not rebindable",
+                            actor.fields[*id].name)));
+                }
+            }
+        }
+        checked.push(ParsedActorProjection {
+            actor: actor.name.clone(),
+            method: receiver.name.clone(),
+            ceiling,
+        });
+    }
+    Ok(checked)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

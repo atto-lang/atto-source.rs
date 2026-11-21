@@ -365,3 +365,60 @@ fn ordinary_shift_reads_do_not_become_spurious_mutations() {
             "unexpected compiler stage for read-only expression '{expr}': {error}");
     }
 }
+
+#[test]
+fn concrete_actor_field_projections_are_checked_in_real_compiler_preflight() {
+    use atto_compiler::target_state_effects::{
+        validate_source_actor_state_projections, WriteCeiling,
+    };
+    let ok = r#"
+declare actor Meter;
+define actor Meter as
+    let int counter = 0;
+    let int xyz = 0;
+end
+mtd (Meter mut this.state.{counter, xyz}) update(): void {
+    this.handle_state(critical-write |s| -> { s.counter += 1; s.xyz += 1; });
+}
+"#;
+    let headers = parse(ok);
+    let checked = validate_source_actor_state_projections(&headers).unwrap();
+    assert_eq!(checked.len(), 1);
+    assert_eq!(checked[0].actor, "Meter");
+    assert_eq!(checked[0].method, "update");
+    assert!(matches!(&checked[0].ceiling, WriteCeiling::Fields(ids) if ids.len() == 2));
+    assert_eq!(compile(ok).unwrap_err().code, "E_UNSUPPORTED",
+        "resolved names are not typed effects or permission to emit actor Wasm");
+}
+
+#[test]
+fn concrete_actor_projection_unknown_or_readonly_fields_fail_closed() {
+    for (src, code) in [
+        (r#"
+declare actor Meter;
+define actor Meter as let int counter = 0; end
+mtd (Meter mut this.state.missing) write(): void {}
+"#, "E_STATE_FIELD_UNKNOWN"),
+        (r#"
+declare actor Meter;
+define actor Meter as val int counter = 0; end
+mtd (Meter mut this.state.counter) write(): void {}
+"#, "E_MUTABILITY"),
+    ] {
+        let headers = parse(src);
+        let checked = atto_compiler::target_state_effects::
+            validate_source_actor_state_projections(&headers);
+        assert_eq!(checked.unwrap_err().code, code);
+        assert_eq!(compile(src).unwrap_err().code, code,
+            "production compiler must execute schema admission before guest lowering");
+    }
+}
+
+#[test]
+fn forward_only_state_ceiling_cannot_forge_an_authenticated_layout() {
+    let src = "declare actor Meter; mtd (Meter mut this.state.fake) f(): void {}";
+    let headers = parse(src);
+    assert!(atto_compiler::target_state_effects::
+        validate_source_actor_state_projections(&headers).unwrap().is_empty());
+    assert_eq!(compile(src).unwrap_err().code, "E_UNSUPPORTED");
+}
