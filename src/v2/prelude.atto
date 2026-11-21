@@ -411,7 +411,9 @@ fnc __chan_close(int c): void {
 // Actor instance (56-byte prefix): 0 mailbox channel, 8 downstream target,
 // 16 next sequence, 24 downstream kind (0 actor, 1 bounded channel),
 // 32/40 completion Future flag/value, 48 unique incoming pipe owner,
-// then the actor's state fields.
+// 56/64 independent READY Future flag/value, then the actor's state fields.
+// READY is published only after all fields, mailbox, and the cooperative
+// actor receive task have been initialized and registered.
 // This is a SINGLE guest-memory domain; no cross-TenantVM bridge exists.
 
 fnc __mail_send(int a, int v): void {
@@ -609,6 +611,13 @@ suspends fnc __actor_emit(int a, int v): void {
 
 fnc __actor_stop(int a): void {
   __chan_close_internal(__load(a, 0));
+}
+
+fnc __actor_ready(int a): int {
+  // The same independent Future is returned on every observation. A plain
+  // spawn registers the actor before returning; neither this observer nor
+  // terminal READY drains DATA or implies DONE.
+  return a + 56;
 }
 
 fnc __actor_done(int a): int {
