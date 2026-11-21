@@ -1,0 +1,15 @@
+// v2 guest: a closed-and-drained loser must not mask a ready channel.
+// expect-exit: 42
+// expect-stdout: 1\n
+pub suspends fnc main(): int {
+  val closed = Channel<int>.bounded(1);
+  val ready = Channel<int>.bounded(1);
+  closed.close();
+  writech ready, 42;
+  val SelectPlan plan = SelectPlan.from_list([
+    SelectCase.read(closed), SelectCase.read(ready)
+  ]);
+  val Option<SelectResult> hit = try select first from plan;
+  stdio.println(hit.unwrap().index);
+  return hit.unwrap().value;
+}
