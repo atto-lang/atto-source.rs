@@ -1701,19 +1701,23 @@ impl Parser {
                 return Err(Diagnostic::new(ty_pos, "E_TYPE",
                     format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
             }
-            if self.eat(&Tok::Comma) {
-                return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
-                    format!("duplicate Error type in '{kind}' effect clause")));
-            }
             if parenthesized {
+                if self.eat(&Tok::Comma) {
+                    return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
+                        format!("multiple Error types in '{kind}' clause are unsupported")));
+                }
                 self.expect(Tok::RParen, "')' to close the effect clause")?;
             }
-            // \`throws(Error), raises(Error)\`: a comma may separate clauses.
-            if *self.peek() == Tok::Comma
-                && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
-                && *self.peek_at(2) == Tok::LParen
-            {
-                self.advance();
+            // A comma may separate different effect kinds in both header
+            // spellings, but cannot sneak extra types through this limited
+            // checked built-in Error profile.
+            if *self.peek() == Tok::Comma {
+                if matches!(self.word_at(1), Some("throws" | "raises" | "panics")) {
+                    self.advance();
+                } else {
+                    return Err(Diagnostic::new(self.pos(), "E_TYPE",
+                        format!("'{kind}' admits only built-in Error; expected another effect kind after ','")));
+                }
             }
         }
     }
