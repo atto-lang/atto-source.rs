@@ -19,7 +19,9 @@ use crate::diag::{Diagnostic, Pos};
 pub const PRIVATE_PREFIX: &str = "__atto_fixed_sequence_";
 const MAX_EXECUTABLE_ITEMS: usize = 8;
 const MAX_EXECUTABLE_BINDINGS: usize = 32;
-const MAX_REWRITE_DEPTH: usize = 64;
+// Match the parser's independently enforced tree-height cap. This pass
+// traverses ordinary scalar expressions even when no sequence index occurs.
+const MAX_REWRITE_DEPTH: usize = crate::parser::MAX_TREE_HEIGHT as usize;
 
 fn error(at: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(at, code, message)
