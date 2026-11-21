@@ -73,7 +73,8 @@ pub fnc main(): int {
   val ch = Channel<int>.bounded(1);
   val plan = SelectPlan.from_list([SelectCase.read(ch)]);
   val Future<Option<SelectResult>> pending = nb select first from plan;
-  writech ch, 42;
+  // A synchronous callable cannot use suspending writech. This test
+  // inspects the compiled entry wrapper, not the lifetime of an awaited plan.
   return 42;
 }
 "#;
