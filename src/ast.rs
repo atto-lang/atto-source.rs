@@ -269,6 +269,9 @@ pub struct Func {
     pub is_generator: bool,
     /// Explicit effect contract: no externally observable effects or impure calls.
     pub is_pure: bool,
+    /// Explicit unsafe callable qualifier: caller needs a lexical unsafe context.
+    /// This flag is never a runtime capability or a browser guest admission.
+    pub is_unsafe: bool,
     /// Present when the caller declares one or more exceptional channels.
     pub declared_effects: Option<DeclaredEffects>,
     pub params: Vec<Param>,
@@ -311,6 +314,13 @@ pub enum Stmt {
     /// Lexical scope admission for protected state writes, retained through
     /// the typed frontend so a class field cannot manufacture write authority.
     StateWrite {
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
+    /// Lexically delimited Atto unsafe statement block. Its body is ordinary
+    /// checked Atto source; it does not grant memory, FFI, actor or TenantVM
+    /// authority. Browser/Wasm codegen always rejects this node.
+    UnsafeBlock {
         body: Vec<Stmt>,
         pos: Pos,
     },

@@ -33,6 +33,8 @@ pub mod lexer;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+/// G0 unsafe reservation before all alternative lowerers and guest emitters.
+pub mod unsafe_admission;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
@@ -115,6 +117,7 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    unsafe_admission::reject_unlowered(&tokens)?;
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {

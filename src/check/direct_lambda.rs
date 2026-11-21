@@ -204,6 +204,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 pos: d.lambda.pos,
                 is_generator: false,
                 is_pure: true,
+                is_unsafe: false,
                 declared_effects: None,
                 params: d.params.into_iter().chain(
                     d.captures.into_iter().map(|c| c.source)
@@ -280,7 +281,8 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
         }
         Stmt::Return(Some(e), _) => rewrite_expr(e, d),
         Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => Ok(()),
-        Stmt::Block(b) | Stmt::Loop { body: b, .. } => rewrite_statements(b, d),
+        Stmt::Block(b) | Stmt::UnsafeBlock { body: b, .. } |
+        Stmt::Loop { body: b, .. } => rewrite_statements(b, d),
         Stmt::While { cond, body, .. } => {
             rewrite_expr(cond, d)?;
             rewrite_statements(body, d)
@@ -455,7 +457,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
 fn stmt_pos(s: &Stmt) -> Pos {
     match s {
         Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
-        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
+        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } |
+        Stmt::UnsafeBlock { pos, .. } | Stmt::If { pos, .. } |
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |

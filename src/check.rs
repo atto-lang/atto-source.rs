@@ -805,7 +805,148 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
     Ok(())
 }
 
+/// Guest profile admission: a caller may construct `Program` without
+/// passing through the lexer or parser. Scan *every reachable expression and
+/// statement*, including lambda bodies and field initializers, before any
+/// effect inference, lambda rewriting, owner analysis, or guest codegen.
+///
+/// Iterative traversal keeps even a maliciously forged deep AST from using
+/// unbounded C/Rust call-stack depth. The node budget is independent of the
+/// normal parser's source nesting and tree-height limits.
+fn deny_unsafe_guest_ast(p: &Program) -> R<()> {
+    enum Node<'a> {
+        Stmt(&'a Stmt),
+        Expr(&'a Expr),
+    }
+    fn body<'a>(work: &mut Vec<Node<'a>>, stmts: &'a [Stmt]) {
+        work.extend(stmts.iter().map(Node::Stmt));
+    }
+    fn exprs<'a>(work: &mut Vec<Node<'a>>, expressions: &'a [Expr]) {
+        work.extend(expressions.iter().map(Node::Expr));
+    }
+    fn forbidden(pos: Pos) -> Diagnostic {
+        Diagnostic::new(pos, "E_UNSAFE_DOMAIN",
+            "unsafe source AST cannot be checked into browser/Wasm guest code")
+    }
+
+    const MAX_GUEST_AST_NODES: usize = 65_536;
+    let mut work = Vec::<Node<'_>>::new();
+    for function in &p.funcs {
+        if function.is_unsafe { return Err(forbidden(function.pos)); }
+        body(&mut work, &function.body);
+    }
+    for class in &p.classes {
+        for field in &class.fields {
+            if let Some(init) = &field.init { work.push(Node::Expr(init)); }
+        }
+        if let Some(ctor) = &class.ctor { body(&mut work, &ctor.body); }
+        for method in &class.methods { body(&mut work, &method.body); }
+    }
+    for actor in &p.actors {
+        for field in &actor.fields {
+            if let Some(init) = &field.init { work.push(Node::Expr(init)); }
+        }
+        if let Some(receive) = &actor.receive { body(&mut work, &receive.body); }
+        for method in &actor.methods { body(&mut work, &method.body); }
+    }
+
+    let mut visited = 0usize;
+    while let Some(node) = work.pop() {
+        visited += 1;
+        if visited > MAX_GUEST_AST_NODES {
+            return Err(Diagnostic::new(Pos::default(), "E_SOURCE_LIMIT",
+                "program AST exceeds bounded unsafe guest-admission visit budget"));
+        }
+        match node {
+            Node::Stmt(stmt) => match stmt {
+                Stmt::UnsafeBlock { pos, .. } => return Err(forbidden(*pos)),
+                Stmt::Bind { init, .. } => work.push(Node::Expr(init)),
+                Stmt::Assign { value, .. } => work.push(Node::Expr(value)),
+                Stmt::FieldAssign { target, value, .. } => {
+                    work.push(Node::Expr(target));
+                    work.push(Node::Expr(value));
+                }
+                Stmt::Expr(value) | Stmt::Throw(value, _) | Stmt::Raise(value, _)
+                | Stmt::Yield(value, _) | Stmt::YieldFrom(value, _) =>
+                    work.push(Node::Expr(value)),
+                Stmt::Return(Some(value), _) => work.push(Node::Expr(value)),
+                Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
+                Stmt::Block(inner) | Stmt::StateWrite { body: inner, .. }
+                | Stmt::Loop { body: inner, .. } => body(&mut work, inner),
+                Stmt::If { arms, otherwise, .. } => {
+                    for (condition, arm) in arms {
+                        work.push(Node::Expr(condition));
+                        body(&mut work, arm);
+                    }
+                    if let Some(other) = otherwise { body(&mut work, other); }
+                }
+                Stmt::While { cond, body: inner, .. } => {
+                    work.push(Node::Expr(cond));
+                    body(&mut work, inner);
+                }
+                Stmt::For { init, cond, update, body: inner, .. } => {
+                    if let Some(s) = init { work.push(Node::Stmt(s)); }
+                    if let Some(c) = cond { work.push(Node::Expr(c)); }
+                    if let Some(s) = update { work.push(Node::Stmt(s)); }
+                    body(&mut work, inner);
+                }
+                Stmt::ForIn { source, body: inner, .. } => {
+                    work.push(Node::Expr(source));
+                    body(&mut work, inner);
+                }
+                Stmt::Try { body: inner, catch, finally, .. } => {
+                    body(&mut work, inner);
+                    if let Some((_, catch)) = catch { body(&mut work, catch); }
+                    if let Some(finally) = finally { body(&mut work, finally); }
+                }
+                Stmt::Defer { args, body: inner, .. }
+                | Stmt::Recover { args, body: inner, .. } => {
+                    exprs(&mut work, args);
+                    body(&mut work, inner);
+                }
+                Stmt::Match { subject, arms, .. } => {
+                    work.push(Node::Expr(subject));
+                    for arm in arms {
+                        if let Some(guard) = &arm.guard { work.push(Node::Expr(guard)); }
+                        body(&mut work, &arm.body);
+                    }
+                }
+            },
+            Node::Expr(expr) => match &expr.kind {
+                ExprKind::Unary(_, inner) | ExprKind::Trap(inner)
+                | ExprKind::Ownership(_, _, inner) | ExprKind::Propagate(inner)
+                | ExprKind::Member(inner, _) => work.push(Node::Expr(inner)),
+                ExprKind::Binary(_, a, b) => {
+                    work.push(Node::Expr(a));
+                    work.push(Node::Expr(b));
+                }
+                ExprKind::Ternary(condition, yes, no) => {
+                    work.push(Node::Expr(condition));
+                    work.push(Node::Expr(yes));
+                    work.push(Node::Expr(no));
+                }
+                ExprKind::Call(_, args) | ExprKind::New(_, args)
+                | ExprKind::Array(args) => exprs(&mut work, args),
+                ExprKind::MethodCall(target, _, args) => {
+                    work.push(Node::Expr(target));
+                    exprs(&mut work, args);
+                }
+                ExprKind::Lambda { body: lambda_body, .. } => match lambda_body {
+                    LambdaBody::Expression(value) => work.push(Node::Expr(value)),
+                    LambdaBody::Statement(stmt) => work.push(Node::Stmt(stmt)),
+                    LambdaBody::Block(stmts) => body(&mut work, stmts),
+                },
+                ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_)
+                | ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef
+                | ExprKind::StateRead(_) | ExprKind::Spawn(_) => {}
+            },
+        }
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
+    deny_unsafe_guest_ast(p)?;
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
@@ -1928,7 +2069,8 @@ fn ctor_init_stmts(
                 ctor_init_expr(e, flow, fields)?; false
             }
             Stmt::Break(_) | Stmt::Continue(_) => false,
-            Stmt::Block(stmts) | Stmt::StateWrite { body: stmts, .. } =>
+            Stmt::Block(stmts) | Stmt::UnsafeBlock { body: stmts, .. } |
+            Stmt::StateWrite { body: stmts, .. } =>
                 ctor_init_stmts(stmts, flow, fields, ambiguous)?,
             Stmt::If { arms, otherwise, .. } => {
                 // Condition effects do not initialize fields. Merge all
@@ -2109,7 +2251,8 @@ fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
             Stmt::Return(Some(expr), _) => constructor_self_expr(expr, captured)?,
             Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::StateWrite { body, .. } | Stmt::Loop { body, .. }
-            | Stmt::Block(body) => constructor_self_stmts(body, captured)?,
+            | Stmt::Block(body) | Stmt::UnsafeBlock { body, .. } =>
+                constructor_self_stmts(body, captured)?,
             Stmt::Try { body, catch, finally, .. } => {
                 constructor_self_stmts(body, captured)?;
                 if let Some((_, handler)) = catch {
@@ -3011,6 +3154,9 @@ impl<'a> FnCx<'a> {
                 }
             }
             Stmt::Block(b) => TStmt::Block(self.scoped(b)?),
+            Stmt::UnsafeBlock { pos, .. } => return Err(Diagnostic::new(*pos,
+                "E_UNSAFE_DOMAIN",
+                "untrusted browser/Wasm guest cannot lower an unsafe block")) ,
             Stmt::Match { subject, arms, pos } => self.match_stmt(subject, arms, *pos)?,
         })
     }

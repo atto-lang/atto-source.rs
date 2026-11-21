@@ -201,6 +201,8 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         return Err(diagnostic(Pos { line: 1, col: 1 }, "E_IMPORT_PATH", "logical path must be project-relative"));
     }
     let lexed = lexer::lex(source)?;
+    // Reject unsafe guest source before invoking the caller's import loader.
+    crate::unsafe_admission::reject_unlowered(&lexed)?;
     let (imports, root) = imports(&lexed, logical)?;
     if imports.is_empty() { return Ok(lexed); }
     reject_forged_names(&root)?;
@@ -225,6 +227,8 @@ where F: FnMut(&Path) -> std::io::Result<String> {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "imported file exceeds 64 KiB"));
             }
             let toks = lexer::lex(&text)?;
+            // Imported modules cannot bypass the same TenantVM unsafe gate.
+            crate::unsafe_admission::reject_unlowered(&toks)?;
             reject_forged_names(&toks)?;
             let (funcs, heads) = functions(&toks)?;
             let module = format!("{RESERVED}{}", units.len());

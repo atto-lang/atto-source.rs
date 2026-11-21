@@ -104,6 +104,7 @@ const RESERVED: &[&str] = &[
     "spawn",
     "stop",
     "rt",
+    "unsafe",
     "await",
     "nb",
     "cb",
@@ -248,6 +249,8 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    /// Analysis-only AST parsing. Never enables an executable guest profile.
+    unsafe_syntax_analysis: bool,
 }
 
 struct TypeFirstField {
@@ -317,6 +320,7 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            unsafe_syntax_analysis: false,
         }
     }
 
@@ -613,7 +617,23 @@ impl Parser {
 
     // ------------------------------------------------------------ top level
 
+    /// Parse the G1 language AST solely for host analysis/tests. Unlike
+    /// `parse_program`, this does not admit codegen and does not grant host
+    /// authority. The ordinary browser parser entry remains fail-closed.
+    pub fn parse_program_for_unsafe_analysis(&mut self) -> R<Program> {
+        self.unsafe_syntax_analysis = true;
+        let result = self.parse_program();
+        self.unsafe_syntax_analysis = false;
+        result
+    }
+
     pub fn parse_program(&mut self) -> R<Program> {
+        if self.unsafe_syntax_analysis {
+            crate::unsafe_admission::analyze(&self.toks)?;
+        } else {
+            // Any direct Parser entry is also a guest-context boundary.
+            crate::unsafe_admission::reject_unlowered(&self.toks)?;
+        }
         let mut prog = Program::default();
         let mut decls = 0usize;
         while *self.peek() != Tok::Eof {
@@ -1484,7 +1504,8 @@ impl Parser {
                     };
                     out.push((ty, *pos));
                 }
-                Stmt::Block(body) | Stmt::StateWrite { body, .. } |
+                Stmt::Block(body) | Stmt::UnsafeBlock { body, .. } |
+                Stmt::StateWrite { body, .. } |
                 Stmt::Loop { body, .. } | Stmt::While { body, .. } |
                 Stmt::ForIn { body, .. } => {
                     for stmt in body { collect(stmt, params, out)?; }
@@ -1569,6 +1590,7 @@ impl Parser {
         let start = self.pos();
         self.eat_word("pub");
         let is_pure = self.eat_word("pure");
+        let is_unsafe = self.eat_word("unsafe");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
         }
@@ -1611,6 +1633,10 @@ impl Parser {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
         } = self.parse_named_callable_header("a function name")?;
         let declared_effects = self.parse_effect_clauses()?;
+        if is_pure && is_unsafe {
+            return Err(Diagnostic::new(pos, "E_UNSAFE_EFFECT",
+                "pure unsafe callables require a separately checked effect/provenance contract"));
+        }
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1630,6 +1656,7 @@ impl Parser {
             pos,
             is_generator,
             is_pure,
+            is_unsafe,
             declared_effects,
             params,
             ret,
@@ -2236,6 +2263,14 @@ impl Parser {
             Some("block") => {
                 self.advance();
                 Ok(Stmt::Block(self.parse_block()?))
+            }
+            Some("unsafe") => {
+                self.advance();
+                if *self.peek() != Tok::LBrace {
+                    return Err(Diagnostic::new(pos, "E_UNSAFE_SYNTAX",
+                        "unsafe statement requires a braced block"));
+                }
+                Ok(Stmt::UnsafeBlock { body: self.parse_block()?, pos })
             }
             Some("break") => {
                 self.advance();
