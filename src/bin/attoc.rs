@@ -5,6 +5,60 @@
 //! Discovered package: attoc --package path/to/main.atto [-o out.wasm]
 use std::path::Path;
 use std::process::ExitCode;
+use std::io::Write;
+
+// The .atto source must never be removed when a user accidentally chooses it
+// (or its symlink/hardlink alias) as the Wasm destination.
+fn same_file(left: &Path, right: &Path) -> bool {
+    if left == right { return true; }
+    if let (Ok(a), Ok(b)) = (left.canonicalize(), right.canonicalize()) {
+        if a == b { return true; }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (left.metadata(), right.metadata()) {
+            if a.dev() == b.dev() && a.ino() == b.ino() { return true; }
+        }
+    }
+    false
+}
+
+fn input_source_path(input: &Input) -> std::path::PathBuf {
+    match input {
+        Input::Single(file) | Input::Check(file) | Input::Discovered(file) =>
+            Path::new(file).to_path_buf(),
+        Input::Package { root, entry } | Input::LockedPackage { root, entry, .. } =>
+            Path::new(root).join(entry),
+    }
+}
+
+// No previous successful guest is allowed to survive a failed recompilation.
+// This is deliberately before source reading, parsing and code generation.
+fn clear_previous_output(input: &Input, output: &str) -> std::io::Result<()> {
+    if same_file(&input_source_path(input), Path::new(output)) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+            "output resolves to the Atto source file"));
+    }
+    match std::fs::remove_file(output) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+// Creation is exclusive: a planted output symlink cannot be followed between
+// the initial stale-file cleanup and successful compiler output publication.
+fn publish_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true).create_new(true).open(output)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(output); }
+    result
+}
 
 enum Input {
     Single(String),
@@ -45,6 +99,12 @@ fn main() -> ExitCode {
             (Input::LockedPackage { root: root.clone(), entry: entry.clone(), digest: digest.clone() }, Some(out.clone())),
         _ => return usage(),
     };
+    if let Some(ref target) = output {
+        if let Err(error) = clear_previous_output(&input, target) {
+            eprintln!("{target}: cannot prepare Wasm output: {error}");
+            return ExitCode::from(2);
+        }
+    }
     let check_only = matches!(&input, Input::Check(_));
     let (label, compiled) = match input {
         Input::Single(path) | Input::Check(path) => {
@@ -97,8 +157,8 @@ fn main() -> ExitCode {
         Ok(bytes) => {
             if check_only { return ExitCode::SUCCESS; }
             if let Some(output) = output {
-                if std::fs::write(&output, &bytes).is_err() {
-                    eprintln!("{output}: cannot write Wasm output");
+                if let Err(error) = publish_wasm(&output, &bytes) {
+                    eprintln!("{output}: cannot write Wasm output: {error}");
                     return ExitCode::from(2);
                 }
             } else {
