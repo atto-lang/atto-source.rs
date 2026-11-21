@@ -1,0 +1,16 @@
+// expect-exit: 9
+// Throwing from a VALUE pipeline skips the later stage and reaches caller-side trap.
+fnc explode(int value): int {
+  throw Error("ordinary stage failure");
+}
+fnc must_not_run(int value): int {
+  stdio.println("BUG: downstream stage executed");
+  return 1;
+}
+pub fnc main(): int {
+  val Option<int> outcome = trap (41 |> explode |> must_not_run);
+  match outcome over
+    on Some(value) -> { return value; }
+    on None -> { return 9; }
+  end
+}
