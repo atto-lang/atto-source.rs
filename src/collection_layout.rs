@@ -68,7 +68,11 @@ fn top_level_args(toks: &[Token], lt: usize) -> Result<(Vec<(usize, usize)>, usi
         }
         i += 1;
     }
-    Err(error(toks[lt].pos, "E_LAYOUT_SYNTAX", "unterminated collection generic argument list"))
+    Err(error(
+        toks[lt].pos,
+        "E_LAYOUT_SYNTAX",
+        "unterminated collection generic argument list",
+    ))
 }
 
 fn parse_layout(value: &[Token], pos: Pos) -> Result<Layout, Diagnostic> {
@@ -76,15 +80,17 @@ fn parse_layout(value: &[Token], pos: Pos) -> Result<Layout, Diagnostic> {
         return match name.as_str() {
             "aos" => Ok(Layout::Aos),
             "soa" => Ok(Layout::Soa),
-            _ => Err(error(pos, "E_LAYOUT_VALUE", "expected aos, soa or aosoa(<constant positive lanes>)")),
+            _ => Err(error(
+                pos,
+                "E_LAYOUT_VALUE",
+                "expected aos, soa or aosoa(<constant positive lanes>)",
+            )),
         };
     }
-    if let [
-        Token { tok: Tok::Ident(name), .. },
-        Token { tok: Tok::LParen, .. },
-        Token { tok: Tok::Int(Some(n)), .. },
-        Token { tok: Tok::RParen, .. },
-    ] = value {
+    if let [Token { tok: Tok::Ident(name), .. }, Token { tok: Tok::LParen, .. }, Token {
+        tok: Tok::Int(Some(n)), ..
+    }, Token { tok: Tok::RParen, .. }] = value
+    {
         if name == "aosoa" {
             return if *n >= 1 && *n <= MAX_AOSOA_LANES && n.is_power_of_two() {
                 Ok(Layout::Aosoa(*n as u16))
@@ -94,9 +100,17 @@ fn parse_layout(value: &[Token], pos: Pos) -> Result<Layout, Diagnostic> {
         }
     }
     if matches!(value.first().map(|t| &t.tok), Some(Tok::Ident(name)) if name == "aosoa") {
-        return Err(error(pos, "E_LAYOUT_SIZE", "aosoa requires a constant power-of-two block size in 1..=1024"));
+        return Err(error(
+            pos,
+            "E_LAYOUT_SIZE",
+            "aosoa requires a constant power-of-two block size in 1..=1024",
+        ));
     }
-    Err(error(pos, "E_LAYOUT_VALUE", "expected aos, soa or aosoa(<constant positive lanes>)"))
+    Err(error(
+        pos,
+        "E_LAYOUT_VALUE",
+        "expected aos, soa or aosoa(<constant positive lanes>)",
+    ))
 }
 
 /// Find layout-bearing collection type requests. Pure syntax only: no nominal
@@ -120,14 +134,19 @@ pub fn inspect(toks: &[Token]) -> Result<Vec<Candidate>, Diagnostic> {
                 // Preserve the existing parser's diagnostics for unrelated
                 // generic syntax. A missing '>' that mentions the new layout
                 // formal receives a deterministic targeted syntax error.
-                let has_layout = toks[i + 2..].iter().take_while(|t| !matches!(t.tok, Tok::Semi | Tok::Eof))
+                let has_layout = toks[i + 2..]
+                    .iter()
+                    .take_while(|t| !matches!(t.tok, Tok::Semi | Tok::Eof))
                     .any(|t| matches!(&t.tok, Tok::Ident(s) if s == "layout"));
-                if has_layout { return Err(err); }
+                if has_layout {
+                    return Err(err);
+                }
                 continue;
             }
         };
-        let uses_layout = parts.iter().any(|&(a, b)| a < b &&
-            matches!(&toks[a].tok, Tok::Ident(s) if s == "layout"));
+        let uses_layout = parts
+            .iter()
+            .any(|&(a, b)| a < b && matches!(&toks[a].tok, Tok::Ident(s) if s == "layout"));
         if !uses_layout {
             continue; // Other generic types retain their existing admission.
         }
@@ -141,7 +160,10 @@ pub fn inspect(toks: &[Token]) -> Result<Vec<Candidate>, Diagnostic> {
             }
             let value = &toks[start..end];
             let label = if value.len() >= 2 && matches!(value[1].tok, Tok::Assign) {
-                match &value[0].tok { Tok::Ident(s) => Some(s.as_str()), _ => None }
+                match &value[0].tok {
+                    Tok::Ident(s) => Some(s.as_str()),
+                    _ => None,
+                }
             } else {
                 None
             };
@@ -163,16 +185,34 @@ pub fn inspect(toks: &[Token]) -> Result<Vec<Candidate>, Diagnostic> {
                     }
                     element = Some((start + 2, end));
                 }
-                Some(_) => return Err(error(toks[start].pos, "E_GENERIC_NAME", "unknown collection generic formal; expected T or layout")),
+                Some(_) => {
+                    return Err(error(
+                        toks[start].pos,
+                        "E_GENERIC_NAME",
+                        "unknown collection generic formal; expected T or layout",
+                    ))
+                }
                 None => {
                     if matches!(&value[0].tok, Tok::Ident(s) if s == "layout") {
-                        return Err(error(toks[start].pos, "E_LAYOUT_SYNTAX", "layout requires a named value: layout=..."));
+                        return Err(error(
+                            toks[start].pos,
+                            "E_LAYOUT_SYNTAX",
+                            "layout requires a named value: layout=...",
+                        ));
                     }
                     if named {
-                        return Err(error(toks[start].pos, "E_GENERIC_ORDER", "positional generic argument after a named argument"));
+                        return Err(error(
+                            toks[start].pos,
+                            "E_GENERIC_ORDER",
+                            "positional generic argument after a named argument",
+                        ));
                     }
                     if element.is_some() {
-                        return Err(error(toks[start].pos, "E_GENERIC_ARITY", "too many positional collection generic arguments"));
+                        return Err(error(
+                            toks[start].pos,
+                            "E_GENERIC_ARITY",
+                            "too many positional collection generic arguments",
+                        ));
                     }
                     element = Some((start, end));
                 }
@@ -180,7 +220,12 @@ pub fn inspect(toks: &[Token]) -> Result<Vec<Candidate>, Diagnostic> {
         }
         let element_span = element.ok_or_else(|| error(toks[i].pos, "E_GENERIC_ARITY", "missing collection element type T"))?;
         let layout = layout.ok_or_else(|| error(toks[i].pos, "E_LAYOUT_SYNTAX", "missing layout=... binding"))?;
-        results.push(Candidate { collection, element_span, layout, pos: toks[i].pos });
+        results.push(Candidate {
+            collection,
+            element_span,
+            layout,
+            pos: toks[i].pos,
+        });
     }
     Ok(results)
 }
@@ -189,8 +234,11 @@ pub fn inspect(toks: &[Token]) -> Result<Vec<Candidate>, Diagnostic> {
 /// reject before generating guest Wasm until actual layout lowering is proven.
 pub fn reject_unlowered(toks: &[Token]) -> Result<(), Diagnostic> {
     if let Some(first) = inspect(toks)?.first() {
-        return Err(error(first.pos, "E_UNSUPPORTED",
-            "named collection layout recognized but Array/List/Vector layout storage and guest execution are not implemented"));
+        return Err(error(
+            first.pos,
+            "E_UNSUPPORTED",
+            "named collection layout recognized but Array/List/Vector layout storage and guest execution are not implemented",
+        ));
     }
     Ok(())
 }
@@ -212,7 +260,10 @@ mod tests {
         assert_eq!(a[0].collection, "Array");
         assert_eq!(b[0].element_span.1 - b[0].element_span.0, 1);
         assert_eq!(candidates("Array<Particle>").unwrap().len(), 0);
-        assert_eq!(candidates("Array<Map<int, int>, layout=aosoa(16)>").unwrap()[0].layout, Layout::Aosoa(16));
+        assert_eq!(
+            candidates("Array<Map<int, int>, layout=aosoa(16)>").unwrap()[0].layout,
+            Layout::Aosoa(16)
+        );
     }
 
     #[test]
@@ -238,8 +289,12 @@ mod tests {
 
     #[test]
     fn does_not_scan_comments_or_strings() {
-        assert!(candidates(r#"// Array<Particle, layout=soa>
-            val s = "Array<Particle, layout=soa>";"#).unwrap().is_empty());
+        assert!(candidates(
+            r#"// Array<Particle, layout=soa>
+            val s = "Array<Particle, layout=soa>";"#
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
