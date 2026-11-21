@@ -1,5 +1,5 @@
 // v2 guest: a missing SelectResult is an unwrap fault, not scheduler deadlock.
-// expect-panic: 13
+// expect-panic: 14
 pub suspends fnc main(): int {
   val ch = Channel<int>.bounded(1);
   val plan = SelectPlan.from_list([SelectCase.read(ch)]);
