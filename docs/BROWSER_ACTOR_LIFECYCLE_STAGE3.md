@@ -93,13 +93,27 @@ READY events cannot resurrect an actor that already failed. A successful
 READY remains observable even after `get_done()` has settled. READY does
 not prove any message was delivered or that the actor exited.
 
-**Important scope limit:** this is executable JavaScript host-session behavior
-tested by the browser actor harness. The Rust guest compiler still only
-supports the narrow terminal `await actor.get_done()` pattern and does
-**not** yet lower arbitrary `await actor.get_ready()`, `await spawn`,
-continuous `pipe!/rpipe!` or guest Future observers. Unsupported guest
-expressions must fail closed; no host Promise is proof of an Atto source
-Future or full Wasm actor parity.
+**Stage-3.1 terminal READY source lowering (candidate; not yet CI-proven):**
+the Rust guest compiler now admits `await actor.get_ready()` **only** as the
+last statement in a `void main()`. It emits an `atto.actor_ready(i32)` Wasm
+import DISTINCT from `atto.actor_join(i32)` for terminal DONE. The host
+records the READY barrier during the synchronous Wasm call, and actually
+awaits the worker's READY acknowledgement before reporting success and
+closing the structured scope. The child worker can link the full guest
+module but always rejects attempted use of `actor_ready` within its own
+receiver execution domain (`E_ACTOR_NESTED_READY`). Invalid handles fail
+closed. Neither a synchronous import return nor host promise creation is
+mistaken for a completed Future.
+
+**Important scope limit:** there is no resumable Wasm continuation after
+terminal `await get_ready()`. Arbitrary source suspensions, `await spawn`,
+nonterminal `await get_ready()`, Future-valued expressions and continuous
+`pipe!/rpipe!` are still rejected before guest emission. Automatic
+structured-scope drain after the terminal await is distinct from READY
+itself. Tests require exact guest import identity, real Web Worker READY
+acknowledgement, startup failure and typed no-artifact negatives. The
+source/guest changes are staged, **not** a published compiler update or
+proof of all-backend actor parity.
 
 Canonical target specification:
 https://github.com/atto-lang/atto-spec/pull/148
