@@ -53,15 +53,21 @@ test('native attoc enforces all 38 parser-stage contract cases without guest art
         assert.equal(run.stdout, '', item.id + ': compiler leaked artifact bytes on stdout');
         assert.equal(existsSync(artifact), false, item.id + ': rejected source emitted guest');
         const diag = run.stderr;
-        assert.ok(typeof diag === 'string' && diag.includes('E_'),
-          item.id + ': missing typed diagnostic: ' + diag);
+        // Diagnostic::Display formats "file:line:column: E_CODE: message".
+        // Compare the *exact* leading diagnostic code, not a substring in
+        // descriptive text (which could mask an unrelated failure).
+        const match = diag.match(/:(\d+):(\d+): (E_[A-Z0-9_]+):/);
+        assert.ok(match, item.id + ': missing positioned diagnostic: ' + diag);
+        assert.ok(Number(match[1]) >= 1 && Number(match[2]) >= 1,
+          item.id + ': invalid diagnostic source position: ' + diag);
+        const actualCode = match[3];
         if (item.expect === 'reject') {
           assert.match(item.diagnosticClass, /^E_[A-Z0-9_]+$/);
-          assert.ok(diag.includes(item.diagnosticClass),
-            item.id + ': expected ' + item.diagnosticClass + ', got ' + diag);
+          assert.equal(actualCode, item.diagnosticClass,
+            item.id + ': incorrect rejection category: ' + diag);
         } else {
-          assert.match(diag, /E_UNSUPPORTED(?:_TYPE)?\b/,
-            item.id + ': AST-accepted feature unexpectedly emitted guest: ' + diag);
+          assert.ok(actualCode === 'E_UNSUPPORTED' || actualCode === 'E_UNSUPPORTED_TYPE',
+            item.id + ': AST-only case failed too early or compiled unexpectedly: ' + diag);
         }
       } finally {
         rmSync(temp, { recursive: true, force: true });
