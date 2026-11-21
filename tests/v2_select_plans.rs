@@ -7,6 +7,7 @@ const POSITIVES: &[(&str, &str)] = &[
     ("nb", include_str!("fixtures/pass/232-v2-nb-select-snapshot.atto")),
     ("try-miss", include_str!("fixtures/pass/233-v2-try-select-empty.atto")),
     ("one-winner", include_str!("fixtures/pass/234-v2-select-single-winner.atto")),
+    ("blocking-generation", include_str!("fixtures/pass/235-v2-blocking-select-generation.atto")),
 ];
 
 #[test]
