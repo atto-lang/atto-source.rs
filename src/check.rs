@@ -166,6 +166,13 @@ pub enum TExpr {
     },
     /// Compare the discriminant with a known variant tag.
     AdtIs { obj: Box<TE>, tag: u32 },
+    /// Compiler-only ErrorView nominal identity check in recover callbacks.
+    /// The kind local is i32; the result is i32 bool (never a string lookup).
+    ErrorIsType { kind_slot: u32, tag: u32 },
+    /// ErrorView.message for subtype-bearing exceptions: the EH payload is
+    /// an owned object handle, not a (offset,len) message string.
+    /// Return the empty immutable string for field-free Error subclasses.
+    ErrorMessage { kind_slot: u32, message_slot: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
     /// Evaluate a tagged ADT once. On failure return its original handle from
@@ -247,6 +254,10 @@ pub enum TStmt {
     /// Escalated failure on the separate module-private raise tag. It is
     /// never matched by `catch`/`trap`; only `recover` or the root sees it.
     Raise(TE),
+    /// A field-free, nominal Error object: the owned Class handle crosses
+    /// the Wasm EH boundary in a private subclass-specific exception tag.
+    /// The class index identifies a compiler-proved direct Error subclass.
+    RaiseNominal { obj: TE, class_index: u32 },
     /// First statement of a top-level body that uses try/defer/recover:
     /// compiler-owned unwind slots (defer-recover-unwind-v1). `ret` holds
     /// the snapshotted return value, `msg`/`kind` the pending failure.
@@ -361,6 +372,10 @@ pub struct TProgram {
     pub guest_eh: bool,
     /// A second private tag for `raise` (escalated failure).
     pub raise_tag: bool,
+    /// Direct Error-subclass class indices in deterministic source class order.
+    /// Private Wasm tag indices 2+n retain type identity independently of
+    /// the i64 error payload; this list is empty for unrelated programs.
+    pub nominal_raises: Vec<u32>,
     /// A guest-global active-catch counter exists because some `recover`
     /// must defer to an outer caller's catch or trap (two-phase dispatch).
     pub catch_depth: bool,
