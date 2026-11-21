@@ -90,19 +90,25 @@ not proof that a runner has been provisioned or tests have passed.
    `atto-lang/atto-source.rs` itself**, with a unique private label, and
    configure repository Actions variable `ATTO_PRIVATE_RUST_RUNNER_LABEL`
    to exactly that label. Do not point it at a carrier in another organization.
-2. Open **Actions → Portable Atto frontend and browser Wasm conformance →
-   Run workflow**, select the exact source PR branch, and provide its
-   full **40-character current HEAD SHA** as the required `expected_head`
-   input. The job compares `expected_head` with immutable dispatch
+2. First open **Actions → Source-free runner admission canary →
+   Run workflow**, choose the current PR branch and enter the current full
+   **40-character HEAD SHA** as `expected_head`. Require an actual assigned
+   runner, recorded shell step and `SOURCE_FREE_RUNNER_ADMITTED` output.
+   This canary has `permissions: {}`, no checkout, secrets, cache or artifact.
+   A zero-step run is **NOT_EXECUTED** and must block the next action.
+3. Only after the canary succeeds, open **Actions → Portable Atto frontend
+   and browser Wasm conformance → Run workflow**, select the *same current*
+   source PR branch, and provide its full **40-character current HEAD SHA**
+   as `expected_head`. The job compares this value with immutable dispatch
    `github.sha` **before checkout**; mismatch fails closed.
-3. Automatic `pull_request` and `push` jobs always use
+4. Automatic `pull_request` and `push` jobs always use
    `ubuntu-24.04`, never the repository-configured private runner label.
    Checkout pins the head SHA with `persist-credentials: false` and
    `contents: read` only. The workflow retains the exact-head tree
    check, Cargo target inventory, Rust 1.85.1 native and wasm32 builds,
    `cargo fmt --all -- --check`, Cargo/Clippy, native-package tests,
    real compiler and compiled guest tests, browser E2E and receipts.
-4. Independently inspect the actual run ID, steps, exit codes, generated
+5. Independently inspect the actual run ID, steps, exit codes, generated
    compiler artifact, source HEAD/tree, and any required security review.
    A failed zero-step job, a synthetic-only canary, or a run on an earlier
    SHA is **NOT_EXECUTED**, not a release pass.
