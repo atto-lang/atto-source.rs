@@ -66,6 +66,9 @@ const cases = [
   ['return unless true then 7 elif true then 8 else 9 fi;', 8n],
   ['return if true then 7 else 9 fi;', 7n],
   ['do if true then return 7; fi return 9;', 7n],
+  ['do if true then if false { return 7; } fi return 42;', 42n],
+  ['do if true then unless false { return 42; } fi return 9;', 42n],
+  ['if false { return 7; } fi return 42;', 42n],
 ];
 const negatives = [
   ['return ifnot false then 7 fi;', 'E_VALUE_ARM'],
@@ -78,6 +81,9 @@ const negatives = [
   ['return ifnot true then 7 else false fi;', 'E_TYPE'],
   ['do unless 5 then return 7; fi return 42;', 'E_TYPE'],
   ['ifnot 3 { return 7; } return 42;', 'E_TYPE'],
+  ['do unless true { return 7; }', 'E_SYNTAX'],
+  ['do ifnot false { return 7; }', 'E_SYNTAX'],
+  ['ifnot false { return 7; } fi return 42;', 'E_SYNTAX'],
 ];
 
 const temp = await mkdtemp(join(tmpdir(), 'atto-conditional-browser-'));
@@ -157,7 +163,7 @@ try {
   }
   // A failed browser compile must never poison a subsequent valid guest.
   await run('pub fnc main(): int { return 42; }\n', 42n, 'recovery');
-  console.log('PASS: 19 native/wasm32 byte-identical guests, exact website 42, 4 side-effect evaluations, 10 negatives, recovery');
+  console.log('PASS: 22 native/wasm32 byte-identical guests, exact website 42, 4 side-effect evaluations, 13 negatives, recovery');
 } finally {
   await rm(temp, {recursive:true,force:true});
 }

@@ -20,6 +20,9 @@ fn negated_conditional_heads_are_reserved_and_have_all_three_legal_forms() {
         "return if true then 7 else 42 fi;",
         "do if true then return 7; fi return 42;",
         "if true { return 7; } return 42;",
+        "do if true then if false { return 7; } fi return 42;",
+        "do if true then unless false { return 42; } fi return 9;",
+        "if false { return 7; } fi return 42;",
     ] {
         let src = format!("pub fnc main(): int {{ {body} }}");
         Parser::new(lex(&src).unwrap()).parse_program().unwrap();
@@ -42,6 +45,9 @@ fn invalid_conditionals_fail_closed_before_any_guest() {
         ("do unless 5 then return 7; fi return 42;", "E_TYPE"),
         ("ifnot 3 { return 7; } return 42;", "E_TYPE"),
         ("return unless true then return 7 else 9 fi;", "E_SYNTAX"),
+        ("do unless true { return 7; }", "E_SYNTAX"),
+        ("do ifnot false { return 7; }", "E_SYNTAX"),
+        ("ifnot false { return 7; } fi return 42;", "E_SYNTAX"),
     ] {
         let src = format!("pub fnc main(): int {{ {body} }}");
         let error = match compile(&src) {

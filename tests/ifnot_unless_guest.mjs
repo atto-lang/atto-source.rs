@@ -27,6 +27,9 @@ const cases = [
   ['return unless true then 7 elif true then 8 else 9 fi;', 8n],
   ['return if true then 7 else 9 fi;', 7n],
   ['do if true then return 7; fi return 9;', 7n],
+  ['do if true then if false { return 7; } fi return 42;', 42n],
+  ['do if true then unless false { return 42; } fi return 9;', 42n],
+  ['if false { return 7; } fi return 42;', 42n],
 ];
 const tmp = await mkdtemp(join(tmpdir(), 'atto-negated-cond-'));
 try {

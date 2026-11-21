@@ -257,6 +257,9 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    /// Keyword-delimited statement bodies own their surrounding fi tokens.
+    /// A nested braced if must never consume an enclosing fi as a legacy suffix.
+    active_keyword_if: u32,
     state_method: bool,
     state_binder: Option<String>,
 }
@@ -328,6 +331,7 @@ impl Parser {
             array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            active_keyword_if: 0,
             state_method: false,
             state_binder: None,
         }
@@ -2084,6 +2088,15 @@ impl Parser {
         parsed
     }
 
+    fn parse_if_stmts_until(&mut self, stops: &[&str]) -> R<Vec<Stmt>> {
+        let prior = self.active_keyword_if;
+        self.active_keyword_if = prior.checked_add(1).ok_or_else(|| Diagnostic::new(
+            self.pos(), "E_NESTING", "keyword-delimited conditional nesting overflow"))?;
+        let parsed = self.parse_stmts_until(stops);
+        self.active_keyword_if = prior;
+        parsed
+    }
+
     fn parse_loop_body(&mut self) -> R<Vec<Stmt>> {
         if *self.peek() == Tok::LBrace {
             self.parse_block()
@@ -2682,6 +2695,10 @@ impl Parser {
             predicate
         };
         let braced = *self.peek() == Tok::LBrace;
+        if braced && procedural {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "'do' conditionals use 'then ... fi'; remove 'do' to use braces"));
+        }
         if !braced && negated && !procedural {
             return Err(Diagnostic::new(pos, "E_SYNTAX",
                 "imperative negated conditions require 'do ifnot/unless ... then ... fi' or braces"));
@@ -2715,7 +2732,7 @@ impl Parser {
                 return Err(self.expected("'then'"));
             }
             let stops = ["elif", "elseif", "else", "fi"];
-            arms.push((cond, self.parse_stmts_until(&stops)?));
+            arms.push((cond, self.parse_if_stmts_until(&stops)?));
             loop {
                 let is_elif = self.eat_word("elif")
                     || self.eat_word("elseif")
@@ -2731,9 +2748,9 @@ impl Parser {
                     if !(self.eat_word("then") || self.eat_word("do")) {
                         return Err(self.expected("'then'"));
                     }
-                    arms.push((c, self.parse_stmts_until(&stops)?));
+                    arms.push((c, self.parse_if_stmts_until(&stops)?));
                 } else if self.eat_word("else") {
-                    otherwise = Some(self.parse_stmts_until(&["fi"])?);
+                    otherwise = Some(self.parse_if_stmts_until(&["fi"])?);
                     break;
                 } else {
                     break;
@@ -2755,7 +2772,7 @@ impl Parser {
         // Only historical positive 'if' accepts a trailing fi after braces
         // for compatibility. The canonical braced negated forms never need fi,
         // and an outer keyword-delimited if must retain its own fi token.
-        if braced && !negated && !procedural {
+        if braced && !negated && !procedural && self.active_keyword_if == 0 {
             self.eat_word("fi");
         }
         // each elif arm nests one level deeper in the lowered if/else chain
