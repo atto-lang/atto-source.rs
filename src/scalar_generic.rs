@@ -392,13 +392,14 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     // MAX_INSTANCES full-sized generic bodies before the final length gate.
     let projected = requested.iter().fold(out.len().checked_add(1), |total, ((tid, _), _)| {
         let instance = &templates[*tid].source;
-        let length = instance.len().checked_sub(3)?
+        let length = instance
+            .len()
+            .checked_sub(3)?
             .checked_sub(usize::from(word(&instance[0]) == Some("pub")))?;
         total?.checked_add(length)
     });
     if !projected.is_some_and(|length| length <= MAX_TOKENS) {
-        return Err(error(templates[0].pos, "E_SOURCE_LIMIT",
-            "expanded generics exceed token budget"));
+        return Err(error(templates[0].pos, "E_SOURCE_LIMIT", "expanded generics exceed token budget"));
     }
     for ((tid, to), generated) in &requested {
         out.extend(specialize(&templates[*tid], to, generated)?);
