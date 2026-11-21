@@ -81,6 +81,25 @@ approved cross-org private-source destination. Do not mirror code to any
 other organization without an independently reviewed exact destination
 approval; historical carrier minutes do not authorize export.
 
+### Executed source-free private runner admission
+
+A **source-free** capacity check succeeded on a candidate carrier:
+`22-factor-apps/atto-ci`, numeric repository ID `1459040433` (private).
+[Workflow run 44860823730](https://github.com/22-factor-apps/atto-ci/actions/runs/44860823730)
+at the source-free probe commit `b314ac3f9b30ec6a4f28d4d9df5ca57e47117412`
+executed the Linux environment and compiled/ran an original, standalone
+Rust 42 smoke program with all steps reporting success. The source-free
+snapshot's exact Git tree is `f5f57779e48939aeee3cdae825aa98924d9b2654`.
+
+This establishes **runner capacity only**, not compiler behavior, available
+budget for a full suite, or approval to export any private files. The
+source repo's allowlist is still empty. Before transferring any compiler
+source, a separate reviewed source-owned allowlist change must explicitly
+authorize the exact carrier ID, scoped purpose, exact source commit/tree,
+file exclusions, retention and cleanup, with independent security approval.
+Do not infer permission from repository administrator access or this
+source-free green job.
+
 Before advancing toward `atto-lang.github.io/play`:
 1. Reconcile overlap between old v2 PR #262 and lifecycle PR #25, directed
    pipe PR #224 and bang parser PR #450. This sidecar does not rewrite
