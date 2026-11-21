@@ -6,7 +6,7 @@
 //! an invented runtime type. Once this is wired to checked guest allocation the
 //! same type and tree structure can be consumed by the lowering stage.
 
-use crate::ast::{Expr, ExprKind, Program, Stmt, Type, UnOp};
+use crate::ast::{BindKind, Expr, ExprKind, Program, Stmt, Type, UnOp};
 use crate::diag::{Diagnostic, Pos};
 
 pub const MAX_LITERAL_DEPTH: usize = 128;
@@ -31,6 +31,8 @@ pub enum LiteralType {
     Pair(Box<LiteralType>, Box<LiteralType>),
     Entry(Box<LiteralType>, Box<LiteralType>),
     List(Box<LiteralType>),
+    /// Persistent immutable indexed sequence, distinct from List/Array.
+    Vector(Box<LiteralType>),
     Array(Box<LiteralType>),
     /// Unparameterized Tuple accepts any arity; not the same as ().
     AnyTuple,
@@ -116,6 +118,7 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
         "Record" => LiteralType::OpenRecord,
         "Array" => LiteralType::Array(Box::new(LiteralType::Bottom)),
         "List" => LiteralType::List(Box::new(LiteralType::Bottom)),
+        "Vector" => LiteralType::Vector(Box::new(LiteralType::Bottom)),
         "Map" => LiteralType::Map(Box::new(LiteralType::Bottom), Box::new(LiteralType::Bottom)),
         "Tuple" => LiteralType::AnyTuple,
         _ => {
@@ -168,6 +171,7 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
                 ("Entry", [key,value]) => LiteralType::Entry(Box::new(key.clone()), Box::new(value.clone())),
                 ("Array", [item]) => LiteralType::Array(Box::new(item.clone())),
                 ("List", [item]) => LiteralType::List(Box::new(item.clone())),
+                ("Vector", [item]) => LiteralType::Vector(Box::new(item.clone())),
                 ("Map", [key, value]) =>
                     LiteralType::Map(Box::new(key.clone()), Box::new(value.clone())),
                 ("Tuple", values) if !values.is_empty() => LiteralType::Tuple(values.to_vec()),
@@ -206,7 +210,8 @@ fn compatible(actual: &LiteralType, expected: &LiteralType) -> bool {
         (Record(a), Record(b)) =>
             a.len() == b.len() && a.iter().zip(b).all(|((na,ta),(nb,tb))|
                 na == nb && compatible(ta,tb)),
-        (Array(a), Array(b)) | (List(a), List(b)) => compatible(a,b),
+        (Array(a), Array(b)) | (List(a), List(b)) |
+        (Vector(a), Vector(b)) => compatible(a,b),
         (Map(ka, va), Map(kb, vb))
         | (Pair(ka, va), Pair(kb, vb))
         | (Entry(ka, va), Entry(kb, vb)) =>
@@ -229,6 +234,7 @@ fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagno
         (OpenRecord, Record(_)) => Ok(OpenRecord),
         (Option(a), Option(b)) => Ok(Option(Box::new(common(*a,*b,at)?))),
         (List(a), List(b)) => Ok(List(Box::new(common(*a, *b, at)?))),
+        (Vector(a), Vector(b)) => Ok(Vector(Box::new(common(*a, *b, at)?))),
         (Array(a), Array(b)) => Ok(Array(Box::new(common(*a, *b, at)?))),
         (Map(ka,va), Map(kb,vb)) => Ok(Map(
             Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
@@ -342,10 +348,11 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         }
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
-                Some(Array(element)) => (true, element.as_ref().clone()),
-                Some(List(element)) => (false, element.as_ref().clone()),
-                None => (false, Bottom),
-                _ => return Err(diag(e.pos, "E_TYPE", "bracket literal needs Array or List context")),
+                Some(Array(element)) => (0_u8, element.as_ref().clone()),
+                Some(List(element)) => (1_u8, element.as_ref().clone()),
+                Some(Vector(element)) => (2_u8, element.as_ref().clone()),
+                None => (1_u8, Bottom),
+                _ => return Err(diag(e.pos, "E_TYPE", "bracket literal needs Array, List or Vector context")),
             };
             let mut found = Bottom;
             for item in items {
@@ -355,7 +362,11 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
                 children.push(child);
             }
             let element_ty = if element == Bottom { found } else { element };
-            if kind { Array(Box::new(element_ty)) } else { List(Box::new(element_ty)) }
+            match kind {
+                0 => Array(Box::new(element_ty)),
+                1 => List(Box::new(element_ty)),
+                _ => Vector(Box::new(element_ty)),
+            }
         }
         ExprKind::Record(fields) => {
             let expected_fields = match expected {
@@ -515,6 +526,22 @@ fn starts_literal(e: &Expr) -> bool {
             name.starts_with("@builtin/Map.of_entries<"))
 }
 
+
+/// Bounded constexpr scalar items for a frozen Vector. Do not treat a
+/// runtime binding, a call or a nested object reference as compile-time data.
+fn constexpr_vector_scalar(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Int(Some(n)) => *n <= i64::MAX as u64,
+        ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) => true,
+        ExprKind::Unary(UnOp::Neg, inner) => matches!(&inner.kind,
+            ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 + 1) ||
+            matches!(&inner.kind, ExprKind::Int(None)),
+        ExprKind::Unary(UnOp::Plus, inner) =>
+            matches!(&inner.kind, ExprKind::Int(Some(n)) if *n <= i64::MAX as u64),
+        _ => false,
+    }
+}
+
 /// Staged semantic preflight: checked declarations are *not* yet executable.
 /// Scalar-only statements remain the responsibility of the existing checker.
 fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
@@ -522,10 +549,21 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
 {
     for stmt in body {
         match stmt {
-            Stmt::Bind {name, ty,init,pos,..} => {
+            Stmt::Bind {name, kind, ty,init,pos,..} => {
                 let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
+                if *kind == BindKind::Const &&
+                    matches!(&wanted, Some(LiteralType::Vector(_))) {
+                    let ExprKind::Array(values) = &init.kind else {
+                        return Err(diag(init.pos, "E_NON_CONST_INITIALIZER",
+                            "const Vector requires a constexpr [] literal in this guest profile"));
+                    };
+                    if !values.iter().all(constexpr_vector_scalar) {
+                        return Err(diag(init.pos, "E_NON_CONST_INITIALIZER",
+                            "const Vector elements must be compile-time scalar constants"));
+                    }
+                }
                 if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
-                    LiteralType::List(_) | LiteralType::Map(_,_) |
+                    LiteralType::List(_) | LiteralType::Vector(_) | LiteralType::Map(_,_) |
                     LiteralType::Pair(_,_) | LiteralType::Entry(_,_) |
                     LiteralType::Option(_) | LiteralType::OpenRecord |
                     LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))

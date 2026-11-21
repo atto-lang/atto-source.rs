@@ -1,4 +1,4 @@
-//! Checked first executable scalar Array.of/List.of/Tuple.of slice.
+//! Checked bounded scalar Array/List/Vector/Tuple slice (Vector literals are frozen).
 //!
 //! All three factory kinds retain distinct types in collection_types::analyze.
 //! Only direct local, 1..=8 scalar-element factories are lowerable. We reuse
@@ -229,6 +229,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
         if matches!(
             &binding.value.ty,
             LiteralType::Tuple(_) | LiteralType::Array(_) | LiteralType::List(_) |
+                LiteralType::Vector(_) |
                 LiteralType::Pair(_,_) | LiteralType::Entry(_,_)
         ) {
             let key = (
@@ -296,7 +297,8 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             })?;
             let types = match &typed.value.ty {
                 LiteralType::Tuple(items) => items.clone(),
-                LiteralType::Array(element) | LiteralType::List(element) => {
+                LiteralType::Array(element) | LiteralType::List(element) |
+                LiteralType::Vector(element) => {
                     // [] is admitted only with a concrete contextual element.
                     if typed.value.children.is_empty() && matches!(element.as_ref(), LiteralType::Bottom) {
                         return Err(error(init.pos, "E_TYPE_INFERENCE",
@@ -309,7 +311,8 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 _ => return Err(error(init.pos, "E_SHAPE", "collection type identity lost")),
             };
             let empty_sequence = types.is_empty()
-                && matches!(&typed.value.ty, LiteralType::Array(_) | LiteralType::List(_));
+                && matches!(&typed.value.ty, LiteralType::Array(_) |
+                    LiteralType::List(_) | LiteralType::Vector(_));
             if (types.is_empty() && !empty_sequence)
                 || types.len() > MAX_EXECUTABLE_ITEMS
                 || ordinal >= MAX_EXECUTABLE_BINDINGS
@@ -320,7 +323,12 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                     "executable Tuple/Array/List/Pair/Entry permits 1..=8 scalar items (or typed empty arrays/lists) and <=32 bindings",
                 ));
             }
-            if kind == BindKind::Const {
+            // Vector is an immutable value with compile-time scalar payloads
+            // validated by collection_types. The guest constructor only
+            // materializes that precomputed frozen payload; no writable
+            // capabilities may escape through the compiler-private slots.
+            if kind == BindKind::Const &&
+                !matches!(&typed.value.ty, LiteralType::Vector(_)) {
                 return Err(error(
                     pos,
                     "E_UNSUPPORTED",
