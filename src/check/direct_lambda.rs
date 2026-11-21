@@ -94,10 +94,13 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "direct lambdas need an unannotated immutable val or const fnc binding"));
                     }
-                    if *kind == BindKind::Const && param_types.iter().any(Option::is_none) {
-                        return Err(error(*pos, "E_INFER",
-                            "const fnc parameters require explicit types"));
-                    }
+                    // Local const fnc remains noncapturing. Unannotated parameters
+                    // may be resolved from a verified scalar-literal direct call,
+                    // just as for a val lambda. No type is fabricated from its
+                    // return annotation; an unused or uninferrable callable
+                    // still fails closed with E_UNSUPPORTED or E_INFER.
+                    // Module-scope const fnc declarations separately require
+                    // fully specified parameter types.
                     if bindings_before_lambda.contains(name) {
                         return Err(error(*pos, "E_DUPLICATE",
                             "direct lambda duplicates an existing local binding"));
