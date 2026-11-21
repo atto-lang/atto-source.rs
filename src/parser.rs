@@ -68,6 +68,8 @@ const RESERVED: &[&str] = &[
     "let",
     "mut",
     "if",
+    "ifnot",
+    "unless",
     "guard",
     "then",
     "else",
@@ -2232,7 +2234,11 @@ impl Parser {
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
-            Some("if") => self.parse_if(),
+            Some("if" | "ifnot" | "unless") => self.parse_if(false),
+            Some("do") if matches!(self.word_at(1), Some("if" | "ifnot" | "unless")) => {
+                self.advance();
+                self.parse_if(true)
+            }
             Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
@@ -2660,10 +2666,26 @@ impl Parser {
         })
     }
 
-    fn parse_if(&mut self) -> R<Stmt> {
+    fn parse_if(&mut self, procedural: bool) -> R<Stmt> {
         let pos = self.pos();
-        self.expect_word("if")?;
-        let cond = self.parse_cond_head()?;
+        let negated = matches!(self.word_at(0), Some("ifnot" | "unless"));
+        // The imperative do-form is explicit for newly introduced keywords.
+        // Legacy bare keyword-delimited 'if' remains supported for migration.
+        if !matches!(self.word_at(0), Some("if" | "ifnot" | "unless")) {
+            return Err(self.expected("'if', 'ifnot' or 'unless'"));
+        }
+        self.advance();
+        let predicate = self.parse_cond_head()?;
+        let cond = if negated {
+            Expr { kind: ExprKind::Unary(UnOp::Not, Box::new(predicate)), pos }
+        } else {
+            predicate
+        };
+        let braced = *self.peek() == Tok::LBrace;
+        if !braced && negated && !procedural {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "imperative negated conditions require 'do ifnot/unless ... then ... fi' or braces"));
+        }
         let mut arms = Vec::new();
         let mut otherwise = None;
         if *self.peek() == Tok::LBrace {
@@ -2718,7 +2740,7 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        if !braced && !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
@@ -2730,9 +2752,68 @@ impl Parser {
                 ),
             ));
         }
+        // Only historical positive 'if' accepts a trailing fi after braces
+        // for compatibility. The canonical braced negated forms never need fi,
+        // and an outer keyword-delimited if must retain its own fi token.
+        if braced && !negated && !procedural {
+            self.eat_word("fi");
+        }
         // each elif arm nests one level deeper in the lowered if/else chain
         self.height -= arms.len() as u32 - 1;
         Ok(Stmt::If { arms, otherwise, pos })
+    }
+
+    /// The initial negated head is lowered once to the ordinary lazy ternary.
+    /// Subsequent elif predicates are not inverted. A value conditional always
+    /// requires a typed else arm; only one expression per arm is admitted.
+    fn parse_if_expr(&mut self) -> R<Expr> {
+        let pos = self.pos();
+        let negated = matches!(self.word_at(0), Some("ifnot" | "unless"));
+        if !matches!(self.word_at(0), Some("if" | "ifnot" | "unless")) {
+            return Err(self.expected("a value conditional"));
+        }
+        self.advance();
+        let mut arms = Vec::new();
+        loop {
+            let predicate = self.parse_cond_head()?;
+            let condition = if negated && arms.is_empty() {
+                Expr { kind: ExprKind::Unary(UnOp::Not, Box::new(predicate)), pos }
+            } else {
+                predicate
+            };
+            self.expect_word("then")?;
+            if matches!(self.word_at(0), Some("else" | "elif" | "elseif" | "fi")) {
+                return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                    "value conditional arm requires an expression"));
+            }
+            let value = self.parse_expr()?;
+            arms.push((condition, value));
+            if !(self.eat_word("elif") || self.eat_word("elseif")) { break; }
+            if arms.len() >= 128 {
+                return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                    "value conditional exceeds 128 arms"));
+            }
+            self.grow(1)?;
+        }
+        if !self.eat_word("else") {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "value conditional requires an else expression"));
+        }
+        if self.is_word("fi") {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "value conditional else arm requires an expression"));
+        }
+        let mut value = self.parse_expr()?;
+        self.expect_word("fi")?;
+        let height_links = arms.len() as u32 - 1;
+        for (condition, first) in arms.into_iter().rev() {
+            value = Expr {
+                kind: ExprKind::Ternary(Box::new(condition), Box::new(first), Box::new(value)),
+                pos,
+            };
+        }
+        self.height -= height_links;
+        Ok(value)
     }
 
     /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
@@ -3860,6 +3941,7 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "if" | "ifnot" | "unless" => return self.parse_if_expr(),
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
