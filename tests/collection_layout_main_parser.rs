@@ -2,7 +2,11 @@
 //! source-compiled guest specialization. Generic type support alone MUST NOT
 //! admit unproved general-purpose allocation, borrowing or transport.
 
-use atto_compiler::{ast::{Stmt, Type}, check, lexer, parser::Parser};
+use atto_compiler::{
+    ast::{Stmt, Type},
+    check, lexer,
+    parser::Parser,
+};
 
 fn parse(source: &str) -> atto_compiler::ast::Program {
     Parser::new(lexer::lex(source).expect("lex")).parse_program().expect("main parser")
@@ -10,27 +14,35 @@ fn parse(source: &str) -> atto_compiler::ast::Program {
 
 #[test]
 fn canonical_reordered_named_generics_share_one_type_identity() {
-    let p = parse(r#"
+    let p = parse(
+        r#"
         fnc main() -> int {
             let first: Array<Particle, layout=soa> = [];
             let second: Array<layout=soa, T=Particle> = [];
             let third: Array<T=Particle, layout=soa> = [];
             return 0;
         }
-    "#);
+    "#,
+    );
     assert_eq!(p.array_types.len(), 1, "reordering named args must not change type identity");
     assert_eq!(p.array_types[0].element, "Particle");
     assert_eq!(p.array_types[0].layout, atto_compiler::collection_layout_plan::Storage::Soa);
     let f = &p.funcs[0];
     for stmt in &f.body[..3] {
-        let Stmt::Bind { ty: Some(Type::Array(i)), .. } = stmt else { panic!("missing typed Array") };
+        let Stmt::Bind {
+            ty: Some(Type::Array(i)), ..
+        } = stmt
+        else {
+            panic!("missing typed Array")
+        };
         assert_eq!(*i, 0);
     }
 }
 
 #[test]
 fn default_aos_is_canonical_and_soa_aosoa_remain_distinct() {
-    let p = parse(r#"
+    let p = parse(
+        r#"
         fnc main() -> int {
             let x: Array<Particle> = [];
             let y: Array<T=Particle, layout=aos> = [];
@@ -38,24 +50,33 @@ fn default_aos_is_canonical_and_soa_aosoa_remain_distinct() {
             let w: Array<Particle, layout=aosoa(16)> = [];
             return 0;
         }
-    "#);
+    "#,
+    );
     assert_eq!(p.array_types.len(), 3);
-    let slots: Vec<u32> = p.funcs[0].body.iter().filter_map(|stmt| match stmt {
-        Stmt::Bind { ty: Some(Type::Array(i)), .. } => Some(*i),
-        _ => None,
-    }).collect();
+    let slots: Vec<u32> = p.funcs[0]
+        .body
+        .iter()
+        .filter_map(|stmt| match stmt {
+            Stmt::Bind {
+                ty: Some(Type::Array(i)), ..
+            } => Some(*i),
+            _ => None,
+        })
+        .collect();
     assert_eq!(slots, [0, 0, 1, 2]);
 }
 
 #[test]
 fn aosoa_min_and_max_power_of_two_widths_keep_distinct_type_identities() {
-    let p = parse(r#"
+    let p = parse(
+        r#"
         fnc main() -> int {
             let lo: Array<Particle, layout=aosoa(1)> = [];
             let hi: Array<Particle, layout=aosoa(1024)> = [];
             return 0;
         }
-    "#);
+    "#,
+    );
     assert_eq!(p.array_types.len(), 2, "lane width is part of the type identity");
     assert_eq!(p.array_types[0].layout, atto_compiler::collection_layout_plan::Storage::Aosoa(1));
     assert_eq!(p.array_types[1].layout, atto_compiler::collection_layout_plan::Storage::Aosoa(1024));
@@ -65,13 +86,15 @@ fn aosoa_min_and_max_power_of_two_widths_keep_distinct_type_identities() {
 fn nominal_element_is_checked_and_runtime_requires_proven_lowering() {
     let missing = parse("fnc main() -> int { let a: Array<Undefined,layout=soa> = []; return 0; }");
     assert_eq!(check::check(&missing).unwrap_err().code, "E_UNKNOWN_TYPE");
-    let declared = parse(r#"
+    let declared = parse(
+        r#"
         define class Particle as end
         fnc main() -> int {
             let a: Array<Particle, layout=soa> = [];
             return 0;
         }
-    "#);
+    "#,
+    );
     assert_eq!(declared.array_types.len(), 1);
     let err = check::check(&declared).expect_err("general Array allocation requires proven storage and borrow checking");
     assert_eq!(err.code, "E_UNSUPPORTED");
@@ -100,24 +123,25 @@ fn generic_errors_from_production_parser_match_guest_parser() {
 
 #[test]
 fn ordinary_compile_uses_production_nominal_resolver_not_token_preflight() {
-    let missing = atto_compiler::compile(
-        "fnc main() -> int { let xs: Array<NeverDefined,layout=soa> = []; return 0; }"
-    ).expect_err("unknown nominal element must fail");
+    let missing = atto_compiler::compile("fnc main() -> int { let xs: Array<NeverDefined,layout=soa> = []; return 0; }")
+        .expect_err("unknown nominal element must fail");
     assert_eq!(missing.code, "E_UNKNOWN_TYPE");
 
-    let known = atto_compiler::compile(r#"
+    let known = atto_compiler::compile(
+        r#"
         define class Particle as end
         fnc main() -> int {
             let xs: Array<layout=soa, T=Particle> = [];
             return 0;
         }
-    "#).expect_err("unproven general Array runtime must fail");
+    "#,
+    )
+    .expect_err("unproven general Array runtime must fail");
     assert_eq!(known.code, "E_UNSUPPORTED");
     assert!(known.message.contains("general-purpose Array storage"));
 
-    let invalid = atto_compiler::compile(
-        "fnc main() -> int { let xs: Array<Particle,layout=aosoa(n)> = []; return 0; }"
-    ).expect_err("dynamic lane count must be rejected");
+    let invalid = atto_compiler::compile("fnc main() -> int { let xs: Array<Particle,layout=aosoa(n)> = []; return 0; }")
+        .expect_err("dynamic lane count must be rejected");
     assert_eq!(invalid.code, "E_LAYOUT_SIZE");
 }
 
