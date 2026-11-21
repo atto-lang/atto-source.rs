@@ -47,12 +47,15 @@ try {
     console.log('REAL_WASM_SELECT_PLAN_PASS '+name);
   }
 
-  // All three must compile successfully, then reject an actor DATA-port
-  // capability inside the actual WebAssembly guest with panic 10.
-  for (const name of [
-    '236-v2-select-pipe-owned-at-construction.atto',
-    '237-v2-select-pipe-claimed-after-plan.atto',
-    '238-v2-dynamic-select-put-pipe-owned.atto',
+  // Compile and execute all SelectPlan panic cases as real Wasm guests.
+  // Check precise panic codes: a generic trap is insufficient evidence.
+  for (const [name,expectedPanic] of [
+    ['233-v2-select-empty-unwrap.atto',14],
+    ['234-v2-select-all-closed.atto',9],
+    ['235-v2-select-no-live-cases.atto',10],
+    ['236-v2-select-pipe-owned-at-construction.atto',10],
+    ['237-v2-select-pipe-claimed-after-plan.atto',10],
+    ['238-v2-dynamic-select-put-pipe-owned.atto',10],
   ]) {
     const guest=join(tmp,'denied.wasm');
     const compiled=spawnSync(compiler,[resolve('tests/fixtures/panic',name),'-o',guest],
@@ -70,10 +73,10 @@ try {
       print_i64(){},print_bool(){},print_str(){},print_newline(){},print_f64(){},
     }});
     assert.throws(()=>instance.exports.main(),WebAssembly.RuntimeError,
-      name+': actor DATA capability was not denied by guest runtime');
-    assert.equal(instance.exports.panic_code.value,10,
-      name+': wrong actor capability panic code');
-    console.log('REAL_WASM_SELECT_PLAN_OWNERSHIP_DENIED '+name);
+      name+': expected an actual guest panic');
+    assert.equal(instance.exports.panic_code.value,expectedPanic,
+      name+': wrong guest panic code');
+    console.log('REAL_WASM_SELECT_PLAN_PANIC_'+expectedPanic+' '+name);
   }
 } finally {
   rmSync(tmp,{recursive:true,force:true});
