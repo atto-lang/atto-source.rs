@@ -93,6 +93,8 @@ jobs:
           node --check tests/ifnot_unless_browser_compiler.mjs
       - name: Test ifnot/unless Rust compiler grammar and fail-closed diagnostics
         run: cargo test --locked --test ifnot_unless_guest
+      - name: Prove readonly inline-self arity and deterministic Wasm regression
+        run: cargo test --locked --test inline_self_receiver_parity
       - name: Test native compiler core over the fixture corpus
         env:
           RUST_MIN_STACK: "16777216"
