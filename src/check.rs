@@ -2608,8 +2608,36 @@ impl<'a> FnCx<'a> {
         r
     }
 
-    /// The message of an admitted `throw`/`raise` operand:
-    /// `Error(message)` or `new Error(message)`.
+    /// Turn a field-free direct Error subclass into an owned nominal
+    /// raised object, not a forged base Error(message). The class constructor
+    /// allocates exactly once and the pointer is widened only at the EH ABI.
+    /// Actor, custom constructor, field-bearing and indirect raises remain
+    /// unsupported until typed lifetime/supervisor integration is proven.
+    fn guest_raise(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
+        if let ExprKind::New(name, args) = &error.kind {
+            if let Some(index) = self.g.class(name) {
+                if self.g.classes[index as usize].error_parent {
+                    if self.owner != Owner::TopLevel || self.cleanup_depth > 0 {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "nominal raise in actor/method or cleanup requires supervisor and frame-lifetime lowering"));
+                    }
+                    if !args.is_empty() {
+                        return Err(Diagnostic::new(error.pos, "E_ARITY",
+                            "field-free Error subclass constructor takes no arguments"));
+                    }
+                    let owned = self.new_object(name, args, error.pos)?;
+                    return Ok(TStmt::RaiseNominal {
+                        obj: owned,
+                        class_index: index,
+                    });
+                }
+            }
+        }
+        Ok(TStmt::Raise(self.guest_error_message(error, "raise", pos)?))
+    }
+
+    /// The message of an admitted \`throw\`/\`raise\` operand:
+    /// \`Error(message)\` or \`new Error(message)\`.
     fn guest_error_message(&mut self, error: &Expr, what: &str, pos: Pos) -> R<TE> {
         if self.owner != Owner::TopLevel {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
@@ -4412,7 +4440,10 @@ impl<'a> FnCx<'a> {
                 // ErrorView is an ephemeral compiler-issued view, never a
                 // first-class object or a transferable/returnable handle.
                 return match name {
-                    "message" => Ok(TE { e: TExpr::Local(msg), ty: Type::Str }),
+                    "message" => Ok(TE {
+                        e: TExpr::ErrorMessage { kind_slot: kind, message_slot: msg },
+                        ty: Type::Str,
+                    }),
                     "is_raise" => Ok(TE { e: TExpr::Local(kind), ty: Type::Bool }),
                     _ => Err(Diagnostic::new(pos, "E_UNBOUND",
                         format!("unknown ErrorView property '{name}'"))),
@@ -4581,6 +4612,37 @@ impl<'a> FnCx<'a> {
     }
 
     fn method_call(&mut self, base: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // An ErrorView capability exists only in an active recover callback.
+        // The argument is a compiler-resolved nominal type, never a string
+        // or user-controlled runtime type id. The matching private EH tag
+        // is proof of exact nominal origin for this Wasm module instance.
+        if let ExprKind::Var(receiver) = &base.kind {
+            if self.recover_error.as_deref() == Some(receiver) {
+                if name != "is_type" {
+                    return Err(Diagnostic::new(pos, "E_UNBOUND",
+                        format!("unknown ErrorView method '{name}'")));
+                }
+                self.arity("ErrorView.is_type", 1, args.len(), pos)?;
+                let ExprKind::Var(ref target) = args[0].kind else {
+                    return Err(type_err(args[0].pos,
+                        "ErrorView.is_type requires a nominal Error class identifier"));
+                };
+                let class = self.g.class(target).ok_or_else(|| type_err(
+                    args[0].pos, format!("unknown nominal Error subclass '{target}'")))?;
+                if !self.g.classes[class as usize].error_parent {
+                    return Err(type_err(args[0].pos,
+                        format!("'{target}' does not extend Error")));
+                }
+                let ordinal = self.g.classes[..class as usize].iter()
+                    .filter(|c| c.error_parent).count();
+                let tag = 2u32 + ordinal as u32;
+                let (_, _, _, kind, _) = self.unwind.expect("recovery needs unwind slots");
+                return Ok(TE {
+                    e: TExpr::ErrorIsType { kind_slot: kind, tag },
+                    ty: Type::Bool,
+                });
+            }
+        }
         // Class.static(args)
         if let ExprKind::Var(n) = &base.kind {
             if self.lookup(n).is_none() {
