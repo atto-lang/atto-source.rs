@@ -773,7 +773,7 @@ impl<'a> Checker<'a> {
         let ty = if actor { Ty::Actor(i) } else { Ty::Object(i) };
         self.cx.push(FnCx::new(ty.clone(), false, false));
         let this = self.declare("self", ty, false, o.pos)?;
-        let base = if actor { 56 } else { 0 };
+        let base = if actor { 72 } else { 0 };
         let size = base + 8 * o.fields.len() as u32;
         self.objs[i].size = size;
         let mut body = vec![IrStmt::Set(this, Ir::Helper(Helper::Alloc, vec![Ir::Const(size.max(8) as i64)]))];
@@ -824,6 +824,13 @@ impl<'a> Checker<'a> {
             body.push(IrStmt::Store(add(Ir::Local(clo), 8), Ir::Local(this)));
             let spawn = self.rt("__task_spawn", vec![Ir::Local(clo)]);
             body.push(IrStmt::Expr(spawn));
+            // This first-stage actor has no asynchronous user constructor.
+            // READY means the mailbox, fields and receive-task have all been
+            // registered; DONE is independent and remains unsettled.
+            // The actor ref must not escape before this real initialization.
+            let ready = self.rt("__fut_done",
+                vec![add(Ir::Local(this), 56), Ir::Const(0)]);
+            body.push(IrStmt::Expr(ready));
         }
         body.push(IrStmt::Return(Ir::Local(this)));
         let cx = self.cx.pop().unwrap();
@@ -1883,6 +1890,16 @@ impl<'a> Checker<'a> {
 
     fn await_expr(&mut self, inner: &Expr, pos: Pos) -> R<(Ir, Ty)> {
         self.need_suspends(pos, "'await'")?;
+        // `await spawn Actor()` is precisely a READY barrier, not an
+        // implicit DONE join. Spawn is evaluated exactly once, then the
+        // scheduler awaits the new actor's independent READY Future.
+        if let Ex::Spawn(..) = &inner.kind {
+            let (actor, ty) = self.expr(inner, None)?;
+            let actor = self.spill(actor);
+            let ready = self.rt("__actor_ready", vec![actor.clone()]);
+            self.rt_scall("__await", vec![ready]);
+            return Ok((actor, ty));
+        }
         let (ir, ty, direct) = match &inner.kind {
             Ex::Call { name, targs, args } => self.call(name, targs, args, None, inner.pos, true)?,
             Ex::Method { base, name, args } => self.method(base, name, args, inner.pos, true)?,
@@ -2342,6 +2359,11 @@ impl<'a> Checker<'a> {
                     self.c().pre.push(IrStmt::Expr(call));
                     return Ok((Ir::Const(0), Ty::Void, false));
                 }
+                if name == "get_ready" {
+                    self.plain_args(name, args, 0, pos)?;
+                    return Ok((self.rt("__actor_ready", vec![recv]),
+                        Ty::Future(Box::new(Ty::Void)), false));
+                }
                 if name == "get_done" {
                     self.plain_args(name, args, 0, pos)?;
                     return Ok((self.rt("__actor_done", vec![recv]),
@@ -2358,7 +2380,7 @@ impl<'a> Checker<'a> {
                     self.c().pre.push(IrStmt::Expr(call));
                     return Ok((Ir::Const(0), Ty::Void, false));
                 }
-                Err(err(pos, "E_ACTOR", "an actor reference only accepts send(value), stop() and get_done(); actor methods are private"))
+                Err(err(pos, "E_ACTOR", "an actor reference only accepts send(value), stop(), get_ready() and get_done(); actor methods are private"))
             }
             Ty::Object(i) => match self.objs[*i].methods.iter().find(|(n, _)| n == name) {
                 Some(&(_, id)) => self.invoke(name, id, Some(recv), args, pos, awaited),
