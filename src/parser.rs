@@ -21,6 +21,9 @@ pub const MAX_MEMBERS: usize = 256;
 /// produce trees that the checker, emitter and `Drop` walk recursively, so
 /// each chain link counts against this budget as well as each nested level.
 pub const MAX_TREE_HEIGHT: u32 = 256;
+/// Independent call-stack safety bound for recursive lambda bodies. The
+/// general parser tree budget is insufficient for deeply nested closures.
+pub const MAX_NESTED_LAMBDAS: u32 = 48;
 
 /// Words reserved by the reference lexer (spec chapter 16 keyword table).
 const RESERVED: &[&str] = &[
@@ -240,6 +243,8 @@ pub struct Parser {
     depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
     height: u32,
+    /// Active recursive lambda parsers; independently bounded for stack safety.
+    lambda_depth: u32,
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
@@ -302,6 +307,7 @@ impl Parser {
             i: 0,
             depth: 0,
             height: 0,
+            lambda_depth: 0,
             cond: 0,
             type_names: Vec::new(),
             in_generator: false,
@@ -3672,6 +3678,20 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        if self.lambda_depth >= MAX_NESTED_LAMBDAS {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_NESTING",
+                format!("nested lambdas exceed safe recursion budget of {MAX_NESTED_LAMBDAS}"),
+            ));
+        }
+        self.lambda_depth += 1;
+        let result = self.parse_lambda_inner();
+        self.lambda_depth -= 1;
+        result
+    }
+
+    fn parse_lambda_inner(&mut self) -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {

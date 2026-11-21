@@ -44,9 +44,9 @@ fn invalid_operator_types_and_retired_xor_remain_rejected() {
     invalid("pub fnc main(): int { stdio.println(Or([])); return 0; }");
 }
 #[test]
-fn literal_bool_array_packs_cannot_become_general_array_runtime() {
+fn literal_bool_array_packs_are_bounded_guests_not_effectful_arrays() {
     valid("pub fnc main(): int { stdio.println(And([true, true, false])); return 0; }");
-    invalid("pub fnc main(): int { val list = [true,false]; return 0; }");
+    valid("pub fnc main(): int { val list = [true,false]; return 0; }");
     invalid(
         r#"
         fnc effect(): bool { return true; }
