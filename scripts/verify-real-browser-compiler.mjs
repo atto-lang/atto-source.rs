@@ -32,8 +32,13 @@ const tests=[
     'pub fnc main(): int { val x: int = 9223372036854775807; return x + 1; }\n'],
   ['pass','01-answer.atto',42n]
 ];
-assert.equal(new Set(tests.map(([kind,name])=>kind+'/'+name)).size,tests.length,
-  'smoke matrix contains duplicate source fixtures');
+// The *one* repeated final positive fixture is deliberate: it verifies
+// recovery and deterministic codegen after errors and a checked guest trap.
+const initialCases=tests.slice(0,-1);
+assert.equal(new Set(initialCases.map(([kind,name])=>kind+'/'+name)).size,initialCases.length,
+  'unexpected duplicate source fixtures in smoke matrix');
+assert.deepEqual(tests.at(-1),tests[0],
+  'final smoke fixture must replay the initial successful Atto program');
 function file(path){assert.ok(existsSync(path),'missing real compiler/fixture: '+path);return readFileSync(path)}
 function wasmInstance(){
   const bytes=file(compiler);
