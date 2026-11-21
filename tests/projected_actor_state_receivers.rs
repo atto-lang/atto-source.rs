@@ -356,7 +356,12 @@ fn ordinary_shift_reads_do_not_become_spurious_mutations() {
         );
         assert_eq!(parse(&src).receivers.len(), 1,
             "read-only expression '{expr}' was mistaken for mutation");
-        assert_eq!(compile(&src).unwrap_err().code, "E_UNSUPPORTED",
-            "noncompiled actor expression must remain fail-closed");
+        let error = compile(&src).expect_err("actor read must not emit guest code");
+        // The broad compiler's IO/shift grammar gate can reject a target
+        // expression before the later actor-ABI unsupported gate. Either
+        // denial is safe; only the target parser's read/write separation is
+        // asserted above.
+        assert!(matches!(error.code, "E_UNSUPPORTED" | "E_IO_SYNTAX"),
+            "unexpected compiler stage for read-only expression '{expr}': {error}");
     }
 }
