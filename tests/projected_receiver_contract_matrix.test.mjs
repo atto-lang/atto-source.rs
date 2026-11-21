@@ -16,15 +16,15 @@ const contractPath = join(dir, 'fixtures/actor-projected-state-receivers-v1.json
 const bytes = readFileSync(contractPath);
 const sha = createHash('sha1')
   .update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
-assert.equal(sha, '3b5d6f0a3d4698833073e63ee9af8bdad3bbbeb7',
+assert.equal(sha, '180f1ec03fcb65f08d4bb28cbc3bf7b898216a12',
   'canonical conformance contract changed: refresh proof and stage expectations');
 const contract = JSON.parse(bytes.toString('utf8'));
-assert.equal(contract.cases.length, 43);
+assert.equal(contract.cases.length, 51);
 const targets = contract.cases.filter(x => x.stage === 'target_parser');
-assert.equal(targets.length, 38);
+assert.equal(targets.length, 46);
 assert.equal(targets.filter(x => x.expect === 'accept_ast_only').length, 10);
-assert.equal(targets.filter(x => x.expect === 'reject').length, 28);
-assert.equal(new Set(contract.cases.map(x => x.id)).size, 43);
+assert.equal(targets.filter(x => x.expect === 'reject').length, 36);
+assert.equal(new Set(contract.cases.map(x => x.id)).size, 51);
 assert.ok(contract.cases.filter(x => x.stage !== 'target_parser')
   .every(x => x.evidence === 'NOT_EXECUTED'),
   'unimplemented typed/guest cases must remain explicitly unexecuted');
@@ -32,7 +32,7 @@ assert.ok(contract.cases.filter(x => x.stage !== 'target_parser')
 // Use a local build of the real Rust CLI, never a JS evaluator or a stub.
 const compiler = resolve(dir, '../target/debug/attoc');
 
-test('native attoc enforces all 38 parser-stage contract cases without guest artifacts', async t => {
+test('native attoc enforces all 46 parser-stage contract cases without guest artifacts', async t => {
   assert.ok(existsSync(compiler), 'build attoc before running this contract gate');
   for (const item of targets) {
     await t.test(item.id, () => {
