@@ -5,16 +5,18 @@ on:
     paths:
       - 'experimental/llvm-aot/**'
       - 'tests/llvm_aot_frontend_ownership.rs'
-      - 'src/check.rs'
-      - 'src/ast.rs'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/llvm-aot-adapter.yml'
   push:
     branches: [main]
     paths:
       - 'experimental/llvm-aot/**'
       - 'tests/llvm_aot_frontend_ownership.rs'
-      - 'src/check.rs'
-      - 'src/ast.rs'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/llvm-aot-adapter.yml'
 
 permissions:
