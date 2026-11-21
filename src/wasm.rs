@@ -7,6 +7,7 @@
 //!   3 = object heap exhausted; 4 = invalid generator handle/state;
 //!   5 = generator per-pull dispatch budget exhausted;
 //!   6 = logical stack exhausted: a recursive call exceeded [`MAX_CALL_DEPTH`]
+//!   7 = invalid signed-i64 shift distance (must be 0..63), no modulo masking
 //! * export `memory` when strings, classes, or actors exist;
 //!   actor-only modules receive one private 64 KiB page per instance;
 //!   with classes it is a fixed, non-growable [`HEAP_PAGES`]-page memory
