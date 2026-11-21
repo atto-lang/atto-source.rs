@@ -15,6 +15,7 @@ fn scalar_ascription_and_identity_cast_emit_wasm() {
         "(40 + 2) : int",
         "(40 + 2) as int",
         "true ? 42 : 7",
+        "true ? (42 : int) : 7",
         "(true ? 42 : 7) : int",
         "(true ? 42 : 7) as int",
     ] {
