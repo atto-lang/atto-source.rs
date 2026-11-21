@@ -351,6 +351,10 @@ name = "type_declarations"
 path = "tests/type_declarations.rs"
 
 [[test]]
+name = "typed_llambda_named_args"
+path = "tests/typed_llambda_named_args.rs"
+
+[[test]]
 name = "typeof_static_return"
 path = "tests/typeof_static_return.rs"
 

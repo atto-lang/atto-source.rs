@@ -27,7 +27,7 @@ fn colon_annotated_rx_pipeline_and_arrays_parse() {
     assert_eq!(method, "take");
     let ExprKind::MethodCall(base, method, args) = &base.kind else { panic!("expected map") };
     assert_eq!(method, "map");
-    let ExprKind::Lambda { params, return_type, body } = &args[0].kind else { panic!("expected lambda") };
+    let ExprKind::Lambda { params, return_type, body, .. } = &args[0].kind else { panic!("expected lambda") };
     assert_eq!(params, &["n"]);
     assert_eq!(return_type.as_deref(), Some("int"));
     assert!(matches!(body, LambdaBody::Statement(_)));
@@ -79,4 +79,60 @@ fn parsed_but_unlowered_lambda_fails_closed() {
     let err = atto_compiler::compile(src).unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED");
     assert!(err.message.contains("lambdas"), "{err}");
+}
+
+#[test]
+fn explicit_pipes_are_required_in_const_function_expressions() {
+    // The bar delimiters are syntax, not optional shorthand.
+    for (expr, arity) in [
+        ("|_| : int -> 5", 1usize),
+        ("|| : int -> 5", 0),
+        ("|x| : int -> x + 5", 1),
+        ("|int x| : int -> x + 5", 1),
+        ("|x: int| : int -> x + 5", 1),
+    ] {
+        let source = format!(
+            "pub fnc main(): int {{ const fnc v = {expr}; return 0; }}"
+        );
+        let program = parse(&source);
+        let Stmt::Bind { init, .. } = &program.funcs[0].body[0] else {
+            panic!("expected const fnc binding: {expr}");
+        };
+        let ExprKind::Lambda { params, .. } = &init.kind else {
+            panic!("expected a lambda: {expr}");
+        };
+        assert_eq!(params.len(), arity, "{expr}");
+    }
+
+    for expr in [
+        "_ : int -> 5",
+        "_ -> 5",
+        "x : int -> x + 5",
+        "x -> x + 5",
+    ] {
+        for prefix in ["const fnc v =", "val v ="] {
+            let src = format!(
+                "pub fnc main(): int {{ {prefix} {expr}; return 0; }}"
+            );
+            assert!(
+                Parser::new(lexer::lex(&src).unwrap()).parse_program().is_err(),
+                "bare lambda head was accepted: {prefix} {expr}"
+            );
+        }
+        let module_source = format!("const fnc v = {expr}; pub fnc main(): int {{ return 0; }}");
+        assert!(
+            Parser::new(lexer::lex(&module_source).unwrap()).parse_program().is_err(),
+            "module-level bare lambda head accepted: {expr}"
+        );
+    }
+    for bare_call in [
+        "values.map(_ : int -> 5)",
+        "values.map(_ -> 5)",
+    ] {
+        let source = main_with(bare_call);
+        assert!(
+            Parser::new(lexer::lex(&source).unwrap()).parse_program().is_err(),
+            "bare lambda head accepted as a call argument: {bare_call}"
+        );
+    }
 }
