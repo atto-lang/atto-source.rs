@@ -66,8 +66,10 @@ fn template_at(tokens: &[Token], i: usize) -> Result<Option<Template>, Diagnosti
         return Err(error(tokens[i].pos, "E_UNSUPPORTED",
             "browser generics require one unconstrained type parameter"));
     }
-    if scalar(&tokens[i + 3]).is_some() || name == parameter {
-        return Err(error(tokens[i + 3].pos, "E_TYPE", "generic type parameter conflicts with a type or function name"));
+    if scalar(&tokens[i + 3]).is_some() || name == parameter ||
+        crate::parser::is_reserved(parameter) {
+        return Err(error(tokens[i + 3].pos, "E_TYPE",
+            "generic type parameter conflicts with a reserved type or function name"));
     }
     let params_end = pair(tokens, i + 5, Tok::LParen, Tok::RParen)
         .ok_or_else(|| error(tokens[i].pos, "E_SYNTAX", "unclosed generic parameters"))?;
@@ -173,6 +175,21 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         begin = template.end;
     }
     base.extend_from_slice(&tokens[begin..]);
+    // There is no safe overloading or shadowed callable resolution in the
+    // bounded specializer. A same-named concrete callable or binding must
+    // not have its references rewritten into a different generic function.
+    for template in &templates {
+        if base.windows(2).any(|w| {
+            (word(&w[0]) == Some("fnc") || word(&w[0]) == Some("routine")) &&
+                word(&w[1]) == Some(template.name.as_str())
+        }) || base.windows(2).any(|w| {
+            matches!(word(&w[0]), Some("val" | "let" | "const")) &&
+                word(&w[1]) == Some(template.name.as_str())
+        }) {
+            return Err(error(template.pos, "E_DUPLICATE",
+                "generic function name conflicts with a callable or local binding"));
+        }
+    }
     let eof = base.pop().ok_or_else(|| error(Pos::default(), "E_SYNTAX", "empty source"))?;
     if eof.tok != Tok::Eof {
         return Err(error(eof.pos, "E_SYNTAX", "missing end-of-source"));
