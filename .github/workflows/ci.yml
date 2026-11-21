@@ -112,6 +112,12 @@ jobs:
         run: cargo test --locked --all-targets --verbose
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Check formatting in separate native Cranelift package
+        working-directory: native
+        run: cargo fmt --all -- --check
+      - name: Strict native Cranelift Clippy all targets
+        working-directory: native
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
