@@ -23,12 +23,13 @@ self.onmessage=async ({data})=>{
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
     // atto.browser.guest.v1: output imports and the gated actor_spawn capability.
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','actor_spawn','actor_send','actor_join']);
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','actor_spawn','actor_send','actor_join','actor_ready']);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
     let stdout='',instance;
     const awaited_handles=new Set();
+    const awaited_ready_handles=new Set();
     const atto={
       print_i64:v=>{stdout+=String(v)},
       print_bool:v=>{stdout+=v?'true':'false'},
@@ -54,6 +55,14 @@ self.onmessage=async ({data})=>{
         if(awaited_handles.has(handle))throw new Error('E_ACTOR_DUP_JOIN');
         awaited_handles.add(handle);
       },
+      // As with the terminal DONE marker, this sync Wasm import ONLY records
+      // the requested barrier. The enclosing host task truly suspends until
+      // the separate actor Worker reports its READY acknowledgement.
+      actor_ready:handle=>{
+        if(!Number.isInteger(handle)||handle<1||handle>actors.length)
+          throw new Error('E_ACTOR_HANDLE');
+        awaited_ready_handles.add(handle);
+      },
     };
     instance=new WebAssembly.Instance(guest,{atto});
     let value;
@@ -78,6 +87,9 @@ self.onmessage=async ({data})=>{
           if(!actor)throw new Error('E_ACTOR_HANDLE');
           if(actor.admit(big)!==ACTOR_ADMISSION.OK)throw new Error('E_ACTOR_MAILBOX_FULL');
         }
+      }
+      for(const handle of awaited_ready_handles){
+        await actors[handle-1].get_ready();
       }
       // The structured scope always drains and explicitly closes each child.
       // This is a real asynchronous task: worker messages and shutdown must be
