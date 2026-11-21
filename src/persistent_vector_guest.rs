@@ -11,6 +11,11 @@ use crate::ast::{Expr, ExprKind, Program, Stmt, Type, UnOp};
 use crate::diag::{Diagnostic, Pos};
 
 const MAX_SCALARS: usize = 8;
+// Compile-time-only provenance is bounded independently of the 64 KiB source
+// limit: copying large scalar strings or thousands of snapshots must not
+// amplify compiler memory unboundedly before the Wasm output-size check.
+const MAX_KNOWN_VECTORS: usize = 128;
+const MAX_COPIED_SCALARS: usize = 1024;
 
 fn error(at: Pos, code: &'static str, reason: impl Into<String>) -> Diagnostic {
     Diagnostic::new(at, code, reason)
@@ -91,6 +96,7 @@ pub fn lower(program: &mut Program) -> Result<(), Diagnostic> {
     let names = &program.type_names;
     for function in &mut program.funcs {
         let mut known = BTreeMap::<String, (Type, Vec<Expr>)>::new();
+        let mut copied_scalars = 0usize;
         for statement in &mut function.body {
             match statement {
                 Stmt::Bind {name,ty,init,..} => {
@@ -99,6 +105,13 @@ pub fn lower(program: &mut Program) -> Result<(), Diagnostic> {
                         if let ExprKind::Var(source) = &receiver.kind {
                             if let Some((source_type, originals)) = known.get(source) {
                                 let updated = replace(originals, method, args, init.pos)?;
+                                copied_scalars = copied_scalars.checked_add(updated.len())
+                                    .ok_or_else(|| error(init.pos, "E_SOURCE_LIMIT",
+                                        "persistent Vector compile-time copy budget exceeded"))?;
+                                if copied_scalars > MAX_COPIED_SCALARS {
+                                    return Err(error(init.pos, "E_SOURCE_LIMIT",
+                                        "persistent Vector compile-time copy budget exceeded"));
+                                }
                                 if let Some(explicit) = requested {
                                     if explicit != *source_type {
                                         return Err(error(init.pos, "E_TYPE",
@@ -118,6 +131,10 @@ pub fn lower(program: &mut Program) -> Result<(), Diagnostic> {
                     if vector_type(names,*ty) {
                         if let ExprKind::Array(items) = &init.kind {
                             if items.len() <= MAX_SCALARS && items.iter().all(static_scalar) {
+                                if !known.contains_key(name) && known.len() >= MAX_KNOWN_VECTORS {
+                                    return Err(error(init.pos, "E_SOURCE_LIMIT",
+                                        "persistent Vector static provenance budget exceeded"));
+                                }
                                 known.insert(name.clone(), (ty.expect("vector has type"),items.clone()));
                                 continue;
                             }
