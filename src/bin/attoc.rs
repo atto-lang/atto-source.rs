@@ -49,13 +49,15 @@ fn clear_previous_output(input: &Input, output: &str) -> std::io::Result<()> {
 
 // Creation is exclusive: a planted output symlink cannot be followed between
 // the initial stale-file cleanup and successful compiler output publication.
+fn write_fresh_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true).create_new(true).open(output)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
 fn publish_wasm(output: &str, bytes: &[u8]) -> std::io::Result<()> {
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true).create_new(true).open(output)?;
-        file.write_all(bytes)?;
-        file.sync_all()
-    })();
+    let result = write_fresh_wasm(output, bytes);
     if result.is_err() { let _ = std::fs::remove_file(output); }
     result
 }
@@ -162,7 +164,6 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             } else {
-                use std::io::Write;
                 if std::io::stdout().write_all(&bytes).is_err() {
                     eprintln!("cannot write compiled Wasm to stdout");
                     return ExitCode::from(2);
