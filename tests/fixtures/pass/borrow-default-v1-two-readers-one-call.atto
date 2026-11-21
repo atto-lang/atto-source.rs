@@ -1,0 +1,13 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+// Both arguments are checked readonly loans of the SAME original object.
+// No implicit clone, ownership transfer, or pointer handle is involved.
+define class Parcel as pub let int value = 21; end
+fnc sum_two(Parcel first, Parcel second): int {
+  return first.value + second.value;
+}
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val total = sum_two(parcel, parcel);
+  return total;
+}
