@@ -27,6 +27,7 @@ pub const MAX_TREE_HEIGHT: u32 = 256;
 
 /// Words reserved by the reference lexer (spec chapter 16 keyword table).
 const RESERVED: &[&str] = &[
+    "unsafe", "sync", "task", "pipe", "rpipe",
     "define",
     "def",
     "module",
@@ -1922,9 +1923,17 @@ impl Parser {
             }
             return self.parse_erlang_body(ret);
         }
-        if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "a ': Type ->' callable body must open with '{'"));
+        if colon_type && self.eat(&Tok::Arrow) {
+            // : T -> { statements } keeps the existing explicit-return semantics.
+            // : T -> expression; is a single expression body with a checked
+            // implicit return, not an implicit return from a brace block.
+            if *self.peek() == Tok::LBrace {
+                return self.parse_block();
+            }
+            let pos = self.pos();
+            let value = self.parse_expr()?;
+            self.expect(Tok::Semi, "';' after an inline callable expression body")?;
+            return Ok(vec![Stmt::Return(Some(value), pos)]);
         }
         self.parse_block()
     }
@@ -3170,6 +3179,46 @@ impl Parser {
             c = Expr { kind: ExprKind::Call(name, args), pos };
         }
         self.height -= links;
+        // Right-associative application: f <| g <| x == f(g(x)).
+        // Lower only ordinary named calls; reject computed, receiver, actor
+        // and dynamic callees rather than generating an unverified ABI.
+        if *self.peek() == Tok::PipeLt {
+            let pos = self.pos();
+            let (name, mut args) = match c.kind {
+                ExprKind::Var(name) => (name, Vec::new()),
+                ExprKind::Call(name, args) if links == 0 => (name, args),
+                _ => return Err(unsupported(pos, "reverse-pipeline callee other than an ordinary named function")),
+            };
+            if args.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pipeline exceeds the call argument limit"));
+            }
+            self.advance();
+            let rhs_start = self.i;
+            self.enter()?;
+            let argument = self.parse_ternary();
+            self.leave();
+            let argument = argument?;
+            // A reverse right operand may contain a grouped forward pipe,
+            // but an unparenthesized mixed chain has no defined ordering.
+            let mut group_depth = 0usize;
+            for token in &self.toks[rhs_start..self.i] {
+                match &token.tok {
+                    Tok::LParen | Tok::LBracket | Tok::LBrace => group_depth += 1,
+                    Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                        group_depth = group_depth.saturating_sub(1);
+                    }
+                    Tok::PipeGt if group_depth == 0 => return Err(Diagnostic::new(
+                        token.pos, "E_SYNTAX",
+                        "mixed '<|' and '|>' chains require explicit parentheses",
+                    )),
+                    _ => {}
+                }
+            }
+            self.grow(1)?;
+            args.insert(0, argument);
+            c = Expr { kind: ExprKind::Call(name, args), pos };
+            self.height -= 1;
+        }
         match self.peek() {
             Tok::Pipe => {
                 return Err(Diagnostic::new(
@@ -4009,6 +4058,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Question => "?",
                 Tok::Pipe => "|",
                 Tok::PipeGt => "|>",
+                Tok::PipeLt => "<|",
                 Tok::Amp => "&",
                 Tok::Caret => "^",
                 Tok::Tilde => "~",
