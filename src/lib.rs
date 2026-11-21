@@ -284,7 +284,11 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
             lexer::Tok::RBrace => braces = braces.saturating_sub(1),
             lexer::Tok::Ident(word) if braces == 0 => {
                 let next = toks.get(i + 1).map(|token| &token.tok);
-                if word == "declare" || word == "mtd" ||
+                // A contextual inline `mtd foo()` is a normal class
+                // method. Only receiver-form `mtd (...)` may need the
+                // separately validated out-of-line lowering path.
+                if word == "declare" ||
+                    (word == "mtd" && matches!(next, Some(lexer::Tok::LParen))) ||
                     (word == "use" && matches!(next,
                         Some(lexer::Tok::Ident(name)) if name == "namespace")) {
                     target = true;
@@ -295,23 +299,30 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
         }
     }
     let program = if target {
-        let headers = target_syntax::parse_target_declarations(&toks)?;
-        if !headers.classes.is_empty() {
-            // Out-of-line *immutable class* mtd is executable: translate the
-            // receiver headers into equivalent in-class method tokens, then
-            // reuse the full production parser, checker and guest Wasm emitter.
-            // Namespace, imports, actor receivers and mutable-self are gated
-            // inside the lowering helper, never silently compiled as classes.
-            let lowered = target_syntax::lower_class_receivers(&toks, &headers)?;
-            parser::Parser::new(lowered).parse_program()?
-        } else {
-            // Actor mtd stays strictly syntax/type preflight only. An ActorRef
-            // must never acquire unverified synchronous method dispatch.
-            let typed = target_typed::lower_target_signatures(&headers)?;
-            let actor_ast = target_typed::build_actor_program(&headers, &typed);
-            check::check_target_actor_interface(&actor_ast)?;
-            return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
-                "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
+        // The preliminary scan is intentionally conservative. A user-defined
+        // callable named mtd(), including calls inside brace-free bodies, can
+        // resemble a receiver header. Prefer the *entire* executable grammar
+        // when it succeeds; only rejected source enters the checked target
+        // receiver path. True `mtd (self: T) foo()` has no executable parse.
+        match parser::Parser::new(toks.clone()).parse_program() {
+            Ok(program) => program,
+            Err(_) => {
+                let headers = target_syntax::parse_target_declarations(&toks)?;
+                if !headers.classes.is_empty() {
+                    // Out-of-line immutable class mtd must still pass
+                    // target ownership/namespace/receiver admission gates.
+                    let lowered = target_syntax::lower_class_receivers(&toks, &headers)?;
+                    parser::Parser::new(lowered).parse_program()?
+                } else {
+                    // Actor mtd stays syntax/type preflight only. Never invent
+                    // unverified synchronous ActorRef dispatch.
+                    let typed = target_typed::lower_target_signatures(&headers)?;
+                    let actor_ast = target_typed::build_actor_program(&headers, &typed);
+                    check::check_target_actor_interface(&actor_ast)?;
+                    return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
+                        "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
+                }
+            }
         }
     } else {
         parser::Parser::new(toks).parse_program()?
