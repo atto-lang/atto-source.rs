@@ -1,0 +1,7 @@
+// expect-exit: 7
+// Contextual maybe is legal as a function, parameter, local, and return operand.
+fnc identity(int maybe): int { return maybe; }
+pub fnc main(): int {
+  val maybe: int = identity(7);
+  return maybe;
+}
