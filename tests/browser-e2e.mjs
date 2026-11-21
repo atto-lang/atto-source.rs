@@ -183,6 +183,21 @@ try{
     console.log('PASS browser: actual Rust/Wasm SelectPlan guest ' + filename);
   }
 
+  // These guests must compile, then trap in the real browser Wasm runtime,
+  // before an earlier ready case can bypass a later actor DATA-port claim.
+  for (const filename of [
+    '236-v2-select-pipe-owned-at-construction.atto',
+    '237-v2-select-pipe-claimed-after-plan.atto',
+    '238-v2-dynamic-select-put-pipe-owned.atto',
+  ]) {
+    const src = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
+    assert.match(await run(src, 'E_PANIC'), /^E_PANIC:/,
+      filename + ': pipeline-owned SelectCase must trap in the actual guest');
+    assert.equal(await evaluate('window.__attoLastPanicCode'), 10,
+      filename + ': claimed channel read must not acquire DATA access');
+    console.log('PASS browser: real SelectPlan rejects DATA port ' + filename);
+  }
+
   // A timeout must close the suspended guest's live span before trapping.
   // The counter is read from Wasm linear memory, not inferred from stdout.
   const timeoutGuest = 'import span from pkg "core.telemetry"; import sleep from pkg "std.time"; '+
