@@ -44,9 +44,9 @@ fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
     // Atto compiler-owned library namespaces may never be interpreted as
     // project-relative paths (including by prefixing "./"). Their typed
     // resolver and profile admission are not yet linked in this subset.
-    if value.starts_with("atto.core/") || value.starts_with("atto.alloc/")
-        || value.starts_with("atto.std/") || value == "atto.runtime.actor"
-        || value.starts_with("atto.runtime.actor/") {
+    if value.split('/').any(|part| matches!(part,
+        "atto.core" | "atto.alloc" | "atto.std" | "atto.runtime.actor"
+    )) {
         return Err(diagnostic(pos, "E_STDLIB_UNLINKED",
             "compiler-owned Atto library requires verified profile resolver"));
     }
