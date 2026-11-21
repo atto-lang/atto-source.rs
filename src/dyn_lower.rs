@@ -163,9 +163,14 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 return Err(err(t[i].pos, "E_DYN_OWNERSHIP",
                     "owned Dyn constructor requires Dyn<I>(take! named_owner)"));
             }
-            if i > 0 && word(&t, i - 1, "new") {
+            // The monomorphic carrier is a concrete class handle. Do not
+            // let a Dyn constructor be used as an ordinary Greeting value:
+            // that would silently reveal the implementation's extra methods.
+            if i < 7 || dyn_type(&t, i - 6) != Some(interface)
+                || !(word(&t, i - 7, "val") || word(&t, i - 7, "let"))
+                || !is(&t, i - 1, Tok::Assign) {
                 return Err(err(t[i].pos, "E_DYN_OWNERSHIP",
-                    "Dyn is an owning erasure, not a heap class constructor"));
+                    "owned Dyn construction requires a matching typed Dyn<I> local binding"));
             }
             constructor_sites.insert(i);
             continue;
