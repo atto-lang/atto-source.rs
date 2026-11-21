@@ -492,7 +492,6 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     let mut c = Cursor { toks, i: 0 };
     let mut out = TargetHeaders::default();
     let mut spans: Vec<(usize, usize, usize)> = Vec::new();
-    let mut function_spans: Vec<(usize, usize)> = Vec::new();
     let mut function_names: Vec<String> = Vec::new();
     let mut import_sites: Vec<(String, Pos)> = Vec::new();
     let mut saw_declaration = false;
@@ -661,7 +660,6 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
             } else if c.take_word("fnc") || c.take_word("routine") {
                 let (name, start, end) = c.function()?;
                 function_names.push(name);
-                function_spans.push((start, end));
                 out.function_sites.push(FunctionSite {
                     declaration_start, body_start: start, end,
                 });
@@ -670,7 +668,6 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 // declaration scope, and has the same owner/name/arity identity.
                 let (name, start, end) = c.function()?;
                 function_names.push(name);
-                function_spans.push((start, end));
                 out.function_sites.push(FunctionSite {
                     declaration_start, body_start: start, end,
                 });
@@ -743,8 +740,11 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     for (i, start, end) in spans {
         validate_receiver_body(toks, &out, i, start, end)?;
     }
-    for (start, end) in function_spans {
-        validate_spawned_actor_calls(toks, &out, start, end)?;
+    // The same parser-owned ledger drives both semantic validation and all
+    // native backend consumers. Never maintain a second unsynchronized span
+    // list, even for the source-only target syntax checker.
+    for site in &out.function_sites {
+        validate_spawned_actor_calls(toks, &out, site.body_start, site.end)?;
     }
     Ok(out)
 }
