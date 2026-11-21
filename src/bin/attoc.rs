@@ -205,7 +205,7 @@ mod output_publish_tests {
         let dir = scratch_dir();
         let destination = dir.join("protected.wasm");
         std::fs::write(&destination, b"existing owner data").unwrap();
-        let error = publish_wasm(destination.to_str().unwrap(), b"\\0asm").unwrap_err();
+        let error = publish_wasm(destination.to_str().unwrap(), b"\0asm").unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&destination).unwrap(), b"existing owner data");
         std::fs::remove_dir_all(dir).unwrap();
@@ -215,9 +215,9 @@ mod output_publish_tests {
     fn fresh_exclusive_publish_writes_complete_output() {
         let dir = scratch_dir();
         let destination = dir.join("compiled.wasm");
-        publish_wasm(destination.to_str().unwrap(), b"\\0asm\\x01\\0\\0\\0").unwrap();
+        publish_wasm(destination.to_str().unwrap(), b"\0asm\x01\0\0\0").unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(),
-                   b"\\0asm\\x01\\0\\0\\0");
+                   b"\0asm\x01\0\0\0");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
