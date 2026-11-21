@@ -3758,7 +3758,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
-            ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
+            ExprKind::Binary(_, _, _) => self.binary_chain(e),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Ascribe(inner, target, explicit_cast) => {
                 let want = self.resolve(*target, e.pos)?;
@@ -3873,11 +3873,32 @@ impl<'a> FnCx<'a> {
     }
 
     #[inline(never)]
-    fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+    /// Type-check a left-associative binary spine iteratively. This preserves
+    /// source-order checked arithmetic (no reassociation) and keeps a valid
+    /// 250-link expression within the default 2 MiB Rust worker stack.
+    fn binary_chain(&mut self, source: &Expr) -> R<TE> {
+        let mut spine = Vec::new();
+        let mut base = source;
+        while let ExprKind::Binary(op, left, right) = &base.kind {
+            if spine.len() >= crate::parser::MAX_TREE_HEIGHT as usize {
+                return Err(Diagnostic::new(base.pos, "E_NESTING",
+                    "binary expression exceeds the bounded tree height"));
+            }
+            spine.push((*op, right.as_ref(), base.pos));
+            base = left.as_ref();
+        }
+        let mut typed = self.value(base)?;
+        for (op, right, pos) in spine.into_iter().rev() {
+            let rhs = self.value(right)?;
+            typed = self.binary_values(op, typed, rhs, pos)?;
+        }
+        Ok(typed)
+    }
+
+    #[inline(never)]
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr) {
                 if a.ty != Type::Int || b.ty != Type::Int {
