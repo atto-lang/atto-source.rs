@@ -87,7 +87,7 @@ fn default_stack_checks_admitted_binary_spines_without_clone_overflow() {
     let bytes = atto_compiler::compile(&chain(250)).expect(
         "a parser-admitted 250-term addition must compile on the default stack"
     );
-    assert!(bytes.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(
         atto_compiler::compile(&chain(3_000)).unwrap_err().code,
         "E_NESTING"
