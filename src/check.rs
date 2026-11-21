@@ -458,7 +458,8 @@ struct Local {
 }
 
 #[derive(Clone, Copy)]
-struct ScopedLoan { owner: u32, mutable: bool }
+/// None identifies a whole owner; Some is an authenticated scalar field slot.
+struct ScopedLoan { owner: u32, field: Option<u32>, mutable: bool }
 
 struct FnCx<'a> {
     g: &'a Globals<'a>,
@@ -472,6 +473,8 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Directly constructed class roots, never aliases received from calls/fields.
+    fresh_class_roots: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
     /// Compiler-issued lexical protected state permissions.
@@ -2429,6 +2432,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            fresh_class_roots: BTreeSet::new(),
             loans: BTreeMap::new(),
             state_write_scope: false,
             state_read_scope: false,
@@ -2511,6 +2515,7 @@ impl<'a> FnCx<'a> {
         let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
+        let fresh_class_roots = std::mem::take(&mut self.fresh_class_roots);
         let loans = std::mem::take(&mut self.loans);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
@@ -2521,6 +2526,7 @@ impl<'a> FnCx<'a> {
         self.recover_error = prev_error;
         self.loans = loans;
         self.moved = moved;
+        self.fresh_class_roots = fresh_class_roots;
         self.loops = loops;
         self.scopes = scopes;
         r
@@ -2630,6 +2636,7 @@ impl<'a> FnCx<'a> {
             for l in ended {
                 self.loans.remove(&l.slot);
                 self.moved.remove(&l.slot);
+                self.fresh_class_roots.remove(&l.slot);
             }
         }
     }
@@ -2709,6 +2716,9 @@ impl<'a> FnCx<'a> {
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                if matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_)) {
+                    self.fresh_class_roots.insert(slot);
+                }
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
@@ -2733,6 +2743,8 @@ impl<'a> FnCx<'a> {
                         format!("cannot assign {} to '{name}' of type {}", self.tn(v.ty), self.tn(ty)),
                     ));
                 }
+                // Never restore freshness after reassignment; monotone across joins.
+                self.fresh_class_roots.remove(&slot);
                 // a reassigned object binding owns a value again
                 self.moved.remove(&slot);
                 TStmt::Set(slot, v)
@@ -3543,8 +3555,15 @@ impl<'a> FnCx<'a> {
     /// Class loans are bound to lexical locals; no owner transfer or escape.
     fn borrow_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
                       inner: &Expr, mutable: bool, pos: Pos) -> R<TStmt> {
-        let ExprKind::Var(owner_name) = &inner.kind else {
-            return Err(Diagnostic::new(inner.pos, "E_BORROW", "borrow! requires a named owner"));
+        let (owner_name, requested_field) = match &inner.kind {
+            ExprKind::Var(n) => (n.as_str(), None),
+            ExprKind::Member(base, f) => match &base.kind {
+                ExprKind::Var(n) => (n.as_str(), Some(f.as_str())),
+                _ => return Err(Diagnostic::new(inner.pos, "E_BORROW",
+                    "scalar field loans require a named class owner")),
+            },
+            _ => return Err(Diagnostic::new(inner.pos, "E_BORROW",
+                "borrow! requires a named owner or checked scalar field")),
         };
         let (owner, owner_ty) = match self.lookup(owner_name) {
             Some(l) => (l.slot, l.ty),
@@ -3553,10 +3572,48 @@ impl<'a> FnCx<'a> {
         if self.loans.contains_key(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
-        if let Some(loan) = self.loans.values().find(|loan| loan.owner == owner) {
-            if mutable || loan.mutable {
-                return Err(Diagnostic::new(pos, "E_BORROW", "conflicting loans: mutable borrowing must be exclusive"));
+        // A field offset is a declaration-checked projection, not an index
+        // or caller-supplied alias root. For now, only direct-new class roots
+        // and immutable snapshots of scalar fields have a guest representation.
+        let projected_field = if let Some(field_name) = requested_field {
+            if mutable {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "mutable scalar field loans require reference write-through lowering"));
             }
+            if !self.fresh_class_roots.contains(&owner) {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "field borrowing requires a proven-unique direct-new class root"));
+            }
+            let Type::Class(c) = owner_ty else {
+                return Err(Diagnostic::new(pos, "E_BORROW", "field owner is not a class"));
+            };
+            let class = &self.g.classes[c as usize];
+            if class.name.starts_with("__atto_tuple_private_") {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "tuple roots require a distinct field-loan provenance proof"));
+            }
+            let f = class.fields.iter().find(|f| f.name == field_name).ok_or_else(||
+                Diagnostic::new(pos, "E_UNBOUND",
+                    format!("class '{}' has no field '{field_name}'", class.name)))?;
+            if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
+                return Err(Diagnostic::new(pos, "E_PRIVATE",
+                    "cannot borrow a private field outside the owning class"));
+            }
+            if f.mode == FieldMode::ActorState {
+                return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                    "protected state requires a critical-read lease"));
+            }
+            if !matches!(f.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "field loans of class/resource handles need nested-loan provenance"));
+            }
+            Some(f.slot)
+        } else { None };
+        if self.loans.values().any(|loan| loan.owner == owner
+            && (loan.field.is_none() || projected_field.is_none() || loan.field == projected_field)
+            && (mutable || loan.mutable)) {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "conflicting loans of overlapping class places"));
         }
         let value = self.value(inner)?;
         if let Some(annotation) = annotation {
@@ -3564,6 +3621,13 @@ impl<'a> FnCx<'a> {
             if expected != value.ty {
                 return Err(type_err(pos, format!("borrowed binding '{name}' expects {}, found {}", self.tn(expected), self.tn(value.ty))));
             }
+        }
+        if let Some(field) = projected_field {
+            // Snapshot-backed, read-only scalar loan: the stored value is
+            // independent, while the field's original storage remains protected.
+            let slot = self.declare(name, value.ty, false, pos)?;
+            self.loans.insert(slot, ScopedLoan { owner, field: Some(field), mutable: false });
+            return Ok(TStmt::Set(slot, value));
         }
         // Tuple roots are value-aggregate anchors. Their non-Copy storage
         // is a private implementation detail, not a writable user class.
@@ -3588,7 +3652,7 @@ impl<'a> FnCx<'a> {
             return Ok(TStmt::Set(slot, value));
         }
         let slot = self.declare(name, value.ty, false, pos)?;
-        self.loans.insert(slot, ScopedLoan { owner, mutable });
+        self.loans.insert(slot, ScopedLoan { owner, field: None, mutable });
         Ok(TStmt::Set(slot, value))
     }
 
