@@ -78,3 +78,38 @@ fn unsupported_receiver_mutability_and_malformed_declarations_fail_closed() {
         assert_eq!(diagnostic.code, expected, "{method}: {diagnostic}");
     }
 }
+
+#[test]
+fn public_inline_self_and_implicit_receiver_emit_equivalent_checked_wasm() {
+    fn source(header: &str, call: &str) -> String {
+        format!(
+            "define class Calculator as\n    {header}\nend\npub fnc main(): int {{\n    val c = new Calculator();\n    return {call};\n}}"
+        )
+    }
+
+    let implicit = source("pub fnc value(int n): int { return n; }", "c.value(42)");
+    let explicit = source("pub fnc value(self, int n): int { return n; }", "c.value(42)");
+    let implicit_wasm = atto_compiler::compile(&implicit).expect("implicit receiver codegen");
+    let explicit_wasm = atto_compiler::compile(&explicit).expect("inline readonly self codegen");
+    assert!(implicit_wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert_eq!(
+        explicit_wasm, implicit_wasm,
+        "declaration-only inline self cannot add a method ABI value slot"
+    );
+    assert_eq!(
+        explicit_wasm,
+        atto_compiler::compile(&explicit).expect("repeat inline receiver compile"),
+        "inline receiver Wasm must compile deterministically"
+    );
+
+    let extra_receiver = source(
+        "pub fnc value(self, int n): int { return n; }",
+        "c.value(c, 42)",
+    );
+    let diagnostic = atto_compiler::compile(&extra_receiver)
+        .expect_err("call-site explicit self cannot become a hidden receiver");
+    assert!(
+        diagnostic.code.starts_with("E_"),
+        "invalid caller-visible arity must produce a structured error: {diagnostic}"
+    );
+}
