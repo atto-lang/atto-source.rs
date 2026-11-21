@@ -44,7 +44,10 @@ fn invalid_conditionals_fail_closed_before_any_guest() {
         ("return unless true then return 7 else 9 fi;", "E_SYNTAX"),
     ] {
         let src = format!("pub fnc main(): int {{ {body} }}");
-        let error = compile(&src).expect_err(&format!("unexpected executable guest: {body}"));
+        let error = match compile(&src) {
+            Err(error) => error,
+            Ok(_) => panic!("unexpected executable guest: {body}"),
+        };
         assert_eq!(error.code, expected, "{body}: {error}");
     }
 }
