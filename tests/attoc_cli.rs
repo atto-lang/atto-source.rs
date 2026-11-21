@@ -124,6 +124,31 @@ fn compiler_output_cannot_overwrite_its_input_file_or_aliases() {
 }
 
 #[test]
+fn compiler_refuses_source_extension_output_before_removing_existing_files() {
+    let temp = CliTemporaryDir::new();
+    let original = b"// unrelated Atto module must survive -o\npub fnc unrelated(): int { return 11; }\n";
+    for suffix in ["atto", "ATTO"] {
+        let output = temp.0.join(format!("unrelated.{suffix}"));
+        std::fs::write(&output, original).unwrap();
+        let result = attoc(&[
+            "tests/fixtures/pass/01-answer.atto", "-o", output.to_str().unwrap(),
+        ]);
+        assert_eq!(result.status.code(), Some(2), "{suffix}: {:?}", result.status);
+        assert!(result.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&result.stderr)
+            .contains("Wasm output cannot use a .atto source extension"));
+        assert_eq!(std::fs::read(&output).unwrap(), original,
+            "{suffix}: compiler deleted or changed unrelated source");
+    }
+    let not_created = temp.0.join("new.atto");
+    let result = attoc(&[
+        "tests/fixtures/pass/01-answer.atto", "-o", not_created.to_str().unwrap(),
+    ]);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!not_created.exists(), "invalid output extension created a source file");
+}
+
+#[test]
 fn preexisting_nonsource_artifacts_are_replaced_not_appended() {
     let temp = CliTemporaryDir::new();
     let target = temp.0.join("old.wasm");

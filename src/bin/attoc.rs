@@ -46,6 +46,19 @@ fn input_source_path(input: &Input) -> std::path::PathBuf {
 // No previous successful guest is allowed to survive a failed recompilation.
 // This is deliberately before source reading, parsing and code generation.
 fn clear_previous_output(input: &Input, output: &str) -> std::io::Result<()> {
+    // An output path must never be another Atto source file, even if that
+    // file is an imported module rather than the entry source. Removing a
+    // pre-existing .atto path before compilation would silently destroy it.
+    if Path::new(output)
+        .extension()
+        .and_then(|suffix| suffix.to_str())
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case("atto"))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Wasm output cannot use a .atto source extension",
+        ));
+    }
     if same_file(&input_source_path(input), Path::new(output)) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
