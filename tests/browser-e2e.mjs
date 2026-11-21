@@ -88,8 +88,9 @@ try{
   assert.match(bulletSource, /raises Error ::/);
   assert.match(bulletSource, /raise! Error\("too large"\)/);
   assert.equal(await run(bulletSource, 'main() -> 42'), 'main() -> 42');
-  // Two distinct real guest oracles: recovery with is_raise=true and
-  // catch bypass (a broken ordinary-catch route produces 17, not 42).
+  // Three distinct triggered-raise guest oracles: recover with is_raise,
+  // ordinary catch bypass and legacy Option trap bypass. Broken paths
+  // return 17 or 0 rather than 42.
   for (const name of [
     'return-first-raise-recover-guest.atto',
     'return-first-raise-bypasses-catch.atto',
