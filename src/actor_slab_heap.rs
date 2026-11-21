@@ -892,4 +892,145 @@ pub mod conformance {
         }
         out
     }
+
+    /// Canonical status codes shared by every backend (golden v2).
+    pub fn code(e: SlabError) -> u32 {
+        match e {
+            SlabError::OutOfMemory => 1,
+            SlabError::BudgetExceeded => 2,
+            SlabError::InvalidSize => 3,
+            SlabError::InvalidAlignment => 4,
+            SlabError::InvalidRef => 5,
+            SlabError::StaleHandle => 6,
+            SlabError::HandleTableFull => 7,
+            SlabError::Retired => 8,
+            SlabError::InvalidConfig => 99,
+        }
+    }
+
+    fn fail(e: SlabError) -> u32 {
+        0x8000_0000 | code(e)
+    }
+
+    fn remember(v: &mut Vec<u32>, w: u32) {
+        v.push(w);
+        if v.len() > 8 {
+            v.remove(0);
+        }
+    }
+
+    /// Golden v2: failure paths and edge cases. Same script as the C++
+    /// `tests/actor_slab_heap_golden_v2_test.cpp`; see that file for the format.
+    pub fn golden_script_v2() -> Vec<u32> {
+        let mut c = Config::new(256 * 1024, 128 * 1024);
+        c.commit_granule = 16 * 1024;
+        c.handle_capacity = 8;
+        c.handle_generation_bits = 3;
+        let mut h = ActorSlabHeap::new(c).expect("golden v2 config");
+        let mut out = Vec::new();
+        let mut lcg: u32 = 99;
+        let mut next = || {
+            lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            lcg >> 8
+        };
+        let sizes = [
+            0usize, 1, 8, 16, 17, 33, 48, 63, 64, 65, 100, 127, 128, 129, 255, 256, 257, 500, 1000, 2047, 2048, 2049,
+        ];
+        let aligns = [1usize, 8, 16, 32, 64, 128, 3];
+        let larges = [3000usize, 4033, 4032, 8000, 12000, 20000];
+        let (mut live, mut freed, mut handles, mut freed_handles) =
+            (Vec::<u32>::new(), Vec::<u32>::new(), Vec::<u32>::new(), Vec::<u32>::new());
+        let word = |w: u32| Ref32::from_word(w).expect("nonzero word");
+        for _ in 0..3000 {
+            let v = next() % 16;
+            if v <= 5 {
+                let s = sizes[next() as usize % 22];
+                let a = aligns[next() as usize % 7];
+                match h.allocate(s, a) {
+                    Ok(r) => {
+                        out.push(r.word());
+                        live.push(r.word());
+                    }
+                    Err(e) => out.push(fail(e)),
+                }
+            } else if v <= 8 {
+                if live.is_empty() {
+                    continue;
+                }
+                let i = next() as usize % live.len();
+                let w = live[i];
+                out.push(h.free(word(w)).map_or_else(fail, |_| 0));
+                live.swap_remove(i);
+                remember(&mut freed, w);
+            } else if v == 9 {
+                if freed.is_empty() {
+                    continue;
+                }
+                let w = freed[next() as usize % freed.len()];
+                let r = h.free(word(w));
+                out.push(r.map_or_else(fail, |_| 0));
+                if r.is_ok() {
+                    if let Some(i) = live.iter().position(|&l| l == w) {
+                        live.swap_remove(i);
+                    }
+                }
+            } else if v <= 11 {
+                match h.allocate_handle(sizes[1 + next() as usize % 12], 8) {
+                    Ok(x) => {
+                        out.push(x.0);
+                        handles.push(x.0);
+                    }
+                    Err(e) => out.push(fail(e)),
+                }
+            } else if v <= 13 {
+                if handles.is_empty() {
+                    continue;
+                }
+                let i = next() as usize % handles.len();
+                let w = handles[i];
+                out.push(h.free_handle(Handle32(w)).map_or_else(fail, |_| 0));
+                handles.swap_remove(i);
+                remember(&mut freed_handles, w);
+            } else if v == 14 {
+                if freed_handles.is_empty() {
+                    continue;
+                }
+                let w = freed_handles[next() as usize % freed_handles.len()];
+                out.push(h.resolve_handle(Handle32(w)).map_or_else(fail, |r| r.word()));
+            } else {
+                match h.allocate(larges[next() as usize % 6], 8) {
+                    Ok(r) => {
+                        out.push(r.word());
+                        live.push(r.word());
+                    }
+                    Err(e) => out.push(fail(e)),
+                }
+            }
+        }
+        let st = h.stats();
+        out.extend([
+            st.live_objects as u32,
+            st.live_pages as u32,
+            st.free_pages as u32,
+            st.quarantined_handles,
+            st.committed_bytes as u32,
+        ]);
+        out
+    }
+}
+
+#[cfg(test)]
+mod golden_v2_tests {
+    #[test]
+    fn golden_v2_matches_cpp_heap() {
+        let expected: Vec<u32> = include_str!("../tests/fixtures/actor_slab_heap_golden_v2.txt")
+            .split_whitespace()
+            .map(|w| w.parse().unwrap())
+            .collect();
+        let got = super::conformance::golden_script_v2();
+        assert_eq!(got.len(), expected.len(), "golden v2 length");
+        if let Some(i) = (0..got.len()).find(|&i| got[i] != expected[i]) {
+            panic!("golden v2 word {i}: {} != {}", got[i], expected[i]);
+        }
+    }
 }
