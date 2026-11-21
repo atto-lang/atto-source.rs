@@ -24,6 +24,7 @@ const tests=[
   ['pass','return-first-bullet-and-arrow.atto',42n],
   ['pass','return-first-raise-recover-guest.atto',42n],
   ['pass','return-first-raise-bypasses-catch.atto',42n],
+  ['pass','return-first-raise-bypasses-trap.atto',42n],
   ['pass','04-binding-forms.atto',52n],
   ['pass','06-precedence.atto',120n],
   ['pass','19-recursion-fib.atto',55n],
