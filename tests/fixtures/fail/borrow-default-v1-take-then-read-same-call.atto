@@ -1,0 +1,12 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_MOVED
+// Argument evaluation is left-to-right; a later implicit loan cannot
+// borrow the owner once the first argument transferred ownership.
+define class Parcel as pub let int value = 21; end
+fnc consume_then_read(take! Parcel owned, Parcel read_only): int {
+  return owned.value + read_only.value;
+}
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return consume_then_read(take! parcel, parcel);
+}
