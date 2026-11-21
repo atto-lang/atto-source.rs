@@ -1,7 +1,7 @@
 // Prove the actual wasm32 compiler (not JS emulation or native-only lowering)
 // compiles the exact website bitwise preview into executable guest Wasm.
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -99,6 +99,15 @@ try {
   const nativeBytes = await readFile(out);
   assert.deepEqual(Buffer.from(compiled.guest), nativeBytes,
     'native and wasm32 compilers must emit byte-identical guest for exact preview');
+  const floatSource = join(tmp, 'float-division.atto');
+  const floatArtifact = join(tmp, 'float-division.wasm');
+  await writeFile(floatSource, divisionSource + '\n');
+  const nativeFloat = spawnSync(attoc, [floatSource, '-o', floatArtifact],
+    { encoding: 'utf8', timeout: 30000 });
+  assert.equal(nativeFloat.status, 0, nativeFloat.stderr);
+  assert.deepEqual(await readFile(floatArtifact), Buffer.from(division.guest),
+    'native and wasm32 compilers must produce byte-identical float division guests');
+
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }
