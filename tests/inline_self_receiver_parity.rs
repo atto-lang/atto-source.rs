@@ -91,7 +91,7 @@ fn public_inline_self_and_implicit_receiver_emit_equivalent_checked_wasm() {
     let explicit = source("pub fnc value(self, int n): int { return n; }", "c.value(42)");
     let implicit_wasm = atto_compiler::compile(&implicit).expect("implicit receiver codegen");
     let explicit_wasm = atto_compiler::compile(&explicit).expect("inline readonly self codegen");
-    assert!(implicit_wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(implicit_wasm.starts_with(&[0, 97, 115, 109, 1, 0, 0, 0]));
     assert_eq!(
         explicit_wasm, implicit_wasm,
         "declaration-only inline self cannot add a method ABI value slot"
