@@ -17,6 +17,9 @@ const tests=[['pass','01-answer.atto',42n],['fail','02-param-reassign.atto','E_I
 function file(path){assert.ok(existsSync(path),'missing real compiler/fixture: '+path);return readFileSync(path)}
 function wasmInstance(){
   const bytes=file(compiler);
+  // The same public Pages release gate must be enforced by native-vs-wasm
+  // compiler parity tests. A larger candidate is not deployable to /play/.
+  assert.ok(bytes.length <= 1048576,'E_COMPILER_SIZE: compiler exceeds public 1 MiB budget');
   assert.ok(WebAssembly.validate(bytes),'compiler binary is not Wasm');
   const mod=new WebAssembly.Module(bytes);
   assert.deepEqual(WebAssembly.Module.imports(mod),[],'compiler cannot import host capabilities');
