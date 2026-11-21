@@ -17,6 +17,9 @@ type R<T> = Result<T, Diagnostic>;
 const O_RDONLY: c_int = 0;
 const O_DIRECTORY: c_int = 0o200000;
 const O_NOFOLLOW: c_int = 0o400000;
+// Linux O_NONBLOCK: a named pipe must not stall openat() before fstat()
+// verifies that the opened source is a regular file. Ignored for regular files.
+const O_NONBLOCK: c_int = 0o4000;
 const O_CLOEXEC: c_int = 0o2000000;
 
 extern "C" {
@@ -28,7 +31,10 @@ fn fail(code: &'static str, detail: impl Into<String>) -> Diagnostic {
 }
 fn open_child(directory: &File, name: &str, directory_only: bool, code: &'static str) -> R<File> {
     let c_name = CString::new(name).map_err(|_| fail(code, "NUL in package file component"))?;
-    let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | if directory_only { O_DIRECTORY } else { 0 };
+    // O_DIRECTORY prevents directory-component FIFO admission. For the final
+    // component O_NONBLOCK prevents FIFO open from waiting for a writer before
+    // the LockedRoot::read() regular-file check. O_NOFOLLOW still rejects links.
+    let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | if directory_only { O_DIRECTORY } else { O_NONBLOCK };
     // SAFETY: openat's name is a NUL-terminated CString, the directory FD is
     // alive for the duration of this call, and no mode is required for an
     // O_RDONLY open. Ownership of a successful raw FD transfers to File.
