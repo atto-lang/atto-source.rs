@@ -3399,10 +3399,11 @@ impl<'a> FnCx<'a> {
         })
     }
 
-    /// Check arguments against parameter types; owned object formals still
-    /// move in this *legacy* ABI. The future default Foo-by-borrow contract
-    /// needs a versioned migration and is NOT enabled by this change.
-    /// Arguments evaluate left-to-right. Inferred Borrow<Class> formals
+    /// Check arguments against parameter types. The legacy ABI consumes owned
+    /// class arguments; the opt-in borrow-default-v1 profile turns ordinary
+    /// top-level class formals into checked, non-owning Borrow<Class> parameters
+    /// and requires explicit take! at an owning class call.
+    /// Arguments evaluate left-to-right. Borrow<Class> formals
     /// issue compile-time shared call loans spanning all subsequent argument
     /// evaluation. These end only once all arguments are checked; the guest
     /// call itself is synchronous and returns no borrowed class handle.
