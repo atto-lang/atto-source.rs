@@ -1141,14 +1141,43 @@ fn validate_callback(
             let next = i + 3;
             let postfix_mutation = matches!(toks.get(next).map(|t| &t.tok),
                 Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus));
-            // The lexer does not combine every compound assignment spelling:
-            // - =, * = and / = are also mutations, not innocent reads.
+            // The lexer combines +=, but it leaves other compound writes
+            // split into operator and '=' tokens. Treat bitwise writes as
+            // mutations too: otherwise a critical-read callback could admit
+            // 's.field &= mask', or a narrow critical-write ceiling could
+            // admit 's.other |= mask' without a mutation check.
             let split_compound = matches!(toks.get(next).map(|t| &t.tok),
-                Some(Tok::Minus | Tok::Star | Tok::Slash | Tok::Plus)) &&
+                Some(Tok::Minus | Tok::Star | Tok::Slash | Tok::Plus |
+                     Tok::Amp | Tok::Pipe | Tok::Caret)) &&
                 at(toks, next + 1, &Tok::Assign);
+            // For <<= and >>=, the tokenizer emits Lt+Le / Gt+Ge;
+            // for spaced or triple-shift forms it may emit multiple angle
+            // tokens plus Assign. Bound the lookahead to 3 shift tokens and
+            // demand a trailing '=' to avoid rejecting ordinary shifts.
+            let first_angle = toks.get(next).map(|t| &t.tok);
+            let second_angle = toks.get(next + 1).map(|t| &t.tok);
+            let third_angle = toks.get(next + 2).map(|t| &t.tok);
+            let shift_compound = match first_angle {
+                Some(Tok::Lt) => {
+                    matches!(second_angle, Some(Tok::Le)) ||
+                    (matches!(second_angle, Some(Tok::Lt)) &&
+                        (at(toks, next + 2, &Tok::Assign) ||
+                            (matches!(third_angle, Some(Tok::Lt)) &&
+                                at(toks, next + 3, &Tok::Assign))))
+                }
+                Some(Tok::Gt) => {
+                    matches!(second_angle, Some(Tok::Ge)) ||
+                    (matches!(second_angle, Some(Tok::Gt)) &&
+                        (at(toks, next + 2, &Tok::Assign) ||
+                            (matches!(third_angle, Some(Tok::Gt)) &&
+                                at(toks, next + 3, &Tok::Assign))))
+                }
+                _ => false,
+            };
             let prefix_mutation = i > 0 && matches!(toks.get(i - 1).map(|t| &t.tok),
                 Some(Tok::PlusPlus | Tok::MinusMinus));
-            let mutates = postfix_mutation || split_compound || prefix_mutation;
+            let mutates = postfix_mutation || split_compound ||
+                shift_compound || prefix_mutation;
             // Nested/dynamic paths and field method calls have no authenticated
             // layout, alias or transitive effect summary at this stage. This
             // applies to critical-write too: otherwise the lexical write-set
