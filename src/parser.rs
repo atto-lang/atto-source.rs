@@ -2802,7 +2802,18 @@ impl Parser {
                     Tok::RBrace | Tok::Comma | Tok::Eof | Tok::Question);
                 let newline = self.i > 0
                     && self.toks[self.i - 1].pos.line < self.pos().line;
-                if !stage_boundary && !newline {
+                // A newline may end a statement, but must NEVER turn the
+                // continuation of a callback body into a separate statement.
+                // For example, await f + 1 followed by a newline and "+ 2"
+                // must fail rather than silently returning the unextended
+                // value. The same rule holds for comparisons and postfixes.
+                let dangling_continuation = matches!(self.peek(),
+                    Tok::Plus | Tok::Minus | Tok::Star | Tok::Slash |
+                    Tok::Dot | Tok::LBracket | Tok::LParen |
+                    Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge |
+                    Tok::EqEq | Tok::NotEq | Tok::Assign |
+                    Tok::Amp | Tok::Pipe | Tok::Bang);
+                if !stage_boundary && (!newline || dangling_continuation) {
                     return Err(unsupported(self.pos(), "complex suspending pipeline lambda bodies"));
                 }
                 self.grow(1)?;
