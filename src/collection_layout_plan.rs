@@ -53,7 +53,7 @@ impl Plan {
             return Err(PlanError::InvalidField);
         }
         let width = match layout {
-            Storage::Aosoa(n) if n == 0 || u64::from(n) > super::collection_layout::MAX_AOSOA_LANES =>
+            Storage::Aosoa(n) if n == 0 || u64::from(n) > super::collection_layout::MAX_AOSOA_LANES || !n.is_power_of_two() =>
                 return Err(PlanError::InvalidBlock),
             Storage::Aosoa(n) => u64::from(n),
             _ => 1,
@@ -157,6 +157,10 @@ mod tests {
     fn rejects_invalid_layouts_bounds_and_overflow() {
         assert_eq!(Plan::new(Storage::Aosoa(0), fields(), 1), Err(PlanError::InvalidBlock));
         assert_eq!(Plan::new(Storage::Aosoa(1025), fields(), 1), Err(PlanError::InvalidBlock));
+        for lanes in [3, 7, 1023] {
+            assert_eq!(Plan::new(Storage::Aosoa(lanes), fields(), 5), Err(PlanError::InvalidBlock));
+        }
+        assert!(Plan::new(Storage::Aosoa(1024), fields(), 1025).is_ok());
         assert_eq!(Plan::new(Storage::Aos, vec![], 1), Err(PlanError::InvalidField));
         assert_eq!(Plan::new(Storage::Aos, vec![ScalarField { size: 3, align: 3 }], 1), Err(PlanError::InvalidField));
         assert_eq!(Plan::new(Storage::Soa, fields(), u64::MAX), Err(PlanError::SizeOverflow));
@@ -173,7 +177,7 @@ mod tests {
         ];
         for layout in [
             Storage::Aos, Storage::Soa, Storage::Aosoa(1),
-            Storage::Aosoa(2), Storage::Aosoa(4), Storage::Aosoa(7),
+            Storage::Aosoa(2), Storage::Aosoa(4), Storage::Aosoa(8),
             Storage::Aosoa(16),
         ] {
             for len in 0..=33_u64 {
