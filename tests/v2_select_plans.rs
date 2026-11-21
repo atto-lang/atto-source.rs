@@ -22,6 +22,7 @@ fn select_plans_produce_real_binary_wasm_with_no_script_fallback() {
 fn select_plans_reject_unsafe_or_unimplemented_forms_without_emitting_guest() {
     let seed = "pub suspends fnc main(): int { val c = Channel<int>.bounded(1); ";
     let tests = [
+        (format!("{seed} val p = SelectPlan.from_list([]); return 42; }}"), "E_TYPE"),
         (format!("{seed} val p = SelectPlan.from_list([1]); return 42; }}"), "E_TYPE"),
         (format!("{seed} val c2 = Channel<bool>.bounded(1); val p = SelectPlan.from_list([SelectCase.read(c2)]); return 42; }}"), "E_TYPE"),
         (format!("{seed} val p = SelectPlan.from_map([SelectCase.read(c)]); return 42; }}"), "E_UNSUPPORTED"),
