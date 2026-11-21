@@ -100,10 +100,15 @@ jobs:
         run: cargo test --locked --test ifnot_unless_guest
       - name: Prove readonly inline-self arity and deterministic Wasm regression
         run: cargo test --locked --test inline_self_receiver_parity
-      - name: Test native compiler core over the fixture corpus
+      - name: Test every declared browser/compiler Cargo target over fixture corpus
         env:
           RUST_MIN_STACK: "16777216"
-        run: cargo test --locked --verbose
+        run: cargo test --locked --all-targets --verbose
+      - name: Test separate native Cranelift compiler package with locked dependencies
+        working-directory: native
+        env:
+          RUST_MIN_STACK: "16777216"
+        run: cargo test --locked --all-targets --verbose
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
@@ -124,10 +129,15 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/ifnot_unless_guest.mjs
-      - name: Build actual Wasm compiler
+      - name: Build bounded actual Wasm compiler
         run: |
+          set -euo pipefail
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
-          sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
+          artifact=target/wasm32-unknown-unknown/release/atto_compiler.wasm
+          test -s "$artifact"
+          actual_bytes=$(wc -c < "$artifact")
+          test "$actual_bytes" -le 1048576 || { echo "E_COMPILER_SIZE: browser compiler exceeds 1 MiB budget ($actual_bytes bytes)" >&2; exit 1; }
+          sha256sum "$artifact"
       - name: Prove ifnot/unless native vs wasm32 browser compiler byte parity and real guests
         env:
           ATTOC: target/release/attoc
