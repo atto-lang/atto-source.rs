@@ -113,7 +113,7 @@ fn context(tokens: &[Token], at: usize, end: usize) -> Option<&'static str> {
     let head = &before[begin..];
     if head.len() == 5 &&
         matches!(&head[0].tok, Tok::Ident(w) if matches!(w.as_str(), "val" | "let" | "const")) &&
-        matches!(head[1].tok, Tok::Ident(_)) &&
+        matches!(&head[1].tok, Tok::Ident(_)) &&
         head[2].tok == Tok::Colon && head[4].tok == Tok::Assign {
         return scalar(&head[3]);
     }
@@ -138,8 +138,23 @@ fn specialize(template: &Template, to: &str, private_name: &str) -> Vec<Token> {
 pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     let mut templates = Vec::<Template>::new();
     let mut i = 0;
+    let mut braces = 0usize;
+    let mut nominal_blocks = 0usize;
     while i < tokens.len() {
+        if word(&tokens[i]) == Some("define") && tokens.get(i + 1).and_then(word)
+            .is_some_and(|kind| matches!(kind, "class" | "actor" | "enum" | "module")) {
+            nominal_blocks += 1;
+        }
+        if word(&tokens[i]) == Some("end") && braces == 0 && nominal_blocks > 0 {
+            nominal_blocks -= 1;
+        }
+        if tokens[i].tok == Tok::LBrace { braces += 1; }
+        if tokens[i].tok == Tok::RBrace { braces = braces.saturating_sub(1); }
         if let Some(template) = template_at(&tokens, i)? {
+            if braces > 0 || nominal_blocks > 0 {
+                return Err(error(template.pos, "E_UNSUPPORTED",
+                    "generic methods or nested generic functions are not supported by the browser compiler"));
+            }
             if templates.len() == MAX_GENERIC_FUNCTIONS {
                 return Err(error(template.pos, "E_SOURCE_LIMIT", "too many generic function templates"));
             }
