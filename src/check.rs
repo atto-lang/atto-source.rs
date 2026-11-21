@@ -4657,7 +4657,7 @@ impl<'a> FnCx<'a> {
                         format!("unknown ErrorView method '{name}'")));
                 }
                 self.arity("ErrorView.is_type", 1, args.len(), pos)?;
-                let ExprKind::Var(ref target) = args[0].kind else {
+                let ExprKind::Var(target) = &args[0].kind else {
                     return Err(type_err(args[0].pos,
                         "ErrorView.is_type requires a nominal Error class identifier"));
                 };
