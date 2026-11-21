@@ -531,25 +531,36 @@ suspends fnc __plan_wait_opt(int p, int fair): int {
   done
 }
 
+// Commit a snapshot's winner to the live FAIR cursor only if its captured
+// generation still exists. An intervening winner on the *same* generation
+// must not suppress this later committed winner's cursor advancement.
+fnc __plan_commit_snapshot(int p, int generation, int fair, int option): void {
+  if __load(p, 24) != generation then return; fi
+  if fair != 0 then
+    val winner = __load(option, 0);
+    let next = __load(winner, 0) + 1;
+    if next >= __load(p, 0) then next = 0; fi
+    __store(p, 16, next);
+  fi
+  __store(p, 40, __load(p, 40) + 1);
+}
+
+// Blocking selection captures the descriptors BEFORE it suspends. Mutations
+// after this point cannot retarget a registered waiter to a replacement slot.
 suspends fnc __plan_wait(int p, int fair): int {
-  val result = await __plan_wait_opt(p, fair);
+  val generation = __load(p, 24);
+  val snapshot = __plan_snapshot(p);
+  val result = await __plan_wait_opt(snapshot, fair);
+  __plan_commit_snapshot(p, generation, fair, result);
   return __load(result, 0);
 }
 
 fnc __plan_nb(int p, int fair): int {
   val generation = __load(p, 24);
-  val commit_epoch = __load(p, 40);
   val snapshot = __plan_snapshot(p);
   return task {
     val answer = await __plan_wait_opt(snapshot, fair);
-    // Neither a structural mutation nor another committed selection may
-    // allow this asynchronous snapshot to overwrite the live FAIR cursor.
-    if __load(p, 24) == generation then
-      if __load(p, 40) == commit_epoch then
-        __store(p, 16, __load(snapshot, 16));
-        __store(p, 40, __load(snapshot, 40));
-      fi
-    fi
+    __plan_commit_snapshot(p, generation, fair, answer);
     return answer;
   };
 }
