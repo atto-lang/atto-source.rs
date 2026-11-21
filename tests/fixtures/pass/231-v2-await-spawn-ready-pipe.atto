@@ -1,0 +1,28 @@
+// EXPERIMENTAL: await spawn is READY, never DONE; it yields ActorRef.
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void { emit(mail.value); }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void { stdio.println(mail.value); }
+end
+pub suspends fnc main(): int {
+  // The awaited spawn returns a typed ActorRef<Producer>, not Future<Void>.
+  val producer = await spawn Producer();
+  val consumer = spawn Consumer();
+  val channel = Channel<int>.bounded(1);
+  val Result<PipeHandle, PipeSetupError> connection =
+      producer pipe channel pipe consumer;
+  val int admitted = match connection over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if admitted != 1 then return 92; fi
+  producer.send(40);
+  producer.send(2);
+  producer.stop();
+  await producer.get_done();
+  await consumer.get_done();
+  return 42;
+}
