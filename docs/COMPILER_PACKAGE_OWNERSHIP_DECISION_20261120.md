@@ -14,8 +14,15 @@ remains the authority for grammar and semantics.
   `oreslang-source-rs` until a separately reviewed crate rename.
 - Root `tests/`: 88 browser integration suites explicitly registered
   by #448; 38 legacy native-only root test files **excluded** from browser
-  Cargo. They are NOT automatically run by the separate native crate.
-  Port/verify them deliberately. Do not report an omitted suite as passed.
+  Cargo. The dedicated native package already has 15 same-named suites:
+  7 are byte-identical to their root counterparts, while 8 have different
+  Git blobs. Native Cargo now explicitly registers **31 distinct root tests**
+  under `legacy_*` target names, covering the 23 previously absent names
+  **and all 8 divergent variants**; its existing 15 `native/tests/*.rs`
+  suites stay auto-discovered. The structural inventory checker verifies
+  root and native file-byte equality, test names, and paths.
+  **Registration is not execution**: native Cargo tests have not run on the
+  current head because source Actions is still failing before runner admission.
 
 Keep the canonical browser crate at the root and Cranelift in `native/`.
 Do not replace the root manifest with a native package or add a second
