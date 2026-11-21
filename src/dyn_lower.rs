@@ -27,6 +27,33 @@ fn err(p: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic {
 fn is(t: &[Token], i: usize, tok: Tok) -> bool {
     t.get(i).is_some_and(|x| x.tok == tok)
 }
+// The first executable Dyn profile is object-safe by construction: method
+// parameters and results must be independent scalar values. A named object,
+// Self, generic, borrow, ActorRef or nested container needs provenance-aware
+// result lifetimes and cannot be passed through monomorphic erasure.
+fn scalar(name: &str, allow_void: bool) -> bool {
+    matches!(name, "int" | "bool" | "boolean" | "float" | "f64" | "string" | "String")
+        || (allow_void && name == "void")
+}
+fn scalar_method_signature(t: &[Token], method: usize, semi: usize) -> bool {
+    // Exact 'name(type arg, ...) : scalar ;' shape. The class/interface
+    // conformance pass independently checks the complete named signature.
+    if !is(t, method + 1, Tok::LParen) { return false; }
+    let mut j = method + 2;
+    while !is(t, j, Tok::RParen) {
+        if j >= semi { return false; }
+        let Some(ty) = ident(t, j) else { return false; };
+        if !scalar(ty, false) || ident(t, j + 1).is_none() { return false; }
+        j += 2;
+        if is(t, j, Tok::RParen) { break; }
+        if !is(t, j, Tok::Comma) { return false; }
+        j += 1;
+        if is(t, j, Tok::RParen) { return false; }
+    }
+    is(t, j + 1, Tok::Colon)
+        && ident(t, j + 2).is_some_and(|ty| scalar(ty, true))
+        && j + 3 == semi
+}
 #[derive(Clone)]
 struct Contract {
     impls: Vec<String>,
@@ -77,6 +104,10 @@ fn contracts(t: &[Token]) -> R<BTreeMap<String, Contract>> {
             if !is(t, end, Tok::Semi) {
                 return Err(err(t[k].pos, "E_DYN_INTERFACE",
                     "Dyn interface members must be abstract signatures ending ';'"));
+            }
+            if !scalar_method_signature(t, k, end) {
+                return Err(err(t[k].pos, "E_DYN_ABI",
+                    "browser Dyn<I> method ABI only admits scalar parameters and scalar/void results; no object, Self, generic or borrowed values"));
             }
             k = end + 1;
         }
