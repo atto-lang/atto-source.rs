@@ -58,6 +58,9 @@ pub struct TargetHeaders {
     pub class_forward_sites: Vec<(usize, usize)>,
     /// Parsed but unsupported protected per-instance class state attachments.
     pub state_owners: Vec<String>,
+    /// Checked actor-only attachment headers and field schemas. These are
+    /// syntax/admission metadata, NEVER ordinary actor or class fields.
+    pub actor_state_attachments: Vec<ActorStateAttachment>,
     /// Parsed but deliberately unlinked struct forwards.
     pub struct_forwards: Vec<String>,
     /// New-style constructor sites; lowered only to checked local classes.
@@ -75,6 +78,24 @@ pub struct TargetHeaders {
     pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
 }
+/// Parse-only actor schema. No instance, mailbox, lease or guest storage is
+/// created by successfully parsing this attachment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActorStateAttachment {
+    pub owner: String,
+    pub pos: Pos,
+    pub fields: Vec<AttachedStateField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachedStateField {
+    pub name: String,
+    pub kind: String,
+    pub writable: bool,
+    pub initialized: bool,
+    pub pos: Pos,
+}
+
 struct Cursor<'a> { toks: &'a [Token], i: usize }
 impl Cursor<'_> {
     fn tok(&self) -> &Tok { &self.toks[self.i.min(self.toks.len()-1)].tok }
@@ -427,6 +448,75 @@ impl Cursor<'_> {
         Ok(owner)
     }
 
+    /// State attached to a *nominal actor* is parsed as a private schema,
+    /// distinct from both class state and ordinary actor member fields.
+    /// This method accepts scalar declaration syntax only. The compiler
+    /// refuses guest emission until activation and guarded storage are proved.
+    fn actor_state_attachment(&mut self, pos: Pos) -> R<ActorStateAttachment> {
+        self.expect_word("on")?;
+        self.expect_word("actor")?;
+        let owner = self.ident()?;
+        self.expect_word("as")?;
+        self.expect(&Tok::LBrace, "expected '{' for actor state")?;
+        let mut fields: Vec<AttachedStateField> = Vec::new();
+        while !self.take(&Tok::RBrace) {
+            if *self.tok() == Tok::Eof {
+                return Err(self.err("E_EOF", "unclosed actor state schema"));
+            }
+            if fields.len() >= 128 {
+                return Err(self.err("E_SOURCE_LIMIT", "actor state has more than 128 fields"));
+            }
+            let fpos = self.pos();
+            let writable = if self.take_word("let") { true }
+                else if self.take_word("val") { false }
+                else { return Err(self.err("E_SYNTAX", "actor state field requires let or val")); };
+            let kind = match self.word() {
+                Some("int") => "int",
+                Some("bool") => "bool",
+                _ => return Err(self.err("E_UNSUPPORTED_TYPE",
+                    "actor attachment preflight permits only int/bool scalar fields")),
+            };
+            self.next();
+            let name = self.ident()?;
+            let initialized = if self.take(&Tok::Colon) || self.take(&Tok::Assign) {
+                if kind == "bool" {
+                    if !self.take_word("true") && !self.take_word("false") {
+                        return Err(self.err("E_SYNTAX", "bool state initializer must be true or false"));
+                    }
+                } else {
+                    let negative = self.take(&Tok::Minus);
+                    let in_range = match self.tok() {
+                        Tok::Int(Some(n)) => *n <= i64::MAX as u64,
+                        // Lexer represents 2^63 as None specifically for
+                        // the signed i64 minimum when preceded by '-'.
+                        Tok::Int(None) => negative,
+                        _ => false,
+                    };
+                    if !in_range { return Err(self.err("E_SYNTAX", "state initializer must be a signed i64 literal")); }
+                    self.next();
+                }
+                true
+            } else { false };
+            self.expect(&Tok::Semi, "expected ';' after actor state field")?;
+            if !writable && !initialized {
+                return Err(Diagnostic::new(fpos, "E_STATE",
+                    "immutable val actor state must have a declaration initializer"));
+            }
+            if fields.iter().any(|f| f.name == name) {
+                return Err(Diagnostic::new(fpos, "E_DUPLICATE",
+                    format!("duplicate protected actor field '{name}'")));
+            }
+            fields.push(AttachedStateField {
+                name, kind: kind.to_owned(), writable, initialized, pos: fpos,
+            });
+        }
+        if fields.is_empty() {
+            return Err(Diagnostic::new(pos, "E_STATE",
+                "actor state attachment must declare at least one field"));
+        }
+        Ok(ActorStateAttachment { owner, pos, fields })
+    }
+
     fn class_definition(&mut self, start: usize) -> R<ClassDecl> {
         let (decl, end) = Parser::parse_target_class_at(self.toks, start)?;
         self.i = end;
@@ -514,7 +604,7 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
             }
             if !out.actors.is_empty() || !out.classes.is_empty() || !out.class_forwards.is_empty() ||
                !out.struct_forwards.is_empty() || !out.state_owners.is_empty() ||
-               !out.constructors.is_empty() || !out.receivers.is_empty() {
+               !out.actor_state_attachments.is_empty() || !out.constructors.is_empty() || !out.receivers.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
             let mut bindings = Vec::new();
@@ -561,12 +651,24 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
         } else if c.take_word("define") {
             saw_declaration = true;
             if c.take_word("state") {
-                let owner = c.state_attachment()?;
-                if out.state_owners.contains(&owner) {
-                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
-                        format!("duplicate protected state attachment for class '{owner}'")));
+                let actor_attachment = c.word() == Some("on") &&
+                    c.toks.get(c.i + 1).is_some_and(|tok|
+                        matches!(&tok.tok, Tok::Ident(kind) if kind == "actor"));
+                if actor_attachment {
+                    let attachment = c.actor_state_attachment(pos)?;
+                    if out.actor_state_attachments.iter().any(|a| a.owner == attachment.owner) {
+                        return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                            format!("duplicate protected state attachment for actor '{}'", attachment.owner)));
+                    }
+                    out.actor_state_attachments.push(attachment);
+                } else {
+                    let owner = c.state_attachment()?;
+                    if out.state_owners.contains(&owner) {
+                        return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                            format!("duplicate protected state attachment for class '{owner}'")));
+                    }
+                    out.state_owners.push(owner);
                 }
-                out.state_owners.push(owner);
             } else if c.word() == Some("actor") {
                 let actor = c.definition(c.i - 1)?;
                 if out.definitions.iter().any(|other| other.name == actor.name) ||
@@ -703,6 +805,34 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 format!("guarded state owner '{owner}' has no class declaration")));
         }
     }
+    for attachment in &out.actor_state_attachments {
+        if out.classes.contains(&attachment.owner) ||
+            out.class_forwards.contains(&attachment.owner) ||
+            out.struct_forwards.contains(&attachment.owner) {
+            return Err(Diagnostic::new(attachment.pos, "E_ACTOR",
+                format!("state attachment owner '{}' is not an actor", attachment.owner)));
+        }
+        if !out.actors.contains(&attachment.owner) &&
+            !out.definitions.iter().any(|a| a.name == attachment.owner) {
+            return Err(Diagnostic::new(attachment.pos, "E_UNBOUND",
+                format!("state attachment actor '{}' is not declared", attachment.owner)));
+        }
+        if let Some(actor) = out.definitions.iter().find(|a| a.name == attachment.owner) {
+            // Legacy inline actor state is represented as actor fields; do
+            // not allow a second schema to alias or overwrite that layout.
+            if !actor.fields.is_empty() {
+                return Err(Diagnostic::new(attachment.pos, "E_DUPLICATE",
+                    "inline actor fields cannot coexist with attached protected state"));
+            }
+            for field in &attachment.fields {
+                if actor.methods.iter().any(|m| m.name == field.name) ||
+                   field.name == "receive" {
+                    return Err(Diagnostic::new(field.pos, "E_DUPLICATE",
+                        "protected actor field conflicts with a method/receive name"));
+                }
+            }
+        }
+    }
     for site in &out.constructors {
         if out.actors.contains(&site.owner) {
             return Err(Diagnostic::new(site.pos, "E_ACTOR", "actors never have constructors"));
@@ -740,6 +870,10 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
     if !headers.state_owners.is_empty() {
         return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
             "guarded class state needs checked per-instance synchronization; no ordinary-field fallback"));
+    }
+    if !headers.actor_state_attachments.is_empty() {
+        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+            "attached actor state parsed; actor activation, checked guarded storage and mailbox guest lowering are not implemented"));
     }
     if headers.classes.is_empty() || headers.namespace.is_some() ||
        !headers.imports.is_empty() || !headers.actors.is_empty() ||

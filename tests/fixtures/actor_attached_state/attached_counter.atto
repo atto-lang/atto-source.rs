@@ -1,0 +1,26 @@
+// TARGET: same nominal per-instance state/layout and lifecycle as inline_counter.atto.
+// The sole attached declaration may follow the actor body.
+define actor Counter as
+  on_start(): void using state.write {
+    self.handle_state(critical-write |s| -> {
+      s.count = 0;
+    });
+  }
+  receive(ActorMail<int> mail): void using state.read, state.write {
+    self.handle_state(critical-write |s| -> {
+      s.count += mail.value;
+    });
+    val observed = self.handle_state(critical-read |s| -> s.count);
+    stdio.println(observed);
+  }
+end
+
+define state on actor Counter as {
+  let int count;
+}
+
+pub fnc main(): int {
+  val counter = spawn Counter();
+  counter.send(1);
+  return 0;
+}

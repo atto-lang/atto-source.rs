@@ -226,7 +226,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
             matches!((&w[0].tok, &w[1].tok, &w[2].tok, &w[3].tok),
                 (lexer::Tok::Ident(a), lexer::Tok::Ident(b),
                  lexer::Tok::Ident(c), lexer::Tok::Ident(d))
-                    if a == "define" && b == "state" && c == "on" && d == "class"))
+                    if a == "define" && b == "state" && c == "on" && (d == "class" || d == "actor")))
         || source_tokens.windows(5).any(|w|
             matches!((&w[0].tok, &w[1].tok, &w[2].tok, &w[3].tok, &w[4].tok),
                 (lexer::Tok::Ident(c), lexer::Tok::LParen, lexer::Tok::Ident(_),
