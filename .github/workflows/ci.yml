@@ -24,8 +24,17 @@ jobs:
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup component add rustfmt clippy --toolchain 1.85.1
           rustup default 1.85.1
           rustc --version
+      - name: Check Rust formatting and fail-closed Clippy diagnostics
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Require source export to remain deny-by-default
+        run: |
+          bash tests/private-ci-export-policy-guard-test.sh
+          bash scripts/private-ci-export-policy-guard.sh .github/private-ci-approved-repositories.txt
       - name: Test native compiler core over the fixture corpus
         run: cargo test --locked --verbose
       - name: Build native attoc host
