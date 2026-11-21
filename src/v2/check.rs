@@ -1629,11 +1629,12 @@ impl<'a> Checker<'a> {
                 self.c().pre.push(IrStmt::If(run, then, Vec::new()));
                 Ok((Ir::Local(t), Ty::Bool))
             }
-            BinOp::Pipe | BinOp::Rpipe => {
+            BinOp::Pipe | BinOp::Rpipe | BinOp::CheckedPipe | BinOp::CheckedRpipe => {
                 // Evaluate stage expressions ONCE in the original written
                 // order. Reverse only source-to-sink DATA orientation for
                 // rpipe; neither form permits an implicit reverse/CONTROL edge.
-                let reverse = op == BinOp::Rpipe;
+                let reverse = matches!(op, BinOp::Rpipe | BinOp::CheckedRpipe);
+                let checked_bang = matches!(op, BinOp::CheckedPipe | BinOp::CheckedRpipe);
                 // The bounded actor -> Channel<T> -> actor graph is a single
                 // connection. Lower all three lexical operands before calling
                 // one guest admission helper; the former left-associative
@@ -1647,7 +1648,8 @@ impl<'a> Checker<'a> {
                         // owned graph IR. Do NOT recursively lower a prefix:
                         // that would activate it before validating all edges.
                         let nested = |e: &Expr| matches!(&e.kind,
-                            Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _));
+                            Ex::Binary(BinOp::Pipe | BinOp::Rpipe |
+                                BinOp::CheckedPipe | BinOp::CheckedRpipe, _, _));
                         if nested(first) || nested(middle) || nested(r) {
                             return Err(err(pos, "E_UNSUPPORTED",
                                 "long or nested continuous graph needs atomic PipeHandle lowering"));
@@ -1696,7 +1698,7 @@ impl<'a> Checker<'a> {
                             // setup. Untyped legacy pipelines still return
                             // their Channel<T> for backward-compatible
                             // experimental guest fixtures.
-                            let checked = matches!(want,
+                            let checked = checked_bang || matches!(want,
                                 Some(Ty::Result(ok, bad))
                                 if **ok == Ty::PipeHandle && **bad == Ty::PipeSetupError);
                             let (helper, result_ty) = if checked {
@@ -1714,9 +1716,20 @@ impl<'a> Checker<'a> {
                             "nested continuous pipe graphs need an owned typed PipeHandle; only the bounded actor-channel-actor triple has atomic guest admission"));
                     }
                 }
+                if checked_bang {
+                    // The checked bang form MUST NOT call the legacy
+                    // trap-based actor-to-actor publisher or a partially
+                    // attached actor-channel segment. Until an atomic direct
+                    // ActorRef->ActorRef Result helper exists, only the
+                    // validated, bounded actor/Channel<T>/actor triple is
+                    // executable. This rejection precedes operand lowering.
+                    return Err(err(pos, "E_UNSUPPORTED",
+                        "checked pipe!/rpipe! currently requires an actor -> bounded Channel<T> -> actor triple"));
+                }
                 // Parenthesized continuous graphs are not ordinary endpoint
                 // expressions. Reject before recursively publishing any edge.
-                if matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _)) {
+                if matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe |
+                    BinOp::CheckedPipe | BinOp::CheckedRpipe, _, _)) {
                     return Err(err(pos, "E_UNSUPPORTED",
                         "nested continuous graph needs atomic PipeHandle lowering"));
                 }
@@ -1730,9 +1743,11 @@ impl<'a> Checker<'a> {
                 // Actor-only nested ASTs are ambiguous (the legacy type is a
                 // head ActorRef, not a graph head+tail). Do not route through
                 // the wrong actor or skip typed checks when a graph is nested.
-                let nested_actor = matches!(&l.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
+                let nested_actor = matches!(&l.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe |
+                    BinOp::CheckedPipe | BinOp::CheckedRpipe, _, _))
                     && matches!(&left_ty, Ty::Actor(_))
-                    || matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
+                    || matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe |
+                        BinOp::CheckedPipe | BinOp::CheckedRpipe, _, _))
                         && matches!(&right_ty, Ty::Actor(_));
                 if nested_actor {
                     return Err(err(pos, "E_UNSUPPORTED",
