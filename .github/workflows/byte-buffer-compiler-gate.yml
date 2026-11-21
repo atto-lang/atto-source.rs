@@ -1,0 +1,54 @@
+name: Canonical ByteBuffer source identity and Rust syntax admission
+on:
+  pull_request:
+    paths:
+      - 'src/lexer.rs'
+      - 'src/parser.rs'
+      - 'src/lib.rs'
+      - 'src/linker.rs'
+      - 'src/std_buffer_gate.rs'
+      - 'tests/fixtures/canonical-buffer-v1/**'
+      - 'tests/fixtures/byte-buffer-v1/**'
+      - 'tests/byte_buffer_rust_frontend_guest.mjs'
+      - '.github/workflows/byte-buffer-compiler-gate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  std-buffer-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source head and canonical library Git blobs
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(git hash-object tests/fixtures/canonical-buffer-v1/stdlib/core/byte_bounds.atto)" = "3c8544bb4e8d87fe63b1284a627913aea6d91527"
+          test "$(git hash-object tests/fixtures/canonical-buffer-v1/stdlib/core/identity.atto)" = "40aa48e5508c8fe24aa5ef7ebe2bde73aaad0b57"
+          test "$(git hash-object tests/fixtures/canonical-buffer-v1/stdlib/core/u32_endian.atto)" = "92297c9df0169ab63197faf74f45af39ae5b7091"
+          test "$(git hash-object tests/fixtures/canonical-buffer-v1/stdlib/std/buffer.atto)" = "2cfc805f9a467e71834dc0354e622f9d81d8fa5e"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal --component clippy
+      - name: Verify Rust frontend syntax and authenticated source tests
+        run: cargo +1.85.1 test --locked --lib std_buffer_gate -- --nocapture
+      - name: Verify compiler native regressions
+        run: cargo +1.85.1 test --locked --lib
+      - name: Strict Rust diagnostics
+        run: cargo +1.85.1 clippy --locked --lib -- -D warnings
+      - name: Build real normal Rust compiler
+        run: cargo +1.85.1 build --locked --release --bin attoc
+      - name: Execute normal-compiler scalar Wasm guests and reject unlinked BB-001
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/byte_buffer_rust_frontend_guest.mjs
+      - name: Evidence boundary
+        run: |
+          echo 'Rust lexer/parser and canonical stdlib source identity tested only if steps actually execute.'
+          echo 'Canonical std.buffer class linked guest, typed BufferError, TenantVM security: NOT_EXECUTED.'
