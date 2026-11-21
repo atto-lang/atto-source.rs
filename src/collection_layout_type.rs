@@ -48,8 +48,8 @@ fn layout(tokens: &[Token], i: &mut usize) -> Result<Storage, Diagnostic> {
         "aosoa" => {
             expect(tokens, i, Tok::LParen, "expected '(' after aosoa")?;
             let lanes = match tokens.get(*i).map(|t| &t.tok) {
-                Some(Tok::Int(Some(n))) if *n >= 1 && *n <= crate::collection_layout::MAX_AOSOA_LANES => *n,
-                _ => return Err(diag(tokens, *i, "E_LAYOUT_SIZE", "aosoa requires a constant lane count in 1..=1024")),
+                Some(Tok::Int(Some(n))) if *n >= 1 && *n <= crate::collection_layout::MAX_AOSOA_LANES && n.is_power_of_two() => *n,
+                _ => return Err(diag(tokens, *i, "E_LAYOUT_SIZE", "aosoa requires a constant power-of-two lane count in 1..=1024")),
             };
             *i += 1;
             expect(tokens, i, Tok::RParen, "expected ')' after aosoa lane count")?;
@@ -146,6 +146,9 @@ mod tests {
             ("Array<Particle, bogus=soa>", "E_GENERIC_NAME"),
             ("Array<Particle, layout=aosoa(n)>", "E_LAYOUT_SIZE"),
             ("Array<Particle, layout=aosoa(0)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(3)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(7)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(1023)>", "E_LAYOUT_SIZE"),
             ("Array<Particle, layout=wat>", "E_LAYOUT_VALUE"),
             ("Array<>", "E_LAYOUT_SYNTAX"),
             ("Array<Particle,>", "E_LAYOUT_SYNTAX"),
