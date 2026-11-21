@@ -309,3 +309,54 @@ fn guarded_state_rejects_prefix_and_split_compound_mutations() {
         this.handle_state(critical-write |s| -> { ++s.counter; s.counter -= 1; }); }";
     assert_eq!(parse(allowed).receivers.len(), 1);
 }
+
+
+#[test]
+fn bitwise_and_shift_compound_assignments_obey_critical_state_permissions() {
+    // These are target-parser gates, not a claim of runnable bitwise actor
+    // effects. All mutation spellings must fail closed before typed lowering.
+    let mutations = ["&= 1", "|= 1", "^= 1", "<<= 1", ">>= 1",
+        "<<< = 1", ">>> = 1", "<<<= 1", ">>>= 1"];
+    for op in mutations {
+        let readonly = format!(
+            "declare actor Foo; mtd (Foo this) run(): void {{ \
+             this.handle_state(critical-read |s| -> {{ s.counter {op}; }}); }}"
+        );
+        reject(&readonly, "E_READONLY");
+        let forbidden_field = format!(
+            "declare actor Foo; mtd (Foo mut this.state.counter) run(): void {{ \
+             this.handle_state(critical-write |s| -> {{ s.other {op}; }}); }}"
+        );
+        reject(&forbidden_field, "E_MUTABILITY");
+        let permitted_field = format!(
+            "declare actor Foo; mtd (Foo mut this.state.counter) run(): void {{ \
+             this.handle_state(critical-write |s| -> {{ s.counter {op}; }}); }}"
+        );
+        assert_eq!(parse(&permitted_field).receivers.len(), 1,
+            "known field may pass lexical write ceiling for '{op}'");
+        assert_eq!(compile(&permitted_field).unwrap_err().code, "E_UNSUPPORTED",
+            "verified parser permissions must never silently compile actor guests");
+    }
+}
+
+#[test]
+fn ordinary_shift_reads_do_not_become_spurious_mutations() {
+    let examples = [
+        "s.counter << 1",
+        "s.counter >> 1",
+        "s.counter <<< 1",
+        "s.counter >>> 1",
+        "s.counter <= 1",
+        "s.counter >= 1",
+    ];
+    for expr in examples {
+        let src = format!(
+            "declare actor Foo; mtd (Foo this) read(): void {{ \
+             this.handle_state(critical-read |s| -> {{ {expr}; }}); }}"
+        );
+        assert_eq!(parse(&src).receivers.len(), 1,
+            "read-only expression '{expr}' was mistaken for mutation");
+        assert_eq!(compile(&src).unwrap_err().code, "E_UNSUPPORTED",
+            "noncompiled actor expression must remain fail-closed");
+    }
+}
