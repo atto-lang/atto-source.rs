@@ -17,11 +17,13 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod loan_liveness;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
+const NLL_WORK_BUDGET: usize = 32_768;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
@@ -475,6 +477,9 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Directly constructed class roots, never aliases received from calls/fields.
     fresh_class_roots: BTreeSet<u32>,
+    /// Stable CLASS borrow provenance; expiry never grants ownership.
+    borrowed_slots: BTreeSet<u32>,
+    nll_fuel: usize,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
     /// Compiler-issued lexical protected state permissions.
@@ -2433,6 +2438,8 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             fresh_class_roots: BTreeSet::new(),
+            borrowed_slots: BTreeSet::new(),
+            nll_fuel: NLL_WORK_BUDGET,
             loans: BTreeMap::new(),
             state_write_scope: false,
             state_read_scope: false,
@@ -2516,6 +2523,7 @@ impl<'a> FnCx<'a> {
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let fresh_class_roots = std::mem::take(&mut self.fresh_class_roots);
+        let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
         let loans = std::mem::take(&mut self.loans);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
@@ -2527,6 +2535,7 @@ impl<'a> FnCx<'a> {
         self.loans = loans;
         self.moved = moved;
         self.fresh_class_roots = fresh_class_roots;
+        self.borrowed_slots = borrowed_slots;
         self.loops = loops;
         self.scopes = scopes;
         r
@@ -2637,6 +2646,7 @@ impl<'a> FnCx<'a> {
                 self.loans.remove(&l.slot);
                 self.moved.remove(&l.slot);
                 self.fresh_class_roots.remove(&l.slot);
+                self.borrowed_slots.remove(&l.slot);
             }
         }
     }
@@ -2670,7 +2680,27 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
-        body.iter().map(|s| self.stmt(s)).collect()
+        let mut checked = Vec::with_capacity(body.len());
+        for (i, stmt) in body.iter().enumerate() {
+            checked.push(self.stmt(stmt)?);
+            // Never retire an outer-scope loan inside a child scope.
+            // Count all syntactic possible uses, not only the straight line.
+            // On budget exhaustion, the visitor treats the loan as live.
+            let loans = &self.loans;
+            let fuel = &mut self.nll_fuel;
+            let ended: Vec<u32> = self.scopes.last().unwrap().iter()
+                .filter(|local| loans.contains_key(&local.slot) &&
+                    !body[i + 1..].iter().any(|next|
+                        loan_liveness::stmt_mentions(next, &local.name, fuel)))
+                .map(|local| local.slot)
+                .collect();
+            for alias in ended {
+                self.loans.remove(&alias);
+                // borrowed_slots is intentionally permanent through this
+                // scope: an expired class alias is NEVER an owner.
+            }
+        }
+        Ok(checked)
     }
 
     fn cond(&mut self, e: &Expr, what: &str) -> R<TE> {
@@ -2733,8 +2763,8 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed local or owner while the loan is live"));
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed alias or owner while the loan is live"));
                 }
                 let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
@@ -3630,7 +3660,7 @@ impl<'a> FnCx<'a> {
             Some(l) => (l.slot, l.ty),
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
-        if self.loans.contains_key(&owner) {
+        if self.borrowed_slots.contains(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
         // A field offset is a declaration-checked projection, not an index
@@ -3714,6 +3744,7 @@ impl<'a> FnCx<'a> {
         }
         let slot = self.declare(name, value.ty, false, pos)?;
         self.loans.insert(slot, ScopedLoan { owner, field: None, mutable });
+        self.borrowed_slots.insert(slot);
         Ok(TStmt::Set(slot, value))
     }
 
@@ -3811,8 +3842,8 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
                 };
                 let slot = *slot_ref;
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "take! cannot move a borrowed class alias or owner with live loans"));
                 }
                 if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                     return Err(Diagnostic::new(pos, "E_MOVED", format!("cannot take '{name}' from outside a loop")));
@@ -3829,8 +3860,8 @@ impl<'a> FnCx<'a> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
-            if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
+            if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class alias or owner while a loan is live"));
             }
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
@@ -4219,6 +4250,10 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
+                    if self.borrowed_slots.contains(&l.slot) && !self.loans.contains_key(&l.slot) {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            "expired borrowed class alias cannot be used as an owner"));
+                    }
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
