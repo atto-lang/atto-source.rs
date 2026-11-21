@@ -98,6 +98,10 @@ executes with result `42`. An explicitly terminated lambda return must
 be parenthesized, as in `val double = (|n| -> return n * 2;);`.
 
 The local lambda is a compile-time declaration, not a runtime handle.
+For sibling lambdas beyond the first, only expression bodies have the
+currently verified lexical call-graph scan; later statement/block lambda
+bodies fail closed. The first lambda retains its earlier statement-body support.
+
 Only direct calls are supported: callable values, aliases, escaped closures,
 mutable or heap-owning captures, reassignments, calls from one locally lifted
 lambda into another, contextual inference from nonliteral first arguments,

@@ -138,7 +138,7 @@ fn three_independent_direct_lambdas_lower_into_distinct_wasm_helpers() {
     assert_eq!(checked.funcs[3].params, [Type::Int]);
     let wasm = atto_compiler::compile(src).expect("real guest module");
     assert_eq!(wasm, atto_compiler::compile(src).unwrap());
-    assert!(wasm.starts_with(b"\\0asm"));
+    assert!(wasm.starts_with(b"\0asm"));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn sibling_lambdas_get_independent_definition_site_capture_snapshots() {
     assert_eq!(p.funcs[2].params, [Type::Int, Type::Int]);
     let wasm = atto_compiler::compile(src).unwrap();
     assert_eq!(wasm, atto_compiler::compile(src).unwrap());
-    assert!(wasm.starts_with(b"\\0asm"));
+    assert!(wasm.starts_with(b"\0asm"));
 }
 
 #[test]
@@ -168,6 +168,8 @@ fn multi_lambda_rejects_unverified_links_shadowing_and_excessive_bindings() {
         ("pub fnc main(): int { val a = |n| -> n+1; val b = |n| -> a(n)+2; return a(2)+b(2); }",
             "E_UNSUPPORTED"),
         ("pub fnc main(): int { val a = |n| -> n+1; val b = |n| -> n+2; return a(41); }",
+            "E_UNSUPPORTED"),
+        ("pub fnc main(): int { val a = |n| -> n+1; val b = (|n| -> return n + 2;); return a(1) + b(2); }",
             "E_UNSUPPORTED"),
     ] {
         let diagnostic = atto_compiler::compile(source).expect_err("must fail closed");
