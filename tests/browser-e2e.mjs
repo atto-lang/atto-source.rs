@@ -167,8 +167,8 @@ try{
   // source-level SelectPlan fixtures as the native-compiler/Node runner.
   // These are bounded list SelectPlans, not full keyed-map select parity.
   for (const [filename, expectedStdout] of [
-    ['230-v2-static-select-fair.atto', '10\\n20\\n'],
-    ['231-v2-dynamic-select-mutate.atto', '2\\n'],
+    ['230-v2-static-select-fair.atto', '10\n20\n'],
+    ['231-v2-dynamic-select-mutate.atto', '2\n'],
     ['232-v2-nb-select-snapshot.atto', ''],
     ['233-v2-try-select-empty.atto', ''],
   ]) {
