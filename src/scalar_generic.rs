@@ -390,7 +390,7 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     // Count every generated instance *before* cloning its tokens. Otherwise
     // a legal <=MAX_TOKENS source can transiently materialize up to
     // MAX_INSTANCES full-sized generic bodies before the final length gate.
-    let projected = requested.iter().try_fold(out.len().checked_add(1), |total, ((tid, _), _)| {
+    let projected = requested.iter().fold(out.len().checked_add(1), |total, ((tid, _), _)| {
         let instance = &templates[*tid].source;
         let length = instance.len().checked_sub(3)?
             .checked_sub(usize::from(word(&instance[0]) == Some("pub")))?;
