@@ -53,6 +53,8 @@ fn rejected_named_actor_state_access_never_writes_wasm_artifact() {
             "declare actor Foo; mtd (Foo mut this.state.counter) f(): void { this.handle_state(critical-write |s| -> { s.other.inner = 1; }); }"),
         ("declared_but_not_guest_lowered", "E_UNSUPPORTED",
             "declare actor Foo; mtd (Foo mut this.state.counter) f(): void { this.handle_state(critical-write |s| -> { s.counter += 1; }); }"),
+        ("exact_playground_preview", "E_UNSUPPORTED",
+            include_str!("playground_previews/actor-named-state-permissions.atto")),
     ];
     for (name, code, src) in invalid {
         let temp = Scratch::new();
