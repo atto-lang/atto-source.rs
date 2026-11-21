@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {verifyScalarGuestValue,verifyCheckedPanicGuest} from './compiler-smoke-guest-oracle.mjs';
-import {readCompilerDiagnostic} from './compiler-diagnostic.mjs';
+import {readWasmCompilerFailure,verifyCompilerDiagnosticParity} from './compiler-diagnostic.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const native=resolve(process.env.ATTOC||join(root,'target/release/attoc'));
 const compiler=resolve(process.env.ATTO_WASM_COMPILER||
@@ -52,7 +52,7 @@ function wasmInstance(){
   const mod=new WebAssembly.Module(bytes);
   assert.deepEqual(WebAssembly.Module.imports(mod),[],'compiler cannot import host capabilities');
   const api=new WebAssembly.Instance(mod,{}).exports;
-  for(const name of ['memory','abi_version','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr'])
+  for(const name of ['memory','abi_version','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr','error_line_number','error_column_number'])
     assert.ok(name in api,'missing compiler ABI '+name);
   assert.equal(api.abi_version(),2,'compiler ABI v2 required');
   assert.ok(api.input_capacity()>0&&api.input_capacity()<=65536,'unexpected source capacity');
@@ -66,8 +66,7 @@ function wasmCompile(api,source){
   const status=api.compile(bytes.length);
   assert.ok(status===0||status===1,'unexpected compile return status');
   if(status){
-    assert.equal(api.result_length(),0,'compiler published rejected guest bytes');
-    return {ok:false,message:readCompilerDiagnostic(api.memory,api.error_ptr())};
+    return readWasmCompilerFailure(api);
   }
   const ptrOut=api.result_ptr(),len=api.result_length();
   assert.ok(len>=8&&len<=1048576&&ptrOut>=0&&ptrOut+len<=api.memory.buffer.byteLength,'guest result bounds');
@@ -111,10 +110,10 @@ try{
       }
     }else{
       assert.equal(cp.status,1,'native accepted invalid '+name);
+      assert.equal(cp.stdout,'','rejected source emitted unexpected stdout');
       assert.ok(!existsSync(output),'rejected native source emitted output');
-      assert.ok(cp.stderr.includes(oracle),'native missing expected diagnostic '+oracle);
       assert.equal(wasm.ok,false,'wasm32 accepted invalid '+name);
-      assert.ok(wasm.message.includes(oracle),'wasm32 missing expected diagnostic '+oracle);
+      verifyCompilerDiagnosticParity(cp.stderr,src,wasm,oracle);
       rows.push({fixture:name,result:'REAL_REJECTION',code:oracle,source_sha256:sha(content),no_artifact:true});
     }
   }
