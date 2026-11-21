@@ -154,6 +154,8 @@ fn rewrite_projection(expr: &mut Expr, record_locals: &BTreeSet<String>, depth: 
         | ExprKind::Float(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::Symbol(_)
+        | ExprKind::Entry(_, _)
         | ExprKind::Var(_)
         | ExprKind::SelfRef
         | ExprKind::StateRead(_)
