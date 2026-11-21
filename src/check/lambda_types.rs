@@ -282,6 +282,12 @@ impl Context {
                 }
                 Ok(a)
             }
+            ExprKind::Ascribe(inner, expected, cast) => {
+                let got = self.expression(inner)?;
+                if got == *expected { Ok(got) }
+                else if *cast { Err(err(e.pos, "E_UNSUPPORTED_CAST", "lambda explicit conversion is not yet lowered")) }
+                else { Err(err(e.pos, "E_TYPE", "lambda expression type ascription mismatch")) }
+            }
             ExprKind::SelfRef => Err(err(e.pos, "E_CAPTURE", "noncapturing lambda cannot access self")),
             _ => Err(err(e.pos, "E_UNSUPPORTED",
                 "lambda expression needs unsupported effect, capture or callable lowering")),
