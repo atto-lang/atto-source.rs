@@ -69,6 +69,9 @@ fn generic_errors_from_production_parser_match_guest_parser() {
     for (generic, expected) in [
         ("Array<Particle, layout=bogus>", "E_LAYOUT_VALUE"),
         ("Array<Particle, layout=aosoa(n)>", "E_LAYOUT_SIZE"),
+        ("Array<Particle, layout=aosoa(3)>", "E_LAYOUT_SIZE"),
+        ("Array<Particle, layout=aosoa(7)>", "E_LAYOUT_SIZE"),
+        ("Array<Particle, layout=aosoa(1023)>", "E_LAYOUT_SIZE"),
         ("Array<layout=soa, Particle>", "E_GENERIC_ORDER"),
         ("Array<Particle, layout=soa, layout=aos>", "E_GENERIC_DUP"),
         ("Array<Particle, bogus=soa>", "E_GENERIC_NAME"),
