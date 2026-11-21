@@ -137,7 +137,7 @@ fn compiler_refuses_source_extension_output_before_removing_existing_files() {
         assert!(result.stdout.is_empty());
         assert!(String::from_utf8_lossy(&result.stderr)
             .contains("Wasm output cannot use a .atto source extension"));
-        assert_eq!(std::fs::read(&output).unwrap(), original,
+        assert_eq!(std::fs::read(&output).unwrap().as_slice(), &original[..],
             "{suffix}: compiler deleted or changed unrelated source");
     }
     let not_created = temp.0.join("new.atto");
