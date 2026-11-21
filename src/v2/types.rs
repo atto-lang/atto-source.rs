@@ -21,6 +21,12 @@ pub enum Ty {
     /// `Future<T>` and `Task<T>`
     Future(Box<Ty>),
     Channel(Box<Ty>),
+    /// A read descriptor owns exactly one checked Channel<int> handle.
+    SelectCase,
+    /// Immutable plan or explicitly mutable DynamicSelectPlan<int>.
+    SelectPlan { dynamic: bool },
+    /// Current ordinal result, not a keyed map result.
+    SelectResult,
     /// Provisional single-tenant, compiler-issued checked DATA graph handle.
     /// No user constructor; cancellation/lifetime methods are not yet shipped.
     PipeHandle,
