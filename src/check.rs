@@ -76,10 +76,11 @@ pub enum Import {
     ActorSpawn,
     ActorSend,
     ActorJoin,
+    ActorReady,
 }
 
 impl Import {
-    pub const ALL: [Import; 7] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend, Import::ActorJoin];
+    pub const ALL: [Import; 8] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend, Import::ActorJoin, Import::ActorReady];
     pub fn name(self) -> &'static str {
         match self {
             Import::PrintI64 => "print_i64",
@@ -89,6 +90,7 @@ impl Import {
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
             Import::ActorJoin => "actor_join",
+            Import::ActorReady => "actor_ready",
         }
     }
 }
@@ -142,6 +144,9 @@ pub enum TStmt {
     /// Source 'await actor.get_done()' is admitted only as the last statement
     /// of a void main(). Host joins after guest main returns, never blocking Wasm.
     AwaitActor(TE),
+    /// Terminal-only READY barrier; host waits for an authenticated child
+    /// worker initialization acknowledgement after the synchronous guest exits.
+    AwaitActorReady(TE),
     Return(Option<TE>),
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
     /// `while`, `loop` and C-style `for`: `cond` absent means unconditional;
@@ -353,7 +358,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         let body = if let Some(Stmt::AwaitDone(awaited, pos)) = f.body.last() {
             if f.name != "main" || f.ret != Type::Void {
                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "await actor.get_done() is supported only as the final statement of void main()"));
+                    "await actor.get_done()/get_ready() is supported only as the final statement of void main()"));
             }
             let mut lowered = cx.stmts(&f.body[..f.body.len() - 1])?;
             lowered.push(cx.lower_terminal_actor_join(awaited, *pos)?);
@@ -414,7 +419,7 @@ fn actor_func_requires_host(index: usize, funcs: &[TFunc], visiting: &mut [bool]
 
 fn actor_stmt_requires_host(stmt: &TStmt, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
     match stmt {
-        TStmt::AwaitActor(_) => true,
+        TStmt::AwaitActor(_) | TStmt::AwaitActorReady(_) => true,
         TStmt::Set(_, expr) | TStmt::Expr(expr) | TStmt::Return(Some(expr)) =>
             actor_expr_requires_host(expr, funcs, visiting),
         TStmt::If(arms, other) =>
@@ -572,7 +577,7 @@ impl FnCx<'_> {
             }
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
             Stmt::AwaitDone(_, pos) => return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                "await actor.get_done() is only admitted as the final direct statement of void main()")),
+                "await actor.get_done()/get_ready() is only admitted as the final direct statement of void main()")),
 
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
@@ -703,11 +708,12 @@ impl FnCx<'_> {
                 if !matches!(actor.ty, Type::Actor(_)) {
                     return Err(type_err(pos, "get_ready() requires a typed actor handle"));
                 }
-                // The browser host exposes a stable READY Promise, but the
-                // guest compiler cannot emit a nonterminal Future/continuation.
-                // Recognize the canonical API; NEVER emit a fake ready guest.
-                Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                    "await actor.get_ready() needs scheduler-backed source Future suspension; host readiness alone is not guest support"))
+                // This is the proven terminal-only host barrier: the guest
+                // registers a READY join request, then main() exits. The host
+                // awaits the child's real READY protocol acknowledgement.
+                // There is NO continuation after this statement in Wasm.
+                self.imports.push(Import::ActorReady);
+                Ok(TStmt::AwaitActorReady(actor))
             }
             _ => Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "only terminal 'await actor.get_done()' is admitted; arbitrary suspension requires async frames")),
