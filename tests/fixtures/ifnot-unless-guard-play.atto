@@ -1,4 +1,4 @@
-// SYNTAX PREVIEW — NOT browser-lowered.
+// SOURCE-BRANCH COMPILER CANDIDATE — public playground release not yet established.
 // Target grammar: https://github.com/atto-lang/atto-spec/pull/183
 // ifnot and unless are synonymous negated conditional heads.
 // Their bool condition is evaluated once; the first arm runs when false.
@@ -6,8 +6,11 @@
 // Brace-style imperative conditionals do not require fi.
 // Value-producing conditionals require else and compatible result types.
 // guard is different: its else-free failure block MUST exit the callable.
-// The separate preview/guard sample runs on the pinned Rust/Wasm compiler.
-// This combined syntax preview is NOT yet executable in the browser.
+// This whole sample is an exact-source Rust/Wasm candidate, covered by
+// tests/ifnot_unless_guest.rs and tests/ifnot_unless_guest.mjs.
+// Its successful public browser deployment is NOT established by these tests.
+// Keep the website preview in syntax-only mode until current-head guest CI
+// and the deployment's pinned compiler artifact have both been verified.
 //
 // INVALID: val int n = ifnot ready then 1 fi; // missing else value
 // INVALID: do unless 5 then return 1; fi // non-bool condition
