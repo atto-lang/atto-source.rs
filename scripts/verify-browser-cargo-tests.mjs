@@ -126,8 +126,14 @@ const nativeDisk = readdirSync(join(root, 'native/tests'))
   .filter(name => name.endsWith('.rs')).map(name => name.slice(0, -3));
 assert.equal(new Set(nativeDisk).size, nativeDisk.length,
   'duplicate native-local test basenames');
+// A matching basename is insufficient: a native-local suite may be an
+// older/incompatible version. Compare the actual file bytes before claiming
+// that its auto-discovered copy covers the root-native regression contract.
 const expectedNativeExternal = [...nativeRootTests]
-  .filter(name => !nativeDisk.includes(name)).sort();
+  .filter(name => !nativeDisk.includes(name) ||
+    !readFileSync(join(root, 'native/tests', name + '.rs')).equals(
+      readFileSync(join(root, 'tests', name + '.rs'))))
+  .sort();
 const nativeExternalPattern = /\[\[test\]\]\s*name\s*=\s*"legacy_([A-Za-z0-9_]+)"\s*path\s*=\s*"\.\.\/tests\/([A-Za-z0-9_]+)\.rs"/g;
 const parsedNativeExternal = [...nativeManifest.matchAll(nativeExternalPattern)];
 const nativeExternalTargets = parsedNativeExternal.map(m => {
