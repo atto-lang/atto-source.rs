@@ -2309,6 +2309,13 @@ impl Parser {
                 self.advance();
                 self.parse_match(true)
             }
+            // The future maybe/?=/else syntax is a value-match scope, not
+            // ordinary exception handling. Reject it explicitly even when
+            // nested in a newly admitted keyword try; it needs its own typed
+            // failure/cleanup CFG rather than falling through to an identifier.
+            Some("do") if self.word_at(1) == Some("maybe") => {
+                Err(unsupported(pos, "'do maybe' value matching"))
+            }
             Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
