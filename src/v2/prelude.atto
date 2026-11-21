@@ -412,6 +412,25 @@ fnc __chan_close(int c): void {
 // compiled into the guest's own Wasm memory, not simulated by JavaScript.
 // Plan layout: slots, live, FAIR cursor, version, dynamic, commit epoch (48 bytes),
 // followed by up to 256 stable, zero-based read-case channel pointers.
+
+// A SelectCase must never grant an implicit read capability for a channel
+// claimed as an actor DATA port. Check at construction, mutation, and on
+// EVERY select before consuming ANY case so later forbidden cases cannot be
+// masked by an earlier winner. The bounded scan is non-suspending.
+fnc __plan_check_case(int ch): void {
+  if ch == 0 then __panic(10); fi
+  if __load(ch, 56) != 0 then __panic(10); fi
+  if __load(ch, 64) != 0 then __panic(10); fi
+}
+
+fnc __plan_preflight(int p): void {
+  let i = 0;
+  while i < __load(p, 0) do
+    val ch = __load(p, 48 + 8 * i);
+    if ch != 0 then __plan_check_case(ch); fi
+    i = i + 1;
+  done
+}
 // A zero slot is a removed case. No guest scheduling/yield happens during the
 // ready-case scan, the chosen read, or the cursor update: only one case commits.
 fnc __plan_from_list(int cases, int dynamic): int {
@@ -424,7 +443,9 @@ fnc __plan_from_list(int cases, int dynamic): int {
   __store(p, 32, dynamic);
   let i = 0;
   while i < n do
-    __store(p, 48 + 8 * i, __load(cases, 8 + 8 * i));
+    val ch = __load(cases, 8 + 8 * i);
+    __plan_check_case(ch);
+    __store(p, 48 + 8 * i, ch);
     i = i + 1;
   done
   return p;
@@ -437,6 +458,9 @@ fnc __plan_try(int p, int fair): int {
   val n = __load(p, 0);
   // A live plan may have all its dynamic slots removed; never spin forever.
   if n == 0 then __panic(10); fi
+  // Fail before one channel read if any other active case has become a
+  // pipeline-owned channel since the plan/snapshot was created.
+  __plan_preflight(p);
   let k = 0;
   let live = 0;
   let viable = 0;
@@ -449,10 +473,6 @@ fnc __plan_try(int p, int fair): int {
     val ch = __load(p, 48 + 8 * i);
     if ch != 0 then
       live = live + 1;
-      // Check ownership even for closed/drained cases: stale DATA grants
-      // must never become implicit public read privileges.
-      if __load(ch, 56) != 0 then __panic(10); fi
-      if __load(ch, 64) != 0 then __panic(10); fi
       if __load(ch, 8) > 0 then
         viable = viable + 1;
         val option = __chan_try(ch);
@@ -506,7 +526,7 @@ fnc __plan_put(int p, int key, int ch): void {
   if __load(p, 32) == 0 then __panic(10); fi
   if key < 0 then __panic(10); fi
   if key >= __load(p, 0) then __panic(10); fi
-  if ch == 0 then __panic(10); fi
+  __plan_check_case(ch);
   if __load(p, 48 + 8 * key) == 0 then
     __store(p, 8, __load(p, 8) + 1);
   fi
