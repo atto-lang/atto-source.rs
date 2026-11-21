@@ -1,0 +1,21 @@
+// expect-exit: 42
+// Two distinct Error subclasses require two different private Wasm EH tags.
+define class Foo extends Error as end
+define class Bar extends Error as end
+
+fnc int <- risky(int value)
+raises Bar ::
+  if value > 3 then
+    raise! new Bar();
+  fi
+  return value;
+end
+
+pub fnc main(): int raises Bar ::
+  recover |err, cursor| -> {
+    if err.is_type(Foo) then return 17; fi
+    if err.is_type(Bar) then return 42; fi
+    return 0;
+  };
+  return risky(4);
+end
