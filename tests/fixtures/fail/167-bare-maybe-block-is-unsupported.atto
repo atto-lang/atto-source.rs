@@ -1,0 +1,10 @@
+// expect-error: E_UNSUPPORTED
+// A bare fallible-match scope must never become a caller of function maybe.
+pub fnc main(): int {
+  maybe
+    Ok(value) ?= Ok(7);
+    return value;
+  else
+    Err(reason) -> { return 0; };
+  end
+}
