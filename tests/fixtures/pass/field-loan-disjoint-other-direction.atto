@@ -1,5 +1,6 @@
 // expect-exit: 42
 // expect-stdout: Bob
+// expect-stdout: 42
 // java: rejects
 // A live age loan must not prohibit writes to the sibling name field.
 define class Person as
@@ -13,9 +14,7 @@ pub fnc main(): int {
     val borrowed_age = borrow! person.age;
     person.name = "Bob";
     stdio.println(person.name);
-    if borrowed_age neq 42 then
-      return 0;
-    fi
+    stdio.println(borrowed_age);
   }
   return person.age;
 }
