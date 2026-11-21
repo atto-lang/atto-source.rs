@@ -442,7 +442,10 @@ impl<'a> Checker<'a> {
         let id = self.reserve(sig);
         self.rt_ids.insert(name.to_owned(), id);
         self.rt_work.push((idx, id));
-        if matches!(name, "__task_spawn" | "__rx_subscribe" | "__rx_first_task") {
+        // __plan_nb spawns a real guest task internally. Because entry()
+        // is chosen before reachable prelude functions are lowered, mark the
+        // scheduler dependency at the first user call, not in the prelude.
+        if matches!(name, "__task_spawn" | "__rx_subscribe" | "__rx_first_task" | "__plan_nb") {
             self.needs_sched = true;
         }
         id
