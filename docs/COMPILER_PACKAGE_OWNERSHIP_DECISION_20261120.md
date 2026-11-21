@@ -12,7 +12,7 @@ remains the authority for grammar and semantics.
 - `native/Cargo.toml`, `native/src/`: the independent Cranelift native
   `oresc` compiler and safety/effect IR prototype, currently named
   `oreslang-source-rs` until a separately reviewed crate rename.
-- Root `tests/`: 85 browser integration suites explicitly registered
+- Root `tests/`: 88 browser integration suites explicitly registered
   by #448; 38 legacy native-only root test files **excluded** from browser
   Cargo. They are NOT automatically run by the separate native crate.
   Port/verify them deliberately. Do not report an omitted suite as passed.

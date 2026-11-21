@@ -369,3 +369,15 @@ path = "tests/virtual_hardware_actor_guest.rs"
 [[test]]
 name = "virtual_hardware_guest"
 path = "tests/virtual_hardware_guest.rs"
+
+[[test]]
+name = "expression_type_ascription"
+path = "tests/expression_type_ascription.rs"
+
+[[test]]
+name = "lambda_stack_budget"
+path = "tests/lambda_stack_budget.rs"
+
+[[test]]
+name = "scalar_generic_specialization"
+path = "tests/scalar_generic_specialization.rs"
