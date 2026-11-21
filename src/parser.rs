@@ -1887,6 +1887,22 @@ impl Parser {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
             }
+            // An optional exact '::' closes a return-first header. Unlike
+            // name-first arrow/comma/end, this is an ordinary statement body
+            // with explicit return and the existing checked type/effect gates.
+            // The first body token must occur on a later physical source line.
+            if *self.peek() == Tok::ColonColon {
+                let boundary_line = self.pos().line;
+                self.advance();
+                if *self.peek() == Tok::LBrace {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "return-first '::' requires statements/end, not a brace block"));
+                }
+                if self.pos().line <= boundary_line {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "return-first '::' requires the body on the next source line"));
+                }
+            }
             // Return-first T <- name(params) statement; ... end is explicit
             // statement syntax, never an Erlang implicit-tail return.
             return self.parse_explicit_end_body_with_empty(true);
