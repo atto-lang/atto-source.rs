@@ -55,7 +55,10 @@ const positives = [
   ['pub fnc main(): int {const Vector<int> foo=[];return 42;}', 42n],
   ['pub fnc main(): int {const Vector<int> foo=[40,2];return foo[0]+foo[1];}', 42n],
   ['pub fnc main(): int {val Vector<int> foo=[10,32];return foo[0]+foo[1];}', 42n],
-  ['pub fnc main(): int {val vector<int> foo=[42];return foo[0];}', 42n]
+  ['pub fnc main(): int {val vector<int> foo=[42];return foo[0];}', 42n],
+  ['pub fnc main(): int {const Vector<int> a=[];val Vector<int> b=a.appended(42);return b[0];}', 42n],
+  ['pub fnc main(): int {val Vector<int> a=[2];val Vector<int> b=a.updated(0,42);return a[0]+b[0]-2;}', 42n],
+  ['pub fnc main(): int {val Vector<int> a=[1,2];val Vector<int> b=a.appended(3);val Vector<int> c=b.updated(0,39);return a[0]+c[0]+c[2]-1;}', 42n]
 ];
 const negatives = [
   ['pub fnc main(): int {val int x=42;const Vector<int> foo=[x];return 0;}', 'E_NON_CONST_INITIALIZER'],
@@ -63,7 +66,11 @@ const negatives = [
   ['pub fnc main(): int {val Vector<int> foo=[42];return foo[1];}', 'E_INDEX_BOUNDS'],
   ['pub fnc main(): int {val Vector<int> foo=[42];val int i=0;return foo[i];}', 'E_UNSUPPORTED'],
   ['pub fnc main(): int {const Vector<int> foo=[1,\"bad\"];return 0;}', 'E_TYPE'],
-  ['pub fnc main(): int {const Vector<int> foo=Array.of(1);return 0;}', 'E_NON_CONST_INITIALIZER']
+  ['pub fnc main(): int {const Vector<int> foo=Array.of(1);return 0;}', 'E_NON_CONST_INITIALIZER'],
+  ['pub fnc main(): int {val Vector<int> a=[1];val Vector<int> b=a.updated(1,42);return 0;}', 'E_INDEX_BOUNDS'],
+  ['pub fnc main(): int {val Vector<int> a=[1];val int i=0;val Vector<int> b=a.updated(i,42);return 0;}', 'E_UNSUPPORTED'],
+  ['pub fnc main(): int {val Vector<int> a=[1];val int value=42;val Vector<int> b=a.appended(value);return 0;}', 'E_UNSUPPORTED'],
+  ['pub fnc main(): int {val Vector<int> a=[1,2,3,4,5,6,7,8];val Vector<int> b=a.appended(9);return 0;}', 'E_UNSUPPORTED']
 ];
 
 const dir = await mkdtemp(join(tmpdir(), 'atto-immutable-vector-'));
