@@ -203,6 +203,28 @@ fn closed_const_lambda_infers_ignored_formal_at_direct_call() {
 }
 
 #[test]
+fn repeated_ignored_formals_have_distinct_private_abi_slots() {
+    // Each '_' is a separate argument position, not a duplicate name. The
+    // lowered callable must not expose those private slots as source names.
+    let source = "pub fnc main(): int { const fnc v = |_, _| : int -> 5; return v(41, false); }";
+    let program = ast(source);
+    let Stmt::Bind { init, .. } = &program.funcs[0].body[0] else {
+        panic!("missing const lambda binding")
+    };
+    let ExprKind::Lambda { params, .. } = &init.kind else {
+        panic!("expected pipe lambda")
+    };
+    assert_eq!(params.len(), 2);
+    assert_ne!(params[0], params[1]);
+    assert!(params.iter().all(|name| name.starts_with("$ignored_lambda_")));
+    ok(source);
+
+    ok("const fnc v = |int _, bool _| : int -> 5; pub fnc main(): int { return v(41, false); }");
+    bad("pub fnc main(): int { const fnc v = |_, _| : int -> 5; return v(41); }", "E_ARITY");
+    bad("pub fnc main(): int { const fnc v = |_, _| : int -> _; return v(41, false); }", "E_CONST");
+}
+
+#[test]
 fn bare_lambda_heads_never_emit_a_wasm_artifact() {
     for expression in ["_ : int -> 5", "_ -> 5", "x : int -> x + 5", "x -> x + 5"] {
         let source = format!(
