@@ -75,3 +75,21 @@ fn missing_end_duplicate_handlers_and_mixed_styles_are_rejected() {
         rejects(&format!("pub fnc main(): int {{\n{block}\n}}"));
     }
 }
+
+#[test]
+fn maybe_value_matching_nested_in_keyword_try_must_fail_closed() {
+    // Parsing try/catch does not admit the still-unimplemented maybe
+    // value/cleanup CFG. Neither a match failure nor a thrown exception
+    // may be reinterpreted through the other's control-flow mechanism.
+    for body in [
+        "do maybe\n Ok(value) ?= Ok(5);\n return value;\nelse\n Err(e) -> { return 0; };\nend",
+        "maybe\n Ok(value) ?= Ok(5);\n value\nelse\n on Err(e) -> 0\nend",
+        "return maybe\n Ok(value) ?= Ok(5);\n value\nelse\n Err(e) -> { return 0; };\nend;",
+    ] {
+        let source = format!(
+            "pub fnc main(): int {{\ntry\n{body}\ncatch()\n return 0;\nend\n}}"
+        );
+        let failure = compile(&source).expect_err("unimplemented maybe must not emit Wasm");
+        assert_eq!(failure.code, "E_UNSUPPORTED", "{failure}: {body}");
+    }
+}
