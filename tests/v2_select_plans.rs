@@ -13,7 +13,7 @@ fn select_plans_produce_real_binary_wasm_with_no_script_fallback() {
     for (name, source) in POSITIVES {
         let bytes = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name} failed source compilation: {e}"));
-        assert!(bytes.starts_with(b"\\0asm\\x01\\0\\0\\0"), "{name} did not emit Wasm");
+        assert!(bytes.starts_with(b"\0asm\x01\0\0\0"), "{name} did not emit Wasm");
         assert!(bytes.len() > 100, "{name} empty binary guest");
     }
 }
