@@ -3940,9 +3940,7 @@ impl<'a> FnCx<'a> {
                 // truncation. The existing IntToFloat typed IR already
                 // lowers to signed f64.convert_i64_s in wasm.rs. Both operands
                 // are converted exactly once before the f64 division.
-                if a.ty == Type::Int && b.ty == Type::Int && *op != BinOp::Div {
-                    // Keep checked signed-i64 +, -, * and integer comparisons.
-                } else {
+                if a.ty != Type::Int || b.ty != Type::Int || *op == BinOp::Div {
                     // Java binary numeric promotion: an int operand widens to float.
                     let widen = |v: TE| -> TE {
                         if v.ty == Type::Int {
