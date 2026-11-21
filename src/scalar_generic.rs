@@ -3,9 +3,9 @@
 //! named callables with one unconstrained type parameter are eligible.
 //! Every instantiated body is checked by the normal parser and Wasm backend.
 
-use std::collections::BTreeMap;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token, MAX_TOKENS};
+use std::collections::BTreeMap;
 
 const MAX_GENERIC_FUNCTIONS: usize = 16;
 const MAX_INSTANCES: usize = 64;
@@ -22,7 +22,11 @@ struct Template {
 }
 
 fn word(t: &Token) -> Option<&str> {
-    if let Tok::Ident(s) = &t.tok { Some(s) } else { None }
+    if let Tok::Ident(s) = &t.tok {
+        Some(s)
+    } else {
+        None
+    }
 }
 
 fn error(pos: Pos, code: &'static str, why: &str) -> Diagnostic {
@@ -30,15 +34,23 @@ fn error(pos: Pos, code: &'static str, why: &str) -> Diagnostic {
 }
 
 fn pair(tokens: &[Token], at: usize, open: Tok, close: Tok) -> Option<usize> {
-    if tokens.get(at)?.tok != open { return None; }
+    if tokens.get(at)?.tok != open {
+        return None;
+    }
     let mut depth = 0;
     for (i, token) in tokens.iter().enumerate().skip(at) {
-        if token.tok == open { depth += 1; }
+        if token.tok == open {
+            depth += 1;
+        }
         if token.tok == close {
             depth -= 1;
-            if depth == 0 { return Some(i); }
+            if depth == 0 {
+                return Some(i);
+            }
         }
-        if token.tok == Tok::Eof { return None; }
+        if token.tok == Tok::Eof {
+            return None;
+        }
     }
     None
 }
@@ -54,25 +66,35 @@ fn scalar(t: &Token) -> Option<&'static str> {
 }
 
 fn template_at(tokens: &[Token], i: usize) -> Result<Option<Template>, Diagnostic> {
-    if word(&tokens[i]) != Some("fnc") { return Ok(None); }
-    let Some(name) = tokens.get(i + 1).and_then(word) else { return Ok(None) };
+    if word(&tokens[i]) != Some("fnc") {
+        return Ok(None);
+    }
+    let Some(name) = tokens.get(i + 1).and_then(word) else {
+        return Ok(None);
+    };
     if tokens.get(i + 2).map(|t| &t.tok) != Some(&Tok::Lt) {
         return Ok(None);
     }
-    let parameter = tokens.get(i + 3).and_then(word)
+    let parameter = tokens
+        .get(i + 3)
+        .and_then(word)
         .ok_or_else(|| error(tokens[i].pos, "E_UNSUPPORTED", "generic type parameter required"))?;
-    if tokens.get(i + 4).map(|t| &t.tok) != Some(&Tok::Gt) ||
-        tokens.get(i + 5).map(|t| &t.tok) != Some(&Tok::LParen) {
-        return Err(error(tokens[i].pos, "E_UNSUPPORTED",
-            "browser generics require one unconstrained type parameter"));
+    if tokens.get(i + 4).map(|t| &t.tok) != Some(&Tok::Gt) || tokens.get(i + 5).map(|t| &t.tok) != Some(&Tok::LParen) {
+        return Err(error(
+            tokens[i].pos,
+            "E_UNSUPPORTED",
+            "browser generics require one unconstrained type parameter",
+        ));
     }
-    if scalar(&tokens[i + 3]).is_some() || name == parameter ||
-        crate::parser::is_reserved(parameter) {
-        return Err(error(tokens[i + 3].pos, "E_TYPE",
-            "generic type parameter conflicts with a reserved type or function name"));
+    if scalar(&tokens[i + 3]).is_some() || name == parameter || crate::parser::is_reserved(parameter) {
+        return Err(error(
+            tokens[i + 3].pos,
+            "E_TYPE",
+            "generic type parameter conflicts with a reserved type or function name",
+        ));
     }
-    let params_end = pair(tokens, i + 5, Tok::LParen, Tok::RParen)
-        .ok_or_else(|| error(tokens[i].pos, "E_SYNTAX", "unclosed generic parameters"))?;
+    let params_end =
+        pair(tokens, i + 5, Tok::LParen, Tok::RParen).ok_or_else(|| error(tokens[i].pos, "E_SYNTAX", "unclosed generic parameters"))?;
     let mut body = params_end + 1;
     while body < tokens.len() && tokens[body].tok != Tok::LBrace {
         if matches!(tokens[body].tok, Tok::Semi | Tok::ColonColon | Tok::Eof) {
@@ -80,21 +102,31 @@ fn template_at(tokens: &[Token], i: usize) -> Result<Option<Template>, Diagnosti
         }
         body += 1;
     }
-    if body == tokens.len() { return Err(error(tokens[i].pos, "E_SYNTAX", "generic function body missing")); }
-    let end = pair(tokens, body, Tok::LBrace, Tok::RBrace)
-        .ok_or_else(|| error(tokens[i].pos, "E_SYNTAX", "unclosed generic body"))? + 1;
+    if body == tokens.len() {
+        return Err(error(tokens[i].pos, "E_SYNTAX", "generic function body missing"));
+    }
+    let end = pair(tokens, body, Tok::LBrace, Tok::RBrace).ok_or_else(|| error(tokens[i].pos, "E_SYNTAX", "unclosed generic body"))? + 1;
     let mut start = i;
-    if i > 0 && word(&tokens[i - 1]) == Some("pure") { start -= 1; }
-    if start > 0 && word(&tokens[start - 1]) == Some("pub") { start -= 1; }
-    Ok(Some(Template { name: name.into(), parameter: parameter.into(),
-        start, end, name_offset: i + 1 - start, source: tokens[start..end].to_vec(),
-        pos: tokens[i].pos }))
+    if i > 0 && word(&tokens[i - 1]) == Some("pure") {
+        start -= 1;
+    }
+    if start > 0 && word(&tokens[start - 1]) == Some("pub") {
+        start -= 1;
+    }
+    Ok(Some(Template {
+        name: name.into(),
+        parameter: parameter.into(),
+        start,
+        end,
+        name_offset: i + 1 - start,
+        source: tokens[start..end].to_vec(),
+        pos: tokens[i].pos,
+    }))
 }
 
 fn context(tokens: &[Token], at: usize, end: usize) -> Option<&'static str> {
     let next = end + 1;
-    if tokens.get(next).map(|t| &t.tok) == Some(&Tok::Colon) ||
-        tokens.get(next).and_then(word) == Some("as") {
+    if tokens.get(next).map(|t| &t.tok) == Some(&Tok::Colon) || tokens.get(next).and_then(word) == Some("as") {
         // A plain ternary colon is not a type-ascription operator.
         let mut nesting = 0usize;
         for t in tokens[..at].iter().rev() {
@@ -110,13 +142,17 @@ fn context(tokens: &[Token], at: usize, end: usize) -> Option<&'static str> {
     }
     // Direct typed binding: val/let/const result: T = foo(args).
     let before = &tokens[..at];
-    let begin = before.iter().rposition(|t| matches!(t.tok, Tok::Semi | Tok::LBrace))
+    let begin = before
+        .iter()
+        .rposition(|t| matches!(t.tok, Tok::Semi | Tok::LBrace))
         .map_or(0, |n| n + 1);
     let head = &before[begin..];
-    if head.len() == 5 &&
-        matches!(&head[0].tok, Tok::Ident(w) if matches!(w.as_str(), "val" | "let" | "const")) &&
-        matches!(&head[1].tok, Tok::Ident(_)) &&
-        head[2].tok == Tok::Colon && head[4].tok == Tok::Assign {
+    if head.len() == 5
+        && matches!(&head[0].tok, Tok::Ident(w) if matches!(w.as_str(), "val" | "let" | "const"))
+        && matches!(&head[1].tok, Tok::Ident(_))
+        && head[2].tok == Tok::Colon
+        && head[4].tok == Tok::Assign
+    {
         return scalar(&head[3]);
     }
     None
@@ -131,7 +167,9 @@ fn specialize(template: &Template, to: &str, private_name: &str) -> Vec<Token> {
             token.tok = Tok::Ident(to.into());
         }
     }
-    if word(&result[0]) == Some("pub") { result.remove(0); }
+    if word(&result[0]) == Some("pub") {
+        result.remove(0);
+    }
     result
 }
 
@@ -143,19 +181,30 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     let mut braces = 0usize;
     let mut nominal_blocks = 0usize;
     while i < tokens.len() {
-        if word(&tokens[i]) == Some("define") && tokens.get(i + 1).and_then(word)
-            .is_some_and(|kind| matches!(kind, "class" | "actor" | "enum" | "module")) {
+        if word(&tokens[i]) == Some("define")
+            && tokens
+                .get(i + 1)
+                .and_then(word)
+                .is_some_and(|kind| matches!(kind, "class" | "actor" | "enum" | "module"))
+        {
             nominal_blocks += 1;
         }
         if word(&tokens[i]) == Some("end") && braces == 0 && nominal_blocks > 0 {
             nominal_blocks -= 1;
         }
-        if tokens[i].tok == Tok::LBrace { braces += 1; }
-        if tokens[i].tok == Tok::RBrace { braces = braces.saturating_sub(1); }
+        if tokens[i].tok == Tok::LBrace {
+            braces += 1;
+        }
+        if tokens[i].tok == Tok::RBrace {
+            braces = braces.saturating_sub(1);
+        }
         if let Some(template) = template_at(&tokens, i)? {
             if braces > 0 || nominal_blocks > 0 {
-                return Err(error(template.pos, "E_UNSUPPORTED",
-                    "generic methods or nested generic functions are not supported by the browser compiler"));
+                return Err(error(
+                    template.pos,
+                    "E_UNSUPPORTED",
+                    "generic methods or nested generic functions are not supported by the browser compiler",
+                ));
             }
             if templates.len() == MAX_GENERIC_FUNCTIONS {
                 return Err(error(template.pos, "E_SOURCE_LIMIT", "too many generic function templates"));
@@ -165,17 +214,25 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             }
             i = template.end;
             templates.push(template);
-        } else { i += 1; }
+        } else {
+            i += 1;
+        }
     }
-    if templates.is_empty() { return Ok(tokens); }
+    if templates.is_empty() {
+        return Ok(tokens);
+    }
     // The current scalar profile has no lexical resolution between methods,
     // actor scopes and source-local generic callables. Refuse mixed nominal
     // source rather than redirecting a method invocation into a free function.
-    if tokens.windows(2).any(|w|
-        word(&w[0]) == Some("define") &&
-        matches!(word(&w[1]), Some("class" | "actor" | "state" | "module" | "enum"))) {
-        return Err(error(templates[0].pos, "E_UNSUPPORTED",
-            "scalar generics mixed with nominal declarations need scope-aware resolution"));
+    if tokens
+        .windows(2)
+        .any(|w| word(&w[0]) == Some("define") && matches!(word(&w[1]), Some("class" | "actor" | "state" | "module" | "enum")))
+    {
+        return Err(error(
+            templates[0].pos,
+            "E_UNSUPPORTED",
+            "scalar generics mixed with nominal declarations need scope-aware resolution",
+        ));
     }
     let mut base = Vec::new();
     let mut begin = 0;
@@ -188,15 +245,18 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     // bounded specializer. A same-named concrete callable or binding must
     // not have its references rewritten into a different generic function.
     for template in &templates {
-        if base.windows(2).any(|w| {
-            (word(&w[0]) == Some("fnc") || word(&w[0]) == Some("routine")) &&
-                word(&w[1]) == Some(template.name.as_str())
-        }) || base.windows(2).any(|w| {
-            matches!(word(&w[0]), Some("val" | "let" | "const")) &&
-                word(&w[1]) == Some(template.name.as_str())
-        }) {
-            return Err(error(template.pos, "E_DUPLICATE",
-                "generic function name conflicts with a callable or local binding"));
+        if base
+            .windows(2)
+            .any(|w| (word(&w[0]) == Some("fnc") || word(&w[0]) == Some("routine")) && word(&w[1]) == Some(template.name.as_str()))
+            || base
+                .windows(2)
+                .any(|w| matches!(word(&w[0]), Some("val" | "let" | "const")) && word(&w[1]) == Some(template.name.as_str()))
+        {
+            return Err(error(
+                template.pos,
+                "E_DUPLICATE",
+                "generic function name conflicts with a callable or local binding",
+            ));
         }
     }
     let eof = base.pop().ok_or_else(|| error(Pos::default(), "E_SYNTAX", "empty source"))?;
@@ -207,8 +267,7 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     let mut requested: BTreeMap<(usize, String), String> = BTreeMap::new();
     let mut at = 0;
     while at < base.len() {
-        let tid = word(&base[at]).and_then(|name|
-            templates.iter().position(|template| template.name == name));
+        let tid = word(&base[at]).and_then(|name| templates.iter().position(|template| template.name == name));
         let Some(tid) = tid else {
             out.push(base[at].clone());
             at += 1;
@@ -216,26 +275,40 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         };
         let mut args_at = at + 1;
         let explicit = if base.get(args_at).map(|t| &t.tok) == Some(&Tok::Lt) {
-            let chosen = base.get(args_at + 1).and_then(scalar)
-                .ok_or_else(|| error(base[at].pos, "E_UNSUPPORTED_TYPE",
-                    "generic type argument must be an admitted scalar"))?;
+            let chosen = base.get(args_at + 1).and_then(scalar).ok_or_else(|| {
+                error(
+                    base[at].pos,
+                    "E_UNSUPPORTED_TYPE",
+                    "generic type argument must be an admitted scalar",
+                )
+            })?;
             if base.get(args_at + 2).map(|t| &t.tok) != Some(&Tok::Gt) {
                 return Err(error(base[at].pos, "E_UNSUPPORTED", "generic call needs one type argument"));
             }
             args_at += 3;
             Some(chosen)
-        } else { None };
+        } else {
+            None
+        };
         if base.get(args_at).map(|t| &t.tok) != Some(&Tok::LParen) {
             return Err(error(base[at].pos, "E_INFER", "generic callable cannot escape as a value"));
         }
-        let end = pair(&base, args_at, Tok::LParen, Tok::RParen)
-            .ok_or_else(|| error(base[at].pos, "E_SYNTAX", "unclosed generic call"))?;
+        let end = pair(&base, args_at, Tok::LParen, Tok::RParen).ok_or_else(|| error(base[at].pos, "E_SYNTAX", "unclosed generic call"))?;
         let inferred = context(&base, at, end);
         if explicit.is_some() && inferred.is_some() && explicit != inferred {
-            return Err(error(base[at].pos, "E_TYPE", "explicit type argument conflicts with expected result"));
+            return Err(error(
+                base[at].pos,
+                "E_TYPE",
+                "explicit type argument conflicts with expected result",
+            ));
         }
-        let to = explicit.or(inferred).ok_or_else(|| error(base[at].pos, "E_INFER",
-            "unknown generic result type: use <Type>, : Type, as Type or typed binding"))?;
+        let to = explicit.or(inferred).ok_or_else(|| {
+            error(
+                base[at].pos,
+                "E_INFER",
+                "unknown generic result type: use <Type>, : Type, as Type or typed binding",
+            )
+        })?;
         let key = (tid, to.to_string());
         if !requested.contains_key(&key) {
             if requested.len() == MAX_INSTANCES {
@@ -248,14 +321,23 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             requested.insert(key.clone(), generated);
         }
         let generated = requested.get(&key).expect("specialization inserted");
-        out.push(Token { tok: Tok::Ident(generated.clone()), pos: base[at].pos });
+        out.push(Token {
+            tok: Tok::Ident(generated.clone()),
+            pos: base[at].pos,
+        });
         out.extend_from_slice(&base[args_at..=end]);
         at = end + 1;
     }
-    if templates.iter().enumerate().any(|(tid, _)|
-        !requested.keys().any(|key| key.0 == tid)) {
-        return Err(error(templates[0].pos, "E_UNSUPPORTED",
-            "uninstantiated generic definition cannot be type-checked in this browser profile"));
+    if templates
+        .iter()
+        .enumerate()
+        .any(|(tid, _)| !requested.keys().any(|key| key.0 == tid))
+    {
+        return Err(error(
+            templates[0].pos,
+            "E_UNSUPPORTED",
+            "uninstantiated generic definition cannot be type-checked in this browser profile",
+        ));
     }
     for ((tid, to), generated) in &requested {
         out.extend(specialize(&templates[*tid], to, generated));
@@ -299,16 +381,27 @@ mod tests {
         let src = "pub fnc main(): int { return 42; }";
         let lexed = lex(src).unwrap();
         let lowered = lower(lexed.clone()).unwrap();
-        assert_eq!(lowered.iter().map(|t| &t.tok).collect::<Vec<_>>(),
-            lexed.iter().map(|t| &t.tok).collect::<Vec<_>>());
+        assert_eq!(
+            lowered.iter().map(|t| &t.tok).collect::<Vec<_>>(),
+            lexed.iter().map(|t| &t.tok).collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn ambiguous_and_shadowed_instances_are_rejected() {
         for (src, code) in [
-            (format!("{GENERIC} pub fnc main(): int {{ val x = calculate(5); return 0; }}"), "E_INFER"),
-            (format!("{GENERIC} pub fnc main(): int {{ val x = calculate<int>(5) as float; return 0; }}"), "E_TYPE"),
-            (format!("{GENERIC} pub fnc main(): int {{ val calculate = 9; return 0; }}"), "E_DUPLICATE"),
+            (
+                format!("{GENERIC} pub fnc main(): int {{ val x = calculate(5); return 0; }}"),
+                "E_INFER",
+            ),
+            (
+                format!("{GENERIC} pub fnc main(): int {{ val x = calculate<int>(5) as float; return 0; }}"),
+                "E_TYPE",
+            ),
+            (
+                format!("{GENERIC} pub fnc main(): int {{ val calculate = 9; return 0; }}"),
+                "E_DUPLICATE",
+            ),
         ] {
             assert_eq!(lower(lex(&src).unwrap()).unwrap_err().code, code);
         }
