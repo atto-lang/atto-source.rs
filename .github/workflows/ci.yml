@@ -55,10 +55,21 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/bitwise_guest.mjs
-      - name: Build actual Wasm compiler
+      - name: Build actual Rust wasm32 compiler within public 1 MiB artifact budget
+        env:
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: z
         run: |
+          set -euo pipefail
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
-          sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
+          artifact=target/wasm32-unknown-unknown/release/atto_compiler.wasm
+          test -s "$artifact"
+          test "$(wc -c < "$artifact")" -le 1048576 || { echo "E_COMPILER_SIZE: browser compiler exceeds public 1 MiB budget" >&2; exit 1; }
+          sha256sum "$artifact"
+      - name: Prove real attoc versus wasm32 compiler and compiled guest baseline
+        env:
+          ATTOC: target/release/attoc
+          ATTO_WASM_COMPILER: target/wasm32-unknown-unknown/release/atto_compiler.wasm
+        run: node scripts/verify-real-browser-compiler.mjs
       - name: Compile exact bitwise preview inside browser Wasm compiler and compare native guest bytes
         env:
           ATTOC: target/release/attoc
