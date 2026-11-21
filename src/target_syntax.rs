@@ -1138,8 +1138,31 @@ fn validate_callback(
                 return Err(diagnostic(toks, i+2, "E_SEALED",
                     "state field member access requires a field name"));
             }
-            if write && matches!(toks.get(i+3).map(|t| &t.tok),
-                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
+            let next = i + 3;
+            let postfix_mutation = matches!(toks.get(next).map(|t| &t.tok),
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus));
+            // The lexer does not combine every compound assignment spelling:
+            // - =, * = and / = are also mutations, not innocent reads.
+            let split_compound = matches!(toks.get(next).map(|t| &t.tok),
+                Some(Tok::Minus | Tok::Star | Tok::Slash | Tok::Plus)) &&
+                at(toks, next + 1, &Tok::Assign);
+            let prefix_mutation = i > 0 && matches!(toks.get(i - 1).map(|t| &t.tok),
+                Some(Tok::PlusPlus | Tok::MinusMinus));
+            let mutates = postfix_mutation || split_compound || prefix_mutation;
+            // Nested/dynamic paths and field method calls have no authenticated
+            // layout, alias or transitive effect summary at this stage. This
+            // applies to critical-write too: otherwise the lexical write-set
+            // check would miss e.g. s.other.child = 1 or s.other[0] = 1.
+            if [Tok::Dot, Tok::LParen, Tok::LBracket].iter()
+                .any(|tok| at(toks, next, tok)) {
+                return Err(diagnostic(toks, next, "E_UNSUPPORTED",
+                    "nested, indexed or callable actor state fields require typed effect proofs"));
+            }
+            if mutates {
+                if !write {
+                    return Err(diagnostic(toks, next, "E_READONLY",
+                        "critical-read cannot mutate actor state"));
+                }
                 if let Some(ReceiverStateWrite::Fields(allowed)) = &receiver.state_write {
                     if let Some(Tok::Ident(field)) = toks.get(i+2).map(|t| &t.tok) {
                         if !allowed.contains(field) {
@@ -1148,20 +1171,6 @@ fn validate_callback(
                         }
                     }
                 }
-            }
-            // Nested/dynamic paths and field method calls have no authenticated
-            // layout, alias or transitive effect summary at this stage. This
-            // applies to critical-write too: otherwise the lexical write-set
-            // check would miss e.g. s.other.child = 1 or s.other[0] = 1.
-            if [Tok::Dot, Tok::LParen, Tok::LBracket].iter()
-                .any(|tok| at(toks, i + 3, tok)) {
-                return Err(diagnostic(toks, i + 3, "E_UNSUPPORTED",
-                    "nested, indexed or callable actor state fields require typed effect proofs"));
-            }
-            if !write && matches!(toks.get(i+3).map(|t| &t.tok),
-                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
-                return Err(diagnostic(toks, i+3, "E_READONLY",
-                    "critical-read cannot mutate actor state"));
             }
         }
     }
