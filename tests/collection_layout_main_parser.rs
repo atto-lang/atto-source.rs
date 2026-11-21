@@ -48,6 +48,20 @@ fn default_aos_is_canonical_and_soa_aosoa_remain_distinct() {
 }
 
 #[test]
+fn aosoa_min_and_max_power_of_two_widths_keep_distinct_type_identities() {
+    let p = parse(r#"
+        fnc main() -> int {
+            let lo: Array<Particle, layout=aosoa(1)> = [];
+            let hi: Array<Particle, layout=aosoa(1024)> = [];
+            return 0;
+        }
+    "#);
+    assert_eq!(p.array_types.len(), 2, "lane width is part of the type identity");
+    assert_eq!(p.array_types[0].layout, atto_compiler::collection_layout_plan::Storage::Aosoa(1));
+    assert_eq!(p.array_types[1].layout, atto_compiler::collection_layout_plan::Storage::Aosoa(1024));
+}
+
+#[test]
 fn nominal_element_is_checked_and_runtime_requires_proven_lowering() {
     let missing = parse("fnc main() -> int { let a: Array<Undefined,layout=soa> = []; return 0; }");
     assert_eq!(check::check(&missing).unwrap_err().code, "E_UNKNOWN_TYPE");
@@ -69,6 +83,8 @@ fn generic_errors_from_production_parser_match_guest_parser() {
     for (generic, expected) in [
         ("Array<Particle, layout=bogus>", "E_LAYOUT_VALUE"),
         ("Array<Particle, layout=aosoa(n)>", "E_LAYOUT_SIZE"),
+        ("Array<Particle, layout=aosoa(0)>", "E_LAYOUT_SIZE"),
+        ("Array<Particle, layout=aosoa(1025)>", "E_LAYOUT_SIZE"),
         ("Array<Particle, layout=aosoa(3)>", "E_LAYOUT_SIZE"),
         ("Array<Particle, layout=aosoa(7)>", "E_LAYOUT_SIZE"),
         ("Array<Particle, layout=aosoa(1023)>", "E_LAYOUT_SIZE"),
