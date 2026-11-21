@@ -25,6 +25,9 @@ const cases=[
   ['pass/225-v2-checked-preloaded-channel-denial.atto',false],
   ['pass/217-v2-declared-port-pipe.atto',false],
   ['pass/218-v2-declared-port-rpipe.atto',false],
+  // Nonterminal READY Future and await-spawn use the real guest scheduler.
+  ['pass/230-v2-actor-ready-future-pipe.atto',false],
+  ['pass/231-v2-await-spawn-ready-pipe.atto',false],
   ['panic/210-v2-pipe-double-attach.atto',true],
   ['panic/211-v2-pipe-rendezvous-denial.atto',true],
   ['panic/212-v2-pipe-duplicate-consumer.atto',true],
