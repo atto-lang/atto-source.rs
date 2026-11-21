@@ -257,3 +257,57 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::lex;
+
+    const GENERIC: &str = "fnc calculate<T>(int x): T { return (x + 3) as T; }";
+
+    #[test]
+    fn scalar_specialization_rewrites_both_template_and_call() {
+        let src = format!("{GENERIC} pub fnc main(): int {{ val y = calculate(5) as float; return 0; }}");
+        let lowered = lower(lex(&src).unwrap()).unwrap();
+        let words: Vec<_> = lowered.iter().filter_map(word).collect();
+        assert!(words.iter().filter(|w| **w == "__atto_generic_0_float").count() >= 2);
+        assert!(!words.iter().any(|w| *w == "calculate"));
+        assert!(!words.iter().any(|w| *w == "T"));
+        assert_eq!(lowered.last().map(|t| &t.tok), Some(&Tok::Eof));
+    }
+
+    #[test]
+    fn distinct_types_create_distinct_instances() {
+        let src = format!("{GENERIC} pub fnc main(): int {{ val x = calculate<int>(5); val y = calculate(5) : float; return x; }}");
+        let lowered = lower(lex(&src).unwrap()).unwrap();
+        let words: Vec<_> = lowered.iter().filter_map(word).collect();
+        assert!(words.contains(&"__atto_generic_0_int"));
+        assert!(words.contains(&"__atto_generic_0_float"));
+    }
+
+    #[test]
+    fn no_generic_source_keeps_identical_tokens() {
+        let src = "pub fnc main(): int { return 42; }";
+        let lexed = lex(src).unwrap();
+        let lowered = lower(lexed.clone()).unwrap();
+        assert_eq!(lowered.iter().map(|t| &t.tok).collect::<Vec<_>>(),
+            lexed.iter().map(|t| &t.tok).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn ambiguous_and_shadowed_instances_are_rejected() {
+        for (src, code) in [
+            (format!("{GENERIC} pub fnc main(): int {{ val x = calculate(5); return 0; }}"), "E_INFER"),
+            (format!("{GENERIC} pub fnc main(): int {{ val x = calculate<int>(5) as float; return 0; }}"), "E_TYPE"),
+            (format!("{GENERIC} pub fnc main(): int {{ val calculate = 9; return 0; }}"), "E_DUPLICATE"),
+        ] {
+            assert_eq!(lower(lex(&src).unwrap()).unwrap_err().code, code);
+        }
+    }
+
+    #[test]
+    fn nested_generic_method_never_becomes_an_unchecked_free_function() {
+        let src = "define class C as pub fnc calculate<T>(int x): T { return x as T; } end pub fnc main(): int { return 0; }";
+        assert_eq!(lower(lex(src).unwrap()).unwrap_err().code, "E_UNSUPPORTED");
+    }
+}
