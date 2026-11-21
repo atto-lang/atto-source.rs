@@ -4,12 +4,29 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      expected_head:
+        description: 'Exact 40-character source PR head SHA; reject drift'
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
   real-compiler:
-    runs-on: ubuntu-24.04
+    # Source-local, administrator-provisioned, unique-label private runner.
+    # Pull-request and push events continue using hosted ubuntu-24.04.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && vars.ATTO_PRIVATE_RUST_RUNNER_LABEL || 'ubuntu-24.04' }}
     steps:
+      - name: Reject manual dispatch SHA drift before checking out private source
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          DISPATCH_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
