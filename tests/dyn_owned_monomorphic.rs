@@ -91,6 +91,33 @@ end
         "E_DYN_INTERFACE");
 }
 
+
+#[test]
+fn interface_methods_accept_checked_scalar_parameters() {
+    let src = POSITIVE
+        .replace("describe(): string;", "describe(int code): string;")
+        .replace("pub describe(): string", "pub describe(int code): string")
+        .replace("item.describe();", "item.describe(1);");
+    let wasm = compile(&src).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+}
+
+#[test]
+fn object_and_handle_method_signatures_fail_before_type_erasure() {
+    for signature in [
+        "describe(): Greeting;",
+        "describe(): Self;",
+        "describe(ActorRef<Worker> peer): string;",
+        "describe(Pointer<Greeting> borrowed): string;",
+        "describe(Greeting object): string;",
+        "describe(Any hidden): string;",
+        "describe(): Option<Greeting>;",
+    ] {
+        let src = POSITIVE.replace("describe(): string;", signature);
+        error(&src, "E_DYN_ABI");
+    }
+}
+
 #[test]
 fn unnamed_or_borrowed_erasure_is_not_silently_lowered() {
     error(&POSITIVE.replace("val Dyn<Printable> erased = Dyn<Printable>(take! concrete);",
