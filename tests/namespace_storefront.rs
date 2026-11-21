@@ -86,6 +86,15 @@ fn explicit_dotted_and_folder_derived_namespace_headers_link() {
 }
 
 #[test]
+fn standalone_use_identifier_does_not_become_a_namespace_header() {
+    // "use namespace" is a source header, but "use" alone is not reserved.
+    // A valid local name inside main must not be rejected by header scanning.
+    let with_use = ENTRY.replace("return 0;", "let int use = 0; return use;");
+    let linked = compile(&with_use, MATH);
+    assert!(linked.is_ok(), "local identifier named use must link: {linked:?}");
+}
+
+#[test]
 fn missing_default_namespace_depth_and_misplaced_headers_fail_closed() {
     let too_deep = ENTRY.replace("use namespace storefront;", "use default namespace(2);");
     let diagnostic = compile(&too_deep, MATH).expect_err("src/main.atto has only one parent folder");
@@ -100,4 +109,39 @@ fn missing_default_namespace_depth_and_misplaced_headers_fail_closed() {
         "import module math from \"./math.atto\";\nuse namespace storefront;");
     let diagnostic = compile(&misplaced, MATH).expect_err("namespace header must precede import");
     assert_eq!(diagnostic.code, "E_SYNTAX");
+}
+
+#[test]
+fn explicit_module_export_is_linked_and_stripped_without_reexport() {
+    let exported = MATH.replace(
+        "define pub module math",
+        "export pub module math;\ndefine module math",
+    );
+    let wasm = compile(ENTRY, &exported)
+        .expect("export pub module is an equivalent import authority");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+
+    let pkg_only = exported.replace(
+        "export pub module math;",
+        "export pub[pkg] module math;",
+    );
+    assert!(compile(ENTRY, &pkg_only).is_ok(),
+        "same-package import may see pub[pkg] export");
+
+    let foreign = compile_linked(
+        "src/main.atto",
+        &[
+            LinkUnit {
+                path: "src/main.atto",
+                package: "shop@1.0.0",
+                source: ENTRY,
+            },
+            LinkUnit {
+                path: "src/math.atto",
+                package: "storefront@1.0.0",
+                source: &pkg_only,
+            },
+        ],
+    ).expect_err("package-private modules do not cross package boundaries");
+    assert_eq!(foreign.code, "E_VISIBILITY");
 }
