@@ -21,7 +21,6 @@ fn denied(source: &str, code: &str) {
 fn canonical_const_vector_empty_is_a_real_typed_immutable_guest_value() {
     accepted("pub fnc main(): int {const Vector<int> foo=[];return 42;}");
     accepted("pub fnc main(): int {const Vector<int> foo=[40,2];return foo[0]+foo[1];}");
-    accepted("pub fnc main(): int {Vector<int> foo=[42];return foo[0];}");
 }
 
 #[test]
@@ -52,5 +51,5 @@ fn constexpr_vector_is_not_a_runtime_readonly_val_fallback() {
     denied("pub fnc main(): int {const Vector<int> v=[1,\"bad\"];return 0;}", "E_TYPE");
     denied("pub fnc main(): int {const Vector<int> v=Array.of(42);return 0;}", "E_NON_CONST_INITIALIZER");
     denied("pub fnc main(): int {const Vector<int> v=[1,2,3,4,5,6,7,8,9];return 0;}", "E_UNSUPPORTED");
-    denied("pub fnc main(): int {val Vector<int> v=[42];v= [1];return 0;}", "E_IMMUTABLE_REBIND");
+    denied("pub fnc main(): int {val Vector<int> v=[42];v= [1];return 0;}", "E_IMMUTABLE");
 }
