@@ -22,6 +22,15 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact PR or push head and record source tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "ATTO_NAMESPACE_EXACT_HEAD=$EXPECTED_HEAD"
+          git rev-parse 'HEAD^{tree}'
       - name: Install pinned Rust
         run: rustup toolchain install 1.85.1 --profile minimal
       - name: Test exact storefront namespace and import
