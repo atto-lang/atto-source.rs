@@ -160,3 +160,46 @@ fn preexisting_nonsource_artifacts_are_replaced_not_appended() {
     assert!(!bytes.windows(b"NOT A COMPILED WASM GUEST".len())
         .any(|w| w == b"NOT A COMPILED WASM GUEST"));
 }
+
+#[test]
+fn oversized_entry_source_fails_before_publishing_a_guest() {
+    let temp = CliTemporaryDir::new();
+    let huge = temp.0.join("huge.atto");
+    let output = temp.0.join("compiled.wasm");
+    // A bounded 64 KiB source reader must not allocate the whole input first.
+    // The guard should classify this as a compiler source-limit rejection,
+    // and invalidate any output from an earlier successful build.
+    std::fs::write(&huge, vec![b'x'; atto_compiler::SOURCE_CAP + 1]).unwrap();
+    let valid = "tests/fixtures/pass/01-answer.atto";
+    assert!(attoc(&[valid, "-o", output.to_str().unwrap()]).status.success());
+    assert!(output.exists());
+    let denied = attoc(&[huge.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+    assert_eq!(denied.status.code(), Some(1), "{:?}", denied.status);
+    assert!(denied.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("E_SOURCE_LIMIT"),
+        "expected a source limit diagnostic: {}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    assert!(!output.exists(), "stale executable survived oversized input");
+
+    let check_only = attoc(&["--check", huge.to_str().unwrap()]);
+    assert_eq!(check_only.status.code(), Some(1));
+    assert!(check_only.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&check_only.stderr).contains("E_SOURCE_LIMIT"));
+}
+
+#[test]
+fn exactly_source_cap_input_is_not_rejected_by_bounded_reader() {
+    let temp = CliTemporaryDir::new();
+    let source = temp.0.join("limit.atto");
+    let prefix = b"pub fnc main(): int { return 42; }\n";
+    let mut bytes = prefix.to_vec();
+    bytes.resize(atto_compiler::SOURCE_CAP, b' ');
+    std::fs::write(&source, bytes).unwrap();
+    let out = temp.0.join("limit.wasm");
+    let result = attoc(&[source.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    assert!(result.status.success(), "exact source cap rejected: {}",
+        String::from_utf8_lossy(&result.stderr));
+    assert!(std::fs::read(out).unwrap().starts_with(b"\\0asm\\x01\\0\\0\\0"));
+}
