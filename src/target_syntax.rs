@@ -24,6 +24,8 @@ pub enum ReceiverStateWrite {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceiverHeader {
     pub owner: String,
+    /// Source-local receiver name; unrelated to actor identity, dispatch or ABI.
+    pub binding: String,
     pub name: String,
     pub arity: usize,
     pub params: Vec<ReceiverParam>,
@@ -345,26 +347,32 @@ impl Cursor<'_> {
     }
     fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize, usize)> {
         self.expect(&Tok::LParen, "expected '(' before receiver")?;
-        // Old typed receivers remain accepted. New type-first actor receivers
-        // declare a field-scoped state write *ceiling*, not an acquired loan.
-        let (owner, mutable, state_write) = if self.take_word("mut") {
-            self.expect_word("self")?;
-            self.expect(&Tok::Colon, "expected ':' after self")?;
-            (self.ident()?, true, None)
+        // The receiver binding is lexical. It is not an actor capability, a
+        // mutable place, an ABI field, or an implicit alias named "self".
+        // Preserve legacy typed spelling (self: Foo) as well as type-first
+        // (Foo this), (Foo mut this.state.{counter, xyz}).
+        let (owner, binding, mutable, state_write) = if self.take_word("mut") {
+            let binding = if self.take_word("self") { "self".to_string() }
+                else { self.ident()? };
+            self.expect(&Tok::Colon, "expected ':' after receiver binding")?;
+            (self.ident()?, binding, true, None)
         } else if self.take_word("self") {
             self.expect(&Tok::Colon, "expected ':' after self")?;
-            (self.ident()?, false, None)
+            (self.ident()?, "self".to_string(), false, None)
         } else {
-            let owner = self.ident()?;
-            if self.take_word("mut") {
-                self.expect_word("self")?;
-                self.expect(&Tok::Dot, "expected '.state' after 'mut self'")?;
+            let first = self.ident()?;
+            if self.take(&Tok::Colon) {
+                // Typed named alias: (this: Foo); not an ABI-visible parameter.
+                (self.ident()?, first, false, None)
+            } else if self.take_word("mut") {
+                let binding = if self.take_word("self") { "self".to_string() }
+                    else { self.ident()? };
+                self.expect(&Tok::Dot, "expected '.state' after mutable receiver")?;
                 self.expect_word("state")?;
                 let scope = if self.take(&Tok::Dot) {
                     let fields = if self.take(&Tok::LBrace) {
-                        // A nonempty, bounded, duplicate-free set of fields.
-                        // The *typed* state-schema resolver must independently
-                        // validate all identifiers before code generation.
+                        // A nonempty bounded field set. Actual actor layout
+                        // and effects are independently verified after parsing.
                         let mut fields = vec![self.ident()?];
                         while self.take(&Tok::Comma) {
                             if fields.len() >= 32 {
@@ -375,25 +383,25 @@ impl Cursor<'_> {
                         }
                         self.expect(&Tok::RBrace, "expected '}' after state fields")?;
                         fields
-                    } else {
-                        vec![self.ident()?]
-                    };
+                    } else { vec![self.ident()?] };
                     let mut seen = std::collections::HashSet::new();
                     if fields.iter().any(|field| !seen.insert(field)) {
                         return Err(self.err("E_DUPLICATE",
                             "duplicate mutable state field in receiver projection"));
                     }
                     ReceiverStateWrite::Fields(fields)
-                } else {
-                    ReceiverStateWrite::Whole
-                };
-                (owner, true, Some(scope))
+                } else { ReceiverStateWrite::Whole };
+                (first, binding, true, Some(scope))
+            } else if self.take_word("self") {
+                (first, "self".to_string(), false, None)
+            } else if self.take_word("_") {
+                (first, "_".to_string(), false, None)
+            } else if matches!(self.tok(), Tok::Ident(_)) {
+                // Explicit receiver variable (Foo this), (Foo actor), etc.
+                (first, self.ident()?, false, None)
             } else {
-                // Explicit name or compiler-owned implicit receiver.
-                if !self.take_word("self") {
-                    self.take_word("_");
-                }
-                (owner, false, None)
+                // Existing implicit-receiver form (Foo) binds self.
+                (first, "self".to_string(), false, None)
             }
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
@@ -406,6 +414,10 @@ impl Cursor<'_> {
         } else { None };
         let name = self.ident()?;
         let params = self.params()?;
+        if params.iter().any(|p| p.name == binding) {
+            return Err(self.err("E_DUPLICATE",
+                "receiver binding conflicts with an explicit method parameter"));
+        }
         let arity = params.len();
         let arrow_type = !return_first && *self.tok() == Tok::Arrow;
         let colon_type = !return_first && *self.tok() == Tok::Colon;
@@ -424,7 +436,7 @@ impl Cursor<'_> {
         let start = self.i;
         self.body(arrow_type, colon_type, return_first)?;
         let end = self.i;
-        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, state_write, public, pos }, start, end, method_start))
+        Ok((ReceiverHeader { owner, binding, name, arity, params, return_type, mutable, state_write, public, pos }, start, end, method_start))
     }
 
     /// Use production parsing for one declaration; unlike a token-only scan,
@@ -849,6 +861,10 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
         }
     }
     for (receiver, site) in headers.receivers.iter().zip(&headers.receiver_sites) {
+        if receiver.binding != "self" && receiver.binding != "_" {
+            return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
+                "named class receiver bindings need checked production method lowering"));
+        }
         if receiver.state_write.is_some() {
             return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
                 "projected state receiver requires checked actor state effects; cannot lower as a class"));
@@ -1086,7 +1102,7 @@ fn validate_callback(
         Some(Tok::Ident(name)) if !is_reserved(name) => name.as_str(),
         _ => return Err(diagnostic(toks, binder_pos, "E_SEALED", "invalid state callback binder")),
     };
-    if binder == "self" || binder == "_" {
+    if binder == receiver.binding || binder == "_" || binder == "self" {
         return Err(diagnostic(toks, binder_pos, "E_SEALED",
             "state callback must bind a distinct state variable"));
     }
@@ -1108,7 +1124,7 @@ fn validate_callback(
                 "suspension, spawning and deferred effects are forbidden during critical access"));
         }
         if word_at(toks, i, "handle_state") ||
-            (word_at(toks, i, "self") && at(toks, i+1, &Tok::Dot)) {
+            word_at(toks, i, &receiver.binding) {
             return Err(diagnostic(toks, i, "E_BORROW",
                 "nested actor state access or self capture is forbidden in critical callback"));
         }
@@ -1165,19 +1181,34 @@ fn validate_receiver_body(
         start + 1
     } else { start };
     while i < end.saturating_sub(1) {
-        if word_at(toks, i, "handle_state") &&
-            !(i >= 2 && word_at(toks, i-2, "self") && at(toks, i-1, &Tok::Dot)) {
-            return Err(diagnostic(toks, i, "E_SEALED",
-                "actor state access must be 'self.handle_state(...)'"));
+        // The old implicit name is not an alternate alias for a renamed
+        // receiver; otherwise the parser would silently admit an unbound self.
+        if receiver.binding != "self" && word_at(toks, i, "self") {
+            return Err(diagnostic(toks, i, "E_UNBOUND",
+                "self is not bound when the receiver has a different name"));
         }
-        if word_at(toks, i, "self") && at(toks, i+1, &Tok::Dot) {
+        // Do not allow the receiver name to be rebound inside the method.
+        if (word_at(toks, i, "let") || word_at(toks, i, "val") ||
+            word_at(toks, i, "const")) &&
+            (word_at(toks, i+1, &receiver.binding) ||
+                (matches!(toks.get(i+1).map(|t| &t.tok), Some(Tok::Ident(_))) &&
+                    word_at(toks, i+2, &receiver.binding))) {
+            return Err(diagnostic(toks, i, "E_DUPLICATE",
+                "method body cannot shadow its receiver binding"));
+        }
+        if word_at(toks, i, "handle_state") &&
+            !(i >= 2 && word_at(toks, i-2, &receiver.binding) && at(toks, i-1, &Tok::Dot)) {
+            return Err(diagnostic(toks, i, "E_SEALED",
+                "actor state access requires the declared receiver binding"));
+        }
+        if word_at(toks, i, &receiver.binding) && at(toks, i+1, &Tok::Dot) {
             let member = match toks.get(i+2).map(|t| &t.tok) {
                 Some(Tok::Ident(s)) => s.as_str(),
                 _ => return Err(diagnostic(toks, i+2, "E_SEALED", "invalid actor member access")),
             };
             if !at(toks, i+3, &Tok::LParen) {
                 return Err(diagnostic(toks, i, "E_SEALED",
-                    "direct actor fields are sealed; use self.handle_state"));
+                    "direct actor fields are sealed; use receiver.handle_state"));
             }
             if member == "handle_state" {
                 let closed = validate_callback(toks, symbols, receiver, i+3, end)?;
