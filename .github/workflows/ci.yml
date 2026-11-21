@@ -89,12 +89,22 @@ jobs:
         run: node --test tests/compiler-diagnostic.test.mjs
       - name: Test source-free bounded Wasm guest ABI and panic oracles
         run: node --test tests/compiler-smoke-guest-oracle.test.mjs
+      - name: Syntax-check the conditional native and browser guest oracles
+        run: |
+          node --check tests/ifnot_unless_guest.mjs
+          node --check tests/ifnot_unless_browser_compiler.mjs
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
           rustup component add clippy rustfmt --toolchain 1.85.1
           rustup default 1.85.1
           rustc --version
+      - name: Focused explicit-pipe lambda parser and deterministic Wasm regressions
+        run: cargo test --locked --test lambda_syntax
+      - name: Test ifnot/unless Rust compiler grammar and fail-closed diagnostics
+        run: cargo test --locked --test ifnot_unless_guest
+      - name: Prove readonly inline-self arity and deterministic Wasm regression
+        run: cargo test --locked --test inline_self_receiver_parity
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
       - name: Build actual Rust wasm32 compiler within public 1 MiB artifact budget
@@ -107,6 +117,10 @@ jobs:
           test -s "$artifact"
           test "$(wc -c < "$artifact")" -le 1048576 || { echo "E_COMPILER_SIZE: browser compiler exceeds public 1 MiB budget" >&2; exit 1; }
           sha256sum "$artifact"
+      - name: Prove ifnot/unless native vs wasm32 browser compiler byte parity and real guests
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/ifnot_unless_browser_compiler.mjs
       - name: Prove real attoc versus wasm32 compiler and compiled guest baseline
         env:
           ATTOC: target/release/attoc
@@ -135,6 +149,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/bitwise_guest.mjs
+      - name: Execute negated conditional expression and statement Wasm guests
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/ifnot_unless_guest.mjs
       - name: Compile exact bitwise preview inside browser Wasm compiler and compare native guest bytes
         env:
           ATTOC: target/release/attoc
