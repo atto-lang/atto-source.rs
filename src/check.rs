@@ -1005,7 +1005,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None")
+        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None" | "Error")
             || is_reserved_collection_or_loan_name(&f.name) {
             return Err(Diagnostic::new(
                 f.pos,
