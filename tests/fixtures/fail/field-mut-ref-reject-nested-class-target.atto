@@ -1,4 +1,6 @@
-// expect-error: E_BORROW
+// expect-error: E_UNSUPPORTED
+// Nested object declarations themselves are not yet implemented. This test
+// verifies declaration admission, NOT the projection-level borrow checker.
 // java: rejects
 define class Nested as
   pub let int score = 7;

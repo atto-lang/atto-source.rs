@@ -1,0 +1,12 @@
+// expect-error: E_BORROW
+// java: rejects
+// A multi-hop projection has no proven class/root alias path in this profile.
+// Reject even if the first hop is a validated scalar field.
+define class Person as
+  pub let int age = 30;
+end
+pub fnc main(): int {
+  let person = new Person();
+  let nested_ref = borrow! mut person.age.unknown;
+  return 0;
+}

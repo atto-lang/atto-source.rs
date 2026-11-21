@@ -39,7 +39,8 @@ fn exclusive_field_loans_fail_closed_when_proofs_are_absent() {
         ("reader_writer_conflict", include_str!("fixtures/fail/field-mut-ref-reject-shared-exclusive-overlap.atto"), "E_BORROW"),
         ("owner_move", include_str!("fixtures/fail/field-mut-ref-reject-owner-take.atto"), "E_BORROW"),
         ("immutable_alias", include_str!("fixtures/fail/field-mut-ref-reject-val-alias.atto"), "E_BORROW"),
-        ("nested_handle_unproved", include_str!("fixtures/fail/field-mut-ref-reject-nested-class-target.atto"), "E_BORROW"),
+        ("nested_class_unimplemented", include_str!("fixtures/fail/field-mut-ref-reject-nested-class-target.atto"), "E_UNSUPPORTED"),
+        ("nested_projection_no_proof", include_str!("fixtures/fail/field-mut-ref-reject-nested-projection.atto"), "E_BORROW"),
     ] {
         rejects(name, src, diagnostic);
     }
