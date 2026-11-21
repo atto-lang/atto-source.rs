@@ -1,6 +1,6 @@
 // expect-exit: 42
 define class Methods as
-    pub method m_colon() : int {
+    pub mtd m_colon() : int {
         return 5;
     }
     pub fnc m_colon_arrow() : int -> {
