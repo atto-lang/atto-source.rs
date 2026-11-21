@@ -158,19 +158,36 @@ fn context(tokens: &[Token], at: usize, end: usize) -> Option<&'static str> {
     None
 }
 
-fn specialize(template: &Template, to: &str, private_name: &str) -> Vec<Token> {
+fn specialize(template: &Template, to: &str, private_name: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut result = template.source.clone();
     result[template.name_offset].tok = Tok::Ident(private_name.into());
     result.drain(template.name_offset + 1..template.name_offset + 4);
-    for token in &mut result {
-        if word(token) == Some(template.parameter.as_str()) {
-            token.tok = Tok::Ident(to.into());
+    // Do not use a global identifier substitution: a type parameter is not
+    // a value binding, a member name, a function name, or a capture.
+    // Only scoped type positions in this bounded profile are admitted.
+    let params_end = pair(&result, template.name_offset + 1, Tok::LParen, Tok::RParen)
+        .ok_or_else(|| error(template.pos, "E_SYNTAX", "generic formal parameter list is unclosed"))?;
+    for i in 0..result.len() {
+        if word(&result[i]) != Some(template.parameter.as_str()) {
+            continue;
         }
+        let marker_type = i > 0
+            && (result[i - 1].tok == Tok::Colon
+                || word(&result[i - 1]) == Some("as"));
+        let type_first_formal = i > template.name_offset + 1
+            && i < params_end
+            && matches!(result[i - 1].tok, Tok::LParen | Tok::Comma)
+            && matches!(result.get(i + 1).map(|t| &t.tok), Some(Tok::Ident(_)));
+        if !marker_type && !type_first_formal {
+            return Err(error(result[i].pos, "E_GENERIC_SCOPE",
+                "generic type parameter used as a value or unsupported type position"));
+        }
+        result[i].tok = Tok::Ident(to.into());
     }
     if word(&result[0]) == Some("pub") {
         result.remove(0);
     }
-    result
+    Ok(result)
 }
 
 /// Rewrites direct generic invocations into source-local monomorphic instances.
@@ -273,6 +290,10 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             at += 1;
             continue;
         };
+        if at > 0 && matches!(base[at - 1].tok, Tok::Dot | Tok::ColonColon) {
+            return Err(error(base[at].pos, "E_GENERIC_SCOPE",
+                "generic function name cannot be rebound through member or namespace access"));
+        }
         let mut args_at = at + 1;
         let explicit = if base.get(args_at).map(|t| &t.tok) == Some(&Tok::Lt) {
             let chosen = base.get(args_at + 1).and_then(scalar).ok_or_else(|| {
@@ -294,6 +315,15 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             return Err(error(base[at].pos, "E_INFER", "generic callable cannot escape as a value"));
         }
         let end = pair(&base, args_at, Tok::LParen, Tok::RParen).ok_or_else(|| error(base[at].pos, "E_SYNTAX", "unclosed generic call"))?;
+        // The first compiler profile must not silently leave nested generic
+        // calls in rewritten arguments, which could change overload meaning.
+        if base[args_at + 1..end].iter().any(|token| {
+            word(token).is_some_and(|name|
+                templates.iter().any(|candidate| candidate.name == name))
+        }) {
+            return Err(error(base[at].pos, "E_UNSUPPORTED",
+                "nested generic calls require a scope-aware type solver"));
+        }
         let inferred = context(&base, at, end);
         if explicit.is_some() && inferred.is_some() && explicit != inferred {
             return Err(error(
@@ -340,7 +370,7 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         ));
     }
     for ((tid, to), generated) in &requested {
-        out.extend(specialize(&templates[*tid], to, generated));
+        out.extend(specialize(&templates[*tid], to, generated)?);
     }
     out.push(eof);
     if out.len() > MAX_TOKENS {
