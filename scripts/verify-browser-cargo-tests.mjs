@@ -21,10 +21,17 @@ assert.match(manifest, /^crate-type\s*=\s*\[\s*"cdylib"\s*,\s*"rlib"\s*\]\s*$/m,
 assert.match(manifest, /^name\s*=\s*"attoc"\s*$/m,
   'root executable must be named attoc');
 
-assert.equal((manifest.match(/^\[\[bin\]\]\s*$/gm) ?? []).length, 1,
-  'root Cargo package must expose exactly one executable target');
+const binTargets = [...manifest.matchAll(
+  /\[\[bin\]\]\s*name\s*=\s*"([^"]+)"\s*path\s*=\s*"([^"]+)"/g
+)].map((m) => [m[1], m[2]]);
+assert.equal((manifest.match(/^\[\[bin\]\]\s*$/gm) ?? []).length, 2,
+  'root Cargo must declare exactly two explicit executable targets');
+assert.deepEqual(binTargets, [
+  ['attoc', 'src/bin/attoc.rs'],
+  ['atto-state-mir', 'src/bin/atto_state_mir.rs'],
+], 'only the browser attoc CLI and host-only MIR exporter are allowed');
 assert.match(manifest, /^path\s*=\s*"src\/bin\/attoc\.rs"\s*$/m,
-  'root browser binary must be attoc, not an implicit native oresc target');
+  'root browser CLI must be attoc, not an implicit native oresc target');
 assert.equal((manifest.match(/^\[lib\]\s*$/gm) ?? []).length, 1,
   'root Cargo package must declare a single compiler library');
 assert.match(nativeManifest, /^path\s*=\s*"src\/main\.rs"\s*$/m,
