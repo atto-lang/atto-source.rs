@@ -75,3 +75,33 @@ not an OS security sandbox.
 Do not transfer source/compiled artifacts or publish to Pages without separate
 independent source/disclosure approval and public Pages protections, as
 recorded in https://github.com/atto-lang/atto-lang.github.io/issues/5 .
+
+## READY observer parity refinement (2026-11-20)
+
+The browser host's `ActorSession` now exposes `get_ready()` as the stable,
+shareable, zero-argument initialization observer. It returns the same Promise
+on repeated calls; `get_done()` remains an independent, stable completion
+observer. The host session keeps the actual promises internally as
+`_ready_task` and `_done_task`, **not** public `.ready`/`.done`
+property aliases. Mailbox registration and bounded admission happen during
+plain spawn, before the worker sends READY. `drain_and_close()` awaits the
+explicit readiness method internally, but callers do not have to await READY
+just to hold or later connect a typed actor reference.
+
+A startup failure, cancellation or timeout rejects `get_ready()`; late
+READY events cannot resurrect an actor that already failed. A successful
+READY remains observable even after `get_done()` has settled. READY does
+not prove any message was delivered or that the actor exited.
+
+**Important scope limit:** this is executable JavaScript host-session behavior
+tested by the browser actor harness. The Rust guest compiler still only
+supports the narrow terminal `await actor.get_done()` pattern and does
+**not** yet lower arbitrary `await actor.get_ready()`, `await spawn`,
+continuous `pipe!/rpipe!` or guest Future observers. Unsupported guest
+expressions must fail closed; no host Promise is proof of an Atto source
+Future or full Wasm actor parity.
+
+Canonical target specification:
+https://github.com/atto-lang/atto-spec/pull/148
+and 11-backend fixtures:
+https://github.com/atto-lang/atto-platform-conformance/pull/237 .
