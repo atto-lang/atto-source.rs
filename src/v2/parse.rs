@@ -571,8 +571,12 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::With { scope, body, pos })
             }
+            // These expression forms must also work as standalone statements.
+            // Braced/static select blocks are a separate syntax contract and
+            // deliberately remain unsupported in this bounded v2 guest profile.
             Some(w @ ("throw" | "try" | "switch" | "select" | "defer" | "raise" | "panic"))
-                if !(w == "try" && self.word_at(1) == Some("readch")) =>
+                if !((w == "try" && matches!(self.word_at(1), Some("readch" | "select")))
+                    || (w == "select" && matches!(self.word_at(1), Some("from" | "fair" | "first")))) =>
             {
                 Err(unsupported(pos, &format!("'{w}' together with async/pattern features")))
             }
