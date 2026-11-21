@@ -1,0 +1,477 @@
+{
+  "schema": "atto.actor.projection.receiver.v1",
+  "version": 1,
+  "status": "TARGET_NOT_EXECUTED",
+  "canonicalReceiver": "mtd (Foo mut self.state.{counter, xyz}) update(): void",
+  "spec": "https://github.com/atto-lang/atto-spec/pull/194",
+  "compilerParser": "https://github.com/atto-lang/atto-source.rs/pull/488",
+  "formatter": "https://github.com/atto-lang/atto-format/pull/80",
+  "semantics": {
+    "receiverIdentity": "Foo self permits actor runtime operations without mutable guest state",
+    "permissions": "mut self.state is whole-state write ceiling, mut self.state.field single field, mut self.state.{a, b} unordered distinct field set",
+    "guard": "Guarded critical-read/critical-write remains mandatory; no direct self.state access",
+    "scheduling": "Disjoint write effects do not split a whole-state critical-write lock",
+    "effects": "Verified transitive reads/writes/escape/suspend effects required; unknown effects fail closed",
+    "failClosed": "No compiler guest admission until layouts, provenance, state-guard and effect proofs are authenticated",
+    "canonicalize": "Singleton braced field group normalizes to self.state.field; no square-bracket variant",
+    "receiverBinding": "Any legal named receiver binds its actor instance; self is conventional, not a mandatory alias. Renaming all bound body references preserves dispatch ABI and state write footprint.",
+    "alphaEquivalence": "Foo mut self.state.{counter,xyz} and Foo mut this.state.{counter,xyz} have equal typed write-set identity; receiver naming alone cannot overload a method.",
+    "receiverScope": "The guard binder must be distinct from receiver name; receiver name cannot collide with formals or be shadowed; mistaken self references are unbound after renaming.",
+    "nestedArgumentGate": "Member-call argument expressions are recursively inspected at source preflight: send(receiver.state.x) cannot hide a direct state access.",
+    "mutationGate": "Critical state writes detect direct, prefix ++/--, and split compound assignments. Nested/indexed fields and unknown field calls fail closed pending typed effect proofs.",
+    "artifactGate": "Rust native attoc negative compilation must produce the expected diagnostic with nonzero exit and no .wasm output; compiled actor guest parity is still NOT_EXECUTED."
+  },
+  "targets": [
+    "rs",
+    "java",
+    "llvm",
+    "net",
+    "wasm",
+    "forge",
+    "cranelift",
+    "js",
+    "hdl"
+  ],
+  "backendStatus": {
+    "rs": "NOT_EXECUTED",
+    "java": "NOT_EXECUTED",
+    "llvm": "NOT_EXECUTED",
+    "net": "NOT_EXECUTED",
+    "wasm": "NOT_EXECUTED",
+    "forge": "NOT_EXECUTED",
+    "cranelift": "NOT_EXECUTED",
+    "js": "NOT_EXECUTED",
+    "hdl": "NOT_EXECUTED"
+  },
+  "evidenceRules": [
+    "Exact source and tree SHA",
+    "Positive compiled guest execution and verified output",
+    "Negative diagnostic and absence of emitted guest",
+    "Typed field identity, transitive effects and sealed-state guard evidence",
+    "No parser-only / host-only pass counted as backend parity"
+  ],
+  "cases": [
+    {
+      "id": "identity_send_end_readonly",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "use namespace workers;\ndeclare actor Foo;\nmtd (Foo self) receive(ActorMail<String> mail): void {\n  self.send(41);\n  self.end();\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "field_single_write",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut self.state.counter) increment(): void {\n  self.handle_state(critical-write |s| -> { s.counter += 1; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "field_group_write",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut self.state.{counter, xyz}) update(): void {\n  self.handle_state(critical-write |s| -> { s.counter += 1; s.xyz = 2; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "whole_state_write",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut self.state) reset(): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "duplicate_group_field",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_DUPLICATE",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut self.state.{counter, counter}) update(): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "empty_group",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_SYNTAX",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut self.state.{}) update(): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "trailing_group_comma",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_SYNTAX",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut self.state.{counter,}) update(): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "square_bracket_group",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_SYNTAX",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut [self.state.{counter, xyz}]) update(): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "class_owner_invalid",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_ACTOR",
+      "sourceUnits": {
+        "src/worker.atto": "define class Foo as end\nmtd (Foo mut self.state.counter) update(): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "direct_actor_state_access",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_SEALED",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut self.state.counter) update(): void { self.state.counter = 2; }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "unauthorized_direct_guard_write",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_MUTABILITY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut self.state.counter) update(): void {\n self.handle_state(critical-write |s| -> { s.xyz = 2; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "readonly_receiver_critical_write",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_MUTABILITY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo self) update(): void {\n self.handle_state(critical-write |s| -> { s.counter = 2; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "field_not_in_schema",
+      "stage": "typed_state_effects",
+      "expect": "reject",
+      "diagnosticClass": "E_STATE_FIELD_UNKNOWN",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\ndefine state on actor Foo as { let int counter: 0; }\nmtd (Foo mut self.state.xyz) update(): void {\n self.handle_state(critical-write |s| -> { s.xyz = 2; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "transitive_unverified_effect",
+      "stage": "typed_state_effects",
+      "expect": "reject",
+      "diagnosticClass": "E_EFFECT_UNVERIFIED",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\ndefine state on actor Foo as { let int counter: 0; let int xyz: 0; }\nmtd (Foo mut self.state.counter) update(): void {\n self.handle_state(critical-write |s| -> { unknown_effect(s.counter); });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "guard_suspension",
+      "stage": "typed_state_effects",
+      "expect": "reject",
+      "diagnosticClass": "E_BORROW",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\ndefine state on actor Foo as { let int counter: 0; }\nmtd (Foo mut self.state.counter) update(): void {\n self.handle_state(critical-write |s| -> { await tick(); s.counter += 1; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "two_disjoint_write_effects",
+      "stage": "compiled_guest",
+      "expect": "accept_after_typed_effect_and_guard_proofs",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\ndefine state on actor Foo as { let int counter: 0; let int xyz: 0; }\nmtd (Foo mut self.state.counter) inc(): void {\n self.handle_state(critical-write |s| -> { s.counter += 1; });\n}\nmtd (Foo mut self.state.xyz) bump(): void {\n self.handle_state(critical-write |s| -> { s.xyz += 1; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "overlapping_write_loans",
+      "stage": "typed_loan_oracle",
+      "expect": "reject",
+      "diagnosticClass": "E_BORROW_CONFLICT",
+      "evidence": "NOT_EXECUTED",
+      "irSequence": [
+        "Acquire mut loan on canonical place actor.state.counter as loan_a",
+        "Before EndLoan(loan_a), acquire mut loan on actor.state.{counter,xyz} as loan_b",
+        "Reject second loan because actor.state.counter overlaps"
+      ],
+      "note": "Defining two methods with overlapping potential write sets is legal; the conflict only exists when incompatible loans are simultaneously live."
+    },
+    {
+      "id": "named_this_receiver_control",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) receive(): void { this.send(42); this.end(); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_typed_alias",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (this: Foo) read(): int { this.send(5); return 5; }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_field_write",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) increment(): void {\n this.handle_state(critical-write |s| -> { s.counter += 1; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_group_write",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut node.state.{counter, xyz}) update(): void {\n node.handle_state(critical-write |s| -> { s.counter += 1; s.xyz += 1; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_whole_state",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state) reset(): void {\n this.handle_state(critical-write |s| -> { s.counter = 0; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_unguarded_state_write",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_SEALED",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) bad(): void { this.state.counter = 9; }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_guard_unauthorized_write",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_MUTABILITY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) bad(): void {\n this.handle_state(critical-write |s| -> { s.xyz = 9; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_receiver_missing_self_alias",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_UNBOUND",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) bad(): void {\n self.handle_state(critical-write |s| -> { s.counter = 1; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_receiver_callback_binder_collision",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_SEALED",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) bad(): void {\n this.handle_state(critical-write |this| -> { this.counter = 1; });\n}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_receiver_param_collision",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_DUPLICATE",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(int this): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_receiver_local_shadow",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_DUPLICATE",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { let int this = 1; }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "named_receiver_not_overload",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_DUPLICATE",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo self) f(): void {}\nmtd (Foo this) f(): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "reserved_actor_is_not_receiver_identifier",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_SYNTAX",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo actor) f(): void {}\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "nested_send_direct_state",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_SEALED",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.send(this.state.counter); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "nested_send_unknown_method",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_UNBOUND",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.send(this.missing()); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "nested_send_receiver_escape",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_ESCAPE",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.send(this); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "return_receiver_escape",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_ESCAPE",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): Foo { return this; }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "nested_send_guard_exceeds_write_set",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_MUTABILITY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) f(): void { this.send(this.handle_state(critical-write |s| -> { s.other = 1; })); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_write_nested_field",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_UNSUPPORTED",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) f(): void { this.handle_state(critical-write |s| -> { s.other.inner = 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_write_indexed_field",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_UNSUPPORTED",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) f(): void { this.handle_state(critical-write |s| -> { s.other[0] = 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_write_field_call",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_UNSUPPORTED",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) f(): void { this.handle_state(critical-write |s| -> { s.other.method(); }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "discarded_receiver_use",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_UNBOUND",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo _) f(): void { _.send(42); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_read_prefix_mutation",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_READONLY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.handle_state(critical-read |s| -> { ++s.counter; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_read_split_compound_mutation",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_READONLY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) f(): void { this.handle_state(critical-read |s| -> { s.counter -= 1; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "critical_write_prefix_outside_projection",
+      "stage": "target_parser",
+      "expect": "reject",
+      "diagnosticClass": "E_MUTABILITY",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo mut this.state.counter) f(): void { this.handle_state(critical-write |s| -> { ++s.other; }); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    },
+    {
+      "id": "nested_control_calls_safe_syntax",
+      "stage": "target_parser",
+      "expect": "accept_ast_only",
+      "sourceUnits": {
+        "src/worker.atto": "declare actor Foo;\nmtd (Foo this) foo(): int { return 41; }\nmtd (Foo this) bar(): void { this.send(this.foo()); this.send(this.send(42)); }\n"
+      },
+      "evidence": "NOT_EXECUTED"
+    }
+  ]
+}
