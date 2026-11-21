@@ -3787,7 +3787,9 @@ impl Parser {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
                 }
                 let (name, pos) = self.ident("a lambda parameter")?;
-                if params.contains(&name) {
+                // `_` is a positional discard, not a named binder; repeated
+                // ignored parameter positions remain distinct.
+                if name != "_" && params.contains(&name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
                 }
                 params.push(name);

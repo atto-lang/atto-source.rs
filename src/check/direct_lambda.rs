@@ -206,7 +206,11 @@ pub fn lower(input: &Program) -> R<Program> {
                 is_generator: false,
                 is_pure: true,
                 declared_effects: None,
-                params: d.params.into_iter().chain(
+                params: d.params.into_iter().enumerate().map(|(i, name)| {
+                    // The emitted function must have unique internal names
+                    // even when source declares multiple ignored positions.
+                    if name == "_" { format!("$lambda_ignored_{i}") } else { name }
+                }).chain(
                     d.captures.into_iter().map(|c| c.source)
                 ).zip(all_types).map(|(name, ty)| Param {
                     name, ty, mutable: false, pos: d.lambda.pos,

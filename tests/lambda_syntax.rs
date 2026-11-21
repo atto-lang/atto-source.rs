@@ -172,3 +172,44 @@ fn explicit_pipe_lambdas_compile_to_real_wasm_and_recover_after_rejection() {
         );
     }
 }
+
+#[test]
+fn ignored_placeholder_formals_preserve_arity_without_binding_a_name() {
+    // atto-spec #192: repeated _ consumes independent argument positions.
+    let p = parse(&main_with("|_, _| : int -> 5"));
+    let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else {
+        panic!("expected ignored two-argument lambda");
+    };
+    let ExprKind::Lambda { params, .. } = &init.kind else {
+        panic!("expected a lambda AST");
+    };
+    assert_eq!(
+        params.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["_", "_"]
+    );
+
+    let duplicate_named = main_with("|n, n| -> n");
+    let err = Parser::new(lexer::lex(&duplicate_named).unwrap())
+        .parse_program()
+        .unwrap_err();
+    assert_eq!(err.code, "E_DUPLICATE");
+
+    // A discard cannot be referenced; otherwise the last of two positions
+    // could silently shadow the first inside a lifted Wasm helper.
+    let forbidden = "pub fnc main(): int {
+        val callback = |_, _| : int -> _;
+        return callback(1, 2);
+    }";
+    assert_eq!(
+        atto_compiler::compile(forbidden).unwrap_err().code,
+        "E_CAPTURE"
+    );
+
+    let valid = "pub fnc main(): int {
+        val callback = |_, _| : int -> 42;
+        return callback(1, 2);
+    }";
+    let first = atto_compiler::compile(valid).expect("ignored parameters must lower safely");
+    assert!(first.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(first, atto_compiler::compile(valid).unwrap());
+}
