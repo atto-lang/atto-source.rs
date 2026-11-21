@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// A forward lambda must not resolve to a same-named global function.
+fnc later(int n): int { return n * 100; }
+pub fnc main(): int {
+    val first = |n| : int -> later(n) + 1;
+    val later = |n| : int -> n + 1;
+    return first(1) + later(1);
+}

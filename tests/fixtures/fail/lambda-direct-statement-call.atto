@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// Statement-bodied earlier lambdas cannot bypass sibling-call scanning.
+fnc later(int n): int { return n * 100; }
+pub fnc main(): int {
+    val first = (|n| : int -> return later(n) + 1;);
+    val later = |n| : int -> n + 1;
+    return first(1) + later(1);
+}

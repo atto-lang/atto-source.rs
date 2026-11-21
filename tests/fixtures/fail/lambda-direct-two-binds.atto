@@ -1,4 +1,5 @@
 // expect-error: E_UNSUPPORTED
+// Two lambda bindings are valid, but an unused lambda is not executable.
 pub fnc main(): int {
     val double = |n| -> n * 2;
     val triple = |n| -> n * 3;

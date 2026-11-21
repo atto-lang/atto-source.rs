@@ -1,0 +1,13 @@
+// expect-error: E_UNSUPPORTED
+// A nested branch in a block lambda cannot invoke a forward sibling.
+fnc later(int n): int { return n * 100; }
+pub fnc main(): int {
+    val first = |n| : int -> {
+        if n > 0 {
+            return later(n);
+        }
+        return 0;
+    };
+    val later = |n| : int -> n + 1;
+    return first(1) + later(1);
+}

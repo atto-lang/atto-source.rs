@@ -140,3 +140,21 @@ fn direct_lambda_cannot_hide_unverified_ownership_moves_or_borrows() {
         assert_eq!(error.code, "E_UNSUPPORTED", "{op}: {error}");
     }
 }
+
+#[test]
+fn deferred_cleanup_must_not_rebind_local_lambda_to_global_homonym() {
+    // Registration executes in the caller; the deferred body is isolated.
+    // Do not resolve its same-named call to the global function after
+    // erasing the local lambda binding.
+    let source = r#"
+        fnc transform(int n): int { return n * 100; }
+        pub fnc main(): int {
+            val transform = |n| : int -> n + 1;
+            defer { transform(1); };
+            return transform(41);
+        }
+    "#;
+    let diagnostic = atto_compiler::compile(source)
+        .expect_err("isolated cleanup cannot invoke a direct lambda");
+    assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
+}

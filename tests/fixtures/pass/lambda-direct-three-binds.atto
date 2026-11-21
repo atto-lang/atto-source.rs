@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Three independent direct lambdas compile into distinct typed Wasm functions.
+pub fnc main(): int {
+    val discard = |_| : int -> 5;
+    val seven = || -> 7;
+    val twice = |n| : int -> n * 2;
+    return discard(99) + seven() + twice(15);
+}
