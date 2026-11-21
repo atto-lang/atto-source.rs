@@ -92,3 +92,17 @@ fn guard_failure_return_is_checked_even_if_condition_is_const_true() {
     rejected("pub fnc main(): int { guard true else break; end return 42; }", "E_GUARD");
     accepted("pub fnc main(): int { guard true else return 7; end return 42; }");
 }
+
+#[test]
+fn earlier_nonreturn_exit_cannot_be_hidden_by_trailing_return() {
+    for bad in [r#"throw Error("bad");"#, "break;", "continue;"] {
+        for keyword in [false, true] {
+            let source = if keyword {
+                format!("pub fnc main(): int {{ guard false else {bad} return 0; end return 42; }}")
+            } else {
+                format!("pub fnc main(): int {{ guard false {{ {bad} return 0; }} return 42; }}")
+            };
+            rejected(&source, "E_GUARD");
+        }
+    }
+}
