@@ -9,6 +9,28 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = readFileSync(join(root, 'Cargo.toml'), 'utf8');
 const nativeManifest = readFileSync(join(root, 'native/Cargo.toml'), 'utf8');
 
+// Lock the compiler package ownership boundary while reconciling #455.
+// A native-first root manifest or a second browser shadow crate would silently
+// compile a different parser/ABI than the source used by the playground.
+assert.match(manifest, /^name\s*=\s*"atto-compiler-browser"\s*$/m,
+  'root Cargo package must remain the canonical browser compiler');
+assert.match(manifest, /^name\s*=\s*"atto_compiler"\s*$/m,
+  'root library must preserve the compiler ABI crate name');
+assert.equal((manifest.match(/^\[\[bin\]\]\s*$/gm) ?? []).length, 1,
+  'root Cargo package must expose exactly one executable target');
+assert.match(manifest, /^path\s*=\s*"src\/bin\/attoc\.rs"\s*$/m,
+  'root browser binary must be attoc, not an implicit native oresc target');
+assert.equal((manifest.match(/^\[lib\]\s*$/gm) ?? []).length, 1,
+  'root Cargo package must declare a single compiler library');
+assert.match(nativeManifest, /^path\s*=\s*"src\/main\.rs"\s*$/m,
+  'native Cranelift binary must remain in the dedicated native package');
+assert.equal((nativeManifest.match(/^\[\[bin\]\]\s*$/gm) ?? []).length, 1,
+  'native Cranelift package must expose exactly one executable target');
+assert.ok(!existsSync(join(root, 'browser/Cargo.toml')),
+  'nested browser Cargo package would duplicate the canonical root frontend');
+assert.doesNotMatch(manifest, /^\s*(?:cranelift|logos)\s*=/m,
+  'Cranelift and Logos are native-only package dependencies');
+
 // These tests import oreslang_source_rs or invoke the native-only oresc CLI.
 // They MUST NOT be built against atto_compiler. Their continued presence is
 // tracked explicitly rather than silently discarded. The separate native
