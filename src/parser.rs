@@ -2755,9 +2755,39 @@ impl Parser {
                     return Err(Diagnostic::new(at, "E_PIPE_BIND",
                         "a suspending identity-await stage must await its own parameter"));
                 }
-                // Do not reinterpret a lambda tail such as "await v + 1"
-                // as arithmetic performed *outside* the lambda. General
-                // lambda bodies require real callable-value semantics.
+                // The first executable callback-body slice permits exactly
+                // one checked scalar addition/subtraction of an integer
+                // literal after the await. It is part of the lambda body,
+                // never a later pipeline stage. No free variables, closure
+                // captures or unrestricted expression bodies are admitted.
+                let mut awaited_value = Expr {
+                    kind: ExprKind::Await(Box::new(c)),
+                    pos,
+                };
+                if matches!(self.peek(), Tok::Plus | Tok::Minus) {
+                    let arithmetic_pos = self.pos();
+                    let op = if *self.peek() == Tok::Plus { BinOp::Add } else { BinOp::Sub };
+                    self.advance();
+                    let literal_pos = self.pos();
+                    let amount = match self.peek().clone() {
+                        Tok::Int(Some(value)) if value <= i64::MAX as u64 => value,
+                        Tok::Int(_) => return Err(Diagnostic::new(literal_pos, "E_INTEGER_RANGE",
+                            "callback integer literal exceeds signed 64-bit range")),
+                        _ => return Err(unsupported(literal_pos,
+                            "suspending callback arithmetic requires an integer literal")),
+                    };
+                    self.advance();
+                    self.grow(1)?;
+                    links += 1;
+                    awaited_value = Expr {
+                        kind: ExprKind::Binary(
+                            op,
+                            Box::new(awaited_value),
+                            Box::new(Expr {kind: ExprKind::Int(Some(amount)),pos: literal_pos}),
+                        ),
+                        pos: arithmetic_pos,
+                    };
+                }
                 let terminal_capture = *self.peek() == Tok::Gt
                     && *self.peek_at(1) == Tok::Gt
                     && matches!(self.word_at(2), Some("val" | "let" | "const"))
@@ -2774,7 +2804,7 @@ impl Parser {
                 }
                 self.grow(1)?;
                 links += 1;
-                c = Expr {kind: ExprKind::Await(Box::new(c)), pos};
+                c = awaited_value;
                 continue;
             }
             let stage = self.parse_postfix()?;
