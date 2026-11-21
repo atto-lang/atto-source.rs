@@ -1,6 +1,5 @@
 // expect-exit: 42
-int• bullet_answer()
-begin
+int• bullet_answer() ::
   return 42;
 end
 
