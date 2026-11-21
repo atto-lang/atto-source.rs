@@ -253,3 +253,60 @@ fn return_first_colon_colon_is_explicit_statement_body_and_needs_a_newline() {
         .expect_err("end delimiter is required");
     assert_eq!(missing_end.code, "E_EOF", "{missing_end}");
 }
+
+
+#[test]
+fn return_first_checked_error_effects_support_free_form_clause_and_colon_colon() {
+    for decl in [
+        "fnc int <- twice(int value)\nraises Error ::\n  return value * 2;\nend",
+        "fnc int • twice(int value)\nraises Error\nbegin\n  return value * 2;\nend",
+        "fnc int <- twice(int value)\nthrows Error ::\n  return value * 2;\nend",
+        "fnc int <- twice(int value)\nraises(Error) ::\n  return value * 2;\nend",
+    ] {
+        let src = format!("{decl}\npub fnc main(): int {{ return twice(21); }}");
+        let wasm = compile(&src).unwrap_or_else(|err| panic!("{decl}: {err}"));
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn return_first_checked_raise_bang_is_not_an_ordinary_throw() {
+    let src = r#"
+        fnc int <- twice(int value)
+        raises Error ::
+          if value > 3 then
+            raise! Error("too large");
+          fi
+          return value * 2;
+        end
+        pub fnc main(): int raises(Error) {
+          return twice(3) + 36;
+        }
+    "#;
+    let wasm = compile(src).unwrap();
+    assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    let contiguous = lex(r#"raise! Error("bad");"#).unwrap();
+    assert!(matches!(&contiguous[0].tok, Tok::Ident(name) if name == "raise!"));
+    let separate = lex(r#"raise !Error("bad");"#).unwrap();
+    assert!(matches!(&separate[0].tok, Tok::Ident(name) if name == "raise"));
+    assert_eq!(separate[1].tok, Tok::Bang);
+}
+
+#[test]
+fn return_first_effect_boundary_and_canonical_exception_bangs_fail_closed() {
+    for (decl, code) in [
+        ("fnc int <- twice(int x)\nraises Foo ::\n  return x * 2;\nend", "E_TYPE"),
+        ("fnc int <- twice(int x)\nraises Error\n  return x * 2;\nend", "E_SYNTAX"),
+        ("fnc int <- twice(int x)\nraises Error raises Error ::\n  return x * 2;\nend", "E_DUPLICATE"),
+        ("fnc int <- twice(int x)\nraises Error :: return x * 2; end", "E_SYNTAX"),
+        ("fnc int <- twice(int x)\nraises Error ::\n  42;\nend", "E_RETURN"),
+        ("fnc int <- twice(int x)\nraises Error ::\n  panic! Error(\"no control\");\nend", "E_UNSUPPORTED"),
+    ] {
+        let src = format!("{decl}\npub fnc main(): int {{ return 0; }}");
+        let err = compile(&src).expect_err("invalid source must emit no guest");
+        assert_eq!(err.code, code, "{decl}: {err}");
+    }
+    let bad = compile("pub fnc main(): int { val x = trap! 42; return 42; }")
+        .expect_err("legacy Option trap is not canonical Result");
+    assert_eq!(bad.code, "E_TRAP_BANG_RESULT_UNVERIFIED");
+}
