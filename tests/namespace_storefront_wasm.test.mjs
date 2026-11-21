@@ -16,7 +16,9 @@ test("use namespace storefront; import module math; prints 49 and returns 0", as
     .sort();
   assert.deepEqual(imports, ["atto.print_i64", "atto.print_newline"]);
   const stdout = [];
-  const { instance } = await WebAssembly.instantiate(module, {
+  // With a precompiled WebAssembly.Module, instantiate returns Instance directly.
+  // The {instance, module} wrapper belongs to the byte-buffer overload only.
+  const instance = await WebAssembly.instantiate(module, {
     atto: {
       print_i64: value => stdout.push(value.toString()),
       print_newline: () => stdout.push("\n"),
