@@ -90,6 +90,7 @@ fn lambda_expression_heads_must_be_pipe_delimited() {
         ("|| : int -> 5", 0usize),
         ("|x| : int -> x + 5", 1usize),
         ("|x| -> x + 5", 1usize),
+        ("|left,right| : int -> left + right", 2usize),
     ] {
         let p = parse(&main_with(expr));
         let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else {
@@ -108,6 +109,8 @@ fn lambda_expression_heads_must_be_pipe_delimited() {
         "x -> x + 5",
         "values.map(_ : int -> 5)",
         "values.map(_ -> 5)",
+        "_ => int -> 5",
+        "values.map(_ => int -> 5)",
     ] {
         let src = main_with(expr);
         let parsed = Parser::new(lexer::lex(&src).unwrap()).parse_program();
