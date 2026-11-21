@@ -310,3 +310,50 @@ fn return_first_effect_boundary_and_canonical_exception_bangs_fail_closed() {
         .expect_err("legacy Option trap is not canonical Result");
     assert_eq!(bad.code, "E_TRAP_BANG_RESULT_UNVERIFIED");
 }
+
+
+#[test]
+fn triggered_return_first_raise_has_recover_and_catch_bypass_guest_targets() {
+    for fixture in [
+        include_str!("fixtures/pass/return-first-raise-recover-guest.atto"),
+        include_str!("fixtures/pass/return-first-raise-bypasses-catch.atto"),
+    ] {
+        assert!(fixture.contains("raise! Error(\"too large\")"));
+        let guest = compile(fixture).unwrap_or_else(|err|
+            panic!("triggered-raise candidate compiler rejection: {err}"));
+        assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn checked_exception_effect_mixes_and_missing_raises_fail_closed() {
+    // An effect comma separates kinds, not additional unverified error types.
+    for header in [
+        "throws(Error), raises(Error)",
+        "throws Error, raises Error",
+        "throws Error raises(Error)",
+        "raises(Error), throws Error",
+    ] {
+        let src = format!("fnc int <- risky(int x)\n{header} ::\n  return x;\nend\npub fnc main(): int {{ return risky(42); }}");
+        let wasm = compile(&src).unwrap_or_else(|err| panic!("{header}: {err}"));
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+    for (header, code) in [
+        ("raises Error, Foo", "E_TYPE"),
+        ("raises(Error, Error)", "E_DUPLICATE"),
+        ("raises Error, raises Error", "E_DUPLICATE"),
+        ("raises Error,", "E_TYPE"),
+        ("raises Foo", "E_TYPE"),
+    ] {
+        let src = format!("fnc int <- risky(int x)\n{header} ::\n  return x;\nend\npub fnc main(): int {{ return 0; }}");
+        let err = compile(&src).expect_err("invalid effect must produce no Wasm");
+        assert_eq!(err.code, code, "{header}: {err}");
+    }
+    let undeclared = concat!(
+        "fnc int <- risky(int x)\nthrows Error ::\n",
+        "  raise! Error(\"unaccounted\");\nend\n",
+        "pub fnc main(): int { return 0; }\n"
+    );
+    let err = compile(undeclared).expect_err("raises must not pass throws-only bound");
+    assert_eq!(err.code, "E_EFFECT", "{err}");
+}
