@@ -269,6 +269,17 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             || base
                 .windows(2)
                 .any(|w| matches!(word(&w[0]), Some("val" | "let" | "const")) && word(&w[1]) == Some(template.name.as_str()))
+            // Source-local scalar specialization has no lexical binder table.
+            // A callable formal or type-first declaration must never shadow
+            // the generic name and then get rewritten into a different call.
+            || base.windows(3).any(|w| {
+                (word(&w[1]) == Some(template.name.as_str())
+                    && scalar(&w[0]).is_some()
+                    && matches!(w[2].tok, Tok::Comma | Tok::RParen | Tok::Assign | Tok::LParen))
+                    || (word(&w[0]) == Some(template.name.as_str())
+                        && w[1].tok == Tok::Colon
+                        && scalar(&w[2]).is_some())
+            })
         {
             return Err(error(
                 template.pos,
@@ -376,13 +387,24 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             "uninstantiated generic definition cannot be type-checked in this browser profile",
         ));
     }
+    // Count every generated instance *before* cloning its tokens. Otherwise
+    // a legal <=MAX_TOKENS source can transiently materialize up to
+    // MAX_INSTANCES full-sized generic bodies before the final length gate.
+    let projected = requested.iter().try_fold(out.len().checked_add(1), |total, ((tid, _), _)| {
+        let instance = &templates[*tid].source;
+        let length = instance.len().checked_sub(3)?
+            .checked_sub(usize::from(word(&instance[0]) == Some("pub")))?;
+        total?.checked_add(length)
+    });
+    if !projected.is_some_and(|length| length <= MAX_TOKENS) {
+        return Err(error(templates[0].pos, "E_SOURCE_LIMIT",
+            "expanded generics exceed token budget"));
+    }
     for ((tid, to), generated) in &requested {
         out.extend(specialize(&templates[*tid], to, generated)?);
     }
     out.push(eof);
-    if out.len() > MAX_TOKENS {
-        return Err(error(Pos::default(), "E_SOURCE_LIMIT", "expanded generics exceed token budget"));
-    }
+    debug_assert!(out.len() <= MAX_TOKENS);
     Ok(out)
 }
 
@@ -478,6 +500,36 @@ mod tests {
         let words: Vec<_> = lowered.iter().filter_map(word).collect();
         assert!(words.contains(&"__atto_generic_0_int"));
         assert!(!words.contains(&"T"));
+    }
+
+    #[test]
+    fn scalar_type_first_formal_cannot_shadow_generic_callable() {
+        let source = "fnc calculate<T>(int x): T { return x as T; } \
+                      fnc evaluate(int calculate): int { return calculate; } \
+                      pub fnc main(): int { return calculate<int>(5); }";
+        assert_eq!(lower(lex(source).unwrap()).unwrap_err().code, "E_DUPLICATE");
+    }
+
+    #[test]
+    fn specialization_budget_rejects_before_materializing_large_instances() {
+        let mut source = String::new();
+        for n in 0..MAX_GENERIC_FUNCTIONS {
+            source.push_str(&format!("fnc repeat{n}<T>(int x): T {{ "));
+            for _ in 0..120 {
+                source.push_str("val unused = 1; ");
+            }
+            source.push_str("return x as T; } ");
+        }
+        source.push_str("pub fnc main(): int { ");
+        for n in 0..MAX_GENERIC_FUNCTIONS {
+            for ty in ["int", "float", "bool", "string"] {
+                source.push_str(&format!("val v = repeat{n}<{ty}>(5); "));
+            }
+        }
+        source.push_str("return 0; }");
+        let tokens = lex(&source).unwrap();
+        assert!(tokens.len() < MAX_TOKENS, "test must start under the original lexer limit");
+        assert_eq!(lower(tokens).unwrap_err().code, "E_SOURCE_LIMIT");
     }
 
     #[test]
