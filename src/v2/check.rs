@@ -495,6 +495,10 @@ impl<'a> Checker<'a> {
             Ty::List(a) => format!("List<{}>", self.tn(a)),
             Ty::Future(a) => format!("Future<{}>", self.tn(a)),
             Ty::Channel(a) => format!("Channel<{}>", self.tn(a)),
+            Ty::SelectCase => "SelectCase<int>".into(),
+            Ty::SelectPlan { dynamic: false } => "SelectPlan".into(),
+            Ty::SelectPlan { dynamic: true } => "DynamicSelectPlan<int>".into(),
+            Ty::SelectResult => "SelectResult".into(),
             Ty::PipeHandle => "PipeHandle".into(),
             Ty::PipeSetupError => "PipeSetupError".into(),
             Ty::AsyncGen(a) => format!("AsyncGenerator<{}>", self.tn(a)),
@@ -535,6 +539,15 @@ impl<'a> Checker<'a> {
             ("Result", 2) => Ty::Result(arg(0)?, arg(1)?),
             ("Future" | "Task", 1) => Ty::Future(arg(0)?),
             ("Channel", 1) => Ty::Channel(arg(0)?),
+            ("SelectPlan", 0) => Ty::SelectPlan { dynamic: false },
+            ("DynamicSelectPlan", 1) => {
+                if self.resolve(&args[0], false)? != Ty::Int {
+                    return Err(err(pos, "E_UNSUPPORTED",
+                        "DynamicSelectPlan currently supports only int list slots; keyed-map lowering is not implemented"));
+                }
+                Ty::SelectPlan { dynamic: true }
+            },
+            ("SelectResult", 0) => Ty::SelectResult,
             ("PipeHandle", 0) => Ty::PipeHandle,
             ("PipeSetupError", 0) => Ty::PipeSetupError,
             ("AsyncGenerator", 1) => Ty::AsyncGen(arg(0)?),
@@ -1413,6 +1426,9 @@ impl<'a> Checker<'a> {
             Ex::Member(base, name) => self.member(base, name, pos),
             Ex::TypeStatic { ty, name, args } => {
                 let t = self.resolve(ty, false)?;
+                if t == (Ty::SelectPlan { dynamic: true }) {
+                    return self.select_plan_factory(name, args, true, pos);
+                }
                 let Ty::Channel(_) = t else {
                     return Err(type_err(pos, format!("{} has no static member '{name}'", self.tn(&t))));
                 };
@@ -1501,6 +1517,22 @@ impl<'a> Checker<'a> {
                 }
                 self.needs_sched = true;
                 Ok((Ir::Call(self.objs[i].ctor, Vec::new()), Ty::Actor(i)))
+            }
+            Ex::PlanSelect { mode, fair, plan } => {
+                let (p, t) = self.value(plan, None)?;
+                if !matches!(t, Ty::SelectPlan { .. }) {
+                    return Err(type_err(plan.pos, format!("select from needs a SelectPlan, found {}", self.tn(&t))));
+                }
+                let policy = Ir::Const(i64::from(*fair));
+                let found = Ty::Option(Box::new(Ty::SelectResult));
+                match mode {
+                    PlanMode::Try => Ok((self.rt("__plan_try", vec![p, policy]), found)),
+                    PlanMode::Nb => Ok((self.rt("__plan_nb", vec![p, policy]), Ty::Future(Box::new(found)))),
+                    PlanMode::Wait => {
+                        self.need_suspends(pos, "'select'")?;
+                        Ok((self.rt_scall("__plan_wait", vec![p, policy]), Ty::SelectResult))
+                    }
+                }
             }
             Ex::ReadCh(mode, ch) => {
                 let (c, ty) = self.value(ch, None)?;
@@ -1873,6 +1905,11 @@ impl<'a> Checker<'a> {
         }
         let (ir, ty) = self.value(base, None)?;
         match &ty {
+            Ty::SelectResult => match name {
+                "index" => Ok((load(ir, 0), Ty::Int)),
+                "value" => Ok((load(ir, 8), Ty::Int)),
+                _ => Err(type_err(pos, "SelectResult has ordinal .index and .value; keyed results are not yet supported")),
+            },
             Ty::Object(i) => match self.objs[*i].fields.iter().find(|f| f.name == name).cloned() {
                 Some(f) => Ok((load(ir, f.offset as i64), f.ty)),
                 None => Err(err(pos, "E_UNDEFINED", format!("{} has no field '{name}'", self.tn(&ty)))),
@@ -1913,6 +1950,31 @@ impl<'a> Checker<'a> {
             return Err(err(pos, "E_ARITY", format!("'{callee}' takes {n} argument(s), {} given", args.len())));
         }
         Ok(args.iter().map(|a| &a.value).collect())
+    }
+
+    /// Select factories snapshot channel descriptors and retain a FAIR cursor.
+    /// Only compiler-owned, checked Channel<int> read cases are admitted.
+    fn select_plan_factory(&mut self, name: &str, args: &[Arg], dynamic: bool, pos: Pos) -> R<(Ir, Ty)> {
+        if name == "from_map" {
+            return Err(err(pos, "E_UNSUPPORTED",
+                "ordered string-keyed SelectPlan.from_map is not yet lowered; use from_list"));
+        }
+        if name != "from_list" {
+            return Err(type_err(pos, format!("unknown SelectPlan factory '{name}'")));
+        }
+        let src = self.plain_args(name, args, 1, pos)?[0];
+        if let Ex::List(items) = &src.kind {
+            if items.len() > 256 {
+                return Err(err(src.pos, "E_SOURCE_LIMIT", "SelectPlan supports at most 256 read cases"));
+            }
+        }
+        let want = Ty::List(Box::new(Ty::SelectCase));
+        let (cases, actual) = self.value(src, Some(&want))?;
+        if actual != want {
+            return Err(type_err(src.pos, "from_list requires List<SelectCase.read(Channel<int>)>"));
+        }
+        Ok((self.rt("__plan_from_list", vec![cases, Ir::Const(i64::from(dynamic))]),
+            Ty::SelectPlan { dynamic }))
     }
 
     /// Call `id` with `first` prepended to the checked arguments.
@@ -2245,6 +2307,24 @@ impl<'a> Checker<'a> {
     }
 
     fn method(&mut self, base: &Expr, name: &str, args: &[Arg], pos: Pos, awaited: bool) -> R<(Ir, Ty, bool)> {
+        if let Ex::Var(kind) = &base.kind {
+            if kind == "SelectCase" {
+                if name != "read" {
+                    return Err(type_err(pos, "SelectCase supports only read(Channel<int>)"));
+                }
+                let src = self.plain_args(name, args, 1, pos)?[0];
+                let (channel, ty) = self.value(src, None)?;
+                if ty != Ty::Channel(Box::new(Ty::Int)) {
+                    return Err(type_err(src.pos, format!(
+                        "SelectCase.read needs Channel<int>, found {}", self.tn(&ty))));
+                }
+                return Ok((channel, Ty::SelectCase, false));
+            }
+            if kind == "SelectPlan" || kind == "DynamicSelectPlan" {
+                let (plan, ty) = self.select_plan_factory(name, args, kind == "DynamicSelectPlan", pos)?;
+                return Ok((plan, ty, false));
+            }
+        }
         // module namespaces, unless shadowed by a variable or field
         if let Ex::Var(ns) = &base.kind {
             let shadowed = self.find(ns, base.pos)?.is_some() || self.self_field(ns, base.pos)?.is_some();
@@ -2309,6 +2389,30 @@ impl<'a> Checker<'a> {
             }
             Ty::PipeHandle => Err(err(pos, "E_UNSUPPORTED",
                 "PipeHandle methods are gated until cancellation, borrow release and TenantVM lifecycle admission are verified")),
+            Ty::SelectPlan { dynamic } => match name {
+                "remove" if *dynamic => {
+                    let idx = self.plain_args(name, args, 1, pos)?[0];
+                    let key = self.typed(idx, &Ty::Int)?;
+                    Ok((self.rt("__plan_remove", vec![recv, key]), Ty::Bool, false))
+                }
+                "put" if *dynamic => {
+                    let vals = self.plain_args(name, args, 2, pos)?;
+                    let key = self.typed(vals[0], &Ty::Int)?;
+                    let case = self.typed(vals[1], &Ty::SelectCase)?;
+                    let operation = self.rt("__plan_put", vec![recv, key, case]);
+                    self.c().pre.push(IrStmt::Expr(operation));
+                    Ok((Ir::Const(0), Ty::Void, false))
+                }
+                "size" => {
+                    self.plain_args(name, args, 0, pos)?;
+                    Ok((self.rt("__plan_size", vec![recv]), Ty::Int, false))
+                }
+                "version" => {
+                    self.plain_args(name, args, 0, pos)?;
+                    Ok((self.rt("__plan_version", vec![recv]), Ty::Int, false))
+                }
+                _ => Err(type_err(pos, "SelectPlan supports size/version; only DynamicSelectPlan<int> permits put/remove")),
+            },
             Ty::Channel(item) => match name {
                 "close" => {
                     self.plain_args(name, args, 0, pos)?;
