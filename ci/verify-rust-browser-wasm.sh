@@ -21,7 +21,9 @@ export CARGO_NET_OFFLINE=true
 # Use the site's current reproducible optimization profile; fail closed if
 # the compiled compiler exceeds the 1-MiB web-distribution size budget.
 export CARGO_PROFILE_RELEASE_OPT_LEVEL=z
-cargo +1.85.1 test --locked --offline --lib
+# Unit AND integration tests: --lib alone misses the lambda/compiler
+# integration contract in tests/typed_llambda_named_args.rs.
+cargo +1.85.1 test --locked --offline --all-targets
 cargo +1.85.1 build --locked --offline --release --bin attoc
 cargo +1.85.1 rustc --locked --offline --release --lib \
   --target wasm32-unknown-unknown -- -C link-arg=--max-memory=67108864
