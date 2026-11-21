@@ -29,6 +29,8 @@ jobs:
           echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=3008a139cfba41131839de3567a263163152cf00"
       - name: Verify explicit browser-vs-native Rust test target inventory
         run: node scripts/verify-browser-cargo-tests.mjs
+      - name: Syntax-check real native/Wasm compiler smoke before building toolchains
+        run: node --check scripts/verify-real-browser-compiler.mjs
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
