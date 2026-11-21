@@ -108,6 +108,47 @@ try {
     .update('blob '+siteSource.length+'\0').update(siteSource).digest('hex');
   assert.equal(siteBlob, expectedSiteBlob, 'website source changed without review');
   await run(decoder.decode(siteSource), 42n, 'exact-website');
+  // Observe real side effects to prove the predicate is evaluated ONCE,
+  // later elif conditions are not negated, and skipped arms stay lazy.
+  const recorded = [
+    ['fnc recorded(bool v, int marker): bool { stdio.println(marker); return v; }\n'
+      +'pub fnc main(): int { return unless recorded(false, 1) then 42 elif recorded(true, 2) then 7 else 9 fi; }',
+      42n, '1\n'],
+    ['fnc recorded(bool v, int marker): bool { stdio.println(marker); return v; }\n'
+      +'pub fnc main(): int { return ifnot recorded(true, 1) then 42 elif recorded(true, 2) then 7 else 9 fi; }',
+      7n, '1\n2\n'],
+    ['fnc recorded(bool v, int marker): bool { stdio.println(marker); return v; }\n'
+      +'pub fnc main(): int { do ifnot recorded(false, 1) then stdio.println(3); return 42; fi return 9; }',
+      42n, '1\n3\n'],
+    ['fnc recorded(bool v, int marker): bool { stdio.println(marker); return v; }\n'
+      +'pub fnc main(): int { unless recorded(true, 1) { return 7; } else { return 42; } }',
+      42n, '1\n'],
+  ];
+  for (const [i,[source, expected, traceExpected]] of recorded.entries()) {
+    const label = 'side-effect-'+i;
+    const filename = join(temp, label+'.atto');
+    const output = join(temp, label+'.wasm');
+    await writeFile(filename, source);
+    const compiled = compileBrowser(source);
+    assert.equal(compiled.ok, true, compiled.diagnostic || label);
+    const cli = spawnSync(attoc, [filename,'-o',output], {encoding:'utf8',timeout:30000});
+    assert.equal(cli.status, 0, label+': '+cli.stderr);
+    assert.deepEqual(Buffer.from(compiled.guest), await readFile(output), label+': native/wasm guest byte drift');
+    const guestModule = new WebAssembly.Module(compiled.guest);
+    const imports = WebAssembly.Module.imports(guestModule);
+    assert.deepEqual(imports.map(imp => imp.module), ['atto','atto'],
+      label+': only the two explicit stdout imports are allowed');
+    assert.deepEqual(imports.map(imp => imp.name).sort(), ['print_i64','print_newline'],
+      label+': unexpected host capability import');
+    let trace = '';
+    const guest = new WebAssembly.Instance(guestModule, {atto:{
+      print_i64: v => {trace += String(v);},
+      print_newline: () => {trace += '\n';},
+    }});
+    assert.equal(guest.exports.main(), expected, label+': incorrect control flow');
+    assert.equal(trace, traceExpected, label+': predicate re-evaluated or arm run unexpectedly');
+    assert.equal(guest.exports.panic_code.value, 0, label+': unexpected panic');
+  }
   for (const [body, code] of negatives) {
     const source = 'pub fnc main(): int { '+body+' }\n';
     const reject = compileBrowser(source);
@@ -116,7 +157,7 @@ try {
   }
   // A failed browser compile must never poison a subsequent valid guest.
   await run('pub fnc main(): int { return 42; }\n', 42n, 'recovery');
-  console.log('PASS: 19 native/wasm32 byte-identical guests, exact website 42, 10 negatives, recovery');
+  console.log('PASS: 19 native/wasm32 byte-identical guests, exact website 42, 4 side-effect evaluations, 10 negatives, recovery');
 } finally {
   await rm(temp, {recursive:true,force:true});
 }
