@@ -726,6 +726,16 @@ impl Parser {
                 "Pointer is a compiler-known builtin and may not be defined as a user class",
             ));
         }
+        // The first nominal-inheritance profile is strictly Error-rooted.
+        // A source 'extends Other' is NOT equivalent to 'extends Error'.
+        let error_parent = if self.eat_word("extends") {
+            let (parent, parent_pos) = self.ident("Error after 'extends'")?;
+            if parent != "Error" {
+                return Err(Diagnostic::new(parent_pos, "E_UNSUPPORTED",
+                    format!("ordinary class inheritance from '{parent}' requires verified inherited layout and dispatch; only 'extends Error' is currently admitted")));
+            }
+            true
+        } else { false };
         self.decl_head("class")?;
         self.expect_word("as")?;
         let m = self.parse_members(&name, false, "end")?;
@@ -733,6 +743,7 @@ impl Parser {
             name,
             pos,
             public,
+            error_parent,
             state_container: false,
             fields: m.fields,
             ctor: m.ctor,
@@ -814,7 +825,7 @@ impl Parser {
         if fields.is_empty() {
             return Err(Diagnostic::new(pos, "E_STATE", "protected state requires at least one scalar field"));
         }
-        Ok(ClassDecl { name, pos, public, state_container: true,
+        Ok(ClassDecl { name, pos, public, error_parent: false, state_container: true,
             fields, ctor: None, methods })
     }
 
@@ -1626,6 +1637,13 @@ impl Parser {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
         } = self.parse_named_callable_header("a function name")?;
         let declared_effects = self.parse_effect_clauses()?;
+        if return_first && declared_effects.is_some()
+            && !self.is_word("begin")
+            && !matches!(self.peek(), Tok::ColonColon | Tok::LBrace)
+        {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "return-first effects require begin, :: or braces before the body"));
+        }
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1666,11 +1684,10 @@ impl Parser {
                 Some("panics") => "panics",
                 _ => return Ok(any.then_some(declared)),
             };
-            if *self.peek_at(1) != Tok::LParen {
-                // Keep unsupported free-form Java-style headers in the
-                // existing parser error path rather than consuming body text.
-                return Ok(any.then_some(declared));
-            }
+            // Free-form and parenthesized headers share checked effect flags.
+            // Keep the exact nominal source type; the checker (not this
+            // source-order-dependent parser) validates Error ancestry.
+            let parenthesized = *self.peek_at(1) == Tok::LParen;
             let pos = self.pos();
             let seen = match kind {
                 "throws" => declared.throws,
@@ -1690,23 +1707,34 @@ impl Parser {
             }
             any = true;
             self.advance();
-            self.advance();
+            if parenthesized { self.advance(); }
             let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
-            if ty != "Error" {
-                return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                    format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+            // None is the built-in Error, and a named subclass has an
+            // independent identity; do not collapse Foo to a bool/alias.
+            let nominal = (ty != "Error").then(|| self.type_name(ty, ty_pos));
+            match kind {
+                "throws" => declared.throws_nominal = nominal,
+                "raises" => declared.raises_nominal = nominal,
+                "panics" => declared.panics_nominal = nominal,
+                _ => unreachable!(),
             }
-            if self.eat(&Tok::Comma) {
-                return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
-                    format!("duplicate Error type in '{kind}' effect clause")));
+            if parenthesized {
+                if self.eat(&Tok::Comma) {
+                    return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
+                        format!("multiple Error types in '{kind}' clause are unsupported")));
+                }
+                self.expect(Tok::RParen, "')' to close the effect clause")?;
             }
-            self.expect(Tok::RParen, "')' to close the effect clause")?;
-            // `throws(Error), raises(Error)`: a comma may separate clauses.
-            if *self.peek() == Tok::Comma
-                && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
-                && *self.peek_at(2) == Tok::LParen
-            {
-                self.advance();
+            // A comma may separate different effect kinds in both header
+            // spellings, but cannot sneak extra types through this limited
+            // checked built-in Error profile.
+            if *self.peek() == Tok::Comma {
+                if matches!(self.word_at(1), Some("throws" | "raises" | "panics")) {
+                    self.advance();
+                } else {
+                    return Err(Diagnostic::new(self.pos(), "E_TYPE",
+                        format!("'{kind}' admits one nominal Error subtype; expected another effect kind after ','")));
+                }
             }
         }
     }
@@ -1886,6 +1914,22 @@ impl Parser {
         if return_first {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
+            }
+            // An optional exact '::' closes a return-first header. Unlike
+            // name-first arrow/comma/end, this is an ordinary statement body
+            // with explicit return and the existing checked type/effect gates.
+            // The first body token must occur on a later physical source line.
+            if *self.peek() == Tok::ColonColon {
+                let boundary_line = self.pos().line;
+                self.advance();
+                if *self.peek() == Tok::LBrace {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "return-first '::' requires statements/end, not a brace block"));
+                }
+                if self.pos().line <= boundary_line {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "return-first '::' requires the body on the next source line"));
+                }
             }
             // Return-first T <- name(params) statement; ... end is explicit
             // statement syntax, never an Erlang implicit-tail return.
@@ -2224,7 +2268,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
             }
-            Some("throw") => {
+            Some("throw" | "throw!") => {
                 self.advance();
                 // Only the typed Error constructor is admitted by the
                 // checker. A raw string is never silently throwable.
@@ -2232,12 +2276,13 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Throw(error, pos))
             }
-            Some("raise") => {
+            Some("raise" | "raise!") => {
                 self.advance();
                 let error = self.parse_expr()?;
                 self.terminator()?;
                 Ok(Stmt::Raise(error, pos))
             }
+            Some("panic!") => Err(unsupported(pos, "typed panic! and supervisor CONTROL lowering")),
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
@@ -3570,6 +3615,10 @@ impl Parser {
                 // Lifetime binders are type-level. Do not emit guest values.
                 return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
                     "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
+            }
+            Tok::Ident(s) if s == "trap!" => {
+                return Err(Diagnostic::new(pos, "E_TRAP_BANG_RESULT_UNVERIFIED",
+                    "trap! requires checked Result<T,Error>; legacy Option trap is not equivalent"));
             }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();

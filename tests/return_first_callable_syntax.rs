@@ -14,8 +14,27 @@ const INT_FORMS: &[&str] = &[
     "int <- calculate(int x) return x * 2; end",
     "int <- calculate(int x) begin return x * 2; end",
     "fnc int <- calculate(int x) begin return x * 2; end",
+    "fnc int <- calculate(int x) ::\n  return x * 2;\nend",
+    "int <- calculate(int x) ::\n  return x * 2;\nend",
+    "fnc int• calculate(int x) ::\n  return x * 2;\nend",
+    "int• calculate(int x) { return x * 2; }",
+    "fnc int• calculate(int x) begin return x * 2; end",
+    "int• calculate(int x) return x * 2; end",
     "fnc calculate(int x) -> int begin return x * 2; end",
 ];
+
+#[test]
+fn bullet_is_exact_utf8_return_delimiter_not_any_similar_glyph() {
+    let tokens = lex("int• answer()").expect("lex exact U+2022 bullet");
+    assert_eq!(tokens[1].tok, Tok::LeftArrow);
+    assert_eq!((tokens[1].pos.line, tokens[1].pos.col), (1, 4));
+    for glyph in ["·", "∙", "‿", "‧", "●"] {
+        let source = format!("int{glyph} answer() begin return 42; end");
+        let err = lex(&source).expect_err("lookalike bullet must not be normalized");
+        assert_eq!(err.code, "E_TOKEN", "{source}");
+        assert_eq!((err.pos.line, err.pos.col), (1, 4), "{source}");
+    }
+}
 
 #[test]
 fn all_requested_int_forms_share_signature_and_compile_to_wasm() {
@@ -206,5 +225,365 @@ fn return_first_out_of_line_class_method_compiles_through_checked_guest_lowering
         let guest = compile(&src).unwrap_or_else(|e|
             panic!("return-first out-of-line class method {body}: {e}"));
         assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn return_first_colon_colon_is_explicit_statement_body_and_needs_a_newline() {
+    for decl in [
+        "fnc int <- answer() ::\n  return 42;\nend",
+        "int• answer() ::\n  return 42;\nend",
+        "fnc int • answer() ::\n  return 42;\nend",
+    ] {
+        let src = format!("{decl}\npub fnc main(): int {{ return answer(); }}");
+        let wasm = compile(&src).unwrap_or_else(|err| panic!("{decl}: {err}"));
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+    for (decl, expected) in [
+        ("int <- answer() :: return 42; end", "E_SYNTAX"),
+        ("int <- answer() ::\n :: return 42; end", "E_SYNTAX"),
+        ("int <- answer() ::\n { return 42; }", "E_SYNTAX"),
+        ("int <- answer() ::\n  42; end", "E_RETURN"),
+    ] {
+        let src = format!("{decl}\npub fnc main(): int {{ return 0; }}");
+        let err = compile(&src).expect_err("invalid return-first :: body");
+        assert_eq!(err.code, expected, "{decl}: {err}");
+    }
+    let missing_end = compile("int <- answer() ::\n  return 42;")
+        .expect_err("end delimiter is required");
+    assert_eq!(missing_end.code, "E_EOF", "{missing_end}");
+}
+
+
+#[test]
+fn return_first_checked_error_effects_support_free_form_clause_and_colon_colon() {
+    for decl in [
+        "fnc int <- twice(int value)\nraises Error ::\n  return value * 2;\nend",
+        "fnc int • twice(int value)\nraises Error\nbegin\n  return value * 2;\nend",
+        "fnc int <- twice(int value)\nthrows Error ::\n  return value * 2;\nend",
+        "fnc int <- twice(int value)\nraises(Error) ::\n  return value * 2;\nend",
+    ] {
+        let src = format!("{decl}\npub fnc main(): int {{ return twice(21); }}");
+        let wasm = compile(&src).unwrap_or_else(|err| panic!("{decl}: {err}"));
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn return_first_checked_raise_bang_is_not_an_ordinary_throw() {
+    let src = r#"
+        fnc int <- twice(int value)
+        raises Error ::
+          if value > 3 then
+            raise! Error("too large");
+          fi
+          return value * 2;
+        end
+        pub fnc main(): int raises(Error) {
+          return twice(3) + 36;
+        }
+    "#;
+    let wasm = compile(src).unwrap();
+    assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    let contiguous = lex(r#"raise! Error("bad");"#).unwrap();
+    assert!(matches!(&contiguous[0].tok, Tok::Ident(name) if name == "raise!"));
+    let separate = lex(r#"raise !Error("bad");"#).unwrap();
+    assert!(matches!(&separate[0].tok, Tok::Ident(name) if name == "raise"));
+    assert_eq!(separate[1].tok, Tok::Bang);
+}
+
+#[test]
+fn return_first_effect_boundary_and_canonical_exception_bangs_fail_closed() {
+    for (decl, code) in [
+        ("fnc int <- twice(int x)\nraises Foo ::\n  return x * 2;\nend", "E_TYPE"),
+        ("fnc int <- twice(int x)\nraises Error\n  return x * 2;\nend", "E_SYNTAX"),
+        ("fnc int <- twice(int x)\nraises Error raises Error ::\n  return x * 2;\nend", "E_DUPLICATE"),
+        ("fnc int <- twice(int x)\nraises Error :: return x * 2; end", "E_SYNTAX"),
+        ("fnc int <- twice(int x)\nraises Error ::\n  42;\nend", "E_RETURN"),
+        ("fnc int <- twice(int x)\nraises Error ::\n  panic! Error(\"no control\");\nend", "E_UNSUPPORTED"),
+    ] {
+        let src = format!("{decl}\npub fnc main(): int {{ return 0; }}");
+        let err = compile(&src).expect_err("invalid source must emit no guest");
+        assert_eq!(err.code, code, "{decl}: {err}");
+    }
+    let bad = compile("pub fnc main(): int { val x = trap! 42; return 42; }")
+        .expect_err("legacy Option trap is not canonical Result");
+    assert_eq!(bad.code, "E_TRAP_BANG_RESULT_UNVERIFIED");
+}
+
+
+#[test]
+fn triggered_return_first_raise_has_recover_catch_and_trap_guest_targets() {
+    for fixture in [
+        include_str!("fixtures/pass/return-first-raise-recover-guest.atto"),
+        include_str!("fixtures/pass/return-first-raise-bypasses-catch.atto"),
+        include_str!("fixtures/pass/return-first-raise-bypasses-trap.atto"),
+    ] {
+        assert!(fixture.contains("raise! Error("));
+        let guest = compile(fixture).unwrap_or_else(|err|
+            panic!("triggered-raise candidate compiler rejection: {err}"));
+        assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn checked_exception_effect_mixes_and_missing_raises_fail_closed() {
+    // An effect comma separates kinds, not additional unverified error types.
+    for header in [
+        "throws(Error), raises(Error)",
+        "throws Error, raises Error",
+        "throws Error raises(Error)",
+        "raises(Error), throws Error",
+    ] {
+        let src = format!("fnc int <- risky(int x)\n{header} ::\n  return x;\nend\npub fnc main(): int {{ return risky(42); }}");
+        let wasm = compile(&src).unwrap_or_else(|err| panic!("{header}: {err}"));
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+    for (header, code) in [
+        ("raises Error, Foo", "E_TYPE"),
+        ("raises(Error, Error)", "E_DUPLICATE"),
+        ("raises Error, raises Error", "E_DUPLICATE"),
+        ("raises Error,", "E_TYPE"),
+        ("raises Foo", "E_TYPE"),
+    ] {
+        let src = format!("fnc int <- risky(int x)\n{header} ::\n  return x;\nend\npub fnc main(): int {{ return 0; }}");
+        let err = compile(&src).expect_err("invalid effect must produce no Wasm");
+        assert_eq!(err.code, code, "{header}: {err}");
+    }
+    let undeclared = concat!(
+        "fnc int <- risky(int x)\nthrows Error ::\n",
+        "  raise! Error(\"unaccounted\");\nend\n",
+        "pub fnc main(): int { return 0; }\n"
+    );
+    let err = compile(undeclared).expect_err("raises must not pass throws-only bound");
+    assert_eq!(err.code, "E_EFFECT", "{err}");
+}
+
+
+#[test]
+fn explicit_error_inheritance_preserves_nominal_checked_effect_identity() {
+    // Both declarations orders are legal; the parser must retain the exact
+    // nominal type and the checker must validate the Error ancestry.
+    for body in [
+        concat!(
+            "define class Foo extends Error as end\n",
+            "fnc int • twice(int value)\nraises Foo ::\n",
+            "  return value * 2;\nend\n",
+        ),
+        concat!(
+            "fnc int <- twice(int value)\nraises(Foo)\nbegin\n",
+            "  return value * 2;\nend\n",
+            "define class Foo extends Error as end\n",
+        ),
+    ] {
+        let source = format!("{body}pub fnc main(): int {{ return twice(21); }}");
+        let p = Parser::new(lex(&source).unwrap()).parse_program().unwrap();
+        assert_eq!(p.classes.len(), 1, "{body}");
+        assert_eq!(p.classes[0].name, "Foo");
+        assert!(p.classes[0].error_parent, "no implicit or missing ancestry");
+        let nominal = p.funcs[0].declared_effects.unwrap().raises_nominal
+            .expect("Foo effect must carry a nominal identity");
+        assert_eq!(p.type_names[nominal as usize].0, "Foo");
+        let guest = compile(&source).unwrap_or_else(|err|
+            panic!("validated, non-raising Foo contract rejected: {err}"));
+        assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn nominal_error_effects_reject_non_error_or_unknown_types() {
+    for (prefix, annotation, code) in [
+        ("define class Bar as end\n", "raises Bar", "E_TYPE"),
+        ("", "raises Missing", "E_TYPE"),
+        ("define class Foo extends Object as end\n", "raises Foo", "E_UNSUPPORTED"),
+        ("define class Foo as end\n", "throws Foo", "E_TYPE"),
+    ] {
+        let source = format!(
+            "{prefix}fnc int <- risky(int x)\n{annotation} ::\n  return x;\nend\n\
+             pub fnc main(): int {{ return risky(42); }}"
+        );
+        let err = compile(&source).expect_err("unproved Error subtype must emit no guest");
+        assert_eq!(err.code, code, "{annotation}: {err}");
+    }
+}
+
+#[test]
+fn nominal_error_runtime_payload_must_not_silently_degrade_to_string_tag() {
+    let raised = r#"
+        define class Foo extends Error as end
+        fnc int <- risky(int value)
+        raises Foo ::
+          if value > 3 then
+            raise! new Foo();
+          fi
+          return value * 2;
+        end
+        pub fnc main(): int { return risky(3); }
+    "#;
+    let guest = compile(raised).expect("field-free Foo must have a private owned-handle EH tag");
+    assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    // A scalar success path is not a subtype proof. The independent guest
+    // fixtures below trigger Foo and inspect its exact private tag in recover.
+
+    let incorrectly_narrowed = r#"
+        define class Foo extends Error as end
+        fnc int <- risky(int value)
+        raises Foo ::
+          raise! Error("not a Foo");
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let err = compile(incorrectly_narrowed).expect_err(
+        "declaring Foo must not silently authorize a generic Error");
+    assert_eq!(err.code, "E_EFFECT", "{err}");
+}
+
+
+
+#[test]
+fn nominal_foo_raise_has_independent_compiled_guest_oracles() {
+    for fixture in [
+        include_str!("fixtures/pass/nominal-foo-raise-recover.atto"),
+        include_str!("fixtures/pass/nominal-foo-raise-vs-bar.atto"),
+        include_str!("fixtures/pass/nominal-foo-raise-catch-bypass.atto"),
+        include_str!("fixtures/pass/nominal-foo-delegated-recover.atto"),
+        include_str!("fixtures/pass/nominal-foo-trap-bypass.atto"),
+        include_str!("fixtures/pass/nominal-foo-transitive-callee.atto"),
+    ] {
+        assert!(fixture.contains("raise! new "));
+        assert!(fixture.contains("err.is_type("));
+        let guest = compile(fixture).unwrap_or_else(|err|
+            panic!("nominal Foo/Bar candidate compiler rejection: {err}"));
+        assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn nominal_error_subtype_effect_guards_reject_forgery() {
+    for (source, code) in [
+        (r#"
+            define class Foo extends Error as end
+            fnc int <- risky(int value)
+            raises Foo ::
+              raise! Error("untyped base Error");
+            end
+            pub fnc main(): int { return 0; }
+        "#, "E_EFFECT"),
+        (r#"
+            define class Foo extends Error as end
+            define class Bar extends Error as end
+            fnc int <- risky(int value)
+            raises Foo ::
+              raise! new Bar();
+            end
+            pub fnc main(): int { return 0; }
+        "#, "E_EFFECT"),
+        (r#"
+            define class Foo extends Error as end
+            fnc int <- risky(int value)
+            throws Error ::
+              raise! new Foo();
+            end
+            pub fnc main(): int { return 0; }
+        "#, "E_EFFECT"),
+        (r#"
+            define class Plain as end
+            fnc int <- risky(int value)
+            raises Error ::
+              raise! new Plain();
+            end
+            pub fnc main(): int { return 0; }
+        "#, "E_TYPE"),
+    ] {
+        let err = compile(source).expect_err("unverified subtype must produce no Wasm");
+        assert_eq!(err.code, code, "{err}");
+    }
+}
+
+#[test]
+fn builtin_error_identity_cannot_be_shadowed_by_class_or_function() {
+    for src in [
+        "define class Error as end\npub fnc main(): int { return 42; }",
+        "fnc Error(): int { return 1; }\npub fnc main(): int { return Error(); }",
+    ] {
+        let err = compile(src).expect_err("reserved built-in Error identity must not be forged");
+        assert_eq!(err.code, "E_DUPLICATE", "{src}: {err}");
+    }
+}
+
+
+#[test]
+fn compiled_wasm_uses_one_private_tag_per_nominal_error_type() {
+    fn uleb(data: &[u8], cursor: &mut usize) -> usize {
+        let mut n = 0usize;
+        let mut shift = 0;
+        loop {
+            let byte = data[*cursor];
+            *cursor += 1;
+            n |= ((byte & 0x7F) as usize) << shift;
+            if byte & 0x80 == 0 { return n; }
+            shift += 7;
+            assert!(shift < 35, "tag count LEB is too wide");
+        }
+    }
+    fn private_tag_count(wasm: &[u8]) -> usize {
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+        let mut i = 8;
+        while i < wasm.len() {
+            let id = wasm[i];
+            i += 1;
+            let len = uleb(wasm, &mut i);
+            let payload_end = i + len;
+            assert!(payload_end <= wasm.len(), "malformed Wasm section length");
+            if id == 13 { return uleb(wasm, &mut i); }
+            i = payload_end;
+        }
+        0
+    }
+    let foo = compile(include_str!("fixtures/pass/nominal-foo-raise-recover.atto"))
+        .expect("Foo private EH tag");
+    let two = compile(include_str!("fixtures/pass/nominal-foo-raise-vs-bar.atto"))
+        .expect("Foo/Bar private EH tags");
+    assert_eq!(private_tag_count(&foo), 3, "throw, base raise, Foo");
+    assert_eq!(private_tag_count(&two), 4, "throw, base raise, Foo, Bar");
+}
+
+#[test]
+fn nominal_error_view_type_checks_cannot_accept_user_forgery() {
+    for (source, code) in [
+        (r#"
+            define class Foo extends Error as end
+            define class Plain as end
+            pub fnc main(): int {
+              recover |err, cursor| -> {
+                if err.is_type(Plain) then return 17; fi
+                return 42;
+              };
+              raise! new Foo();
+            }
+        "#, "E_TYPE"),
+        (r#"
+            define class Foo extends Error as end
+            pub fnc main(): int {
+              recover |err, cursor| -> {
+                if err.is_type("Foo") then return 17; fi
+                return 42;
+              };
+              raise! new Foo();
+            }
+        "#, "E_TYPE"),
+        (r#"
+            define class Foo extends Error as end
+            pub fnc main(): int {
+              recover |err, cursor| -> {
+                if err.is_type(Foo, Foo) then return 17; fi
+                return 42;
+              };
+              raise! new Foo();
+            }
+        "#, "E_ARITY"),
+    ] {
+        let err = compile(source).expect_err("untrusted ErrorView type probe must emit no artifact");
+        assert_eq!(err.code, code, "{err}");
     }
 }

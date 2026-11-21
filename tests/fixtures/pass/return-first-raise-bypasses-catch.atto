@@ -1,0 +1,18 @@
+// expect-exit: 42
+// A catch for ordinary throw must never intercept a raised Error.
+fnc int • risky(int value)
+raises Error
+begin
+  if value > 3 then
+    raise! Error("too large");
+  fi
+  return value * 2;
+end
+
+pub fnc main(): int raises(Error) {
+  recover (|int seed| -> |err, cursor| -> {
+    return seed + 1;
+  })(41);
+  try { return risky(4); }
+  catch (Error e) { return 17; }
+}

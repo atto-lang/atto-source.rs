@@ -1,0 +1,23 @@
+// expect-exit: 42
+// The inner recover invokes cursor.next(), preserving the Foo tag and object
+// handle until the outer handler verifies its exact nominal identity.
+define class Foo extends Error as end
+
+fnc int <- risky(int value)
+raises Foo ::
+  recover |err, cursor| -> {
+    cursor.next();
+  };
+  if value > 3 then
+    raise! new Foo();
+  fi
+  return value;
+end
+
+pub fnc main(): int raises Foo {
+  recover |err, cursor| -> {
+    if err.is_type(Foo) then return 42; fi
+    return 17;
+  };
+  return risky(4);
+}

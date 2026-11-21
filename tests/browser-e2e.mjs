@@ -68,7 +68,8 @@ try{
   await until(async()=>evaluate("!!document.querySelector('#source')"),'editor load');
   await until(async()=>evaluate('window.__attoReady===true'),'module script ready');
   const run=async(src,expected)=>{
-    await evaluate("(()=>{let e=document.querySelector('#source');e.value="+JSON.stringify(src)+";document.querySelector('#run').click()})()");
+    const start = await evaluate("(()=>{const button=document.querySelector('#run');if(button.disabled)return 'E_BUSY';const editor=document.querySelector('#source');editor.value="+JSON.stringify(src)+";button.click();return document.querySelector('#result').textContent})()");
+    assert.equal(start, 'Compiling', 'click must start a NEW compiler Worker; never accept stale output');
     let lastOutput='not yet available';
     const state=await until(async()=>{
       const value=await evaluate("document.querySelector('#result').textContent");
@@ -79,6 +80,49 @@ try{
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+  // These are compiled by the real wasm32 Rust frontend INSIDE Chromium,
+  // then executed as new guest Wasm. A lexer-only unit test is insufficient.
+  const bulletSource = await readFile(new URL('./fixtures/pass/return-first-bullet-and-arrow.atto', import.meta.url), 'utf8');
+  // Real compiler + real guest: now exercises raises Error :: and raise!
+  // on a proven non-raising branch. A triggered raise needs a separate oracle.
+  assert.match(bulletSource, /raises Error ::/);
+  assert.match(bulletSource, /raise! Error\("too large"\)/);
+  assert.equal(await run(bulletSource, 'main() -> 42'), 'main() -> 42');
+  // Three distinct triggered-raise guest oracles: recover with is_raise,
+  // ordinary catch bypass and legacy Option trap bypass. Broken paths
+  // return 17 or 0 rather than 42.
+  for (const name of [
+    'return-first-raise-recover-guest.atto',
+    'return-first-raise-bypasses-catch.atto',
+    'return-first-raise-bypasses-trap.atto',
+  ]) {
+    const source = await readFile(new URL('./fixtures/pass/' + name, import.meta.url), 'utf8');
+    assert.match(source, /raise! Error\(/);
+    assert.equal(await run(source, 'main() -> 42'), 'main() -> 42', name);
+  }
+  // These guests can only return 42 after the recover callback confirms
+  // an exact module-private Foo/Bar EH tag, never a user-controlled string.
+  for (const name of [
+    'nominal-foo-raise-recover.atto',
+    'nominal-foo-raise-vs-bar.atto',
+    'nominal-foo-raise-catch-bypass.atto',
+    'nominal-foo-delegated-recover.atto',
+    'nominal-foo-trap-bypass.atto',
+    'nominal-foo-transitive-callee.atto',
+  ]) {
+    const source = await readFile(new URL('./fixtures/pass/' + name, import.meta.url), 'utf8');
+    assert.match(source, /raise! new (Foo|Bar)\(\)/);
+    assert.match(source, /err\.is_type\((Foo|Bar)\)/);
+    assert.equal(await run(source, 'main() -> 42'), 'main() -> 42', name);
+  }
+  for (const lookalike of ['·', '∙', '‿', '‧', '●']) {
+    const invalid = `int${lookalike} answer() begin return 42; end\npub fnc main(): int { return answer(); }`;
+    assert.match(await run(invalid, 'E_TOKEN'), /^E_TOKEN:/,
+      'non-U+2022 bullet must not produce a guest');
+  }
+  assert.equal(await run(bulletSource, 'main() -> 42'), 'main() -> 42',
+    'a rejected source must not poison the compiler or reuse an old guest');
+  console.log('PASS browser: U+2022 / <- return-first guest executes; lookalikes reject and recover');
   const linkedMtdSource = await readFile(new URL('./fixtures/pass/173-class-mtd-executable.atto', import.meta.url), 'utf8');
   assert.equal(await run(linkedMtdSource, 'main() -> 20'), 'main() -> 20');
   console.log('PASS browser: compiled native class mtd methods dispatch and return 20');

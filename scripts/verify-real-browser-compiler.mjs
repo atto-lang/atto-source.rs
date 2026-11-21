@@ -21,6 +21,16 @@ const tests=[
   ['pass','01-answer.atto',42n],
   ['pass','02-spec-ch16-add.atto',42n],
   ['pass','03-arrow-return.atto',42n],
+  ['pass','return-first-bullet-and-arrow.atto',42n],
+  ['pass','return-first-raise-recover-guest.atto',42n],
+  ['pass','return-first-raise-bypasses-catch.atto',42n],
+  ['pass','return-first-raise-bypasses-trap.atto',42n],
+  ['pass','nominal-foo-raise-recover.atto',42n],
+  ['pass','nominal-foo-raise-vs-bar.atto',42n],
+  ['pass','nominal-foo-raise-catch-bypass.atto',42n],
+  ['pass','nominal-foo-delegated-recover.atto',42n],
+  ['pass','nominal-foo-trap-bypass.atto',42n],
+  ['pass','nominal-foo-transitive-callee.atto',42n],
   ['pass','04-binding-forms.atto',52n],
   ['pass','06-precedence.atto',120n],
   ['pass','19-recursion-fib.atto',55n],
@@ -31,6 +41,33 @@ const tests=[
   ['fail','03-unknown-name.atto','E_UNBOUND'],
   ['fail','09-call-arity.atto','E_ARITY'],
   ['fail','23-no-main.atto','E_ENTRY'],
+  ['fail','return-first-bullet-lookalike.atto','E_TOKEN'],
+  ['fail','return-first-effect-unknown-subtype','E_TYPE',
+    'fnc int <- twice(int x)\nraises Foo ::\n  return x * 2;\nend\npub fnc main(): int { return 0; }\n'],
+  ['fail','nominal-foo-base-raise-effect-mismatch','E_EFFECT',
+    'define class Foo extends Error as end\nfnc int <- risky(int x)\nraises Foo ::\n  raise! Error("not a Foo");\nend\npub fnc main(): int { return 0; }\n'],
+  ['fail','nominal-foo-different-subtype-effect-mismatch','E_EFFECT',
+    'define class Foo extends Error as end\ndefine class Bar extends Error as end\nfnc int <- risky(int x)\nraises Foo ::\n  raise! new Bar();\nend\npub fnc main(): int { return 0; }\n'],
+  ['fail','return-first-raise-incomplete-upper-bound','E_EFFECT',
+    'fnc int <- risky(int x)\nthrows Error ::\n  raise! Error("unaccounted");\nend\npub fnc main(): int { return 0; }\n'],
+  ['fail','return-first-raise-multiple-types','E_TYPE',
+    'fnc int <- risky(int x)\nraises Error, Foo ::\n  return x;\nend\npub fnc main(): int { return 0; }\n'],
+  ['fail','return-first-effect-missing-boundary','E_SYNTAX',
+    'fnc int <- twice(int x)\nraises Error\n  return x * 2;\nend\npub fnc main(): int { return 0; }\n'],
+  ['fail','return-first-coloncolon-missing-newline','E_SYNTAX',
+    'fnc int <- twice(int x) :: return x * 2; end\npub fnc main(): int { return 0; }\n'],
+  ['fail','return-first-unsupported-panic-bang','E_UNSUPPORTED',
+    'fnc int <- twice(int x)\nraises Error ::\n  panic! Error("unverified");\nend\npub fnc main(): int { return 0; }\n'],
+  ['fail','canonical-trap-bang-not-Option','E_TRAP_BANG_RESULT_UNVERIFIED',
+    'pub fnc main(): int { val x = trap! 42; return 42; }\n'],
+  ['fail','return-first-lookalike-middle-dot','E_TOKEN',
+    'int· answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
+  ['fail','return-first-lookalike-undertie','E_TOKEN',
+    'int‿ answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
+  ['fail','return-first-lookalike-hyphenation-point','E_TOKEN',
+    'int‧ answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
+  ['fail','return-first-lookalike-black-circle','E_TOKEN',
+    'int● answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
   ['panic','checked-add-overflow',1,
     'pub fnc main(): int { val x: int = 9223372036854775807; return x + 1; }\n'],
   ['pass','01-answer.atto',42n]
@@ -114,6 +151,15 @@ try{
       assert.ok(!existsSync(output),'rejected native source emitted output');
       assert.equal(wasm.ok,false,'wasm32 accepted invalid '+name);
       verifyCompilerDiagnosticParity(cp.stderr,src,wasm,oracle);
+      const tokenPosition = name==='return-first-bullet-lookalike.atto'
+        ? [2,4] : name.startsWith('return-first-lookalike-') ? [1,4] : null;
+      if(tokenPosition){
+        const [line,col]=tokenPosition;
+        assert.equal(wasm.line,line,'wasm32 incorrect Unicode diagnostic line '+name);
+        assert.equal(wasm.col,col,'wasm32 incorrect Unicode diagnostic column '+name);
+        assert.match(cp.stderr,new RegExp(':\\s*'+line+':'+col+':\\s*E_TOKEN:'),
+          'native incorrect Unicode diagnostic position '+name);
+      }
       rows.push({fixture:name,result:'REAL_REJECTION',code:oracle,source_sha256:sha(content),no_artifact:true});
     }
   }

@@ -258,7 +258,8 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
             locals: vec![Type::Array(0)], body }],
         generators: vec![], main: 0, imports: vec![], data: vec![],
         heap: true, globals: vec![], actors: vec![],
-        strings: false, guest_eh: false, raise_tag: false, catch_depth: false,
+        strings: false, guest_eh: false, raise_tag: false,
+        nominal_raises: Vec::new(), catch_depth: false,
     })
 }
 

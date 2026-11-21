@@ -166,6 +166,13 @@ pub enum TExpr {
     },
     /// Compare the discriminant with a known variant tag.
     AdtIs { obj: Box<TE>, tag: u32 },
+    /// Compiler-only ErrorView nominal identity check in recover callbacks.
+    /// The kind local is i32; the result is i32 bool (never a string lookup).
+    ErrorIsType { kind_slot: u32, tag: u32 },
+    /// ErrorView.message for subtype-bearing exceptions: the EH payload is
+    /// an owned object handle, not a (offset,len) message string.
+    /// Return the empty immutable string for field-free Error subclasses.
+    ErrorMessage { kind_slot: u32, message_slot: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
     /// Evaluate a tagged ADT once. On failure return its original handle from
@@ -247,6 +254,10 @@ pub enum TStmt {
     /// Escalated failure on the separate module-private raise tag. It is
     /// never matched by `catch`/`trap`; only `recover` or the root sees it.
     Raise(TE),
+    /// A field-free, nominal Error object: the owned Class handle crosses
+    /// the Wasm EH boundary in a private subclass-specific exception tag.
+    /// The class index identifies a compiler-proved direct Error subclass.
+    RaiseNominal { obj: TE, class_index: u32 },
     /// First statement of a top-level body that uses try/defer/recover:
     /// compiler-owned unwind slots (defer-recover-unwind-v1). `ret` holds
     /// the snapshotted return value, `msg`/`kind` the pending failure.
@@ -361,6 +372,10 @@ pub struct TProgram {
     pub guest_eh: bool,
     /// A second private tag for `raise` (escalated failure).
     pub raise_tag: bool,
+    /// Direct Error-subclass class indices in deterministic source class order.
+    /// Private Wasm tag indices 2+n retain type identity independently of
+    /// the i64 error payload; this list is empty for unrelated programs.
+    pub nominal_raises: Vec<u32>,
     /// A guest-global active-catch counter exists because some `recover`
     /// must defer to an outer caller's catch or trap (two-phase dispatch).
     pub catch_depth: bool,
@@ -398,6 +413,8 @@ struct MethodInfo {
 
 struct ClassInfo {
     name: String,
+    /// Explicit Error-rooted nominal ancestry, not a message-string alias.
+    error_parent: bool,
     /// Distinct protected-state nominal declaration (single Worker-local profile).
     state_container: bool,
     fields: Vec<FieldInfo>,
@@ -931,7 +948,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for (name, pos, kind) in decl_names {
         if matches!(
             name,
-            "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "int" | "bool" | "boolean"
+            "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "Error" | "int" | "bool" | "boolean"
         ) || is_reserved_collection_or_loan_name(name) {
             return Err(Diagnostic::new(
                 pos,
@@ -956,6 +973,45 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             ));
         }
     }
+    // The first legal inheritance edge is explicit 'extends Error'; do not
+    // infer inheritance from an identifier or silently flatten a subclass.
+    // Until the guest exception value carries a verified nominal type tag,
+    // only field-free subclasses may be declared, and actually throwing one
+    // must fail before output. A later runtime can remove this member gate
+    // after object layout, field lifetime and subtype preservation are proved.
+    for c in &p.classes {
+        if c.error_parent && (c.state_container || !c.fields.is_empty()
+            || c.ctor.is_some() || !c.methods.is_empty())
+        {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED",
+                format!("Error subclass '{}' is nominally recognized, but subclass fields, constructors and methods require subtype-preserving exception layout and lifecycle lowering", c.name)));
+        }
+    }
+    // Resolve the *declared* effect identity against the full class table,
+    // independent of whether Foo appears before or after the function.
+    // A class without an explicit Error parent is not an Error subtype.
+    for f in &p.funcs {
+        if let Some(effects) = f.declared_effects {
+            for (kind, nominal) in [
+                ("throws", effects.throws_nominal),
+                ("raises", effects.raises_nominal),
+                ("panics", effects.panics_nominal),
+            ] {
+                if let Some(id) = nominal {
+                    let (name, pos) = p.type_names.get(id as usize).ok_or_else(|| {
+                        Diagnostic::new(f.pos, "E_UNKNOWN_TYPE",
+                            "checked effect refers to an invalid nominal type index")
+                    })?;
+                    let verified = p.classes.iter().any(|c|
+                        c.name == *name && c.error_parent && !c.state_container);
+                    if !verified {
+                        return Err(Diagnostic::new(*pos, "E_TYPE",
+                            format!("'{kind} {name}' requires a declared class '{name} extends Error'; non-Error classes and unknown types are forbidden")));
+                    }
+                }
+            }
+        }
+    }
     let class_names: Vec<String> = p.classes.iter().map(|c| c.name.clone()).collect();
     let actor_names: Vec<String> = p.actors.iter().map(|a| a.name.clone()).collect();
     let res = |t: Type| resolve(t, tn, &class_names, &p.enums, &actor_names);
@@ -964,7 +1020,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None")
+        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None" | "Error")
             || is_reserved_collection_or_loan_name(&f.name) {
             return Err(Diagnostic::new(
                 f.pos,
@@ -1104,6 +1160,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         };
         classes.push(ClassInfo {
             name: c.name.clone(),
+            error_parent: c.error_parent,
             state_container: c.state_container,
             fields,
             methods,
@@ -1503,13 +1560,20 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
-    audit_cleanup_call_effects(&funcs, &p.funcs)?;
+    audit_cleanup_call_effects(&funcs, p)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
-    let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
+    let nominal_raises: Vec<u32> = p.classes.iter().enumerate()
+        .filter_map(|(i, c)| c.error_parent.then_some(i as u32)).collect();
+    if nominal_raises.len() > 128 {
+        return Err(Diagnostic::new(Pos::default(), "E_SOURCE_LIMIT",
+            "more than 128 nominal Error subclasses would exhaust the bounded guest EH tag budget"));
+    }
+    let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s|
+        matches!(s, TStmt::Raise(_) | TStmt::RaiseNominal { .. })));
     let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     Ok(TProgram {
         funcs,
@@ -1523,6 +1587,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         strings,
         guest_eh,
         raise_tag,
+        nominal_raises,
         catch_depth,
     })
 }
@@ -1555,6 +1620,7 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
     match &value.e {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_)
         | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
+        | TExpr::ErrorIsType { .. } | TExpr::ErrorMessage { .. }
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
         | TExpr::CollectionAlloc(_)
         | TExpr::Spawn(_) => EscapeEffects::default(),
@@ -1608,6 +1674,8 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
             TStmt::Throw(value) => expr_escape_effects(value, effects)
                 .union(EscapeEffects { throws: true, raises: false }),
             TStmt::Raise(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: false, raises: true }),
+            TStmt::RaiseNominal { obj, .. } => expr_escape_effects(obj, effects)
                 .union(EscapeEffects { throws: false, raises: true }),
             TStmt::CollectionStore { array: obj, value, .. } |
             TStmt::FieldSet { obj, value, .. } |
@@ -1676,7 +1744,8 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
 /// safely within cleanup; an escaping raise can never be suppressed by
 /// an ordinary catch/trap. Unreachable-code precision remains deliberately
 /// conservative until the CFG effect solver is complete.
-fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
+fn audit_cleanup_call_effects(funcs: &[TFunc], program: &Program) -> R<()> {
+    let declared = &program.funcs;
     let mut effects = vec![EscapeEffects::default(); funcs.len()];
     loop {
         let mut changed = false;
@@ -1696,6 +1765,49 @@ fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
     for (index, f) in declared.iter().enumerate() {
         let Some(contract) = f.declared_effects else { continue; };
         let actual = effects[index];
+        // This first subtype-effect proof accepts only a direct field-free
+        // Error-subclass raise or a typed call whose (possibly recursive)
+        // callee declares the exact same nominal upper bound. A bare Error
+        // raise, unknown callee, or a different subtype fails closed. The
+        // existing boolean solver still proves the throws/raises channel.
+        if contract.throws_nominal.is_some() && actual.throws {
+            return Err(Diagnostic::new(f.pos, "E_EFFECT",
+                "nominal throws requires typed ordinary catch/EH subtype lowering"));
+        }
+        if let Some(expected_nominal) = contract.raises_nominal {
+            if actual.raises {
+                let expected_name = &program.type_names[expected_nominal as usize].0;
+                let expected_class = program.classes.iter()
+                    .position(|c| c.name == *expected_name)
+                    .expect("prevalidated Error subclass");
+                let invalid_site = stmt_exists(&funcs[index].body, &|s| match s {
+                    TStmt::Raise(_) => true,
+                    TStmt::RaiseNominal { class_index, .. } =>
+                        *class_index as usize != expected_class,
+                    _ => false,
+                });
+                let invalid_callee = any_in_stmts(&funcs[index].body, &|e| {
+                    if let TExpr::Call(callee, _) = &e.e {
+                        let idx = *callee as usize;
+                        if !effects.get(idx).is_some_and(|esc| esc.raises) {
+                            return false;
+                        }
+                        // Compiler-generated class constructors/methods have
+                        // no checked throws/raises contract in this subset.
+                        let Some(target) = declared.get(idx) else { return true; };
+                        let Some(target_nominal) = target.declared_effects
+                            .and_then(|x| x.raises_nominal) else { return true; };
+                        let Some((target_name, _)) = program.type_names.get(target_nominal as usize)
+                            else { return true; };
+                        target_name != expected_name
+                    } else { false }
+                });
+                if invalid_site || invalid_callee {
+                    return Err(Diagnostic::new(f.pos, "E_EFFECT",
+                        format!("function '{}' declares raises {} but an escaping raise has another or unverified nominal subtype", f.name, expected_name)));
+                }
+            }
+        }
         if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
             let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
                 (true, true) => "throws(Error), raises(Error)",
@@ -2233,7 +2345,7 @@ fn body_check(
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
-        TStmt::Raise(_) | TStmt::RecoverNext => true,
+        TStmt::Raise(_) | TStmt::RaiseNominal { .. } | TStmt::RecoverNext => true,
         TStmt::Try { body, catch, finally, .. } =>
             finally.as_ref().is_some_and(|f| returns(f))
                 || (returns(body) && catch.as_ref().is_none_or(|c| returns(c))),
@@ -2304,6 +2416,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
+        TExpr::ErrorIsType { .. } | TExpr::ErrorMessage { .. } |
         TExpr::AdtPropagate { .. } => false,
     }
 }
@@ -2327,7 +2440,8 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
-        TStmt::Raise(_) | TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
+        TStmt::Raise(_) | TStmt::RaiseNominal { .. } |
+        TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
         TStmt::Defer { .. } | TStmt::Recover { .. } | TStmt::RecoverNext => false,
     })
 }
@@ -2348,7 +2462,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
-        TStmt::Raise(e) => any_in(e, f),
+        TStmt::Raise(e) | TStmt::RaiseNominal { obj: e, .. } => any_in(e, f),
         TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
             || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
             || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
@@ -2387,7 +2501,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
 fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Throw(_) => true,
-        TStmt::Raise(_) | TStmt::Try { .. } | TStmt::UnwindFrame { .. } => true,
+        TStmt::Raise(_) | TStmt::RaiseNominal { .. } |
+        TStmt::Try { .. } | TStmt::UnwindFrame { .. } => true,
         TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b))
             || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
         TStmt::Loop { body, update, .. } =>
@@ -2527,8 +2642,36 @@ impl<'a> FnCx<'a> {
         r
     }
 
-    /// The message of an admitted `throw`/`raise` operand:
-    /// `Error(message)` or `new Error(message)`.
+    /// Turn a field-free direct Error subclass into an owned nominal
+    /// raised object, not a forged base Error(message). The class constructor
+    /// allocates exactly once and the pointer is widened only at the EH ABI.
+    /// Actor, custom constructor, field-bearing and indirect raises remain
+    /// unsupported until typed lifetime/supervisor integration is proven.
+    fn guest_raise(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
+        if let ExprKind::New(name, args) = &error.kind {
+            if let Some(index) = self.g.class(name) {
+                if self.g.classes[index as usize].error_parent {
+                    if self.owner != Owner::TopLevel || self.cleanup_depth > 0 {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "nominal raise in actor/method or cleanup requires supervisor and frame-lifetime lowering"));
+                    }
+                    if !args.is_empty() {
+                        return Err(Diagnostic::new(error.pos, "E_ARITY",
+                            "field-free Error subclass constructor takes no arguments"));
+                    }
+                    let owned = self.new_object(name, args, error.pos)?;
+                    return Ok(TStmt::RaiseNominal {
+                        obj: owned,
+                        class_index: index,
+                    });
+                }
+            }
+        }
+        Ok(TStmt::Raise(self.guest_error_message(error, "raise", pos)?))
+    }
+
+    /// The message of an admitted \`throw\`/\`raise\` operand:
+    /// \`Error(message)\` or \`new Error(message)\`.
     fn guest_error_message(&mut self, error: &Expr, what: &str, pos: Pos) -> R<TE> {
         if self.owner != Owner::TopLevel {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
@@ -2537,6 +2680,18 @@ impl<'a> FnCx<'a> {
         if self.cleanup_depth > 0 {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 format!("'{what}' inside a defer/recover body would replace the pending failure")));
+        }
+        // Never re-tag a Foo exception as an untyped built-in Error string:
+        // the existing Wasm EH tag carries only message bytes. In particular,
+        // simply accepting 'raise! new Foo()' here would lose subtype identity
+        // across calls, recover and future supervisor CONTROL boundaries.
+        if let ExprKind::Call(name, _) | ExprKind::New(name, _) = &error.kind {
+            if self.g.class(name).is_some_and(|id|
+                self.g.classes[id as usize].error_parent)
+            {
+                return Err(Diagnostic::new(error.pos, "E_UNSUPPORTED",
+                    format!("nominal Error subclass '{name}' requires subtype-preserving Wasm exception payload and recover/supervisor lowering before guest emission")));
+            }
         }
         let args = match &error.kind {
             ExprKind::Call(name, args) | ExprKind::New(name, args) if name == "Error" => args,
@@ -2759,10 +2914,7 @@ impl<'a> FnCx<'a> {
                 let _ = pos;
                 TStmt::RecoverNext
             }
-            Stmt::Raise(error, pos) => {
-                let msg = self.guest_error_message(error, "raise", *pos)?;
-                TStmt::Raise(msg)
-            }
+            Stmt::Raise(error, pos) => self.guest_raise(error, *pos)?,
             Stmt::Try { body, catch, finally, pos } => {
                 self.unwind_frame(*pos, "try")?;
                 let saved = self.temp(Type::Bool, *pos)?;
@@ -4322,7 +4474,17 @@ impl<'a> FnCx<'a> {
                 // ErrorView is an ephemeral compiler-issued view, never a
                 // first-class object or a transferable/returnable handle.
                 return match name {
-                    "message" => Ok(TE { e: TExpr::Local(msg), ty: Type::Str }),
+                    "message" => Ok(TE {
+                        // Preserve the exact old bytecode for programs that
+                        // have no nominal Error subclass; only mixed payload
+                        // modules need the trusted tag-dependent view.
+                        e: if self.g.classes.iter().any(|c| c.error_parent) {
+                            TExpr::ErrorMessage { kind_slot: kind, message_slot: msg }
+                        } else {
+                            TExpr::Local(msg)
+                        },
+                        ty: Type::Str,
+                    }),
                     "is_raise" => Ok(TE { e: TExpr::Local(kind), ty: Type::Bool }),
                     _ => Err(Diagnostic::new(pos, "E_UNBOUND",
                         format!("unknown ErrorView property '{name}'"))),
@@ -4491,6 +4653,37 @@ impl<'a> FnCx<'a> {
     }
 
     fn method_call(&mut self, base: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // An ErrorView capability exists only in an active recover callback.
+        // The argument is a compiler-resolved nominal type, never a string
+        // or user-controlled runtime type id. The matching private EH tag
+        // is proof of exact nominal origin for this Wasm module instance.
+        if let ExprKind::Var(receiver) = &base.kind {
+            if self.recover_error.as_deref() == Some(receiver) {
+                if name != "is_type" {
+                    return Err(Diagnostic::new(pos, "E_UNBOUND",
+                        format!("unknown ErrorView method '{name}'")));
+                }
+                self.arity("ErrorView.is_type", 1, args.len(), pos)?;
+                let ExprKind::Var(target) = &args[0].kind else {
+                    return Err(type_err(args[0].pos,
+                        "ErrorView.is_type requires a nominal Error class identifier"));
+                };
+                let class = self.g.class(target).ok_or_else(|| type_err(
+                    args[0].pos, format!("unknown nominal Error subclass '{target}'")))?;
+                if !self.g.classes[class as usize].error_parent {
+                    return Err(type_err(args[0].pos,
+                        format!("'{target}' does not extend Error")));
+                }
+                let ordinal = self.g.classes[..class as usize].iter()
+                    .filter(|c| c.error_parent).count();
+                let tag = 2u32 + ordinal as u32;
+                let (_, _, _, kind, _) = self.unwind.expect("recovery needs unwind slots");
+                return Ok(TE {
+                    e: TExpr::ErrorIsType { kind_slot: kind, tag },
+                    ty: Type::Bool,
+                });
+            }
+        }
         // Class.static(args)
         if let ExprKind::Var(n) = &base.kind {
             if self.lookup(n).is_none() {
@@ -5005,7 +5198,8 @@ pub fn check_target_actor_interface(program: &Program) -> R<()> {
 /// nested blocks: a finally block must never replace the pending outcome.
 fn exits_anywhere(body: &[TStmt]) -> bool {
     stmt_exists(body, &|s| matches!(s,
-        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Raise(_) | TStmt::RecoverNext))
+        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Raise(_) |
+        TStmt::RaiseNominal { .. } | TStmt::RecoverNext))
 }
 
 /// Whether any statement in `body` (recursively) satisfies `f`.

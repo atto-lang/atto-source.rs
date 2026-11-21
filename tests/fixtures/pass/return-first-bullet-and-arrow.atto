@@ -1,0 +1,21 @@
+// expect-exit: 42
+int• bullet_answer() ::
+  return 42;
+end
+
+fnc int <- arrow_answer()
+begin
+  return 42;
+end
+
+fnc int <- checked_double(int value)
+raises Error ::
+  if value > 3 then
+    raise! Error("too large");
+  fi
+  return value * 2;
+end
+
+pub fnc main(): int raises(Error) {
+  return bullet_answer() + arrow_answer() + checked_double(3) - 48;
+}

@@ -1,0 +1,3 @@
+// expect-error: E_TOKEN
+int∙ bullet_answer() begin return 42; end
+pub fnc main(): int { return 0; }

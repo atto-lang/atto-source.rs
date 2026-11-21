@@ -1,0 +1,20 @@
+// expect-exit: 42
+// A real raised Foo must retain its *private Wasm exception type*, not a
+// forged string or the generic Error raise tag.
+define class Foo extends Error as end
+
+fnc int <- risky(int value)
+raises Foo ::
+  if value > 3 then
+    raise! new Foo();
+  fi
+  return value * 2;
+end
+
+pub fnc main(): int raises Foo {
+  recover |err, cursor| -> {
+    if err.is_type(Foo) then return 42; fi
+    return 17;
+  };
+  return risky(4);
+}
