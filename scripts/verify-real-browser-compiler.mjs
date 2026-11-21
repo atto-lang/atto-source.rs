@@ -31,6 +31,12 @@ const tests=[
   ['fail','09-call-arity.atto','E_ARITY'],
   ['fail','23-no-main.atto','E_ENTRY'],
   ['fail','return-first-bullet-lookalike.atto','E_TOKEN'],
+  ['fail','return-first-lookalike-middle-dot','E_TOKEN',
+    'int· answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
+  ['fail','return-first-lookalike-undertie','E_TOKEN',
+    'int‧ answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
+  ['fail','return-first-lookalike-black-circle','E_TOKEN',
+    'int● answer() begin return 42; end\npub fnc main(): int { return answer(); }\n'],
   ['panic','checked-add-overflow',1,
     'pub fnc main(): int { val x: int = 9223372036854775807; return x + 1; }\n'],
   ['pass','01-answer.atto',42n]
@@ -52,7 +58,7 @@ function wasmInstance(){
   const mod=new WebAssembly.Module(bytes);
   assert.deepEqual(WebAssembly.Module.imports(mod),[],'compiler cannot import host capabilities');
   const api=new WebAssembly.Instance(mod,{}).exports;
-  for(const name of ['memory','abi_version','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr'])
+  for(const name of ['memory','abi_version','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr','error_line_number','error_column_number'])
     assert.ok(name in api,'missing compiler ABI '+name);
   assert.equal(api.abi_version(),2,'compiler ABI v2 required');
   assert.ok(api.input_capacity()>0&&api.input_capacity()<=65536,'unexpected source capacity');
@@ -71,7 +77,8 @@ function wasmCompile(api,source){
     assert.ok(start>=0&&start<mem.length,'diagnostic bounds');
     let end=start;while(end<mem.length&&end<start+512&&mem[end]!==0)end++;
     assert.ok(end<start+512,'unterminated diagnostic');
-    return {ok:false,message:decoder.decode(mem.subarray(start,end))};
+    return {ok:false,message:decoder.decode(mem.subarray(start,end)),
+      line:api.error_line_number(),col:api.error_column_number()};
   }
   const ptrOut=api.result_ptr(),len=api.result_length();
   assert.ok(len>=8&&len<=1048576&&ptrOut>=0&&ptrOut+len<=api.memory.buffer.byteLength,'guest result bounds');
@@ -138,6 +145,17 @@ try{
       assert.ok(cp.stderr.includes(oracle),'native missing expected diagnostic '+oracle);
       assert.equal(wasm.ok,false,'wasm32 accepted invalid '+name);
       assert.ok(wasm.message.includes(oracle),'wasm32 missing expected diagnostic '+oracle);
+      // The Unicode rejection must be precise, identical in the native
+      // and wasm32 compiler paths, and unable to leave a runnable guest.
+      const tokenPosition = name==='return-first-bullet-lookalike.atto'
+        ? [2,4] : name.startsWith('return-first-lookalike-') ? [1,4] : null;
+      if(tokenPosition){
+        const [line,col]=tokenPosition;
+        assert.equal(wasm.line,line,'wasm32 incorrect Unicode diagnostic line '+name);
+        assert.equal(wasm.col,col,'wasm32 incorrect Unicode diagnostic column '+name);
+        assert.match(cp.stderr,new RegExp(':\\s*'+line+':'+col+':\\s*E_TOKEN:'),
+          'native incorrect Unicode diagnostic position '+name);
+      }
       rows.push({fixture:name,result:'REAL_REJECTION',code:oracle,source_sha256:sha(content),no_artifact:true});
     }
   }
