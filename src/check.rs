@@ -457,8 +457,8 @@ struct Local {
     mail: Option<Type>,
 }
 
-#[derive(Clone, Copy)]
 /// None identifies a whole owner; Some is an authenticated scalar field slot.
+#[derive(Clone, Copy)]
 struct ScopedLoan { owner: u32, field: Option<u32>, mutable: bool }
 
 struct FnCx<'a> {
@@ -3358,7 +3358,7 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
-                if let Some(loan) = self.loans.get(&local.slot).copied() {
+                if let Some(loan) = self.loans.get(&slot).copied() {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
                     }
@@ -3384,7 +3384,7 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(pos, "E_IMMUTABLE",
                             "cannot reassign val/final/const field through borrow! mut"));
                     }
-                    let (slot, offset, fty) = (local.slot, f.slot, f.ty);
+                    let (slot, offset, fty) = (slot, f.slot, f.ty);
                     // A class-valued field write would install an untracked owned
                     // handle through an alias. Lower only copyable field storage.
                     if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
@@ -3403,17 +3403,18 @@ impl<'a> FnCx<'a> {
         // General aliases, protected state and reference-valued fields are
         // not admitted by this bounded browser/guest implementation.
         if let ExprKind::Var(name) = &target.kind {
-            if let Some(local) = self.lookup(name).cloned() {
-                if let Type::Class(c) = local.ty {
-                    if self.loans.contains_key(&local.slot) {
+            if let Some((slot, local_ty, mutable_binding)) =
+                self.lookup(name).map(|l| (l.slot, l.ty, l.mutable)) {
+                if let Type::Class(c) = local_ty {
+                    if self.loans.contains_key(&slot) {
                         return Err(Diagnostic::new(pos, "E_BORROW",
                             "cannot mutate a field through a readonly borrowed handle"));
                     }
-                    if self.moved.contains(&local.slot) {
+                    if self.moved.contains(&slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED",
                             "cannot mutate a field of a moved owner"));
                     }
-                    if !local.mutable || !self.fresh_class_roots.contains(&local.slot) {
+                    if !mutable_binding || !self.fresh_class_roots.contains(&slot) {
                         return Err(Diagnostic::new(pos, "E_OWNERSHIP",
                             "direct class writes require a mutable binding of a proven-unique direct-new class owner"));
                     }
@@ -3442,7 +3443,7 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(pos, "E_BORROW",
                             "reference-valued class field assignment requires checked ownership transfer"));
                     }
-                    if self.loans.values().any(|loan| loan.owner == local.slot &&
+                    if self.loans.values().any(|loan| loan.owner == slot &&
                         (loan.field.is_none() || loan.field == Some(offset))) {
                         return Err(Diagnostic::new(pos, "E_BORROW",
                             "cannot write a field overlapping an active loan"));
@@ -3452,7 +3453,7 @@ impl<'a> FnCx<'a> {
                         return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
                     }
                     return Ok(TStmt::FieldSet {
-                        obj: TE { e: TExpr::Local(local.slot), ty: Type::Class(c) },
+                        obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
                         offset, ty: fty, value: checked,
                     });
                 }
