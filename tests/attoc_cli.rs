@@ -124,6 +124,31 @@ fn compiler_output_cannot_overwrite_its_input_file_or_aliases() {
 }
 
 #[test]
+fn compiler_refuses_source_extension_output_before_removing_existing_files() {
+    let temp = CliTemporaryDir::new();
+    let original = b"// unrelated Atto module must survive -o\npub fnc unrelated(): int { return 11; }\n";
+    for suffix in ["atto", "ATTO"] {
+        let output = temp.0.join(format!("unrelated.{suffix}"));
+        std::fs::write(&output, original).unwrap();
+        let result = attoc(&[
+            "tests/fixtures/pass/01-answer.atto", "-o", output.to_str().unwrap(),
+        ]);
+        assert_eq!(result.status.code(), Some(2), "{suffix}: {:?}", result.status);
+        assert!(result.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&result.stderr)
+            .contains("Wasm output cannot use a .atto source extension"));
+        assert_eq!(std::fs::read(&output).unwrap().as_slice(), &original[..],
+            "{suffix}: compiler deleted or changed unrelated source");
+    }
+    let not_created = temp.0.join("new.atto");
+    let result = attoc(&[
+        "tests/fixtures/pass/01-answer.atto", "-o", not_created.to_str().unwrap(),
+    ]);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!not_created.exists(), "invalid output extension created a source file");
+}
+
+#[test]
 fn preexisting_nonsource_artifacts_are_replaced_not_appended() {
     let temp = CliTemporaryDir::new();
     let target = temp.0.join("old.wasm");
@@ -134,4 +159,85 @@ fn preexisting_nonsource_artifacts_are_replaced_not_appended() {
     assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert!(!bytes.windows(b"NOT A COMPILED WASM GUEST".len())
         .any(|w| w == b"NOT A COMPILED WASM GUEST"));
+}
+
+#[test]
+fn oversized_entry_source_fails_before_publishing_a_guest() {
+    let temp = CliTemporaryDir::new();
+    let huge = temp.0.join("huge.atto");
+    let output = temp.0.join("compiled.wasm");
+    // A bounded 64 KiB source reader must not allocate the whole input first.
+    // The guard should classify this as a compiler source-limit rejection,
+    // and invalidate any output from an earlier successful build.
+    std::fs::write(&huge, vec![b'x'; atto_compiler::SOURCE_CAP + 1]).unwrap();
+    let valid = "tests/fixtures/pass/01-answer.atto";
+    assert!(attoc(&[valid, "-o", output.to_str().unwrap()]).status.success());
+    assert!(output.exists());
+    let denied = attoc(&[huge.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+    assert_eq!(denied.status.code(), Some(1), "{:?}", denied.status);
+    assert!(denied.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("E_SOURCE_LIMIT"),
+        "expected a source limit diagnostic: {}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    assert!(!output.exists(), "stale executable survived oversized input");
+
+    let check_only = attoc(&["--check", huge.to_str().unwrap()]);
+    assert_eq!(check_only.status.code(), Some(1));
+    assert!(check_only.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&check_only.stderr).contains("E_SOURCE_LIMIT"));
+}
+
+#[test]
+fn exactly_source_cap_input_is_not_rejected_by_bounded_reader() {
+    let temp = CliTemporaryDir::new();
+    let source = temp.0.join("limit.atto");
+    let prefix = b"pub fnc main(): int { return 42; }\n";
+    let mut bytes = prefix.to_vec();
+    bytes.resize(atto_compiler::SOURCE_CAP, b' ');
+    std::fs::write(&source, bytes).unwrap();
+    let out = temp.0.join("limit.wasm");
+    let result = attoc(&[source.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    assert!(result.status.success(), "exact source cap rejected: {}",
+        String::from_utf8_lossy(&result.stderr));
+    assert!(std::fs::read(out).unwrap().starts_with(b"\\0asm\\x01\\0\\0\\0"));
+}
+
+
+#[cfg(target_os = "linux")]
+#[test]
+fn fifo_input_cannot_block_compilation_or_preserve_a_stale_guest() {
+    // GNU coreutils are available in the Ubuntu CI runner. A missing reader
+    // preflight would block on File::open(FIFO), so enforce a hard timeout.
+    let temp = CliTemporaryDir::new();
+    let fifo = temp.0.join("incoming.atto");
+    let wasm = temp.0.join("old.wasm");
+    let created = Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(created.success(), "could not create test FIFO");
+    std::fs::write(&wasm, b"STALE_GUEST_MUST_NOT_SURVIVE").unwrap();
+    let result = Command::new("timeout")
+        .args(["4s", env!("CARGO_BIN_EXE_attoc")])
+        .arg(fifo.to_str().unwrap())
+        .arg("-o")
+        .arg(wasm.to_str().unwrap())
+        .output()
+        .expect("GNU timeout must be installed on the Linux CI runner");
+    assert_eq!(result.status.code(), Some(2),
+        "non-regular source was accepted or blocked past timeout: {}",
+        String::from_utf8_lossy(&result.stderr));
+    assert!(result.stdout.is_empty());
+    assert!(!wasm.exists(), "old Wasm guest survived rejected FIFO input");
+
+    use std::os::unix::fs::symlink;
+    let alias = temp.0.join("incoming-alias.atto");
+    symlink(&fifo, &alias).unwrap();
+    let aliased = Command::new("timeout")
+        .args(["4s", env!("CARGO_BIN_EXE_attoc")])
+        .arg(alias.to_str().unwrap())
+        .output()
+        .expect("timeout must be installed");
+    assert_eq!(aliased.status.code(), Some(2),
+        "source symlink to FIFO caused blocking open");
+    assert!(aliased.stdout.is_empty());
 }

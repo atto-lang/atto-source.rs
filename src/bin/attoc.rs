@@ -3,7 +3,7 @@
 //! Syntax check: attoc --check input.atto
 //! Linked package: attoc --package-root DIR --entry src/main.atto [-o out.wasm]
 //! Discovered package: attoc --package path/to/main.atto [-o out.wasm]
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -32,6 +32,40 @@ fn same_file(left: &Path, right: &Path) -> bool {
     false
 }
 
+// Keep untrusted source reads bounded *before* allocating an input buffer.
+// The parser's SOURCE_CAP check is too late for a multi-gigabyte input file.
+// This reader is reused for source imports loaded by the native CLI.
+fn read_bounded_source(path: &Path) -> std::io::Result<String> {
+    // Reject FIFO/device/directory paths *before* File::open: opening a FIFO
+    // without a writer can block indefinitely before the byte cap applies.
+    // Follow ordinary source symlinks only when their target is a regular file.
+    let regular_source = || std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "source must resolve to a regular file",
+    );
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(regular_source());
+    }
+    let file = std::fs::File::open(path)?;
+    // Recheck the opened descriptor, rather than trusting only a path lookup.
+    // A hostile writable parent is not a race-free filesystem trust boundary.
+    if !file.metadata()?.is_file() {
+        return Err(regular_source());
+    }
+    let mut bytes = Vec::new();
+    file.take((atto_compiler::SOURCE_CAP + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > atto_compiler::SOURCE_CAP {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("E_SOURCE_LIMIT: source exceeds {} UTF-8 bytes", atto_compiler::SOURCE_CAP),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "source is not valid UTF-8")
+    })
+}
+
 fn input_source_path(input: &Input) -> std::path::PathBuf {
     match input {
         Input::Single(file) | Input::Check(file) | Input::Discovered(file) => {
@@ -46,6 +80,19 @@ fn input_source_path(input: &Input) -> std::path::PathBuf {
 // No previous successful guest is allowed to survive a failed recompilation.
 // This is deliberately before source reading, parsing and code generation.
 fn clear_previous_output(input: &Input, output: &str) -> std::io::Result<()> {
+    // An output path must never be another Atto source file, even if that
+    // file is an imported module rather than the entry source. Removing a
+    // pre-existing .atto path before compilation would silently destroy it.
+    if Path::new(output)
+        .extension()
+        .and_then(|suffix| suffix.to_str())
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case("atto"))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Wasm output cannot use a .atto source extension",
+        ));
+    }
     if same_file(&input_source_path(input), Path::new(output)) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -130,9 +177,13 @@ fn main() -> ExitCode {
     let check_only = matches!(&input, Input::Check(_));
     let (label, compiled) = match input {
         Input::Single(path) | Input::Check(path) => {
-            let source = match std::fs::read(&path).map(String::from_utf8) {
-                Ok(Ok(s)) => s,
-                _ => {
+            let source = match read_bounded_source(Path::new(&path)) {
+                Ok(s) => s,
+                Err(error) if error.to_string().starts_with("E_SOURCE_LIMIT:") => {
+                    eprintln!("{path}: {error}");
+                    return ExitCode::from(1);
+                }
+                Err(_) => {
                     eprintln!("{path}: cannot read UTF-8 source");
                     return ExitCode::from(2);
                 }
@@ -153,7 +204,7 @@ fn main() -> ExitCode {
                             return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
                                 "import resolves outside project root"));
                         }
-                        std::fs::read_to_string(resolved)
+                        read_bounded_source(&resolved)
                     }),
                     Err(_) => atto_compiler::compile_with_path(&source, name.as_path()),
                 },
