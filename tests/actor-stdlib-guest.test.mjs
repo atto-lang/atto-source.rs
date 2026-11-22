@@ -12,6 +12,7 @@ const compiler = resolve(process.env.ATTOC || join(root, 'target/release/attoc')
 for (const [fixture, label] of [
   ['stdlib/actor/guest_smoke.atto', '34 smoke assertions'],
   ['stdlib/actor/guest_edges.atto', '133 adversarial boundary assertions'],
+  ['stdlib/actor/guest_namespace_only.atto', 'standalone namespace function'],
 ]) {
   test('std.actor ' + label + ' executes as linked Atto Wasm with no host imports', () => {
     const dir = mkdtempSync(join(tmpdir(), 'atto-std-actor-'));
