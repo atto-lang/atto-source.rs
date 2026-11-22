@@ -367,21 +367,25 @@ mod canonical_exception_bang_tests {
     #[test]
     fn canonical_bangs_are_single_contextual_tokens() {
         let cases = [
-            ("trap! 42", "trap!"),
-            ("trap!check()", "trap!"),
-            ("throw! Error(\"e\")", "throw!"),
-            ("raise!Error(\"e\")", "raise!"),
-            ("panic! Error(\"e\")", "panic!"),
-            ("trap 42", ""),
-            ("trap !flag", ""),
+            ("trap! parse_id(\"42\")", "trap!"),
+            ("trap!parse_id(\"42\")", "trap!"),
+            ("throw! Error(\"bad\")", "throw!"),
+            ("raise! Error(\"bad\")", "raise!"),
+            ("panic! Error(\"bad\")", "panic!"),
+            ("throw!Error(\"bad\")", "throw!"),
+            ("trap parse_id(\"42\")", ""),
+            ("throw Error(\"bad\")", ""),
+            ("raise Error(\"bad\")", ""),
+            ("panic Error(\"bad\")", ""),
+            ("trap !ready", ""),
             ("trap!=next", ""),
             ("trap!eq next", ""),
-            ("trapped! 42", ""),
+            ("trapped! parse_id()", ""),
             ("copy! owned", ""),
             ("\"trap! throw! raise! panic!\"", ""),
             ("// trap! throw! raise! panic!\n42", ""),
             ("/* trap! throw! raise! panic! */ 42", ""),
-        ];
+        ];        assert_eq!(cases.len(), 18);
         for (source, expected) in cases {
             let tokens = lex(source).expect("lex");
             let spellings: Vec<&str> = tokens.iter().filter_map(|t| match &t.tok {
