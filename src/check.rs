@@ -3709,7 +3709,7 @@ impl<'a> FnCx<'a> {
                         tr.borrow_escaping(*slot, false, pos);
                     }
                 }
-                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                if !is_copy_scalar(value.ty) {
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding; unproved ADT payload loans are forbidden"));
                 }
                 Ok(value)
@@ -4416,26 +4416,11 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            // The bounded, immutable scalar ADTs have no owned class, heap
-            // resource or mutable payload. Read-only borrow! is legal ONLY
-            // when a resolved, typed function argument consumes that loan
-            // synchronously. It is not an expression-wide owner conversion.
-            // In particular, returning or storing borrow! Option<int> is
-            // rejected by explicit_ownership(), and this branch never
-            // applies to generic/affine Option<T> or Result<T,E>.
-            let borrowed_concrete_adt = match &a.kind {
-                ExprKind::Ownership(OwnershipOp::Borrow, false, owner)
-                    if matches!(&owner.kind, ExprKind::Var(_))
-                    && matches!(*want, Type::OptionInt | Type::ResultIntStr) =>
-                {
-                    Some(self.value(owner)?)
-                }
-                _ => None,
-            };
-            let v = match borrowed_concrete_adt {
-                Some(value) => value,
-                None => self.consume_expected(a, *want)?,
-            };
+            // Option<int> and Result<int,string> are concrete Copy carriers
+            // (their active payload types are themselves Copy). Their normal
+            // consume path therefore preserves a reusable local. This is
+            // deliberately not generic borrowing or affine ownership.
+            let v = self.consume_expected(a, *want)?;
             if v.ty != *want {
                 return Err(type_err(
                     a.pos,
@@ -5182,5 +5167,6 @@ fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
 
 /// Identity-free admitted scalars: value copies, never ownership roots.
 fn is_copy_scalar(t: Type) -> bool {
-    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))
+    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)
+        | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr)
 }
