@@ -1,0 +1,11 @@
+// Proposed compiler-owned imports. Not put in tests/fixtures/pass: the
+// current single-file browser compiler does not claim registry linking.
+import module math from "atto.core/math";
+import module hash from "atto.core/hash";
+import module cell from "atto.core/cell";
+pub fnc main(): int {
+  if math.signum_int(-9) != -1; do return 1; fi
+  if hash.two_bytes(42, 7) != 17646; do return 2; fi
+  if cell.can_borrow_write(1, false); do return 3; fi
+  return 42;
+}
