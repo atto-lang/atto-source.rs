@@ -175,6 +175,10 @@ fn identical_source_conformance_negatives_are_compiler_diagnostics() {
         (include_str!("fixtures/actor-protocol-typestate-v1/stream-unary-confusion.atto"), "E_PROTOCOL_REPLY_MISMATCH"),
         (include_str!("fixtures/actor-protocol-typestate-v1/wrong-actor-kind.atto"), "E_PROTOCOL_IMPLEMENTATION_MISMATCH"),
         (include_str!("fixtures/actor-protocol-typestate-v1/wrong-nominal-reply.atto"), "E_PROTOCOL_REPLY_MISMATCH"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/nonlinear-if.atto"), "E_PROTOCOL_CFG_UNSUPPORTED"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/effectful-call-argument.atto"), "E_PROTOCOL_CFG_UNSUPPORTED"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/handle-argument-escape.atto"), "E_PROTOCOL_AFFINE_HANDLE"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/forward-declaration-only.atto"), "E_PROTOCOL_UNPROVEN_STATE"),
     ] {
         rejects(source, code);
     }
