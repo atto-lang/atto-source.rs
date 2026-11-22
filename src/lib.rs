@@ -8,6 +8,7 @@
 
 pub mod ast;
 pub mod check;
+mod future_typed_v1;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
@@ -40,6 +41,11 @@ pub fn compile_portable_v4(source: &str) -> Result<Vec<u8>, Diagnostic> {
 /// are compiled ahead of time. Unsupported syntax fails closed.
 pub fn compile_portable_v5(source: &str) -> Result<Vec<u8>, Diagnostic> {
     compile_inner(source, 5)
+}
+/// Explicit typed single-use Future<int> frontend. Compiles to the same
+/// guest-v5 AOT lifecycle, with an extra checked-source contract marker.
+pub fn compile_future_int_aot(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, 6)
 }
 fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
@@ -118,7 +124,7 @@ fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnost
             _ => {}
         }
     }
-    let program = if target {
+    let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -140,6 +146,9 @@ fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnost
     } else {
         parser::Parser::new(toks).parse_program()?
     };
+    if portable_version==6 {
+        future_typed_v1::lower(&mut program)?;
+    }
     let typed = check::check(&program)?;
     let bytes = match portable_version {
         4 => wasm::emit_portable_v4(&typed).ok_or_else(|| Diagnostic::new(
@@ -150,6 +159,10 @@ fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnost
             Pos {line:1,col:1},"E_UNSUPPORTED",
             "portable-v5 requires a closed straight-line 1–8 await i64-keyed future task; general Future<T>, branches, reference spills and dynamic effects are not implemented"
         ))?,
+        6 => future_typed_v1::mark(wasm::emit_portable_v5(&typed).ok_or_else(|| Diagnostic::new(
+            Pos {line:1,col:1},"E_UNSUPPORTED",
+            "typed Future<int> requires a closed, statically verified scalar pending-future frame without unsupported effects"
+        ))?),
         _ => wasm::emit(&typed),
     };
     if bytes.len() > wasm::MAX_OUTPUT {
@@ -231,6 +244,11 @@ mod abi {
     pub extern "C" fn compile_v5(length:i32)->i32 {
         compile_inner_abi(length,5)
     }
+    /// Explicit typed Future<int> source contract (same v5 guest runtime ABI).
+    #[no_mangle]
+    pub extern "C" fn compile_future_int(length:i32)->i32 {
+        compile_inner_abi(length,6)
+    }
     fn compile_inner_abi(length:i32,portable_version:u8)->i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
@@ -275,6 +293,7 @@ mod abi {
             let compilation=match portable_version {
                 4=>super::compile_portable_v4(source),
                 5=>super::compile_portable_v5(source),
+                6=>super::compile_future_int_aot(source),
                 _=>super::compile(source),
             };
             match compilation {
