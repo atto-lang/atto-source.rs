@@ -30,6 +30,7 @@ mod generator_runtime;
 mod channel_guest;
 mod portable_task_v3;
 mod portable_task_v4;
+mod portable_task_v5;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
@@ -1049,22 +1050,30 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
-    emit_with_profile(p, false)
+    emit_with_profile(p, 0)
 }
 
 /// The v4 target is explicit and fail-closed. Ordinary compile() is unchanged.
 pub fn emit_portable_v4(p: &TProgram) -> Option<Vec<u8>> {
     portable_task_v4::PortableTaskV4::from_program(p)?;
-    Some(emit_with_profile(p, true))
+    Some(emit_with_profile(p, 4))
 }
-fn emit_with_profile(p: &TProgram, select_v4: bool) -> Vec<u8> {
-    let portable_v3 = if select_v4 { None } else {
+/// Truly externally-pending scalar-future ABI. Does not auto-resume on yield.
+pub fn emit_portable_v5(p: &TProgram) -> Option<Vec<u8>> {
+    portable_task_v5::PortableTaskV5::from_program(p)?;
+    Some(emit_with_profile(p, 5))
+}
+fn emit_with_profile(p: &TProgram, version: u8) -> Vec<u8> {
+    let portable_v3 = if version == 0 {
         portable_task_v3::PortableTaskV3::from_program(p)
-    };
-    let portable_v4 = if select_v4 {
+    } else { None };
+    let portable_v4 = if version == 4 {
         portable_task_v4::PortableTaskV4::from_program(p)
     } else { None };
-    debug_assert!(!select_v4 || portable_v4.is_some());
+    let portable_v5 = if version == 5 {
+        portable_task_v5::PortableTaskV5::from_program(p)
+    } else { None };
+    debug_assert!(version == 0 || portable_v4.is_some() || portable_v5.is_some());
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
@@ -1250,6 +1259,10 @@ fn emit_with_profile(p: &TProgram, select_v4: bool) -> Vec<u8> {
     if let Some(profile) = &portable_v4 {
         profile.append_functions(&mut types, &mut func_types, &mut bodies);
     }
+    let portable_v5_first_idx = portable_v5.as_ref().map(|_| layout.func(p.funcs.len() as u32));
+    if let Some(profile) = &portable_v5 {
+        profile.append_functions(&mut types, &mut func_types, &mut bodies);
+    }
 
     // The tag has no JS import/export. Each instance gets its own identity,
     // so no host exception or foreign guest tag can be forged as an ordinary
@@ -1279,8 +1292,8 @@ fn emit_with_profile(p: &TProgram, select_v4: bool) -> Vec<u8> {
     section(&mut out, 3, fsec);
 
     let has_memory = !p.data.is_empty() || p.heap || p.strings || has_actors
-        || portable_v4.is_some();
-    let export_memory = has_memory && portable_v4.is_none();
+        || portable_v4.is_some() || portable_v5.is_some();
+    let export_memory = has_memory && portable_v4.is_none() && portable_v5.is_none();
     if has_memory {
         // Fixed and non-growable: strings, the object heap, or a private
         // 64 KiB actor memory even for scalar-only actors.
@@ -1327,7 +1340,8 @@ fn emit_with_profile(p: &TProgram, select_v4: bool) -> Vec<u8> {
         + if has_actors { 2 } else { 0 }
         + u64::from(has_tasks)
         + if portable_v3.is_some() { 5 } else { 0 }
-        + if portable_v4.is_some() { 6 } else { 0 });
+        + if portable_v4.is_some() { 6 } else { 0 }
+        + if portable_v5.is_some() { 8 } else { 0 });
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -1356,6 +1370,9 @@ fn emit_with_profile(p: &TProgram, select_v4: bool) -> Vec<u8> {
         profile.append_exports(&mut exp, first);
     }
     if let (Some(profile), Some(first)) = (&portable_v4, portable_v4_first_idx) {
+        profile.append_exports(&mut exp, first);
+    }
+    if let (Some(profile), Some(first)) = (&portable_v5, portable_v5_first_idx) {
         profile.append_exports(&mut exp, first);
     }
     section(&mut out, 7, exp);
@@ -1403,6 +1420,7 @@ fn emit_with_profile(p: &TProgram, select_v4: bool) -> Vec<u8> {
     if has_tasks { all.push("atto.task_invoke".into()); }
     if let Some(profile) = &portable_v3 { profile.append_names(&mut all); }
     if let Some(profile) = &portable_v4 { profile.append_names(&mut all); }
+    if let Some(profile) = &portable_v5 { profile.append_names(&mut all); }
     if !p.generators.is_empty() {
         all.extend([
             "atto.generator_new", "atto.generator_check_ptr",
@@ -1458,6 +1476,12 @@ fn emit_with_profile(p: &TProgram, select_v4: bool) -> Vec<u8> {
         let mut marker=Vec::new();
         name(&mut marker,"atto.browser.guest.v4");
         marker.push(4); // explicit AOT arena compilation target
+        section(&mut out,0,marker);
+    }
+    if portable_v5.is_some() {
+        let mut marker=Vec::new();
+        name(&mut marker,"atto.browser.guest.v5");
+        marker.push(5); // externally-pending i64 future arena
         section(&mut out,0,marker);
     }
     if use_channel {
