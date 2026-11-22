@@ -578,8 +578,24 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                         if package && (path.starts_with("./") || path.starts_with("../")) {
                             return Err(c.err("E_SYNTAX", "package imports cannot use relative file paths"));
                         }
-                        if !package && !path.starts_with("./") && !path.starts_with("../") {
-                            return Err(c.err("E_SYNTAX", "file imports require a quoted relative path"));
+                        // Built-in libraries are reserved compiler module identities:
+                        // "core.*", "alloc.*" and "std.*" never name host files.
+                        // Parsing does not certify the target's built-in linker.
+                        let built_in = ["core", "alloc", "std"].iter().any(|root| {
+                            path == *root || path.strip_prefix(root)
+                                .is_some_and(|tail| tail.starts_with('.'))
+                        });
+                        if !package && !built_in
+                            && !path.starts_with("./") && !path.starts_with("../") {
+                            return Err(c.err("E_SYNTAX",
+                                "file imports need ./ or ../; built-ins use core.*, alloc.*, std.*"));
+                        }
+                        if !package && built_in && path.split('.').any(|part| {
+                            part.is_empty()
+                                || !part.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                                || !part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                        }) {
+                            return Err(c.err("E_SYNTAX", "invalid built-in module identifier"));
                         }
                         c.next();
                     }
