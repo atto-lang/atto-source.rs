@@ -118,6 +118,53 @@ try {
   assert.equal(shutdown.stats.resumes,0,'no resume on closed scheduler');
   console.log('PASS portable v3: closed scheduler still revokes Promise and drops frame');
 
+
+  // Compiler-generated i64 locals must survive real suspension in Wasm.
+  const spillSource=join(temp,'spill.atto'),spillOut=join(temp,'spill.wasm');
+  await writeFile(spillSource,
+    'pub susp fnc main(): int { val answer: int = 42; await 41; return await answer; }');
+  execFileSync(process.env.ATTOC||'target/release/attoc',[spillSource,'-o',spillOut],
+    {stdio:'pipe',timeout:30000});
+  const spillBytes=await readFile(spillOut);
+  assert.equal(WebAssembly.validate(spillBytes),true);
+  const spillModule=new WebAssembly.Module(spillBytes);
+  assert.equal(verifyPortableTaskGuestV3(spillModule),true);
+  const spillGuest=new WebAssembly.Instance(spillModule,{atto:{
+    cooperate(){throw Error('E_V3_JSPI_FORBIDDEN');}
+  }}).exports;
+  assert.equal(spillGuest.task_start_v3(10,1),1);
+  assert.equal(spillGuest.task_resume_v3(10,1),1);
+  assert.equal(spillGuest.task_resume_v3(10,1),2);
+  assert.equal(spillGuest.task_result_v3(10,1),42n,'live int local survived await');
+  assert.equal(spillGuest.task_drop_v3(10,1),0);
+  assert.equal(spillGuest.task_start_v3(10,1),-1,'old generation is fenced');
+  console.log('PASS portable v3: actual AOT live-local spill survives resumption');
+
+  // The shared host scheduler can service multiple independent task instances.
+  // Each guest still owns one fixed private frame; this is NOT a shared arena.
+  const multiTurns=[];
+  const multiLoop=createWorkerControlLoop({postTurn:fn=>multiTurns.push(fn)});
+  const first=createPortableTaskHostV3({
+    module,loop:multiLoop,owner:'task-one',ownerId:7,epoch:1});
+  const second=createPortableTaskHostV3({
+    module:spillModule,loop:multiLoop,owner:'task-two',ownerId:8,epoch:1});
+  const pFirst=first.run(),pSecond=second.run();
+  assert.equal(multiLoop.stats.owners,2,'both task owners admitted');
+  let multiQuanta=0;
+  while(multiTurns.length&&multiQuanta<12) {
+    multiTurns.shift()();
+    multiQuanta++;
+  }
+  assert.equal(await pFirst,42n);
+  assert.equal(await pSecond,42n);
+  assert.equal(first.stats.turns,3);
+  assert.equal(second.stats.turns,3);
+  assert.equal(first.stats.cleanups,1);
+  assert.equal(second.stats.cleanups,1);
+  assert.equal(multiLoop.stats.owners,0,'both independent frames retired');
+  assert.equal(multiQuanta,6);
+  console.log('PASS portable v3: two distinct AOT tasks interleave on one scheduler');
+
 } finally {
   await rm(temp,{recursive:true,force:true});
 }
