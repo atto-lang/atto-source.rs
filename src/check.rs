@@ -3700,6 +3700,19 @@ impl<'a> FnCx<'a> {
                     }
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
                 }
+                // The *concrete* Option<int> and Result<int,string> profiles
+                // contain only immutable scalar payloads. A scoped readonly
+                // call argument may therefore read the same tagged value
+                // without creating a second affine owner. This is NOT general
+                // Option<T>/Result<T,E> borrowing: class/actor/heap payloads
+                // remain rejected until typed loan provenance and drop exist.
+                // Also forbid temporary ADT operands: a borrowed carrier must
+                // name a still-live owner at this call boundary.
+                if let ExprKind::Var(_) = &inner.kind {
+                    if matches!(self.value(inner)?.ty, Type::OptionInt | Type::ResultIntStr) {
+                        return self.value(inner);
+                    }
+                }
                 let value = self.value(inner)?;
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
@@ -3707,7 +3720,7 @@ impl<'a> FnCx<'a> {
                     }
                 }
                 if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding"));
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding; unproved ADT payload loans are forbidden"));
                 }
                 Ok(value)
             }
