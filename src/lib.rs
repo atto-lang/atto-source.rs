@@ -113,7 +113,24 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    compile_prelexed(lexer::lex(source)?, logical_path)
+    let tokens = lexer::lex(source)?;
+    let linked = if matches!(
+        tokens.first(),
+        Some(lexer::Token { tok: lexer::Tok::Ident(name), .. }) if name == "import"
+    ) {
+        // The single-source/browser API can resolve compiler-owned .atto
+        // libraries, but NEVER implicit filesystem imports. Real relative
+        // source loading still requires compile_with_imports + a trusted loader.
+        import_link::lower(source, logical_path.unwrap_or(std::path::Path::new("main.atto")), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "relative imports require a trusted project loader",
+            ))
+        })?
+    } else {
+        tokens
+    };
+    compile_prelexed(linked, logical_path)
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)

@@ -1,0 +1,28 @@
+// Atto Rust/Wasm compiler-local scalar testing helpers, candidate M0.
+// Pure .atto definitions; 0 = pass, 1 = fail. Resolved via the compiler-owned
+// bounded std/testing_scalar linker, never an ambient project file.
+// Not the full Java TestCase/RunSummary or guest ORES_TEST protocol.
+pub fnc equal_int(int actual, int expected): int {
+  return expected == actual ? 0 : 1;
+}
+
+pub fnc not_equal_int(int actual, int unexpected): int {
+  return actual == unexpected ? 1 : 0;
+}
+
+pub fnc greater_than_int(int actual, int lower_bound): int {
+  return actual <= lower_bound ? 1 : 0;
+}
+
+pub fnc less_than_int(int actual, int upper_bound): int {
+  return actual >= upper_bound ? 1 : 0;
+}
+
+// Arithmetic-free, inclusive and safe at signed-i64 boundaries.
+pub fnc in_range_int(int actual, int lower_bound, int upper_bound): int {
+  return lower_bound > upper_bound ? 1 : (actual < lower_bound ? 1 : (actual > upper_bound ? 1 : 0));
+}
+
+pub fnc combine_status(int left, int right): int {
+  return left != 0 ? 1 : (right != 0 ? 1 : 0);
+}

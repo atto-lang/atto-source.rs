@@ -71,3 +71,47 @@ fn untrusted_imports_cannot_create_forged_compiler_identifiers() {
 fn browser_single_file_abi_still_rejects_unresolved_imports() {
     assert!(compile("import square from \"./math.atto\"; pub fnc main(): int {return square(7); }").is_err());
 }
+
+
+#[test]
+fn compiler_owned_scalar_library_never_calls_host_loader() {
+    let entry = "import fnc equal_int, in_range_int from \"std/testing_scalar\"; \
+        pub fnc main(): int { return in_range_int(42,40,50) + equal_int(7,7); }";
+    let native = compile(entry).expect("single-source importer must resolve compiler-owned .atto");
+    assert!(native.starts_with(b"\0asm\x01\0\0\0"));
+    let linked = compile_with_imports(entry, Path::new("src/main.atto"), |_| {
+        panic!("compiler-owned standard library must not use ambient file loader")
+    }).expect("compiler-owned import must bypass project resolver");
+    assert!(linked.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(native, compile(entry).unwrap(), "identical entry source must compile deterministically");
+    assert!(!linked.is_empty(), "explicit import linker must produce a native Wasm module");
+}
+#[test]
+fn compiler_owned_scalar_alias_and_namespace_imports_compile() {
+    for entry in [
+        "import fnc greater_than_int as greater from \"atto.std/testing_scalar.atto\"; \
+         pub fnc main(): int { return greater(42,41); }",
+        "import * as Testing from \"std/testing_scalar.atto\"; \
+         pub fnc main(): int { return Testing.less_than_int(41,42); }",
+        "import fnc in_range_int from \"std/testing_scalar.atto\"; \
+         pub fnc main(): int { return in_range_int(-9223372036854775808,-9223372036854775808,9223372036854775807); }",
+    ] {
+        assert!(compile(entry).is_ok(), "compiler-local import must compile: {entry}");
+    }
+}
+#[test]
+fn compiler_owned_scalar_import_boundaries_are_fail_closed() {
+    for (entry, expected) in [
+        ("import fnc equal_int from \"std/testing_scalar.ores\"; pub fnc main():int{return 0;}", "E_UNSUPPORTED"),
+        ("import fnc equal_int from \"std/../testing_scalar\"; pub fnc main():int{return 0;}", "E_UNSUPPORTED"),
+        ("import fnc equal_int from \"std/unknown\"; pub fnc main():int{return 0;}", "E_UNSUPPORTED"),
+        ("import fnc missing from \"std/testing_scalar\"; pub fnc main():int{return missing(1,1);}", "E_UNBOUND"),
+        ("import fnc equal_int as alias, in_range_int as alias from \"std/testing_scalar\"; pub fnc main():int{return 0;}", "E_DUPLICATE"),
+        ("import fnc equal_int from \"std/testing_scalar\"; pub fnc equal_int(int x,int y):int{return 1;} pub fnc main():int{return 0;}", "E_DUPLICATE"),
+        ("import fnc equal_int from \"std/testing_scalar\"; pub fnc main():int{return __atto_file_import_0.equal_int(1,1);}", "E_RESERVED"),
+        ("import fnc equal_int from \"./stdlib/testing_scalar.atto\"; pub fnc main():int{return 0;}", "E_IMPORT"),
+    ] {
+        let err = compile(entry).expect_err("invalid library import must never emit Wasm");
+        assert_eq!(err.code, expected, "{entry}: unexpected compiler diagnostic");
+    }
+}
