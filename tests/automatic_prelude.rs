@@ -94,3 +94,61 @@ fn core_ownership_categories_do_not_grant_unimplemented_borrow_lowering() {
     assert!(!prelude::core_sum_carrier("Result", 1));
     assert!(!prelude::core_sum_carrier("Object", 1));
 }
+
+#[test]
+fn canonical_type_registry_pins_arity_ownership_allocation_drop_and_send() {
+    use prelude::{Allocation, DropPolicy, LoweringStatus, Ownership, SendPolicy};
+
+    assert_eq!(prelude::TYPE_INFO.len(), prelude::BINDINGS.len());
+    for binding in prelude::BINDINGS {
+        let info = prelude::type_info(binding.name).expect(binding.name);
+        assert_eq!(info.canonical, binding.canonical);
+        assert_eq!(info.kind, binding.kind);
+        assert_eq!(info.scope, binding.scope);
+        assert!(!info.canonical.contains(".."));
+        assert!(info.accepts_arity(info.min_generic_arity as usize)
+            || info.kind == prelude::Kind::Trait);
+    }
+
+    let option = prelude::type_info("Option").unwrap();
+    assert_eq!(option.min_generic_arity, 1);
+    assert_eq!(option.max_generic_arity, 1);
+    assert_eq!(option.ownership, Ownership::PayloadDependent);
+    assert_eq!(option.allocation, Allocation::None);
+    assert_eq!(option.drop_policy, DropPolicy::ActivePayloadOnce);
+    assert_eq!(option.send_policy, SendPolicy::PayloadDependent);
+
+    let result = prelude::type_info("Result").unwrap();
+    assert_eq!(result.min_generic_arity, 2);
+    assert_eq!(result.max_generic_arity, 2);
+    assert_eq!(result.drop_policy, DropPolicy::ActivePayloadOnce);
+
+    assert_eq!(prelude::type_info("None").unwrap().drop_policy, DropPolicy::None);
+    for name in ["Array", "FixedArray", "Tuple", "Pair", "Entry"] {
+        assert_eq!(prelude::type_info(name).unwrap().drop_policy,
+            DropPolicy::AllInitializedMembers, "{name}");
+    }
+
+    let slice = prelude::type_info("Slice").unwrap();
+    assert_eq!(slice.ownership, Ownership::BorrowedView);
+    assert_eq!(slice.allocation, Allocation::BorrowedView);
+    assert_eq!(slice.send_policy, SendPolicy::NeverBorrowed);
+
+    let list = prelude::type_info("List").unwrap();
+    assert_eq!(list.scope, Scope::Alloc);
+    assert_eq!(list.allocation, Allocation::AllocatorRequired);
+    assert_eq!(list.drop_policy, DropPolicy::OwnedStorage);
+    assert_eq!(list.lowering, LoweringStatus::ContractOnly);
+
+    let string = prelude::type_info("String").unwrap();
+    assert_eq!(string.ownership, Ownership::BorrowedView);
+    assert_eq!(string.lowering, LoweringStatus::LegacyStringView);
+    assert_eq!(string.drop_policy, DropPolicy::None);
+
+    assert!(prelude::type_info("HashMap").unwrap().scope == Scope::Explicit);
+    assert!(prelude::type_info("Object").is_none());
+    assert!(!option.accepts_arity(2));
+    assert!(!result.accepts_arity(1));
+    assert!(!prelude::core_sum_carrier("Option", 2));
+    assert!(!prelude::core_sum_carrier("Result", 1));
+}
