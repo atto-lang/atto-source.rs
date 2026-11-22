@@ -2,6 +2,7 @@
 // Freestanding AttoLang Result adapters. Backend-owned source candidate.
 // Result<T,E>/Ok/Err are nominal ADTs; Err is not a thrown exception.
 // Match must consume at most one active payload with exact lifetime cleanup.
+use namespace core;
 define module result as
   pub fnc flatten<T, E>(Result<Result<T, E>, E> value): Result<T, E> {
     return match value over
