@@ -21,6 +21,7 @@ const cases = [
   ['pass/250-v2-cancel-read-after-close.atto', 42, '42\n', 0],
   ['pass/251-v2-cancel-read-head-preserves-fifo.atto', 42, '42\n', 0],
   ['pass/252-v2-cancel-read-middle-preserves-fifo.atto', 42, '42\n', 0],
+  ['pass/253-v2-cancel-read-releases-graph-admission.atto', 42, '40\n2\n', 0],
   ['panic/235-v2-negative-bounded-channel.atto', null, '', 14],
   ['panic/236-v2-negative-other-capacity.atto', null, '', 14],
   ['panic/237-v2-negative-legacy-channel-constructor.atto', null, '', 14],
