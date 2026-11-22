@@ -31,7 +31,8 @@ route and compiling three capacity-related Wasm fixtures) is
 
 The legacy guest constructor treated every negative capacity as effectively
 unbounded. As a result, `Channel<int>.bounded(-1)` silently acquired the
-privileged unbounded semantics. The compiler now lowers `bounded(n)` to
+privileged unbounded semantics. The compiler now lowers both `Channel<T>.bounded(n)` and the legacy
+`channel<T>(capacity: n)` constructor to
 `__chan_new_bounded(n)`, implemented in this backend's `.atto` module.
 This helper rejects all negative values before allocating. Direct internal
 `__chan_new` rejects values below -1, while the dedicated
@@ -42,6 +43,7 @@ panic code **14**. This is a runtime trap, not yet the final recoverable
 New guests:
 - `tests/fixtures/panic/235-v2-negative-bounded-channel.atto` (panic 14)
 - `tests/fixtures/panic/236-v2-negative-other-capacity.atto` (panic 14)
+- `tests/fixtures/panic/237-v2-negative-legacy-channel-constructor.atto` (panic 14)
 - `tests/fixtures/pass/236-v2-unbounded-constructor-atto.atto` (exit 42)
 
 Compiler-to-Wasm assertions are not browser guest execution. All new current
