@@ -92,6 +92,9 @@ try{
    ['unlinked std module','import * as missing from "std.absent"; pub fnc main(): int { return 42; }','E_STDLIB_UNLINKED'],
    ['unimplemented fetch','import * as http from "std.http"; pub fnc main(): int { return http.get(1); }','E_UNBOUND'],
    ['unimplemented filesystem','import * as fs from "std.fs"; pub fnc main(): int { return fs.read_text(1); }','E_UNBOUND'],
+   ['unimplemented read_file','import * as fs from "std.fs"; pub fnc main(): int { return fs.read_file(1); }','E_UNBOUND'],
+   ['unimplemented open','import * as fs from "std.fs"; pub fnc main(): int { return fs.open(1); }','E_UNBOUND'],
+   ['unimplemented read_stream','import * as fs from "std.fs"; pub fnc main(): int { return fs.read_stream(1); }','E_UNBOUND'],
    ['duplicate binding','import * as x from "std.http"; import * as x from "std.fs"; pub fnc main(): int {return 0;}','E_DUPLICATE'],
    ['forged reserved name','import * as http from "std.http"; pub fnc __atto_file_import_0(): int {return 0;} pub fnc main(): int {return 42;}','E_RESERVED'],
  ]) {
@@ -134,7 +137,7 @@ try{
    'pure policy vectors must not acquire HTTP/FS host capabilities');
  assert.equal(new WebAssembly.Instance(vectorModule,{}).exports.main(),42n,
    'compiled sealed-import guest disagreed with 56 canonical policy vectors');
- console.log('PASS compiled Atto sealed std HTTP/FS pure-policy imports: exit 42, zero host imports, 56 source vectors, six negatives and rejected async HTTP/FS');
+ console.log('PASS compiled Atto sealed std HTTP/FS pure-policy imports: exit 42, zero host imports, 56 source vectors, nine negatives and rejected async HTTP/FS');
 } finally {
  rmSync(dir,{recursive:true,force:true});
 }
