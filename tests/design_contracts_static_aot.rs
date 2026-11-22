@@ -79,6 +79,8 @@ fn dynamic_contracts_survive_the_parser_as_source_spanned_clauses() {
 fn misplaced_and_colliding_binders_are_diagnosed() {
     rejected("fnc main(int result) -> int ensures |result| -> true; :: return result; end", "E_CONTRACT_BINDER");
     rejected("fnc main() -> int invariant true; :: return 42; end", "E_CONTRACT_PLACEMENT");
+    rejected("fnc main() -> int ensures |result| -> true; requires true; :: return 42; end", "E_CONTRACT_ORDER");
+    rejected("fnc main() -> int ensures |self| -> true; :: return 42; end", "E_CONTRACT_BINDER");
     rejected("define class C as invariant |s| -> true; end fnc main() -> int { return 42; }", "E_CONTRACT_PLACEMENT");
 }
 
