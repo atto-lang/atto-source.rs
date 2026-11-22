@@ -62,7 +62,7 @@ fn filesystem_package_resolver_injects_builtin_without_disk_shadow() {
     fs::create_dir_all(root.join("src")).unwrap();
     fs::create_dir_all(root.join("atto.alloc")).unwrap();
     fs::write(root.join(".atto.pkg.toml"),
-        "[package]\\nname=\\\"consumer\\\"\\nversion=\\\"1.0.0\\\"\\n").unwrap();
+        "[package]\nname=\"consumer\"\nversion=\"1.0.0\"\n").unwrap();
     fs::write(root.join("src/main.atto"), ENTRY).unwrap();
     // A filesystem lookalike may exist but must never become compiler source.
     fs::write(root.join("atto.alloc/aligned.atto"),
