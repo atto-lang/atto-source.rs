@@ -52,7 +52,7 @@ pub fnc main(): int {
   if !(websocket.websocket_header_bytes(200, false) == -1) then return 44; fi
   if !(quic.quic_wire_integer_valid(4611686018427387903)) then return 45; fi
   if !(!quic.quic_wire_integer_valid(4611686018427387904)) then return 46; fi
-  if !(quic.quic_stream_client_initiated(2)) then return 47; fi
+  if !(quic.quic_stream_id_valid(2) && quic.quic_stream_client_initiated(2)) then return 47; fi
   if !(!quic.quic_stream_client_initiated(3)) then return 48; fi
   if !(!quic.quic_stream_bidirectional(3)) then return 49; fi
   if !(quic.quic_encoding_min_width(63) == 1) then return 50; fi
