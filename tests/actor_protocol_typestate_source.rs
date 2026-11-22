@@ -282,9 +282,8 @@ fn consumed_authority_and_settled_reply_are_invalid_after_completion() {
 
 #[test]
 fn outstanding_obligations_are_reported_at_end_of_callable() {
-    let no_close = GOOD.replace(
-        "  closed.complete_protocol();",
-        "");
+    let close_at = GOOD.find("  closed.complete_protocol();").unwrap();
+    let no_close = format!("{}\n}}\n", &GOOD[..close_at]);
     rejects(&no_close, "E_PROTOCOL_TERMINAL_INCOMPLETE");
     let cut = GOOD.find("  val (ack, connected) = await connecting?;").unwrap();
     let pending = format!("{}\n}}\n", &GOOD[..cut]);
