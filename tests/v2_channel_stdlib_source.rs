@@ -31,6 +31,18 @@ const TRY_CLOSED_EMPTY: &str =
     include_str!("fixtures/panic/245-v2-try-read-closed-empty-denial.atto");
 const TRY_CLOSED_DRAINED: &str =
     include_str!("fixtures/panic/246-v2-try-read-after-drain-denial.atto");
+const CANCEL_FIFO_TAIL: &str =
+    include_str!("fixtures/pass/247-v2-cancel-read-fifo-tail.atto");
+const CANCEL_WRONG_CHANNEL: &str =
+    include_str!("fixtures/pass/248-v2-cancel-read-wrong-channel.atto");
+const CANCEL_DELIVERED: &str =
+    include_str!("fixtures/pass/249-v2-cancel-read-after-delivery.atto");
+const CANCEL_CLOSED: &str =
+    include_str!("fixtures/pass/250-v2-cancel-read-after-close.atto");
+const CANCEL_AWAIT_TRAPS: &str =
+    include_str!("fixtures/panic/247-v2-cancel-read-await-traps.atto");
+const CANCEL_WRONG_TYPE: &str =
+    include_str!("fixtures/fail/247-v2-cancel-read-wrong-payload-type.atto");
 
 
 #[test]
@@ -41,7 +53,7 @@ fn channel_module_is_extracted_once_and_not_duplicated_in_prelude() {
     let declarations = [
         "__chan_new", "__chan_new_bounded", "__chan_offer", "__chan_send", "__chan_send_pipe",
         "__chan_take", "__chan_recv", "__chan_recv_user_opt",
-        "__chan_recv_opt", "__chan_try", "__chan_nb",
+        "__chan_recv_opt", "__chan_try", "__chan_nb", "__chan_cancel_read",
         "__chan_close_internal", "__chan_close",
     ];
     for name in declarations {
@@ -204,4 +216,51 @@ fn terminal_try_read_guest_cases_compile_to_real_wasm() {
         assert!(wasm.starts_with(b"\0asm\x01\0\0\0"),
             "{label}: compiler did not emit Wasm");
     }
+}
+
+#[test]
+fn cancelled_read_is_atomically_unlinked_and_not_reported_as_eof() {
+    let start = LIB.find("fnc __chan_cancel_read(int c, int f): int {")
+        .expect("explicit cancellation is native Atto source");
+    let next = &LIB[start..];
+    let end = next.find("\n}\n").expect("unterminated cancellation helper");
+    let code = &next[..end];
+    assert!(code.contains("if __load(c, 56) != 0 then __panic(10); fi"));
+    assert!(code.contains("if __load(c, 64) != 0 then __panic(10); fi"));
+    assert!(code.contains("if __load(node, 0) == f then"));
+    assert!(code.contains("__store(c, 40, next);"));
+    assert!(code.contains("__store(prev, 8, next);"));
+    assert!(code.contains("if __load(c, 48) == node then"));
+    assert!(code.contains("__store(c, 48, prev);"));
+    assert!(code.contains("__store(f, 0, 2);"));
+    assert!(code.contains("return 1;"));
+    assert!(code.contains("return 0;"));
+    assert!(PRELUDE.contains("if __load(f, 0) == 2 then __panic(15); fi"),
+        "cancelled Future<Option<T>> must not masquerade as normal None EOF");
+    assert!(CHECKER.contains("\"cancel_read\" => {"));
+    assert!(CHECKER.contains("Ty::Future(Box::new(Ty::Option(item.clone())))"),
+        "cancel_read requires a typed Future<Option<T>> for this Channel<T>");
+    assert!(CHECKER.contains("self.rt(\"__chan_cancel_read\", vec![recv, pending])"));
+}
+
+#[test]
+fn cancellation_guest_fixtures_compile_and_bad_future_type_fails_closed() {
+    // Compiled-guest execution is separately required in the Node gate.
+    for (label, src) in [
+        ("cancel pending tail and preserve FIFO", CANCEL_FIFO_TAIL),
+        ("wrong channel cannot revoke reader", CANCEL_WRONG_CHANNEL),
+        ("delivered Future cannot be cancelled", CANCEL_DELIVERED),
+        ("close completion cannot be revoked", CANCEL_CLOSED),
+        ("await cancelled Future is panic 15", CANCEL_AWAIT_TRAPS),
+    ] {
+        let wasm = atto_compiler::v2::compile(atto_compiler::lexer::lex(src)
+            .unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
+            .unwrap_or_else(|e| panic!("{label}: compiler: {e}"));
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"),
+            "{label}: compiler did not emit Wasm");
+    }
+    let invalid = atto_compiler::v2::compile(atto_compiler::lexer::lex(CANCEL_WRONG_TYPE)
+        .expect("type-negative source lexes")).expect_err("wrong Future<Option<T>> must fail");
+    assert_eq!(invalid.code, "E_TYPE",
+        "wrong-element-type pending Future cannot revoke this channel's readers");
 }
