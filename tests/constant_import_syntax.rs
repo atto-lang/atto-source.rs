@@ -34,15 +34,50 @@ fn file_constants_are_static_headers_with_private_default_and_pub_variant() {
         define const int internal_code = 123;
         define pub const int status_valid = 200;
         define pub const int status_not_found as 404;
+        define pub const string status_from_env = std.env.read_env("status_valid");
         define pub const string host = os.read_env("HOST");
         pub fnc main(): int { return status_valid; }
     "#);
     assert_eq!(
         headers.constants,
-        ["internal_code", "status_valid", "status_not_found", "host"]
+        ["internal_code", "status_valid", "status_not_found", "status_from_env", "host"]
     );
     assert!(headers.imports.is_empty());
     assert!(headers.const_imports.is_empty());
+    assert_eq!(headers.env_const_reads, ["status_from_env", "host"]);
+}
+
+#[test]
+fn canonical_qualified_std_env_read_in_namespace_is_a_static_const_shape() {
+    let headers = parse(r#"
+        use namespace std.http;
+        define pub const string status_valid = std.env.read_env("status_valid");
+        pub fnc main(): int { return 0; }
+    "#);
+    assert_eq!(headers.namespace.as_deref(), Some("std.http"));
+    assert_eq!(headers.constants, ["status_valid"]);
+    assert_eq!(headers.env_const_reads, ["status_valid"]);
+
+    // A key-name identifier is only syntactically admitted; the typed
+    // constexpr checker must separately establish its constant provenance.
+    let id_key = parse(r#"
+        define const string key = "ATTO_KEY";
+        define pub const string value = std.env.read_env(key);
+    "#);
+    assert_eq!(id_key.env_const_reads, ["value"]);
+}
+
+#[test]
+fn malformed_direct_static_environment_reads_fail_early() {
+    for source in [
+        r#"define pub const string x = std.env.read_env();"#,
+        r#"define pub const string x = std.env.read_env("A", "B");"#,
+        r#"define pub const string x = std.env.read_env(123);"#,
+        r#"define pub const string x = std.env.read_env("A").field;"#,
+        r#"define pub const string x = os.read_env("A", "B");"#,
+    ] {
+        reject(source, "E_CONST");
+    }
 }
 
 #[test]
