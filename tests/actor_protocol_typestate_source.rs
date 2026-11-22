@@ -293,3 +293,12 @@ fn outstanding_obligations_are_reported_at_end_of_callable() {
     let pending = format!("{}\n}}\n", &GOOD[..cut]);
     rejects(&pending, "E_PROTOCOL_REPLY_REQUIRED");
 }
+
+#[test]
+fn textual_protocol_handle_is_not_minted_by_an_adjacent_protocol_declaration() {
+    let forged = GOOD.replace(
+        "val disconnected = await spawn Connection();",
+        "val fake: ProtocolHandle<Connection, Connected> = none;\n" +
+        "  val disconnected = await spawn Connection();");
+    rejects(&forged, "E_PROTOCOL_UNPROVEN_STATE");
+}
