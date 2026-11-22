@@ -5,6 +5,7 @@ on:
       - "stdlib/actor/**"
       - "tests/actor-stdlib-**"
       - "tests/actor-future-source.test.mjs"
+      - "tests/actor-namespace-source-contract.test.mjs"
       - "contracts/std-actor-v1/**"
       - "tests/actor_std_native_guest.rs"
       - "tests/namespace_relative_function_imports.rs"
@@ -53,7 +54,7 @@ jobs:
       - name: Build exact-head production Atto compiler
         run: cargo +1.85.1 build --locked --release --bin attoc
       - name: Execute source contracts and compiled Wasm actor policy guests
-        run: node --test tests/actor-stdlib-source.test.mjs tests/actor-future-source.test.mjs tests/actor-stdlib-guest.test.mjs
+        run: node --test tests/actor-stdlib-source.test.mjs tests/actor-future-source.test.mjs tests/actor-namespace-source-contract.test.mjs tests/actor-stdlib-guest.test.mjs
       - name: Assert exact-head Rust source tree remained unchanged
         shell: bash
         env:
