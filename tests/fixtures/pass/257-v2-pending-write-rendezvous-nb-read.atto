@@ -1,0 +1,22 @@
+// expect-exit: 42
+// expect-stdout: 42
+// nb readch must rendezvous with the oldest registered writer.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val ticket = ch.send_pending(42);
+  val reader = nb readch ch;
+  val ack = await ticket;
+  val ready = await reader;
+  val int value = match ready over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  val int success = match ack over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if success != 1 then return 91; fi
+  ch.close();
+  stdio.println(value);
+  return value;
+}
