@@ -1,0 +1,42 @@
+name: Design-by-contract static AOT slice (real Rust + Wasm compiler)
+on:
+  pull_request:
+    paths:
+      - 'src/parser.rs'
+      - 'src/lib.rs'
+      - 'tests/design_contracts_static_aot.rs'
+      - 'docs/design-contracts-static-aot-v1.md'
+      - '.github/workflows/design-contracts-static-aot.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-compiler-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify committed source SHA and unchanged worktree
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code HEAD --
+          git rev-parse HEAD^{tree}
+          for f in src/parser.rs src/lib.rs tests/design_contracts_static_aot.rs; do
+            test "$(git hash-object --no-filters "$f")" = "$(git rev-parse "HEAD:$f")"
+          done
+      - name: Compile real Rust compiler and run contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+          cargo test --locked --test design_contracts_static_aot -- --nocapture
+      - name: No guest-parity overclaim
+        run: echo 'This runs compiled Atto->Wasm emission and negative compiler tests; it does not execute Wasm guests or prove dynamic contract panic semantics.'
