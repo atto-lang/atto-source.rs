@@ -2199,9 +2199,13 @@ impl Parser {
                     }
                     return self.parse_return_match(pos);
                 }
+                // An explicit 'void' after return/^ denotes no return value.
+                // It is not an expression. Reuse Stmt::Return(None) so the
+                // ordinary return checker rejects it in non-void callables.
+                let explicit_void = self.eat_word("void");
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
-                let value = if at_end { None } else { Some(self.parse_expr()?) };
+                let value = if explicit_void || at_end { None } else { Some(self.parse_expr()?) };
                 if self.in_generator && value.is_some() {
                     return Err(Diagnostic::new(pos, "E_RETURN",
                         "generators may terminate with 'return;' but cannot return a value"));
@@ -2256,6 +2260,12 @@ impl Parser {
                 Ok(Stmt::Continue(pos))
             }
             Some("match") => self.parse_match(false),
+            // Optional procedural wrapper, with the same lexical return
+            // target as an ordinary statement if.
+            Some("do") if self.word_at(1) == Some("if") => {
+                self.advance();
+                self.parse_if()
+            }
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
@@ -2657,7 +2667,8 @@ impl Parser {
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        let braced = *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
                 if self.eat_word("elif")
@@ -2709,7 +2720,10 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        // Braced statement-if closes with '}'. Do NOT consume a following
+        // 'fi': it can belong to a surrounding then/fi-style statement-if.
+        // This is the independently tested disambiguation rule from #87.
+        if !braced && !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
