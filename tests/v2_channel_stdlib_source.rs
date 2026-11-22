@@ -17,6 +17,14 @@ const RENDEZVOUS_ITER: &str =
     include_str!("fixtures/pass/239-v2-rendezvous-for-await.atto");
 const RENDEZVOUS_CLOSE: &str =
     include_str!("fixtures/pass/240-v2-rendezvous-close-wakes-reader.atto");
+const LEGACY_PENDING_PRODUCER: &str =
+    include_str!("fixtures/panic/241-v2-legacy-pipe-producer-pending-read-denial.atto");
+const LEGACY_PENDING_CONSUMER: &str =
+    include_str!("fixtures/panic/242-v2-legacy-pipe-consumer-pending-read-denial.atto");
+const LEGACY_PRELOADED_PRODUCER: &str =
+    include_str!("fixtures/panic/243-v2-legacy-pipe-producer-preloaded-denial.atto");
+const LEGACY_PRELOADED_CONSUMER: &str =
+    include_str!("fixtures/panic/244-v2-legacy-pipe-consumer-preloaded-denial.atto");
 
 
 #[test]
@@ -122,5 +130,40 @@ fn rendezvous_guest_programs_compile_to_wasm() {
             .unwrap_or_else(|e| panic!("{label}: compiler: {e}"));
         assert!(wasm.starts_with(b"\0asm\x01\0\0\0"),
             "{label}: compiler did not emit a Wasm guest");
+    }
+}
+
+#[test]
+fn legacy_pipe_admission_denies_preexisting_public_readers_and_buffered_data() {
+    // The typed atomic 3-port PipeHandle already rejects both conditions.
+    // The legacy 2-port paths must not bypass the same ownership boundary.
+    for function in ["__actor_pipe_channel", "__channel_pipe_actor"] {
+        let head = format!("fnc {function}(");
+        let start = PRELUDE.find(&head).unwrap_or_else(|| panic!("missing {function}"));
+        let next = &PRELUDE[start..];
+        let end = next.find("\n}\n").unwrap_or_else(|| panic!("unterminated {function}"));
+        let source = &next[..end];
+        assert!(source.contains("if __load(ch, 8) != 0 then __panic(10); fi"),
+            "{function}: cannot redirect previously buffered public DATA");
+        assert!(source.contains("if __load(ch, 40) != 0 then __panic(10); fi"),
+            "{function}: cannot strand or steal pending public reader Futures");
+    }
+}
+
+#[test]
+fn legacy_pipe_ownership_denials_compile_to_real_guest_wasm() {
+    // Only verifies compiler lowering; the Node gate must EXECUTE these
+    // separate guests and observe panic_code=10 with empty stdout.
+    for (label, src) in [
+        ("producer pending public reader", LEGACY_PENDING_PRODUCER),
+        ("consumer pending public reader", LEGACY_PENDING_CONSUMER),
+        ("producer with buffered data", LEGACY_PRELOADED_PRODUCER),
+        ("consumer with buffered data", LEGACY_PRELOADED_CONSUMER),
+    ] {
+        let wasm = atto_compiler::v2::compile(atto_compiler::lexer::lex(src)
+            .unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
+            .unwrap_or_else(|e| panic!("{label}: compiler: {e}"));
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"),
+            "{label}: compiler did not emit Wasm");
     }
 }
