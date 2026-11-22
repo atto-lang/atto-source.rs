@@ -1,5 +1,6 @@
 // Atto Rust/Wasm compiler-local scalar testing helpers, candidate M0.
-// Pure .atto definitions; 0 = pass, 1 = fail. No implicit std import yet.
+// Pure .atto definitions; 0 = pass, 1 = fail. Resolved via the compiler-owned
+// bounded std/testing_scalar linker, never an ambient project file.
 // Not the full Java TestCase/RunSummary or guest ORES_TEST protocol.
 pub fnc equal_int(int actual, int expected): int {
   return expected == actual ? 0 : 1;
