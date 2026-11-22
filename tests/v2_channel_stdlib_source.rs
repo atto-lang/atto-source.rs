@@ -11,6 +11,12 @@ const INVALID_LEGACY: &str =
     include_str!("fixtures/panic/237-v2-negative-legacy-channel-constructor.atto");
 const VALID_UNBOUNDED: &str =
     include_str!("fixtures/pass/236-v2-unbounded-constructor-atto.atto");
+const RENDEZVOUS_DIRECT: &str =
+    include_str!("fixtures/pass/238-v2-rendezvous-direct-readch.atto");
+const RENDEZVOUS_ITER: &str =
+    include_str!("fixtures/pass/239-v2-rendezvous-for-await.atto");
+const RENDEZVOUS_CLOSE: &str =
+    include_str!("fixtures/pass/240-v2-rendezvous-close-wakes-reader.atto");
 
 
 #[test]
@@ -75,5 +81,46 @@ fn negative_bounded_capacity_compiles_into_guest_denial_not_an_unbounded_queue()
             .unwrap_or_else(|e| panic!("{label}: compiler: {e}"));
         assert!(wasm.starts_with(b"\0asm\x01\0\0\0"),
             "{label}: compiler did not emit a guest Wasm module");
+    }
+}
+
+#[test]
+fn rendezvous_readers_register_pending_futures_in_native_atto_source() {
+    // Source-level regression: a cap=0 producer can make progress only if
+    // readch / for-await advertises a pending read in the guest queue.
+    for function in ["__chan_recv", "__chan_recv_user_opt"] {
+        let head = format!("suspends fnc {function}(int c): int {{");
+        let start = LIB.find(&head).unwrap_or_else(|| panic!("missing {function}"));
+        let next = &LIB[start + head.len()..];
+        let end = next.find("\n}\n").unwrap_or_else(|| panic!("unterminated {function}"));
+        let source = &next[..end];
+        assert!(source.contains("if __load(c, 0) == 0 then"),
+            "{function}: must special-case a zero-capacity queue");
+        assert!(source.contains("val pending = __chan_nb(c);"),
+            "{function}: must register a waiting reader");
+        assert!(source.contains("val ready = await __await(pending);"),
+            "{function}: must cooperatively await the registered read");
+        assert!(source.contains("if __load(c, 56) != 0 then __panic(10); fi"));
+        assert!(source.contains("if __load(c, 64) != 0 then __panic(10); fi"));
+    }
+    assert!(LIB.contains("if ready == 0 then __panic(9); fi"),
+        "direct readch must report closed/drained rendezvous as a closed read");
+}
+
+#[test]
+fn rendezvous_guest_programs_compile_to_wasm() {
+    // This compiles real guest sources but does NOT execute the Wasm.
+    // The fixture expected stdout/exit contracts require a stepful browser
+    // runner before they can be called runtime-verified.
+    for (label, src) in [
+        ("direct readch", RENDEZVOUS_DIRECT),
+        ("for await", RENDEZVOUS_ITER),
+        ("close wakes read", RENDEZVOUS_CLOSE),
+    ] {
+        let wasm = atto_compiler::v2::compile(atto_compiler::lexer::lex(src)
+            .unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
+            .unwrap_or_else(|e| panic!("{label}: compiler: {e}"));
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"),
+            "{label}: compiler did not emit a Wasm guest");
     }
 }
