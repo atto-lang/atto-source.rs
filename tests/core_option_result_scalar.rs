@@ -73,3 +73,26 @@ fn nonexhaustive_match_does_not_emit_wasm() {
     assert_eq!(error.code, "E_MATCH", "must reject non-exhaustive Option match: {error}");
     assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
 }
+
+#[test]
+fn borrowed_option_result_tags_execute_wasm_and_preserve_copy_owners() {
+    // This must compile through the real Rust frontend and execute Wasm.
+    // A pure Rust host model or an unsupported-grammar rejection is not a pass.
+    let source = include_str!("core_option_result/borrowed_read_42.atto");
+    let first = compile(source).expect("borrowed Option/Result tag queries need typed admission");
+    assert_eq!(first, compile(source).unwrap(), "borrow guest Wasm must be deterministic");
+    execute_guest(&first, 42);
+}
+
+#[test]
+fn borrowed_affine_payload_escape_requires_ownership_diagnostic() {
+    let source = include_str!("core_option_result/negative_affine_borrow_escape.atto");
+    let error = compile(source).expect_err("a borrowed affine Option must not return its owned payload");
+    // A parser not recognizing borrow or class constructs is NOT a proof.
+    // The compiler must reject the typed ownership violation itself.
+    assert!(
+        matches!(error.code, "E_OWNERSHIP" | "E_BORROW" | "E_MOVED"),
+        "must reject on typed ownership grounds, not a syntax/type fallback: {error}"
+    );
+    assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
+}
