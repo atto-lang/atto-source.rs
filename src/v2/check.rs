@@ -2012,7 +2012,9 @@ impl<'a> Checker<'a> {
                 return Err(type_err(pos, "a channel is created with channel<T>(capacity: n)"));
             }
             let n = self.typed(&args[0].value, &Ty::Int)?;
-            return Ok((self.rt("__chan_new", vec![n]), Ty::Channel(Box::new(item)), false));
+            // Legacy channel<T>(capacity:) is also bounded; it must not
+            // smuggle -1 through the runtime-private unbounded sentinel.
+            return Ok((self.rt("__chan_new_bounded", vec![n]), Ty::Channel(Box::new(item)), false));
         }
         if !targs.is_empty() {
             return Err(unsupported(pos, "explicit type arguments on this call"));
