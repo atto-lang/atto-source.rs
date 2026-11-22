@@ -58,7 +58,7 @@ try {
 
   rejected(main.replace('status_valid;', 'unknown;'), provider, 'E_UNBOUND');
   rejected('import const status_valid from "./config.atto"; pub fnc main(): int {status_valid = 5; return 0;}',
-    provider, 'E_CONST_ASSIGN');
+    provider, 'E_ASSIGN_CONST');
   rejected(main, 'define const int status_valid = 200;', 'E_PRIVATE');
   rejected(main, 'define pub const int status_valid = "bad";', 'E_CONST_TYPE');
   rejected(main, 'define pub const string status_valid = std.env.read_env("status_valid");',
