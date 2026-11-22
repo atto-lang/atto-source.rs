@@ -93,6 +93,10 @@ fn core_ownership_categories_do_not_grant_unimplemented_borrow_lowering() {
     assert!(!prelude::core_sum_carrier("Option", 2));
     assert!(!prelude::core_sum_carrier("Result", 1));
     assert!(!prelude::core_sum_carrier("Object", 1));
+    assert!(prelude::protected_identity("int"));
+    assert!(prelude::protected_identity("From"));
+    assert!(prelude::protected_identity("Option"));
+    assert!(!prelude::protected_identity("HashMap"));
 }
 
 #[test]
