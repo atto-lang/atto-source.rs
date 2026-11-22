@@ -22,6 +22,10 @@ test('Vec reserves actual ownership for consuming operation and Copy for reads',
  assert.match(v,/push_copy\(T item\)/);
  assert.match(v,/self\.values\.add\(copy! item\)/);
  assert.match(v,/index < 0 \|\| index >= self\.values\.size/);
+ assert.match(v,/let mut int capacity = current;/,
+   'capacity growth must use a mutable local rather than reassign an immutable binding');
+ assert.doesNotMatch(v,/let int capacity = current;/,
+   'immutable growth accumulator is a compiler admission bug');
  assert.match(v,/capacity > max_capacity - capacity/);
  assert.doesNotMatch(v,/unsafe|from_raw|transmute|raw_ptr/);
 });
