@@ -15,6 +15,8 @@ const files=new Map([
   ['/channel-guest-abi-probe.mjs',[new URL('./browser-async/channel-guest-abi-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/worker-control-loop-v1.mjs',[new URL('../runtime/browser/worker-control-loop-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/wasm-jspi-control-bridge-v1.mjs',[new URL('../runtime/browser/wasm-jspi-control-bridge-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -246,6 +248,9 @@ try{
   assert.match(await run(readyAwait,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,'two immediate awaits must both yield the browser worker');
   console.log('PASS await: await 42 yields a real JSPI Worker turn twice, while still returning 42');
+  assert.equal(await evaluate('window.__attoLastSchedulerDispatches'),2,
+    'both awaits must be admitted and dispatched by the Worker CONTROL/DATA loop');
+  console.log('PASS integration: compiled JSPI await wakes flow through the bounded Worker scheduler');
   const readyMethod='pub define class Worker as pub suspends mtd answer(): int { await 21; return await 42; } end pub suspends fnc main(): int { val worker=new Worker(); return await worker.answer(); }';
   assert.match(await run(readyMethod,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),3,'class mtd and caller awaits must cooperatively yield');
