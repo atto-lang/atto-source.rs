@@ -268,6 +268,24 @@ try{
     'unsupported arithmetic around await must not advertise portable AOT continuation');
   await evaluate('window.__attoPortableV3=false');
   console.log('PASS portable v3: genuine compiled guest suspends twice and releases AOT frame without JSPI');
+  // Chromium's *wasm32-compiled Rust compiler* must emit the explicit v4
+  // guest, then execute 16 coexisting AOT frames in ONE Worker/Wasm instance.
+  await evaluate('window.__attoPortableV4=true');
+  const portableV4Source=
+    'pub susp fnc main(): int { val answer: int=42; await 41; return await answer; }';
+  assert.equal(await run(portableV4Source,'main() -> 42'),'main() -> 42');
+  assert.equal(await evaluate('window.__attoV4Peak'),16,
+    'all 16 task frames must coexist before the first completion');
+  assert.equal(await evaluate('window.__attoV4Turns'),48,
+    'start and two awaits per task take separate synchronous scheduler turns');
+  assert.equal(await evaluate('window.__attoV4Resumes'),32);
+  assert.equal(await evaluate('window.__attoV4Cleanups'),16);
+  assert.match(await run(
+    'pub susp fnc main(): int { val x: int=41+1; await 41; return await x; }',
+    'E_UNSUPPORTED'),/E_UNSUPPORTED/,
+    'v4 must not fall back to JSPI/partial guest emission');
+  await evaluate('window.__attoPortableV4=false');
+  console.log('PASS portable v4: wasm32 Rust compiler emits 16 live Wasm-owned frames in Chromium Worker without JSPI');
   const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
   assert.match(await run(readyAwait,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,'two immediate awaits must both yield the browser worker');
