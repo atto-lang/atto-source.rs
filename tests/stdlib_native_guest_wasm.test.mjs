@@ -3,9 +3,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 
-const [successPath, mutationPath, ...other] = process.argv.slice(2);
-assert.ok(successPath && mutationPath && other.length === 0,
-  "expected normal.wasm and mutation.wasm from native Atto source compiler");
+const [successPath, mutationPath, boundaryPath, ...other] = process.argv.slice(2);
+assert.ok(successPath && mutationPath && boundaryPath && other.length === 0,
+  "expected normal.wasm, mutation.wasm, boundaries.wasm from Atto source compiler");
 
 async function invoke(path) {
   const bytes = readFileSync(path);
@@ -28,4 +28,9 @@ test("all 37 checks execute inside real source-compiled Atto Wasm", async () => 
 test("mutating QUIC expected byte fails at exact native guest assertion 12", async () => {
   assert.equal(await invoke(mutationPath), 12n,
     "a compiled assertion mutation must be observed in the executing guest");
+});
+
+test("independent 109 boundary checks execute inside real source-compiled Atto Wasm", async () => {
+  assert.equal(await invoke(boundaryPath), 0n,
+    "failed WebSocket, QUIC or compute boundary assertion in compiled Atto guest");
 });
