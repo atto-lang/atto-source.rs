@@ -2,32 +2,8 @@
 //! Every accepted protocol still fails closed at the Wasm emission boundary.
 use atto_compiler::{actor_protocol_typestate::{inspect_source, Response}, compile};
 
-const GOOD: &str = r#"
-define protocol ConnectionProtocol as
-  initial Disconnected
-  state Disconnected as
-    on Connect(Config) -> Connected replies ConnectedAck
-    on Close -> Closed replies ClosedAck
-  end
-  state Connected as
-    on Query(Sql) -> Connected replies QueryReply
-    on Close -> Closed replies ClosedAck
-  end
-  terminal state Closed
-end
-define actor Connection implements ConnectionProtocol as end
-pub fnc main(): int {
-  val disconnected = await spawn Connection();
-  val connecting = disconnected.call(Connect());
-  val (ack, connected) = await connecting?;
-  val querying = connected.call(Query());
-  val (rows, still_connected) = await querying?;
-  val closing = still_connected.call(Close());
-  val (_, closed) = await closing?;
-  closed.complete_protocol();
-  return 0;
-}
-"#;
+// Exactly the Git blob used by atto-platform-conformance, not a retyped copy.
+const GOOD: &str = include_str!("fixtures/actor-protocol-typestate-v1/connection-static-valid.atto");
 
 fn rejects(src: &str, expected: &'static str) {
     let err = compile(src).expect_err("protocol source cannot emit unverified guest code");
@@ -43,7 +19,7 @@ fn connection_protocol_is_checked_from_actual_atto_tokens() {
     let p = &proof.protocols["ConnectionProtocol"];
     assert_eq!(p.initial, "Disconnected");
     assert!(p.terminal.contains("Closed"));
-    assert_eq!(p.transitions.len(), 4);
+    assert_eq!(p.transitions.len(), 5);
     assert_eq!(p.check_send(&["Disconnected".into()], "Connect").unwrap().next_states, ["Connected"]);
     assert_eq!(p.check_send(&["Connected".into()], "Query").unwrap().response,
         Response::Unary("QueryReply".into()));
@@ -187,4 +163,22 @@ fn required_nominal_reply_types_are_checked_before_successor_is_minted() {
     let mutable = GOOD.replace("val (ack, connected) = await connecting?;",
         "let (ack: ConnectedAck, connected) = await connecting?;");
     rejects(&mutable, "E_PROTOCOL_AFFINE_HANDLE");
+}
+
+#[test]
+fn identical_source_conformance_negatives_are_compiler_diagnostics() {
+    for (source, code) in [
+        (include_str!("fixtures/actor-protocol-typestate-v1/disconnected-query.atto"), "E_PROTOCOL_ILLEGAL_MESSAGE_STATE"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/affine-reuse.atto"), "E_PROTOCOL_AFFINE_HANDLE"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/missing-reply.atto"), "E_PROTOCOL_REPLY_REQUIRED"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/early-terminal.atto"), "E_PROTOCOL_TERMINAL_INCOMPLETE"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/stream-unary-confusion.atto"), "E_PROTOCOL_REPLY_MISMATCH"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/wrong-actor-kind.atto"), "E_PROTOCOL_IMPLEMENTATION_MISMATCH"),
+        (include_str!("fixtures/actor-protocol-typestate-v1/wrong-nominal-reply.atto"), "E_PROTOCOL_REPLY_MISMATCH"),
+    ] {
+        rejects(source, code);
+    }
+    let typed = include_str!("fixtures/actor-protocol-typestate-v1/typed-reply-static-valid.atto");
+    assert_eq!(inspect_source(typed).unwrap().unwrap().completed_handles, 1);
+    rejects(typed, "E_PROTOCOL_RUNTIME_UNSUPPORTED");
 }
