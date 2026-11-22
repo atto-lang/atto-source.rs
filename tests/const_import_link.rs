@@ -74,7 +74,7 @@ fn public_private_and_unknown_exports_are_distinguished() {
 #[test]
 fn imported_constant_cannot_be_written_or_used_as_callable() {
     let file = "define pub const int status_valid = 200;";
-    assert_eq!(error("import const status_valid from \"./config.atto\"; pub fnc main(): int {status_valid = 4; return 0;}",file),"E_CONST_ASSIGN");
+    assert_eq!(error("import const status_valid from \"./config.atto\"; pub fnc main(): int {status_valid = 4; return 0;}",file),"E_ASSIGN_CONST");
     assert_eq!(error("import const status_valid from \"./config.atto\"; pub fnc main(): int {return status_valid();}",file),"E_IMPORT_KIND");
     assert_eq!(error("import const status_valid from \"./config.atto\"; pub fnc status_valid(): int {return 0;} pub fnc main(): int {return 0;}",file),"E_DUPLICATE");
 }
