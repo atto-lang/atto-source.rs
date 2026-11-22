@@ -74,6 +74,8 @@ pub mod tuple_ownership_ir;
 pub mod target_typed;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
+/// Exact-i64 nominal interval and fixed-array dimension admission; no guest ABI yet.
+pub mod newtype_const_generic_admission;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -118,6 +120,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // Validate newtype identity and integer dimensions before ANY guest producer.
+    // Valid yet unsupported features remain non-executable, never erased to int.
+    newtype_const_generic_admission::preflight(&original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
