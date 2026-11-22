@@ -107,6 +107,7 @@ fn borrowed_concrete_adt_temporary_and_mutable_loan_are_denied() {
     for source in [
         include_str!("core_option_result/negative_borrow_option_temporary.atto"),
         include_str!("core_option_result/negative_borrow_mut_option.atto"),
+        include_str!("core_option_result/negative_borrow_option_return.atto"),
     ] {
         let error = compile(source).expect_err("unproven ADT loan must not emit Wasm");
         assert_eq!(error.code, "E_BORROW", "{error}");
