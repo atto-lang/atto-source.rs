@@ -35,6 +35,8 @@ pub mod detached_io;
 pub mod parser;
 /// Source-local scalar generic specialization before typed browser lowering.
 pub mod scalar_generic;
+/// Source-local coherent typeclasses: erase associated types and static method witnesses.
+pub mod typeclass_witness;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
@@ -118,6 +120,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // Typeclass source witnesses are resolved before nominal declarations,
+    // generic rewriting, and Wasm emission; they never become guest values.
+    let original_tokens = typeclass_witness::lower(original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
