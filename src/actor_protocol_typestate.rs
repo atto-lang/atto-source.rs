@@ -449,6 +449,9 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     });
                     steps += 1;
                     i += 10 + shift; continue;
+                } else if !pending.is_empty() {
+                    return Err(err(t, i + 8 + shift, "E_PROTOCOL_REPLY_REQUIRED",
+                        "awaited ticket is not the outstanding protocol reply obligation"));
                 }
             }
         }
@@ -564,15 +567,6 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     "pending protocol call used without authenticated await/result binding"));
             }
         }
-        // The source proof has no effect inference for unknown operations
-        // that can revoke a state (timers, supervisor changes, callbacks).
-        // Do not let arbitrary effects sit between live affine transitions.
-        if !handles.is_empty() || !pending.is_empty() {
-            if at(t, i) != Some(&Tok::Semi) {
-                return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
-                    "unverified operation while protocol authority/reply is live"));
-            }
-        }
         // An affine authority cannot be duplicated via a plain binding,
         // copy!, copy!!, share! or an unchecked take!/cast.
         if (word(t, i, "val") || word(t, i, "let")) &&
@@ -591,6 +585,15 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     return Err(err(t, i+2, "E_PROTOCOL_AFFINE_HANDLE",
                         "protocol handle cannot be copied, shared or forged"));
                 }
+            }
+        }
+        // The source proof has no effect inference for unknown operations
+        // that can revoke a state (timers, supervisor changes, callbacks).
+        // Do not let arbitrary effects sit between live affine transitions.
+        if !handles.is_empty() || !pending.is_empty() {
+            if at(t, i) != Some(&Tok::Semi) {
+                return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
+                    "unverified operation while protocol authority/reply is live"));
             }
         }
         i += 1;
