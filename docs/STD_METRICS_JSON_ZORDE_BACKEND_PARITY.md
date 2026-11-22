@@ -96,3 +96,35 @@ before parity may be reported as `PASS`.
   This prevents mutable aliases at the stdlib boundary independent of
   whether an implicit-borrow migration profile is available.
 - The backend stages this core source and borrow fixtures; namespace resolution, typed compiler borrow diagnostics and guest execution remain pending.
+
+
+## Rust compiler-owned real ownership guest gate
+
+`tests/core-borrow-real-guest.mjs` is deliberately **not** a host-language
+borrow model. It requires the actual `attoc` executable built from this
+repository; it compiles each of the six Git-blob-pinned `.atto` ownership
+fixtures. Two accepted programs must yield valid WebAssembly, execute
+`main() == 42`, and leave `panic_code == 0`. Four rejected programs must
+return process status 1 with the **exact typed ownership diagnostic**, never
+`E_SYNTAX`, `E_UNSUPPORTED`, or an unknown-name fallback; they must leave
+**no emitted Wasm artifact**. Host imports are deny-by-default and every
+approved import traps if reached.
+
+Run only against a real compiler (not a mock or reference oracle):
+
+```sh
+cargo build --locked --bin attoc
+ATTOC=target/debug/attoc node tests/core-borrow-real-guest.mjs
+```
+
+The exact-head workflow `.github/workflows/atto-core-borrow-real-guest.yml`
+executes this gate **if a runner is admitted**. These fixtures deliberately
+include the versioned `borrow-default-v1` exclusive-call profile; if this
+compiler has not implemented the profile, the workflow must **FAIL**, not
+substitute a parser acceptance, skipped case, source-only reference, or
+host-modeled borrow decision. A successful job would still require external
+GitHub run/artifact/source-tree attestation before independent certification.
+
+This proves only the Rust-authored Atto-to-Wasm compiler and actual guest Wasm
+execution. It does not count as a second independent Wasm compiler result,
+nor establish .NET/LLVM/Java/Forge, platform actor or native AOT parity.
