@@ -6,10 +6,12 @@ on:
       - 'src/ast.rs'
       - 'src/check.rs'
       - 'src/check/direct_lambda.rs'
+      - 'src/check/generator_lower/liveness.rs'
       - 'src/wasm.rs'
       - 'src/lib.rs'
       - 'tests/design_contracts_static_aot.rs'
       - 'tests/design_contracts_guest.mjs'
+      - 'tests/direct_lambda_audit.rs'
       - 'docs/design-contracts-static-aot-v1.md'
       - '.github/workflows/design-contracts-static-aot.yml'
   workflow_dispatch:
@@ -33,7 +35,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           git diff --exit-code HEAD --
           git rev-parse HEAD^{tree}
-          for f in src/parser.rs src/ast.rs src/check.rs src/check/direct_lambda.rs src/wasm.rs src/lib.rs tests/design_contracts_static_aot.rs tests/design_contracts_guest.mjs; do
+          for f in src/parser.rs src/ast.rs src/check.rs src/check/direct_lambda.rs src/check/generator_lower/liveness.rs src/wasm.rs src/lib.rs tests/design_contracts_static_aot.rs tests/design_contracts_guest.mjs tests/direct_lambda_audit.rs; do
             test "$(git hash-object --no-filters "$f")" = "$(git rev-parse "HEAD:$f")"
           done
       - name: Compile real Rust compiler and run contract tests
@@ -42,6 +44,9 @@ jobs:
           set -euo pipefail
           rustc --version
           cargo --version
+          cargo check --locked --all-targets
+          cargo test --locked --lib
+          cargo test --locked --test direct_lambda_audit
           cargo test --locked --test design_contracts_static_aot -- --nocapture
       - name: Build real compiler and run guest Wasm via Node
         shell: bash
