@@ -1,0 +1,14 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+// Explicit and implicit readonly arguments must carry identical checked loans
+// when their live provenance points to the very same class owner.
+define class Parcel as pub let int value = 10; end
+fnc combine(Parcel left, Parcel right): int {
+  return left.value + right.value;
+}
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val first = combine(parcel, borrow! parcel);
+  val second = combine(borrow! parcel, parcel);
+  return first + second + 2;
+}
