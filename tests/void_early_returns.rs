@@ -75,3 +75,44 @@ fn braced_if_must_not_steal_enclosing_fi() {
         "fnc early_exit() -> void {{ if true {{ ^ void; }} fi }} {ENTRY}"
     ));
 }
+
+
+#[test]
+fn guard_void_exit_both_spellings_in_end_style_callable() {
+    // Preserve the exact two 'end' delimiters of the keyword form:
+    // first closes guard, second closes the enclosing callable.
+    for function in [
+        "fnc process_explicit() -> void\n    guard false else ^ void end\nend",
+        "fnc process_explicit() -> void\n    guard false { ^ void }\nend",
+        "fnc process_explicit() -> void\n    guard false else return void end\nend",
+        "fnc process_explicit() -> void\n    guard false { ^ }\nend",
+        "fnc process_explicit() -> void\n    guard true else ^ void end\nend",
+        "fnc process_explicit() -> void\n    guard true { ^ void }\nend",
+    ] {
+        let source = format!(
+            "{function}\npub fnc main(): int {{ process_explicit(); ^ 42; }}"
+        );
+        accepts(&source);
+    }
+}
+
+#[test]
+fn guard_void_returns_still_check_type_and_termination() {
+    for source in [
+        "fnc process_explicit() -> int\n    guard false else ^ void end\nend\npub fnc main(): int { ^ process_explicit(); }",
+        "fnc process_explicit() -> int\n    guard false { ^ void }\nend\npub fnc main(): int { ^ process_explicit(); }",
+    ] {
+        let err = compile(source).expect_err("nonvoid guard return must be rejected");
+        assert_eq!(err.code, "E_RETURN", "{source}: {err}");
+    }
+    for source in [
+        "fnc process_explicit() -> void\n    guard false else val x = 1; end\nend\npub fnc main(): int { process_explicit(); ^ 42; }",
+        "fnc process_explicit() -> void\n    guard false { val x = 1; }\nend\npub fnc main(): int { process_explicit(); ^ 42; }",
+    ] {
+        let err = compile(source).expect_err("guard failure must be terminal");
+        assert_eq!(err.code, "E_GUARD", "{source}: {err}");
+    }
+    assert!(compile(
+        "fnc process_explicit() -> void\n    guard false { ^ void } else ^ void end\nend\npub fnc main(): int { process_explicit(); ^ 42; }"
+    ).is_err(), "mixed brace/else guard must reject");
+}
