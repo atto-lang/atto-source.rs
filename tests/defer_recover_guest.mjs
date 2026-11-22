@@ -12,6 +12,139 @@ import { fileURLToPath } from 'node:url';
 const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc', import.meta.url));
 
 const cases = [
+
+  {
+    name: 'canonical throw bang uses catch then finally in that order',
+    src: `fnc fail(): int throws(Error) { throw! Error("bang throw"); }
+      pub fnc main(): int {
+        try { return fail(); }
+        catch (Error e) { stdio.println("caught bang"); return 54; }
+        finally { stdio.println("finally"); }
+      }`,
+    stdout: 'caught bang\nfinally\n', value: 54n,
+  },
+
+  {
+    name: 'canonical trap bang preserves Error handle identity, not message equality',
+    src: `fnc fail(Error original): int throws(Error) { throw! original; }
+      pub fnc main(): int {
+        val Error original = Error("same message");
+        val Error distinct = Error("same message");
+        val Result<int,Error> caught = trap! fail(original);
+        match caught over
+          on Ok(n) -> { return 0; }
+          on Err(e) -> {
+            if e.is_same_instance(original) then
+              if e.is_same_instance(distinct) then return 0;
+              else return 49;
+              fi
+            else return 0;
+            fi
+          }
+        end
+      }`,
+    stdout: '', value: 49n,
+  },
+  {
+    name: 'canonical trap bang keeps Option None inside Result Ok',
+    src: `fnc maybe(): Option<int> { return None; }
+      pub fnc main(): int {
+        val Result<Option<int>,Error> result = trap! maybe();
+        match result over
+          on Err(e) -> { return 0; }
+          on Ok(option) -> {
+            match option over
+              on Some(v) -> { return 0; }
+              on None -> { stdio.println("None retained"); return 50; }
+            end
+          }
+        end
+      }`,
+    stdout: 'None retained\n', value: 50n,
+  },
+  {
+    name: 'two nested canonical trap bangs remain one Result layer',
+    src: `pub fnc main(): int {
+        val Result<int,Error> result = trap! trap! 51;
+        match result over
+          on Ok(n) -> { return n; }
+          on Err(e) -> { return 0; }
+        end
+      }`,
+    stdout: '', value: 51n,
+  },
+  {
+    name: 'canonical trap bang Err question propagation runs LIFO cleanup',
+    src: `fnc fail(): int throws(Error) { throw! Error("cleanup failure"); }
+      fnc checked(): Result<int,Error> {
+        defer || -> { stdio.println("cleanup A"); };
+        defer || -> { stdio.println("cleanup B"); };
+        val Result<int,Error> result = trap! fail();
+        val int n = result?;
+        return Ok(n);
+      }
+      pub fnc main(): int {
+        val Result<int,Error> result = checked();
+        match result over
+          on Ok(v) -> { return 0; }
+          on Err(e) -> { stdio.println(e.message); return 52; }
+        end
+      }`,
+    stdout: 'cleanup B\ncleanup A\ncleanup failure\n', value: 52n,
+  },
+  {
+    name: 'canonical trap bang does not intercept raise bang, recover sees original',
+    src: `fnc fail(): int raises(Error) { raise! Error("raise bypasses trap"); }
+      fnc checked(): int {
+        recover |err, cursor| -> {
+          stdio.println(err.message);
+          return 53;
+        };
+        val Result<int,Error> value = trap! fail();
+        return 0;
+      }
+      pub fnc main(): int { return checked(); }`,
+    stdout: 'raise bypasses trap\n', value: 53n,
+  },
+
+  {
+    name: 'canonical trap bang captures original typed throw as one Result Err',
+    src: `fnc fail(): int throws(Error) { throw! Error("bang original"); }
+      pub fnc main(): int {
+        val Result<int,Error> r = trap! fail();
+        match r over
+          on Ok(n) -> { return 0; }
+          on Err(e) -> { stdio.println(e.message); return 42; }
+        end
+      }`,
+    stdout: 'bang original\n', value: 42n,
+  },
+  {
+    name: 'canonical trap bang remains flat for an already returned Err',
+    src: `fnc fail(): Result<int,Error> { return Err(Error("existing Err")); }
+      pub fnc main(): int {
+        val Result<int,Error> r = trap! fail();
+        match r over
+          on Ok(n) -> { return 0; }
+          on Err(e) -> { stdio.println(e.message); return 43; }
+        end
+      }`,
+    stdout: 'existing Err\n', value: 43n,
+  },
+  {
+    name: 'canonical raise bang bypasses catch and reaches recover',
+    src: `fnc fail(): int raises(Error) { raise! Error("bang raise"); }
+      fnc f(): int {
+        recover |err, cursor| -> {
+          stdio.println(err.message);
+          return 44;
+        };
+        try { return fail(); }
+        catch (Error e) { stdio.println("UNEXPECTED catch"); return 0; }
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'bang raise\n', value: 44n,
+  },
   {
     name: 'annotated caught throw is safe in defer and preserves normal result',
     src: `fnc fail(): int throws(Error) { throw Error("inner"); }
@@ -70,7 +203,7 @@ const cases = [
     name: 'defer accepts a transitive call whose throw is wrapped in trap',
     src: `fnc fail(): int { throw Error("inner"); }
       fnc safe(): int {
-        val Option<int> caught = trap fail();
+        val Result<int,Error> caught = trap fail();
         stdio.println("trapped");
         return 8;
       }
@@ -290,16 +423,16 @@ const cases = [
     stdout: 'callee defer\ncaller catch\ncaller finally\n', value: 21n,
   },
   {
-    name: 'a caller-side trap also outranks a callee recover',
+    name: 'a caller-side Result trap outranks a callee recover',
     src: `fnc callee(): int {
       recover (|int v| -> |err, c| -> { stdio.println("UNEXPECTED"); return v; })(-1);
       throw Error("x");
     }
     pub fnc main(): int {
-      val Option<int> r = trap callee();
+      val Result<int,Error> r = trap callee();
       match r over
-        on Some(v) -> { stdio.println(v); }
-        on None -> { stdio.println("trap won"); }
+        on Ok(v) -> { stdio.println(v); }
+        on Err(e) -> { stdio.println("trap won"); }
       end
       return 3;
     }`,
@@ -390,6 +523,13 @@ try {
     const out = join(work, `case${i}.wasm`);
     await writeFile(src, c.src);
     const built = spawnSync(attoc, [src, '-o', out], { encoding: 'utf8', timeout: 30_000 });
+    if (c.reject) {
+      assert.notEqual(built.status, 0, c.name + ': legacy Option trap must not compile');
+      assert.match(built.stderr, new RegExp(c.reject), c.name + ': expected typed diagnostic');
+      await assert.rejects(readFile(out), { code: 'ENOENT' }, 'failure must leave no guest artifact');
+      console.log('PASS negative no-artifact:', c.name);
+      continue;
+    }
     assert.equal(built.status, 0, c.name + ': attoc failed: ' + built.stderr);
     const r = runGuest(await readFile(out));
     assert.equal(r.stdout, c.stdout, c.name + ': stdout');

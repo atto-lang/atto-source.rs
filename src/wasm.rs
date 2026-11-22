@@ -88,12 +88,13 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 
 fn vt(t: Type) -> Option<u8> {
     match t {
-        Type::Int => Some(I64),
+        Type::Int | Type::Error => Some(I64),
         Type::Bool => Some(I32),
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -137,6 +138,8 @@ struct Layout {
     helpers: u32,
     /// helper index of `S_BYTES_EQ`
     str_base: u32,
+    /// Index of the optional checked decimal-to-Result compiler builtin.
+    parse_int_base: u32,
     /// global index of actor-state global 0
     state_base: u32,
     /// Per-instance free-list for 32-byte generator continuation frames.
@@ -163,13 +166,16 @@ impl Layout {
     fn str_helper(&self, s: u32) -> u32 {
         self.helper(self.str_base + s)
     }
+    fn parse_int_helper(&self) -> u32 {
+        self.helper(self.parse_int_base)
+    }
 }
 
 /// Load (`store = false`) or store a field slot of type `t` at `offset`.
 fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
     let (op, align) = match (t, store) {
-        (Type::Int | Type::Str, false) => (0x29, 3),
-        (Type::Int | Type::Str, true) => (0x37, 3),
+        (Type::Int | Type::Str | Type::Error, false) => (0x29, 3),
+        (Type::Int | Type::Str | Type::Error, true) => (0x37, 3),
         (Type::Float, false) => (0x2B, 3),
         (Type::Float, true) => (0x39, 3),
         (_, false) => (0x28, 2),
@@ -213,6 +219,8 @@ struct Emit<'a> {
     uw: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// Emitting a recovery callback body: `return` exits after defers ran.
     in_recover: bool,
+    /// Number of nested ordinary trap handlers for early `?` propagation.
+    active_traps: u32,
     /// Byte ranges `[start, end)` of user calls and their callee, for the
     /// post-pass that bounds recursive calls with the call-depth quota.
     calls: Vec<(usize, usize, u32)>,
@@ -337,22 +345,30 @@ impl Emit<'_> {
     /// runs once on fallthrough, on a pending return (via FinallyExit),
     /// and on any escaping exception (catch_all + rethrow, preserving the
     /// original tag and payload). Engine traps are never Wasm exceptions.
-    fn try_stmt(&mut self, saved: u32, body: &[TStmt], catch: Option<&[TStmt]>, finally: Option<&[TStmt]>) {
+    fn try_stmt(&mut self, saved: u32, body: &[TStmt], catch: Option<(u32, &[TStmt])>, finally: Option<&[TStmt]>) {
         self.depth_save(saved);
         if finally.is_some() {
             self.open(0x02, 0x40, Frame::FinallyExit);
             self.open(0x06, 0x40, Frame::Other);
         }
-        if let Some(handler) = catch {
+        if let Some((err_slot, handler)) = catch {
             self.depth_add(1); // an active catch outranks every callee recover
             self.open(0x06, 0x40, Frame::Other);
             self.stmts(body);
             self.op(0x07); // catch private ordinary-throw tag 0
             uleb(&mut self.code, 0);
             self.landing();
-            self.op(0x1A); // drop the i64 Error message
+            self.set(err_slot); // preserve original i64 Error identity
             self.depth_restore(saved);
             self.stmts(handler);
+            if finally.is_none() {
+                // A bypassing raise must not leak caller-catch depth into recovery.
+                self.op(0x19); // catch_all
+                self.landing();
+                self.depth_restore(saved);
+                self.op(0x09); // rethrow original tag and payload
+                uleb(&mut self.code, 0);
+            }
             self.close();
             self.depth_restore(saved);
         } else {
@@ -605,7 +621,7 @@ impl Emit<'_> {
                 self.set(*flag);
             }
             TStmt::RecoverNext => self.br_to(Frame::RecoverNext),
-            TStmt::Try { saved, body, catch, finally, .. } => self.try_stmt(*saved, body, catch.as_deref(), finally.as_deref()),
+            TStmt::Try { saved, body, catch, finally, .. } => self.try_stmt(*saved, body, catch.as_ref().map(|(slot, b)| (*slot, b.as_slice())), finally.as_deref()),
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
@@ -830,43 +846,88 @@ impl Emit<'_> {
                 }
             }
             TExpr::EnumVal(i) => self.i32c(*i as i32),
-            TExpr::Trap { value, value_tmp, some_tmp, none_tmp } => {
-                // The only caught signal is our private ordinary-throw tag.
-                // WebAssembly engine traps, arithmetic panic, cancellation,
-                // host exceptions, and any other tag bypass this catch.
-                // A trap is an active ordinary-throw handler: a callee recover
-                // must defer to it (two-phase dispatch). No-op without recover.
-                self.depth_add(1);
-                self.open(0x06, I32, Frame::Other); // try (result i32)
-                self.expr(value); // evaluate once, before any Some allocation
-                self.op(0x21); // local.set value_tmp
-                uleb(&mut self.code, *value_tmp as u64);
-                self.depth_add(-1);
+            TExpr::ErrorNew { message, tmp } => {
+                // Allocate one immutable guest Error, keep the pointer as an
+                // opaque i64 identity in the EH payload and Result.Err.
+                // Object layout: reserved 8-byte header, i64 message at +8.
                 self.i32c(16);
                 self.call(self.l.helper(H_ALLOC));
-                self.op(0x21);
-                uleb(&mut self.code, *some_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
-                self.i32c(1); // Some
-                field_op(&mut self.code, Type::Bool, 0, true);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *value_tmp as u64);
-                field_op(&mut self.code, value.ty, 8, true);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
-
-                self.op(0x07); // catch private tag 0
+                self.op(0xAD); // i64.extend_i32_u
+                self.set(*tmp);
+                self.get(*tmp);
+                self.op(0xA7); // i32.wrap_i64
+                self.expr(message);
+                field_op(&mut self.code, Type::Str, 8, true);
+                self.get(*tmp);
+            }
+            TExpr::ErrorMessage(obj) => {
+                self.expr(obj);
+                self.op(0xA7); // i32.wrap_i64; Error is an owned heap identity
+                field_op(&mut self.code, Type::Str, 8, false);
+            }
+            TExpr::ErrorSameIdentity(a, b) => {
+                self.expr(a);
+                self.expr(b);
+                self.op(0x51); // i64.eq: compare *handles*, never messages
+            }
+            TExpr::Trap { value, value_tmp, some_tmp, none_tmp, error_tmp } => {
+                // Only the private ordinary-throw tag 0 is catchable.
+                // raise (tag 1), panic, cancellation and host faults bypass.
+                self.depth_add(1); // outrank callee recover in two-phase dispatch
+                self.open(0x06, I32, Frame::Other); // try (result i32)
+                self.active_traps += 1;
+                self.expr(value); // evaluate exactly once
+                self.active_traps -= 1;
+                if matches!(value.ty, Type::ResultIntError |
+                    Type::ResultOptionIntError | Type::ResultVoidError) {
+                    // Already Result: retain the ORIGINAL tagged pointer,
+                    // including any Err(Error) with its exact identity.
+                } else {
+                    if let Some(slot) = value_tmp {
+                        self.set(*slot);
+                    }
+                    self.i32c(16);
+                    self.call(self.l.helper(H_ALLOC));
+                    self.set(*some_tmp);
+                    self.get(*some_tmp);
+                    self.i32c(0); // Ok
+                    field_op(&mut self.code, Type::Bool, 0, true);
+                    if let Some(slot) = value_tmp {
+                        self.get(*some_tmp);
+                        self.get(*slot);
+                        field_op(&mut self.code, value.ty, 8, true);
+                    }
+                    self.get(*some_tmp);
+                }
+                self.depth_add(-1);
+                self.op(0x07); // catch private ordinary-throw tag 0
                 uleb(&mut self.code, 0);
                 self.landing();
-                self.op(0x1A); // drop i64 Error message (not a panic)
+                self.set(*error_tmp); // i64 original guest Error identity
                 self.depth_add(-1);
                 self.i32c(16);
                 self.call(self.l.helper(H_ALLOC));
-                self.op(0x21); uleb(&mut self.code, *none_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *none_tmp as u64);
-                self.i32c(0); // None
+                self.set(*none_tmp);
+                self.get(*none_tmp);
+                self.i32c(1); // Err
                 field_op(&mut self.code, Type::Bool, 0, true);
-                self.op(0x20); uleb(&mut self.code, *none_tmp as u64);
-                self.close(); // end try: one i32 Option record on stack
+                self.get(*none_tmp);
+                self.get(*error_tmp);
+                field_op(&mut self.code, Type::Error, 8, true);
+                self.get(*none_tmp);
+                // A non-ordinary throw (raise/host tag) must bypass trap
+                // without leaking this handler into the next recover.
+                self.op(0x19); // catch_all: restore and rethrow unchanged
+                self.landing();
+                self.depth_add(-1);
+                self.op(0x09); // rethrow original exception, no conversion
+                uleb(&mut self.code, 0);
+                self.close(); // end try: one i32 Result record on the stack
+            }
+            TExpr::IntParse { value, error_offset, error_len } => {
+                self.expr(value);
+                self.i64c(((*error_offset as i64) << 32) | *error_len as i64);
+                self.call(self.l.parse_int_helper());
             }
             TExpr::AdtNew { tag, payload, tmp } => {
                 self.i32c(16); // 8-aligned, fixed immutable tagged record
@@ -909,11 +970,37 @@ impl Emit<'_> {
                 self.open(0x04, 0x40, Frame::Other); // if (void)
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
-                self.op(0x0F); // return original Err/None tagged pointer
+                if let Some((Some(ret), ..)) = self.uw {
+                    // The Error/None tagged handle is the function's exact
+                    // return object. Snapshot BEFORE executing cleanup.
+                    self.set(ret);
+                }
+                // Early propagation also exits owned generator loops.
+                for handle in self.active_iterators.clone().into_iter().rev() {
+                    self.get(handle);
+                    self.call(self.l.func(self.l.gen_first_func + 3));
+                }
+                if self.uw.is_some() {
+                    // Route through every enclosing finally and then the
+                    // function's LIFO defers; restore catch-depth at $ret.
+                    self.return_path();
+                } else {
+                    // No unwind frame exists, but propagation can occur
+                    // within one or more nested trap operands. Restore
+                    // each active handler's global catch depth before ret.
+                    if self.active_traps > 0 {
+                        self.depth_add(-(self.active_traps as i32));
+                    }
+                    self.op(0x0F); // original Err/None pointer, unchanged
+                }
                 self.close();
-                self.op(0x20);
-                uleb(&mut self.code, *tmp as u64);
-                field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
+                // The success branch of Result<void,Error> returns *no*
+                // Wasm stack value. In particular do not leak the i32 ADT
+                // pointer into the following expression or block.
+                if v.ty != Type::Void {
+                    self.get(*tmp);
+                    field_op(&mut self.code, v.ty, 8, false);
+                }
             },
             TExpr::CollectionLoad { array, offset } => {
                 self.expr(array);
@@ -1415,6 +1502,211 @@ fn string_helpers(base: u32, alloc: Option<u32>) -> Vec<(Sig, Vec<u8>, Vec<u8>)>
     v
 }
 
+
+/// Checked in-guest signed decimal conversion. Param 0 is the packed UTF-8
+/// string (offset<<32 | length); param 1 is the immutable Error.message view.
+/// Returns a 16-byte tagged Result<int,Error> pointer, never a host exception.
+/// The parser accepts optional leading +/- followed by 1+ ASCII digits,
+/// rejects whitespace, non-ASCII digits, embedded NUL and signed-i64 overflow.
+/// It accumulates negatively so -9223372036854775808 remains representable.
+fn int_parse_body(l: &Layout) -> (Sig, Vec<u8>, Vec<u8>) {
+    const PTR: u32 = 2;
+    const LEN: u32 = 3;
+    const IDX: u32 = 4;
+    const DIGIT: u32 = 5;
+    const NEG: u32 = 6;
+    const ACC: u32 = 7;
+    const LIMIT: u32 = 8;
+    const REC: u32 = 9;
+    const ERR: u32 = 10;
+    fn br_if_to(e: &mut Emit<'_>, frame: Frame) {
+        let at = e.frames.iter().rposition(|f| *f == frame).expect("int.parse branch target");
+        e.op(0x0D);
+        uleb(&mut e.code, (e.frames.len() - 1 - at) as u64);
+    }
+    fn byte_at_ptr(e: &mut Emit<'_>, ptr: u32, index: u32) {
+        e.get(ptr);
+        e.get(index);
+        e.op(0x6A); // i32.add
+        e.code.extend_from_slice(&[0x2D, 0, 0]); // i32.load8_u, align=0, offset=0
+    }
+    let mut e = Emit {
+        l,
+        code: Vec::new(),
+        frames: Vec::new(),
+        void_main: false,
+        active_iterators: Vec::new(),
+        state_ticket_slot: None,
+        state_write_depth: 0,
+        uw: None,
+        in_recover: false,
+        active_traps: 0,
+        calls: Vec::new(),
+        landings: Vec::new(),
+    };
+    // Decoded locals: ptr/len/index/digit/negative:i32,
+    // accumulator/limit:i64, Result pointer/Error pointer:i32.
+    let locals = vec![3, 5, I32, 2, I64, 2, I32];
+    str_parts(&mut e.code, 0);
+    e.set(LEN);
+    e.set(PTR);
+
+    // Any malformed or overflow case branches out to the Error constructor.
+    e.open(0x02, 0x40, Frame::Break);
+    e.get(LEN);
+    e.op(0x45); // i32.eqz
+    br_if_to(&mut e, Frame::Break);
+    // Browser admission profile: bound work per call even for strings
+    // containing thousands of leading zeros. Native target profiles may
+    // enlarge this ceiling only with an equivalent scheduler/fuel proof.
+    e.get(LEN);
+    e.i32c(1024);
+    e.op(0x4B); // i32.gt_u
+    br_if_to(&mut e, Frame::Break);
+    // Check the bounded guest string view before loading a byte. No overflow
+    // or out-of-bounds host trap from an invalid/forged (ptr,len) pair.
+    e.get(PTR);
+    e.i32c((HEAP_PAGES * 65536) as i32);
+    e.op(0x4B); // i32.gt_u
+    br_if_to(&mut e, Frame::Break);
+    e.get(LEN);
+    e.i32c((HEAP_PAGES * 65536) as i32);
+    e.get(PTR);
+    e.op(0x6B); // i32.sub (the ptr is already bounded)
+    e.op(0x4B); // i32.gt_u
+    br_if_to(&mut e, Frame::Break);
+
+    // First byte is present and bounded. A leading sign is optional.
+    e.get(PTR);
+    e.code.extend_from_slice(&[0x2D, 0, 0]); // i32.load8_u
+    e.set(DIGIT);
+    e.get(DIGIT);
+    e.i32c(45); // '-'
+    e.op(0x46);
+    e.open(0x04, 0x40, Frame::Other);
+    e.i32c(1);
+    e.set(NEG);
+    e.i32c(1);
+    e.set(IDX);
+    e.op(0x05); // else
+    e.get(DIGIT);
+    e.i32c(43); // '+'
+    e.op(0x46);
+    e.open(0x04, 0x40, Frame::Other);
+    e.i32c(1);
+    e.set(IDX);
+    e.close();
+    e.close();
+    e.get(IDX);
+    e.get(LEN);
+    e.op(0x4F); // i32.ge_u: bare sign is invalid
+    br_if_to(&mut e, Frame::Break);
+
+    e.get(NEG);
+    e.open(0x04, I64, Frame::Other); // if negative: lower bound is MIN
+    e.i64c(i64::MIN);
+    e.op(0x05);
+    e.i64c(-i64::MAX);
+    e.close();
+    e.set(LIMIT);
+    e.i64c(0);
+    e.set(ACC);
+
+    e.open(0x02, 0x40, Frame::Top);
+    e.open(0x03, 0x40, Frame::Continue);
+    e.get(IDX);
+    e.get(LEN);
+    e.op(0x4F); // i >= len
+    br_if_to(&mut e, Frame::Top);
+
+    byte_at_ptr(&mut e, PTR, IDX);
+    e.set(DIGIT);
+    e.get(DIGIT);
+    e.i32c(48); // '0'
+    e.op(0x49); // i32.lt_u
+    br_if_to(&mut e, Frame::Break);
+    e.get(DIGIT);
+    e.i32c(57); // '9'
+    e.op(0x4B); // i32.gt_u
+    br_if_to(&mut e, Frame::Break);
+    e.get(DIGIT);
+    e.i32c(48);
+    e.op(0x6B);
+    e.set(DIGIT);
+
+    // Negative accumulation avoids trapping/overflowing at i64::MIN.
+    e.get(ACC);
+    e.i64c(-922337203685477580); // min/10, truncated toward zero
+    e.op(0x53); // i64.lt_s
+    br_if_to(&mut e, Frame::Break);
+    e.get(ACC);
+    e.i64c(10);
+    e.op(0x7E); // i64.mul; safe after cutoff
+    e.set(ACC);
+    e.get(ACC);
+    e.get(LIMIT);
+    e.get(DIGIT);
+    e.op(0xAD); // i64.extend_i32_u
+    e.op(0x7C); // i64.add
+    e.op(0x53); // i64.lt_s
+    br_if_to(&mut e, Frame::Break);
+    e.get(ACC);
+    e.get(DIGIT);
+    e.op(0xAD);
+    e.op(0x7D); // i64.sub
+    e.set(ACC);
+    e.get(IDX);
+    e.i32c(1);
+    e.op(0x6A);
+    e.set(IDX);
+    e.br_to(Frame::Continue);
+    e.close(); // loop
+    e.close(); // success block
+
+    e.i32c(16);
+    e.call(l.helper(H_ALLOC));
+    e.set(REC);
+    e.get(REC);
+    e.i32c(0); // Ok tag
+    e.store_i32(0);
+    e.get(REC);
+    e.get(NEG);
+    e.open(0x04, I64, Frame::Other);
+    e.get(ACC); // negative includes MIN
+    e.op(0x05);
+    e.i64c(0);
+    e.get(ACC);
+    e.op(0x7D); // positive is -negative_acc, now in range
+    e.close();
+    e.store_i64(8);
+    e.get(REC);
+    e.op(0x0F); // return Ok(pointer)
+    e.close(); // error target
+
+    // Error ABI: reserved 8-byte object header; immutable message at +8.
+    // Match TExpr::ErrorNew exactly or Error.message identity reads corrupt.
+    // Return Err(original Error object). Never manufacture a throw or None.
+    e.i32c(16);
+    e.call(l.helper(H_ALLOC));
+    e.set(ERR);
+    e.get(ERR);
+    e.get(1); // immutable packed "invalid integer" message view
+    e.store_i64(8);
+    e.i32c(16);
+    e.call(l.helper(H_ALLOC));
+    e.set(REC);
+    e.get(REC);
+    e.i32c(1); // Err tag
+    e.store_i32(0);
+    e.get(REC);
+    e.get(ERR);
+    e.op(0xAD); // retain the Error object's address as i64 payload
+    e.store_i64(8);
+    e.get(REC);
+    e.op(0x0B);
+    (Sig(vec![I64, I64], vec![I32]), locals, e.code)
+}
+
 fn locals_decl(types: &[Type]) -> Vec<u8> {
     let mut groups: Vec<(u32, u8)> = Vec::new();
     for t in types {
@@ -1438,8 +1730,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
         imports: p.imports.clone(),
-        helpers: str_base + if p.strings { STRING_HELPERS } else { 0 },
+        helpers: str_base + (if p.strings { STRING_HELPERS } else { 0 }) + u32::from(p.parse_int),
         str_base,
+        parse_int_base: str_base + if p.strings { STRING_HELPERS } else { 0 },
         state_base: 1 + u32::from(p.heap),
         gen_free_global: (!p.generators.is_empty()).then_some(
             1 + u32::from(p.heap) + p.globals.len() as u32
@@ -1483,6 +1776,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         let alloc = p.heap.then(|| layout.helper(H_ALLOC));
         helpers.extend(string_helpers(layout.str_helper(S_BYTES_EQ), alloc));
     }
+    if p.parse_int {
+        // Checked guest parser needs both the string memory and the bounded
+        // allocator to build a tagged Result and an owned Error on failure.
+        assert!(p.strings && p.heap);
+        helpers.push(int_parse_body(&layout));
+    }
     for (sig, locals, code) in helpers {
         func_types.push(types.idx(sig));
         let mut b = locals;
@@ -1511,6 +1810,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             state_write_depth: 0,
             uw: None,
             in_recover: false,
+            active_traps: 0,
             calls: Vec::new(),
             landings: Vec::new(),
         };
@@ -1578,6 +1878,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             state_write_depth: 0,
             uw: None,
             in_recover: false,
+            active_traps: 0,
             calls: Vec::new(),
             landings: Vec::new(),
         };

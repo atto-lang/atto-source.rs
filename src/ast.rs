@@ -35,6 +35,12 @@ pub enum Type {
     /// First executable ADT profiles; their payloads use the checked module heap.
     /// Other generic instantiations reject without emitting an artifact.
     OptionInt,
+    /// First-class built-in guest Error: a single opaque owned heap identity.
+    Error,
+    /// Result with error payload retaining the Error identity and message.
+    ResultIntError,
+    ResultOptionIntError,
+    ResultVoidError,
     ResultIntStr,
     /// First nested ADT profile: Some(Result<int,string>) or None.
     /// Generic ADT instantiations remain deliberately restricted.
@@ -54,6 +60,10 @@ impl Type {
             Type::Float => "float",
             Type::Str => "string",
             Type::OptionInt => "Option<int>",
+            Type::Error => "Error",
+            Type::ResultIntError => "Result<int,Error>",
+            Type::ResultOptionIntError => "Result<Option<int>,Error>",
+            Type::ResultVoidError => "Result<void,Error>",
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
@@ -254,11 +264,22 @@ pub struct ActorDecl {
 /// inferred-effect mode; a partial list forbids omitted throw/raise effects.
 /// Fatal panics remain a distinct runtime channel and are NOT statically
 /// certified by this browser compiler's exception-effect inference.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeclaredEffects {
+    /// An explicit kind may declare an empty set, unlike an absent kind.
+    pub declared: [bool; 3],
+    /// Complete nominal error type names per channel: throw, raise, panic.
+    /// The browser execution profile currently admits only core Error.
+    pub error_types: [Vec<String>; 3],
+    /// Conservative backend projection of the typed sets.
     pub throws: bool,
     pub raises: bool,
     pub panics: bool,
+}
+
+impl DeclaredEffects {
+    pub fn can_throw(&self) -> bool { !self.error_types[0].is_empty() }
+    pub fn can_raise(&self) -> bool { !self.error_types[1].is_empty() }
 }
 
 #[derive(Clone, Debug)]

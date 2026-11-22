@@ -19,6 +19,91 @@ fn reject(code: &str, s: &str) {
     assert!(d.pos.line > 0 && d.pos.col > 0, "{d}");
 }
 
+
+
+#[test]
+fn bang_throw_catch_finally_and_raise_recover_compile_to_real_wasm() {
+    pass(r#"
+        fnc fail(): int throws(Error) { throw! Error("bang throw"); }
+        pub fnc main(): int {
+            try { return fail(); }
+            catch (Error e) { stdio.println("caught bang"); return 54; }
+            finally { stdio.println("finally"); }
+        }
+    "#);
+    pass(r#"
+        fnc fail(): int raises(Error) { raise! Error("bang raise"); }
+        fnc checked(): int {
+            recover |err, cursor| -> { return 44; };
+            return fail();
+        }
+        pub fnc main(): int { return checked(); }
+    "#);
+}
+
+#[test]
+fn canonical_bang_trap_compiles_to_result_guest_wasm() {
+    // Canonical trap! uses the same checked Result lowering as bare trap.
+    // Source admission alone does not prove guest semantics: see Node traces.
+    pass(r#"
+        fnc answer(): Result<int,Error> { return Ok(41); }
+        pub fnc main(): int {
+            val Result<int,Error> first = trap! answer();
+            val Result<int,Error> second = trap! first;
+            match second over
+                on Ok(n) -> { return n + 1; }
+                on Err(e) -> { return 0; }
+            end
+        }
+    "#);
+    pass(r#"
+        fnc fail(): int throws(Error) { throw! Error("original"); }
+        pub fnc main(): int {
+            val Result<int,Error> outcome = trap! fail();
+            match outcome over
+                on Ok(n) -> { return 0; }
+                on Err(e) -> { return 42; }
+            end
+        }
+    "#);
+    pass(r#"
+        fnc maybe(): Option<int> { return None; }
+        pub fnc main(): int {
+            val Result<Option<int>,Error> outcome = trap! maybe();
+            match outcome over
+                on Err(e) -> { return 0; }
+                on Ok(inner) -> {
+                    match inner over
+                        on None -> { return 42; }
+                        on Some(n) -> { return n; }
+                    end
+                }
+            end
+        }
+    "#);
+}
+
+#[test]
+fn canonical_exception_bangs_preserve_strict_type_effect_guards() {
+    reject("E_TYPE", r#"pub fnc main(): int { throw! 7; }"#);
+    reject("E_TYPE", r#"pub fnc main(): int { raise! "string"; }"#);
+    reject("E_UNSUPPORTED", r#"pub fnc main(): int { panic! Error("fatal"); }"#);
+    // Canonical trap! cannot be assigned to historical Option<T>.
+    reject("E_TYPE", r#"
+        pub fnc main(): int {
+            val Option<int> impossible = trap! 42;
+            return 0;
+        }
+    "#);
+    reject("E_TRAP_ERROR_JOIN", r#"
+        fnc old(): Result<int,string> { return Ok(42); }
+        pub fnc main(): int {
+            val outcome = trap! old();
+            return 0;
+        }
+    "#);
+}
+
 #[test]
 fn exact_published_defer_recover_preview_compiles_to_guest_wasm() {
     pass(SITE);
@@ -166,7 +251,7 @@ fn handled_exception_effects_are_accepted_in_cleanup() {
            }"#,
         r#"fnc fail(): int { throw Error("caught"); }
            fnc safe(): int {
-             val Option<int> caught = trap fail();
+             val Result<int,Error> caught = trap fail();
              return 17;
            }
            pub fnc main(): int {
@@ -247,7 +332,7 @@ fn escaping_effects_remain_forbidden_in_cleanup() {
            }"#,
         r#"fnc fail(): int { raise Error("uncaught raise"); }
            fnc unsafe_trap(): int {
-             val Option<int> caught = trap fail();
+             val Result<int,Error> caught = trap fail();
              return 11;
            }
            pub fnc main(): int {
@@ -314,7 +399,7 @@ fn effect_solver_exhaustive_cleanup_matrix() {
     for n in 0..10 {
         for uses_trap in [false, true] {
             let safe = if uses_trap {
-                r#"val Option<int> captured = trap fail(); return 8;"#
+                r#"val Result<int,Error> captured = trap fail(); return 8;"#
             } else {
                 r#"try { return fail(); } catch (Error e) { return 8; }"#
             };
@@ -356,7 +441,7 @@ fn declared_throw_raise_effect_upper_bounds_are_checked() {
            }"#,
         r#"fnc fail(): int throws(Error) { throw Error("caught"); }
            fnc safe(): int raises(Error) {
-             val Option<int> result = trap fail();
+             val Result<int,Error> result = trap fail();
              return 9;
            }
            pub fnc main(): int {
@@ -488,20 +573,34 @@ fn recovery_capability_binders_cannot_be_shadowed_in_any_scope() {
 }
 
 #[test]
-fn programs_without_unwind_constructs_keep_their_guest_bytes() {
-    // The unwind lowering is opt-in: no extra tag, global or frame for
-    // existing throw/trap programs.
+fn ordinary_throw_without_recover_keeps_single_private_guest_tag() {
+    // Ordinary throw lowering remains supported independently of trap.
+    // A source-level throw with no trap/recover must not allocate an
+    // unnecessary second tag, global, or unwind frame.
     let plain = r#"
         fnc t(): int { throw Error("x"); }
-        pub fnc main(): int {
-          val Option<int> r = trap t();
-          return 0;
-        }
+        pub fnc main(): int { return 0; }
     "#;
     let bytes = compile(plain).unwrap();
-    // exactly one tag (section 13: id, size, count=1)
+    // Exactly one private ordinary-throw tag (section 13).
     let tag = bytes.windows(3).position(|w| w == [13, 3, 1]);
-    assert!(tag.is_some(), "single private ordinary-throw tag expected");
+    assert!(tag.is_some(), "single ordinary-throw tag expected");
+
+    // Result-valued trap keeps the same private ordinary-throw tag and
+    // must compile without an Option wrapper or a separate EH tag.
+    let trapped = r#"
+        fnc t(): int { throw Error("x"); }
+        pub fnc main(): int {
+            val Result<int,Error> r = trap t();
+            match r over
+              on Ok(v) -> { return v; }
+              on Err(e) -> { return 1; }
+            end
+        }
+    "#;
+    let compiled = compile(trapped).expect("trap must compile to Result guest");
+    assert!(compiled.windows(3).any(|w| w == [13, 3, 1]));
+
 }
 
 #[test]

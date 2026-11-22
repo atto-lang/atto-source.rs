@@ -547,12 +547,16 @@ impl Parser {
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Result types")?;
-                if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                match (good, bad) {
+                    (Type::Int, Type::Str) => Type::ResultIntStr,
+                    (Type::Int, Type::Error) => Type::ResultIntError,
+                    (Type::OptionInt, Type::Error) => Type::ResultOptionIntError,
+                    (Type::Void, Type::Error) => Type::ResultVoidError,
+                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser Result admits int,string or int/Option<int>/void,Error; other joins require verified generic lowering")),
                 }
-                Type::ResultIntStr
             },
+            "Error" => Type::Error,
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
@@ -1578,9 +1582,9 @@ impl Parser {
     }
 
     fn parse_func(&mut self) -> R<Func> {
-        if *self.peek() == Tok::At {
-            return Err(unsupported(self.pos(), "annotations"));
-        }
+        // Failure annotations are typed upper bounds on the same callable
+        // header as lowercase throws/raises/panics clauses.
+        let prefix_effects = self.parse_failure_annotations()?;
         let start = self.pos();
         self.eat_word("pub");
         let is_pure = self.eat_word("pure");
@@ -1625,7 +1629,7 @@ impl Parser {
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
         } = self.parse_named_callable_header("a function name")?;
-        let declared_effects = self.parse_effect_clauses()?;
+        let declared_effects = self.parse_effect_clauses(prefix_effects)?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1652,56 +1656,100 @@ impl Parser {
         })
     }
 
-    /// Explicit exceptional-effect clauses are a *checked upper bound*
-    /// for ordinary throw and raise. A completely unannotated function
-    /// keeps inferred legacy behavior. The panic channel is parsed and
-    /// retained, but fatal-trap analysis is not yet certified.
-    fn parse_effect_clauses(&mut self) -> R<Option<DeclaredEffects>> {
+    /// Annotation names are case-sensitive, but lowercase @throws is a
+    /// compatible spelling. Every annotation carries exactly one kind and
+    /// requires parentheses. No generic/non-failure annotation is admitted.
+    fn parse_failure_annotations(&mut self) -> R<Option<DeclaredEffects>> {
         let mut declared = DeclaredEffects::default();
         let mut any = false;
+        while self.eat(&Tok::At) {
+            let pos = self.pos();
+            let kind = match self.word_at(0) {
+                Some("Throws" | "throws") => 0,
+                Some("Raises" | "raises") => 1,
+                Some("Panics" | "panics") => 2,
+                _ => return Err(unsupported(pos, "non-failure annotations")),
+            };
+            self.advance();
+            self.expect(Tok::LParen, "'(' after a failure annotation")?;
+            let types = self.parse_failure_error_types(kind)?;
+            Self::record_failure_types(&mut declared, kind, types, pos)?;
+            any = true;
+        }
+        Ok(any.then_some(declared))
+    }
+
+    fn record_failure_types(declared: &mut DeclaredEffects, kind: usize,
+                            types: Vec<String>, pos: Pos) -> R<()> {
+        if declared.declared[kind] {
+            return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                "duplicate failure effect kind, including an explicitly empty row"));
+        }
+        declared.declared[kind] = true;
+        match kind {
+            0 => declared.throws = !types.is_empty(),
+            1 => declared.raises = !types.is_empty(),
+            _ => declared.panics = !types.is_empty(),
+        }
+        declared.error_types[kind] = types;
+        Ok(())
+    }
+
+    /// One nominal list. Preserve exact names in the AST even though the
+    /// current browser profile admits only Error, rather than falsely
+    /// treating a user-defined or unknown name as the built-in Error.
+    fn parse_failure_error_types(&mut self, kind: usize) -> R<Vec<String>> {
+        let spelling = ["throws", "raises", "panics"][kind];
+        let mut types: Vec<String> = Vec::new();
+        if self.eat(&Tok::RParen) { return Ok(types); }
+        loop {
+            let (ty, pos) = self.ident("an Error type in the effect clause")?;
+            if ty != "Error" {
+                return Err(Diagnostic::new(pos, "E_TYPE",
+                    format!("'{spelling}' requires proven nominal Error ancestry; only built-in Error is executable in this browser backend (got '{ty}')")));
+            }
+            if types.iter().any(|old| old == &ty) {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                    format!("duplicate Error type in '{spelling}' effect clause")));
+            }
+            types.push(ty);
+            if !self.eat(&Tok::Comma) { break; }
+            if *self.peek() == Tok::RParen {
+                return Err(Diagnostic::new(self.pos(), "E_TYPE",
+                    format!("trailing comma in '{spelling}' type list")));
+            }
+        }
+        self.expect(Tok::RParen, "')' to close the effect clause")?;
+        Ok(types)
+    }
+
+    /// A complete explicit upper bound is distinct from an inferred-only
+    /// callable. Empty rows prohibit outgoing effects of their kind. An
+    /// omitted kind in any explicit declaration is also forbidden.
+    fn parse_effect_clauses(&mut self, initial: Option<DeclaredEffects>) -> R<Option<DeclaredEffects>> {
+        let mut declared = initial.clone().unwrap_or_default();
+        let mut any = initial.is_some();
         loop {
             let kind = match self.word_at(0) {
-                Some("throws") => "throws",
-                Some("raises") => "raises",
-                Some("panics") => "panics",
+                Some("throws") => 0,
+                Some("raises") => 1,
+                Some("panics") => 2,
+                Some("Throws" | "Raises" | "Panics") => {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "capitalized failure effects require '@' before the function"));
+                }
                 _ => return Ok(any.then_some(declared)),
             };
             if *self.peek_at(1) != Tok::LParen {
-                // Keep unsupported free-form Java-style headers in the
-                // existing parser error path rather than consuming body text.
                 return Ok(any.then_some(declared));
             }
             let pos = self.pos();
-            let seen = match kind {
-                "throws" => declared.throws,
-                "raises" => declared.raises,
-                "panics" => declared.panics,
-                _ => unreachable!(),
-            };
-            if seen {
-                return Err(Diagnostic::new(pos, "E_DUPLICATE",
-                    format!("duplicate '{kind}' effect clause")));
-            }
-            match kind {
-                "throws" => declared.throws = true,
-                "raises" => declared.raises = true,
-                "panics" => declared.panics = true,
-                _ => unreachable!(),
-            }
+            self.advance();
+            self.advance();
+            let types = self.parse_failure_error_types(kind)?;
+            Self::record_failure_types(&mut declared, kind, types, pos)?;
             any = true;
-            self.advance();
-            self.advance();
-            let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
-            if ty != "Error" {
-                return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                    format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
-            }
-            if self.eat(&Tok::Comma) {
-                return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
-                    format!("duplicate Error type in '{kind}' effect clause")));
-            }
-            self.expect(Tok::RParen, "')' to close the effect clause")?;
-            // `throws(Error), raises(Error)`: a comma may separate clauses.
+            // Existing signature grammar permits optional comma separators.
             if *self.peek() == Tok::Comma
                 && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
                 && *self.peek_at(2) == Tok::LParen
@@ -2224,7 +2272,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
             }
-            Some("throw") => {
+            Some("throw" | "throw!") => {
                 self.advance();
                 // Only the typed Error constructor is admitted by the
                 // checker. A raw string is never silently throwable.
@@ -2232,12 +2280,15 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Throw(error, pos))
             }
-            Some("raise") => {
+            Some("raise" | "raise!") => {
                 self.advance();
                 let error = self.parse_expr()?;
                 self.terminator()?;
                 Ok(Stmt::Raise(error, pos))
             }
+            // Terminal actor panic is not ordinary throw/raise and must not
+            // be routed through Result, catch, or host panic.
+            Some("panic!") => Err(unsupported(pos, "typed panic! and supervisor CONTROL lowering")),
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
@@ -2341,7 +2392,7 @@ impl Parser {
                     pos,
                 }))
             }
-            Some("trap") => {
+            Some("trap" | "trap!") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;
                 self.terminator()?;
@@ -2933,9 +2984,21 @@ impl Parser {
                 }
                 "Some" | "Ok" | "Err" => {
                     self.advance();
+                    // Result<void,Error>::Ok has no payload. The checker
+                    // rejects bare Ok for any Result with a value payload.
+                    if w == "Ok" && *self.peek() != Tok::LParen {
+                        return Ok(Pattern::Adt(w, None));
+                    }
                     self.expect(Tok::LParen, "'(' after payload variant")?;
-                    let (name, _) = self.ident("a payload binding name")?;
-                    self.expect(Tok::RParen, "')' after payload binding")?;
+                    // Err()/Ok()/Some() and the (_) spelling discard a
+                    // variant's payload without introducing a binding.
+                    let name = if self.eat(&Tok::RParen) {
+                        "_".to_owned()
+                    } else {
+                        let (name, _) = self.ident("a payload binding name or '_'")?;
+                        self.expect(Tok::RParen, "')' after payload pattern")?;
+                        name
+                    };
                     Ok(Pattern::Adt(w, Some(name)))
                 },
                 "_" => {
@@ -3571,7 +3634,8 @@ impl Parser {
                 return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
                     "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
             }
-            Tok::Ident(s) if s == "trap" => {
+            Tok::Ident(s) if s == "trap" || s == "trap!" => {
+                // Canonical and legacy spellings use checked Result IR.
                 self.advance();
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Trap(Box::new(inner)), pos });
