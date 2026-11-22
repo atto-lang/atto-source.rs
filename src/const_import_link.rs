@@ -123,9 +123,9 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
             (_, [Token { tok: Tok::Int(None), .. }]) => {
                 return Err(fail(pos, "E_CONST_OVERFLOW", "constant i64 literal overflow"));
             }
-            ("int" | "bool" | "string", [Token { tok: Tok::Str(_), .. }])
-                if ty != "string" => {
-                return Err(fail(pos, "E_CONST_TYPE", "file constant type does not match initializer"));
+            ("int" | "bool" | "string", [Token { tok: Tok::Int(_) | Tok::Str(_) | Tok::Float(_), .. }])
+            | ("int" | "bool" | "string", [Token { tok: Tok::Ident(_), .. }]) => {
+                return Err(fail(pos, "E_CONST_TYPE", "file constant type does not match literal initializer"));
             }
             _ => {
                 // `std.env.read_env` and `os.read_env` require runtime
