@@ -53,6 +53,9 @@ while IFS= read -r -d '' record; do
   # Independently hash checkout bytes: assume-unchanged and skip-worktree
   # index flags can conceal modified source files from git diff.
   [[ -f "$path" && ! -L "$path" ]] || reject 'missing or symlinked checked-out source file'
+  # A hardlinked source file can be mutated by a writer outside this checkout.
+  # Permit only singly linked regular checkout files before validating bytes.
+  [[ "$(stat -c '%h' -- "$path")" == 1 ]] || reject 'hardlinked source checkout path'
   working_oid=$(git hash-object --no-filters -- "$path") || reject 'checked-out source file unreadable'
   [[ "$working_oid" == "$oid" ]] || reject 'checked-out source bytes differ from committed blob'
   case "$mode" in

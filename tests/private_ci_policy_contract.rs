@@ -130,6 +130,7 @@ fn workflow_is_source_bound_and_invokes_the_external_guard() {
 #[test]
 fn source_preflight_rehashes_worktree_and_checks_lfs_at_any_size() {
     assert!(PREFLIGHT.contains("git hash-object --no-filters --"));
+    assert!(PREFLIGHT.contains("stat -c '%h' --"));
     assert!(PREFLIGHT.contains("git cat-file blob"));
     assert!(PREFLIGHT.contains("head -c 42"));
     assert!(!PREFLIGHT.contains("size <= 1024"));
@@ -138,6 +139,8 @@ fn source_preflight_rehashes_worktree_and_checks_lfs_at_any_size() {
         "normal large blob without LFS header",
         "dirty source hidden by assume-unchanged",
         "dirty source hidden by skip-worktree",
+        "tracked source linked outside checkout",
+        "clean after external hardlink removed",
         "executable permission hidden by core.filemode false",
     ] {
         assert!(PREFLIGHT_TESTS.contains(case), "missing preflight oracle: {case}");

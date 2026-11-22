@@ -126,6 +126,11 @@ expect_deny 'executable permission hidden by core.filemode false'
 chmod -x "$repo/example.txt"
 git -C "$repo" config core.filemode true
 expect_allow 'clean after adversarial Git index flags'
+external_hardlink="$scratch/external-hardlink.txt"
+ln "$repo/example.txt" "$external_hardlink"
+expect_deny 'tracked source linked outside checkout'
+rm -f -- "$external_hardlink"
+expect_allow 'clean after external hardlink removed'
 original_head=$head
 head=not-a-git-sha
 expect_deny 'malformed source head'
