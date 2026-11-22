@@ -97,39 +97,46 @@ test("duplicate numbered cases and missing imports cannot pass (mutation)", () =
 });
 
 
-test("109 independent Atto boundary cases call every one of the 42 public helpers", () => {
+function verifyBoundary(fixture, ownedSources) {
   const names = ["websocket", "quic", "compute"];
-  const expected = names.flatMap(name => [...sources[name].matchAll(
+  const declared = names.flatMap(name => [...ownedSources[name].matchAll(
     /\bpub\s+fnc\s+([a-z][a-z0-9_]*)\s*\(/g
   )].map(match => name + "." + match[1]));
-  assert.equal(expected.length, 42, "boundary coverage contract must match public API count");
+  assert.equal(declared.length, 42, "boundary coverage must match all public Atto exports");
   for (const name of names) {
-    assert.ok(boundary.includes('import module ' + name + ' from "+stdlib/std/' + name + '.atto";'),
+    assert.ok(fixture.includes('import module ' + name + ' from "+stdlib/std/' + name + '.atto";'),
       "missing native source module in boundary guest: " + name);
   }
-  for (const qualified of expected) {
-    assert.ok(boundary.includes(qualified + "("), "missing Atto boundary call for: " + qualified);
+  for (const qualified of declared) {
+    assert.ok(fixture.includes(qualified + "("),
+      "no native Atto boundary case calls exported function: " + qualified);
   }
-  for (const match of boundary.matchAll(/\b(websocket|quic|compute)\.([a-z_][a-z0-9_]*)\s*\(/g)) {
-    assert.ok(expected.includes(match[1] + "." + match[2]),
-      "boundary guest calls missing Atto exported member: " + match[0]);
+  for (const match of fixture.matchAll(/\b(websocket|quic|compute)\.([a-z_][a-z0-9_]*)\s*\(/g)) {
+    assert.ok(declared.includes(match[1] + "." + match[2]),
+      "unexported Atto module member in boundary guest: " + match[0]);
   }
-  const numbered = [...boundary.matchAll(/\bthen return (\d+); fi/g)].map(x => Number(x[1]));
-  assert.deepEqual(numbered, Array.from({length: 109}, (_,i) => i + 1),
-    "independent guest must contain every numbered boundary case in sequence");
-  assert.match(boundary, /\breturn 0;\s*\}\s*$/,
-    "boundary suite has no independent success return");
+  const numbered = [...fixture.matchAll(/\bthen return (\d+); fi/g)].map(x => Number(x[1]));
+  assert.deepEqual(numbered, Array.from({length: 109}, (_, i) => i + 1),
+    "boundary guest must contain 109 uniquely numbered cases in sequence");
+  assert.match(fixture, /\breturn 0;\s*\}\s*$/,
+    "boundary guest must return zero only after all checks");
+  return true;
+}
+
+test("109 independently compiled Atto boundaries cover all 42 public functions", () => {
+  assert.equal(verifyBoundary(boundary, sources), true);
 });
-test("a missing boundary call, duplicated case or stray symbol is rejected", () => {
-  const declared = ["websocket", "quic", "compute"].flatMap(name =>
-    [...sources[name].matchAll(/\bpub\s+fnc\s+([a-z][a-z0-9_]*)\s*\(/g)].map(x => name + "." + x[1]));
-  const brokenSymbol = boundary.replace("quic.quic_stream_bidirectional(", "quic.quic_bad_symbol(");
-  assert.ok([...brokenSymbol.matchAll(/\bquic\.(quic_[a-z0-9_]+)\s*\(/g)].some(
-    x => !declared.includes("quic." + x[1])), "bad-symbol injection was not effective");
-  const duplicateNumber = boundary.replace("then return 109; fi", "then return 108; fi");
-  assert.notDeepEqual([...duplicateNumber.matchAll(/\bthen return (\d+); fi/g)].map(x => +x[1]),
-    Array.from({length:109}, (_,i) => i + 1), "duplicate numbered case passed");
-  const missingCall = boundary.replace("quic.quic_ack_delay_exponent_valid(", "quic.quic_not_present(");
-  assert.ok(!declared.includes("quic.quic_not_present"), "negative fixture unexpectedly exported");
-  assert.notEqual(missingCall, boundary);
+
+test("boundary auditor rejects missing imports, callsites, exports and bad case numbers", () => {
+  assert.throws(() => verifyBoundary(
+    boundary.replace('import module compute from "+stdlib/std/compute.atto";', ""), sources));
+  assert.throws(() => verifyBoundary(
+    boundary.replace("quic.quic_stream_id_valid(", "quic.quic_unknown_id("), sources));
+  assert.throws(() => verifyBoundary(
+    boundary.replace("then return 109; fi", "then return 108; fi"), sources));
+  assert.throws(() => verifyBoundary(
+    boundary.replace("compute.compute_upload_admit(", "compute.compute_typo("), sources));
+  const removedExport = {...sources,
+    websocket: sources.websocket.replace("pub fnc websocket_mask_octet", "fnc websocket_mask_octet")};
+  assert.throws(() => verifyBoundary(boundary, removedExport));
 });
