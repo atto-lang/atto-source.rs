@@ -11,6 +11,8 @@ on:
       - "tests/namespace_relative_function_imports.rs"
       - "src/import_link.rs"
       - "src/lib.rs"
+      - "src/core_future_ownership.rs"
+      - "tests/core_future_ownership.rs"
       - "src/target_syntax.rs"
       - "src/namespace.rs"
       - ".github/workflows/std-actor-guest.yml"
@@ -50,7 +52,7 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.85.1 --profile minimal
       - name: Compile actual native Atto namespace and relative import
-        run: cargo +1.85.1 test --locked --test actor_std_native_guest --test namespace_relative_function_imports -- --nocapture
+        run: cargo +1.85.1 test --locked --test actor_std_native_guest --test namespace_relative_function_imports --test core_future_ownership -- --nocapture
       - name: Build exact-head production Atto compiler
         run: cargo +1.85.1 build --locked --release --bin attoc
       - name: Execute source contracts and compiled Wasm actor policy guests
