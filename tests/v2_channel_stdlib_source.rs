@@ -52,7 +52,7 @@ fn checked_bounded_constructor_cannot_alias_unbounded_sentinel() {
         "bounded() must call the checked guest .atto constructor");
     assert!(CHECKER.contains("self.rt(\"__chan_new\", vec![Ir::Const(-1)])"),
         "unbounded() must remain an explicit independent spelling");
-    assert_eq!(CHECKER.matches("self.rt(\\\"__chan_new_bounded\\\", vec![n])").count(), 2,
+    assert_eq!(CHECKER.matches("self.rt(\"__chan_new_bounded\", vec![n])").count(), 2,
         "both Channel<T>.bounded and channel<T>(capacity:) must be checked");
     assert!(LIB.contains("fnc __chan_new_bounded(int cap): int {"));
     assert!(LIB.contains("if cap < 0 then"));
