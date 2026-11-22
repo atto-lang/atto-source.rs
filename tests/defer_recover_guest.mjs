@@ -12,6 +12,45 @@ import { fileURLToPath } from 'node:url';
 const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc', import.meta.url));
 
 const cases = [
+
+  {
+    name: 'canonical trap bang captures original typed throw as one Result Err',
+    src: `fnc fail(): int throws(Error) { throw! Error("bang original"); }
+      pub fnc main(): int {
+        val Result<int,Error> r = trap! fail();
+        match r over
+          on Ok(n) -> { return 0; }
+          on Err(e) -> { stdio.println(e.message); return 42; }
+        end
+      }`,
+    stdout: 'bang original\\n', value: 42n,
+  },
+  {
+    name: 'canonical trap bang remains flat for an already returned Err',
+    src: `fnc fail(): Result<int,Error> { return Err(Error("existing Err")); }
+      pub fnc main(): int {
+        val Result<int,Error> r = trap! fail();
+        match r over
+          on Ok(n) -> { return 0; }
+          on Err(e) -> { stdio.println(e.message); return 43; }
+        end
+      }`,
+    stdout: 'existing Err\\n', value: 43n,
+  },
+  {
+    name: 'canonical raise bang bypasses catch and reaches recover',
+    src: `fnc fail(): int raises(Error) { raise! Error("bang raise"); }
+      fnc f(): int {
+        recover |err, cursor| -> {
+          stdio.println(err.message);
+          return 44;
+        };
+        try { return fail(); }
+        catch (Error e) { stdio.println("UNEXPECTED catch"); return 0; }
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'bang raise\\n', value: 44n,
+  },
   {
     name: 'annotated caught throw is safe in defer and preserves normal result',
     src: `fnc fail(): int throws(Error) { throw Error("inner"); }

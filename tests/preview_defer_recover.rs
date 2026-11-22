@@ -19,6 +19,63 @@ fn reject(code: &str, s: &str) {
     assert!(d.pos.line > 0 && d.pos.col > 0, "{d}");
 }
 
+
+#[test]
+fn canonical_bang_trap_compiles_to_result_guest_wasm() {
+    // Canonical trap! uses the same checked Result lowering as bare trap.
+    // Source admission alone does not prove guest semantics: see Node traces.
+    pass(r#"
+        fnc answer(): Result<int,Error> { return Ok(41); }
+        pub fnc main(): int {
+            val Result<int,Error> first = trap! answer();
+            val Result<int,Error> second = trap! first;
+            match second over
+                on Ok(n) -> { return n + 1; }
+                on Err(e) -> { return 0; }
+            end
+        }
+    "#);
+    pass(r#"
+        fnc fail(): int throws(Error) { throw! Error("original"); }
+        pub fnc main(): int {
+            val Result<int,Error> outcome = trap! fail();
+            match outcome over
+                on Ok(n) -> { return 0; }
+                on Err(e) -> { return 42; }
+            end
+        }
+    "#);
+    pass(r#"
+        fnc maybe(): Option<int> { return None; }
+        pub fnc main(): int {
+            val Result<Option<int>,Error> outcome = trap! maybe();
+            match outcome over
+                on Err(e) -> { return 0; }
+                on Ok(inner) -> {
+                    match inner over
+                        on None -> { return 42; }
+                        on Some(n) -> { return n; }
+                    end
+                }
+            end
+        }
+    "#);
+}
+
+#[test]
+fn canonical_exception_bangs_preserve_strict_type_effect_guards() {
+    reject("E_TYPE", r#"pub fnc main(): int { throw! 7; }"#);
+    reject("E_TYPE", r#"pub fnc main(): int { raise! "string"; }"#);
+    reject("E_UNSUPPORTED", r#"pub fnc main(): int { panic! Error("fatal"); }"#);
+    reject("E_TRAP_ERROR_JOIN", r#"
+        fnc old(): Result<int,string> { return Ok(42); }
+        pub fnc main(): int {
+            val outcome = trap! old();
+            return 0;
+        }
+    "#);
+}
+
 #[test]
 fn exact_published_defer_recover_preview_compiles_to_guest_wasm() {
     pass(SITE);
