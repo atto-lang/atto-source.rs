@@ -33,4 +33,5 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --test core_slice_iter_cmp_package -- --nocapture
+          cargo test --locked --test core_namespace_import -- --nocapture
           echo "ATTO_CORE_SIC_COMPILER_OUTPUT=WASM_EMITTED;GUEST_EXECUTION=NOT_EXECUTED"

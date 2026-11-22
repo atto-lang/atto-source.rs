@@ -1,7 +1,7 @@
 // Allocation-free iteration algorithms for already-owned Array<int>.
 // Cursor positions are values. No iterator may retain a dangling loan.
 // Callbacks are synchronous, in input order; no suspension is performed.
-define pub module iter as
+use namespace atto.core.iter;
   pub fnc valid_range(int start, int count, int total): bool {
     if start < 0 || count < 0 || total < 0 then
       return false;
@@ -43,4 +43,3 @@ define pub module iter as
     fi
     return Some(cursor + steps);
   }
-end

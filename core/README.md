@@ -25,3 +25,16 @@ A general slice API must be compiler-owned borrower/owner checked and
 reject escapes, invalidation by owner mutations, aliasing mutable views,
 use-after-take, retained loans crossing await, and actor crossing.
 No runtime allocator or host imports may be used to bypass these gates.
+
+## Namespace-only source (Rust compiler)
+
+Library sources declare `use namespace atto.core.slice;` (or iter/cmp)
+followed by public functions. Consumers use explicit
+`import namespace slice from "+core/slice.atto";`. This is a
+**source-graph package path import**, not an ambient `atto.core/*`
+virtual source lookup. The verified source graph's namespace is lowered
+internally through a private module compatibility bridge before typed Wasm.
+Unknown paths, mismatched namespace leaves, private functions, cycles and
+duplicate file owners fail closed. This first Rust backend profile is
+intentionally namespace-first; other compiler backends may keep modules until
+they implement equivalent typed namespace source linking.

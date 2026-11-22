@@ -1,8 +1,8 @@
 // expect-exit: 0
 // Rust browser package-linker executable scalar subset.
-import module slice from "+core/slice.atto";
-import module iter from "+core/iter.atto";
-import module cmp from "+core/cmp.atto";
+import namespace slice from "+core/slice.atto";
+import namespace iter from "+core/iter.atto";
+import namespace cmp from "+core/cmp.atto";
 pub fnc main(): int {
   if !slice.valid_range(4, 0, 4) then return 1; fi
   if slice.valid_range(3, 2, 4) then return 2; fi

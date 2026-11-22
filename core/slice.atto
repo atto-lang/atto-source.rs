@@ -2,7 +2,7 @@
 // An (offset, count) pair is a checked logical view, NOT a lifetime-
 // bearing Slice<T> reference or an authorization to access foreign memory.
 // The array owner retains ownership. No copies or heap allocations here.
-define pub module slice as
+use namespace atto.core.slice;
   // Check without evaluating offset + count, which could overflow.
   pub fnc valid_range(int offset, int count, int total): bool {
     if offset < 0 || count < 0 || total < 0 then
@@ -36,4 +36,3 @@ define pub module slice as
     fi
     return Some(offset + relative_offset);
   }
-end

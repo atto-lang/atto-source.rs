@@ -1,7 +1,7 @@
 // Pure ordering, safe at signed-int endpoints (no left-right subtraction).
 // compare_* returns -1, 0, or 1; not a numeric difference. All routines
 // preserve deterministic ordering with no I/O or allocator dependency.
-define pub module cmp as
+use namespace atto.core.cmp;
   pub fnc compare_int(int left, int right): int {
     if left < right then
       return -1;
@@ -49,4 +49,3 @@ define pub module cmp as
     fi
     return Some(value);
   }
-end
