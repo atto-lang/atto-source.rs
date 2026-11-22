@@ -17,15 +17,17 @@ const decl=[
  'end',
  'fnc add_int(int lhs, int rhs): int { return lhs + rhs; }'
 ].join('\n')+'\n';
-const good=decl+'pub fnc main(): int { val n: Additive::Output<int> = Additive::add<int>(20,22); return n; }\n';
+const good=decl+'pub fnc main(): int { val n: Additive.Output<int> = Additive.add<int>(20,22); return n; }\n';
 const bad=[
  ['duplicate',decl+'define impl Additive for int type Output=int; bind add=add_int; end','E_WITNESS_AMBIGUOUS'],
  ['incomplete',decl.replace('bind add = add_int;',''),'E_WITNESS_INCOMPLETE'],
  ['signature',decl.replace('fnc add_int(int lhs','fnc add_int(bool lhs'),'E_WITNESS_SIGNATURE'],
- ['missing',decl+'pub fnc main(): int { return Additive::add<bool>(1,2); }','E_WITNESS_MISSING'],
+ ['missing',decl+'pub fnc main(): int { return Additive.add<bool>(1,2); }','E_WITNESS_MISSING'],
  ['value',decl+'pub fnc main(): int { let w = Additive; return 0; }','E_WITNESS_VALUE'],
  ['binding',decl.replace('bind add = add_int;','bind add = absent;'),'E_WITNESS_BINDING'],
- ['member',decl+'pub fnc main(): int { return Additive::unknown<int>(1,2); }','E_WITNESS_MEMBER']
+ ['member',decl+'pub fnc main(): int { return Additive.unknown<int>(1,2); }','E_WITNESS_MEMBER'],
+ ['reject-old-static-method',decl+'pub fnc main(): int { return Additive::add<int>(20,22); }','E_WITNESS_STATIC_ACCESS'],
+ ['reject-old-associated-type',decl+'pub fnc main(): int { val n: Additive::Output<int> = 3; return n; }','E_WITNESS_STATIC_ACCESS']
 ];
 const dir=await mkdtemp(join(tmpdir(),'atto-typeclass-'));
 try{
