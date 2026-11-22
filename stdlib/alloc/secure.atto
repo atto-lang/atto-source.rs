@@ -1,0 +1,83 @@
+// Atto-owned memory scrub POLICY.
+// Logical clearing of Array<int> values is NOT cryptographic zeroization:
+// compilers/GC/JITs may copy, relocate or eliminate the backing writes.
+// The guaranteed secure-clear entry point below FAILS CLOSED until the
+// backend supplies a verified non-elidable, exclusive, complete-range wipe.
+define module secure as
+  pub fnc valid_byte(int value): bool {
+    return value >= 0 && value <= 255;
+  }
+
+  pub define class ScrubBuffer as
+    let int max_bytes;
+    let mut Array<int> elements = new Array<int>();
+    let mut bool closed = false;
+
+    pub constructor(int max_bytes) {
+      if max_bytes < 1 || max_bytes > 65536; do
+        rt fail("alloc/secure: logical scrub buffer limit outside 1..65536");
+      fi
+      self.max_bytes = max_bytes;
+    }
+
+    pub append(mut self)(int value): bool {
+      if self.closed || !valid_byte(value) ||
+         self.elements.size >= self.max_bytes; do
+        return false;
+      fi
+      self.elements.add(value);
+      return true;
+    }
+
+    pub length(): int {
+      return self.elements.size;
+    }
+
+    pub read_at(int index): int {
+      if self.closed || index < 0 || index >= self.elements.size; do
+        rt fail("alloc/secure: closed or out-of-bounds read");
+      fi
+      return self.elements.get(index);
+    }
+
+    // Scrubs the logical elements before making the buffer unusable.
+    // Do not use this operation to protect keys or other secrets.
+    pub logical_clear(mut self)(): bool {
+      if self.closed; do
+        return false;
+      fi
+      for (let int index = 0; index < self.elements.size; index = index + 1) {
+        self.elements.set(index, 0);
+      }
+      self.closed = true;
+      return true;
+    }
+
+    pub is_closed(): bool {
+      return self.closed;
+    }
+
+    pub elements_are_zero(): bool {
+      if !self.closed; do
+        return false;
+      fi
+      for (let int index = 0; index < self.elements.size; index = index + 1) {
+        if self.elements.get(index) != 0; do
+          return false;
+        fi
+      }
+      return true;
+    }
+
+    // No unsafe silent fallback to logical_clear: this must remain
+    // unavailable until compiler/runtime enforce a volatile/opaque wipe,
+    // destroy all aliases and own deallocation on every exit path.
+    pub secure_clear(mut self)(): void {
+      rt fail("alloc/secure: guaranteed zeroization requires backend support");
+    }
+  end
+
+  pub fnc scrub_buffer(int max_bytes): ScrubBuffer {
+    return new ScrubBuffer(max_bytes);
+  }
+end

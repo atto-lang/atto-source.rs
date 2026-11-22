@@ -1,0 +1,72 @@
+// Atto-owned alignment policy, not a raw allocator or a pointer cast.
+// All offsets are checked against a conservative portable signed-int budget.
+// No result here proves that any backing pointer is physically aligned.
+define module aligned as
+  pub fnc valid_alignment(int alignment): bool {
+    return alignment == 1 || alignment == 2 || alignment == 4 ||
+           alignment == 8 || alignment == 16 || alignment == 32 ||
+           alignment == 64 || alignment == 128 || alignment == 256 ||
+           alignment == 512 || alignment == 1024 || alignment == 2048 ||
+           alignment == 4096 || alignment == 8192 || alignment == 16384 ||
+           alignment == 32768 || alignment == 65536;
+  }
+
+  // -1 denotes invalid alignment, invalid address, or arithmetic overflow.
+  pub fnc padding_for(int address, int alignment): int {
+    if address < 0 || address > 2147483647 ||
+       !valid_alignment(alignment); do
+      return -1;
+    fi
+    val int residue = address % alignment;
+    if residue == 0; do
+      return 0;
+    fi
+    return alignment - residue;
+  }
+
+  pub fnc align_up(int value, int alignment): int {
+    val int padding = padding_for(value, alignment);
+    if padding < 0 || value > 2147483647 - padding; do
+      return -1;
+    fi
+    return value + padding;
+  }
+
+  // Worst-case space needed for an aligned payload from an unknown base.
+  // This is an OVERALLOCATION PLAN, not a physical aligned allocation.
+  pub fnc backing_bytes(int payload_bytes, int alignment): int {
+    if payload_bytes < 0 || !valid_alignment(alignment); do
+      return -1;
+    fi
+    if payload_bytes > 2147483647 - (alignment - 1); do
+      return -1;
+    fi
+    return payload_bytes + alignment - 1;
+  }
+
+  // A trusted allocator must independently validate the base allocation,
+  // its full extent, provenance, lifetime and real address before use.
+  pub fnc payload_offset(int base_address, int backing_size,
+                         int payload_bytes, int alignment): int {
+    if backing_size < 0 || payload_bytes < 0 ||
+       payload_bytes > backing_size; do
+      return -1;
+    fi
+    val int padding = padding_for(base_address, alignment);
+    if padding < 0 || padding > backing_size - payload_bytes; do
+      return -1;
+    fi
+    return padding;
+  }
+
+  pub fnc pages_for(int bytes, int page_bytes): int {
+    if bytes < 0 || bytes > 2147483647 ||
+       !valid_alignment(page_bytes); do
+      return -1;
+    fi
+    if bytes == 0; do
+      return 0;
+    fi
+    return ((bytes - 1) / page_bytes) + 1;
+  }
+end
