@@ -87,13 +87,29 @@ fn borrowed_option_result_tags_execute_wasm_and_preserve_copy_owners() {
 #[test]
 fn borrowed_affine_payload_escape_requires_ownership_diagnostic() {
     let source = include_str!("core_option_result/negative_affine_borrow_escape.atto");
-    let error = compile(source).expect_err("a borrowed affine Option must not return its owned payload");
-    // A parser not recognizing borrow or class constructs is NOT a proof.
-    // The compiler must reject the typed ownership violation itself.
-    let diagnostic_code = error.code.to_string();
-    assert!(
-        ["E_OWNERSHIP", "E_BORROW", "E_MOVED"].contains(&diagnostic_code.as_str()),
-        "must reject on typed ownership grounds, not a syntax/type fallback: {error}"
-    );
+    let error = compile(source).expect_err("a borrowed affine class cannot become an owned return");
+    // This class-based test reaches the existing typed ownership checker.
+    // An E_UNSUPPORTED_TYPE on Option<Payload> would not be evidence.
+    assert_eq!(error.code, "E_BORROW", "expected the semantic loan escape diagnostic: {error}");
     assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
+}
+
+#[test]
+fn unproved_affine_option_payload_remains_unsupported() {
+    let source = include_str!("core_option_result/negative_unproved_affine_option.atto");
+    let error = compile(source).expect_err("Option<Payload> must not invent an affine Wasm ABI");
+    assert_eq!(error.code, "E_UNSUPPORTED_TYPE", "{error}");
+    assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
+}
+
+#[test]
+fn borrowed_concrete_adt_temporary_and_mutable_loan_are_denied() {
+    for source in [
+        include_str!("core_option_result/negative_borrow_option_temporary.atto"),
+        include_str!("core_option_result/negative_borrow_mut_option.atto"),
+    ] {
+        let error = compile(source).expect_err("unproven ADT loan must not emit Wasm");
+        assert_eq!(error.code, "E_BORROW", "{error}");
+        assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
+    }
 }
