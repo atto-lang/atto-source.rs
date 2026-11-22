@@ -111,6 +111,9 @@ fn parse_class(tokens: &[Token], at: &mut usize) -> Result<Class, Diagnostic> {
         }
     }
     if methods.is_empty() { return Err(error(tokens[*at-1].pos, "E_WITNESS_METHOD", "typeclass must declare a method")); }
+    if methods.iter().any(|m| associated.contains(&m.name)) {
+        return Err(error(tokens[*at-1].pos, "E_WITNESS_AMBIGUOUS", "method name collides with associated type"));
+    }
     for m in &methods {
         for s in m.params.iter().chain(std::iter::once(&m.ret)) {
             if !scalar(s) && s != "Self" && s != "void" && !associated.contains(s) {
@@ -199,7 +202,10 @@ fn concrete_signatures(tokens: &[Token]) -> Result<BTreeMap<String, (Vec<String>
                         if tok(tokens, j, Tok::Comma) { j += 1; }
                         else if !tok(tokens, j, Tok::RParen) { params.clear(); break; }
                     }
-                    if tok(tokens, j, Tok::RParen) && tok(tokens, j+1, Tok::Colon) {
+                    // Only a direct braced scalar callable with no intervening effect or
+                    // dynamic modifier can satisfy this witness profile.
+                    if tok(tokens, j, Tok::RParen) && tok(tokens, j+1, Tok::Colon)
+                        && tok(tokens, j+3, Tok::LBrace) {
                         if let Some(ret) = word(tokens, j+2) {
                             if scalar(ret) || ret == "void" {
                                 if defs.insert(name, (params, ret.to_string())).is_some() {
@@ -250,8 +256,8 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     if classes.is_empty() { return Err(error(tokens[0].pos, "E_WITNESS_MISSING", "implementation without a local typeclass")); }
     let sigs = concrete_signatures(&output)?;
     let mut reserved = BTreeSet::new();
+    reserved.extend(classes.keys().cloned());
     for (name, class) in &classes {
-        reserved.insert(name.clone());
         for ((owner, _), imp) in impls.iter().filter(|((owner, _), _)| owner == name) {
             if owner != name { unreachable!(); }
             if imp.associated.len() != class.associated.len()
@@ -263,6 +269,20 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             for method in &class.methods {
                 let symbol = &imp.methods[&method.name];
                 if reserved.contains(symbol) { return Err(error(tokens[0].pos, "E_WITNESS_BINDING", "target collides with typeclass")); }
+                // The target must have a unique lexical binding; a local
+                // variable or overloaded named callable cannot substitute for
+                // the checked direct symbol without a scope-aware solver.
+                let shadowed = output.windows(2).any(|w| {
+                    matches!(&w[0].tok, Tok::Ident(k) if matches!(k.as_str(), "val" | "let" | "const"))
+                        && matches!(&w[1].tok, Tok::Ident(n) if n == symbol)
+                });
+                let overloaded = output.windows(2).filter(|w| {
+                    matches!(&w[0].tok, Tok::Ident(k) if k == "fnc")
+                        && matches!(&w[1].tok, Tok::Ident(n) if n == symbol)
+                }).count() != 1;
+                if shadowed || overloaded {
+                    return Err(error(tokens[0].pos, "E_WITNESS_AMBIGUOUS", "witness target has shadowed or multiple declarations"));
+                }
                 let Some((params, ret)) = sigs.get(symbol) else {
                     return Err(error(tokens[0].pos, "E_WITNESS_BINDING", "witness target must be a local scalar fnc"));
                 };
@@ -348,6 +368,8 @@ mod tests {
             (format!("{DECL} pub fnc main(): int {{ return Additive::add<bool>(1,2); }}"), "E_WITNESS_MISSING"),
             (format!("{DECL} pub fnc main(): int {{ val x = Additive; return 0; }}"), "E_WITNESS_VALUE"),
             (DECL.replace("bind add = add_int;", "bind add = unknown;"), "E_WITNESS_BINDING"),
+            (DECL.replace("fnc add(Self, Self): Output;", "fnc Output(Self, Self): Output;"), "E_WITNESS_AMBIGUOUS"),
+            (format!("{DECL} let add_int = 7;"), "E_WITNESS_AMBIGUOUS"),
         ] {
             let err = lower(lex(&src).unwrap()).err().expect(&src);
             assert_eq!(err.code, expected, "{src}");
