@@ -3708,12 +3708,12 @@ impl<'a> FnCx<'a> {
                 // remain rejected until typed loan provenance and drop exist.
                 // Also forbid temporary ADT operands: a borrowed carrier must
                 // name a still-live owner at this call boundary.
-                if let ExprKind::Var(_) = &inner.kind {
-                    if matches!(self.value(inner)?.ty, Type::OptionInt | Type::ResultIntStr) {
-                        return self.value(inner);
-                    }
-                }
                 let value = self.value(inner)?;
+                if matches!(inner.kind, ExprKind::Var(_))
+                    && matches!(value.ty, Type::OptionInt | Type::ResultIntStr)
+                {
+                    return Ok(value);
+                }
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
                         tr.borrow_escaping(*slot, false, pos);
