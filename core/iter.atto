@@ -1,4 +1,4 @@
-// Allocation-free iteration algorithms for already-owned Array<int>.
+// Pure scalar cursor algorithms for separately owned arrays (no array borrow).
 // Cursor positions are values. No iterator may retain a dangling loan.
 // Callbacks are synchronous, in input order; no suspension is performed.
 use namespace atto.core.iter;
@@ -16,8 +16,10 @@ use namespace atto.core.iter;
   // invalid. The returned index is absolute within the original array.
   pub fnc next_index(int start, int count, int consumed,
                      int total): Option<int> {
-    if !valid_range(start, count, total) ||
-       consumed < 0 || consumed >= count then
+    if start < 0 || count < 0 || total < 0 || start > total then
+      return None;
+    fi
+    if count > total - start || consumed < 0 || consumed >= count then
       return None;
     fi
     return Some(start + consumed);
@@ -25,8 +27,10 @@ use namespace atto.core.iter;
 
   pub fnc next_back_index(int start, int count, int consumed,
                           int total): Option<int> {
-    if !valid_range(start, count, total) ||
-       consumed < 0 || consumed >= count then
+    if start < 0 || count < 0 || total < 0 || start > total then
+      return None;
+    fi
+    if count > total - start || consumed < 0 || consumed >= count then
       return None;
     fi
     return Some(start + (count - 1 - consumed));

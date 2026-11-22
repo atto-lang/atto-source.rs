@@ -28,10 +28,16 @@ use namespace atto.core.slice;
 
   pub fnc subslice_offset(int offset, int count, int total,
                           int relative_offset, int relative_count): Option<int> {
-    if !valid_range(offset, count, total) then
+    if offset < 0 || count < 0 || total < 0 || offset > total then
       return None;
     fi
-    if !valid_range(relative_offset, relative_count, count) then
+    if count > total - offset then
+      return None;
+    fi
+    if relative_offset < 0 || relative_count < 0 || relative_offset > count then
+      return None;
+    fi
+    if relative_count > count - relative_offset then
       return None;
     fi
     return Some(offset + relative_offset);
