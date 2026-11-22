@@ -41,12 +41,28 @@ const signedFloat = `
     fi
     return 0;
   }`;
+const signedMismatch = `
+  fnc classify(Any value): int {
+    match value over
+      on is int when value > 0 -> { return 0; }
+      on is int -> { return 42; }
+      on _ -> { return 0; }
+    end
+  }
+  pub fnc main(): int {
+    val value: Any = -42;
+    if value is int && value eq 42 then
+      return 0;
+    fi
+    return classify(value);
+  }`;
 const invalidSigned = expr =>
   'fnc classify(Any value): int { return 42; } ' +
   'pub fnc main(): int { val value: Any = ' + expr + '; return classify(value); }';
 
 const pass = [
   ['signed-negative-int', signedInt('-42')],
+  ['signed-not-equal-positive-42', signedMismatch],
   ['signed-negative-zero', signedInt('-0')],
   ['signed-i64-min', signedInt('-9223372036854775808')],
   ['signed-negative-binary', signedInt('-0b101010')],
