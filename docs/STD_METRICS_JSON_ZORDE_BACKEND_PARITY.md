@@ -128,3 +128,19 @@ GitHub run/artifact/source-tree attestation before independent certification.
 This proves only the Rust-authored Atto-to-Wasm compiler and actual guest Wasm
 execution. It does not count as a second independent Wasm compiler result,
 nor establish .NET/LLVM/Java/Forge, platform actor or native AOT parity.
+
+
+### Core-library import limitation (audited)
+
+The current Rust `src/import_link.rs` implements a bounded, relative-file,
+one-hop linker for imported **top-level braced functions** and rejects other
+imported declarations. In particular, staging `stdlib/core/borrow_admission.atto`
+with `define module borrow_admission as ... end` does **not** make it an
+executable `atto.core` module or prove package/module resolution.
+
+Actual borrow checker verification must proceed on independently compiled
+class/loan fixtures first; subsequent work must add a reviewed module and
+core-package import adapter that preserves typed borrowed formals, owner root,
+error diagnostics, and source provenance. Do not use the Rust file linker as
+an accidental workaround or silently flatten module visibility. The current
+module-import status is `NOT_EXECUTED / NOT_LINKED`.
