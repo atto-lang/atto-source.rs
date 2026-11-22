@@ -142,7 +142,7 @@ struct Layout {
     raise_tag: bool,
     /// A verified, trivial readonly class accessor may load directly from
     /// the caller's existing guest handle. Never manufacture a borrow slot.
-    borrow_getters: Vec<Option<(Type, u32)>>,
+    borrow_getters: Vec<Option<(Type, Type, u32)>>,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -773,17 +773,23 @@ impl Emit<'_> {
                 // callee call/parameter handoff. Evaluate the argument once
                 // on the stack, then load its scalar field in place.
                 // A missing proof always uses the original call ABI.
-                if let ([arg], Some(Some((ty, offset)))) =
-                    (args.as_slice(), self.l.borrow_getters.get(*f as usize))
-                {
-                    debug_assert_eq!(*ty, v.ty);
-                    self.expr(arg);
-                    field_op(&mut self.code, *ty, *offset, false);
-                } else {
-                    for a in args {
-                        self.expr(a);
+                match (args.as_slice(), self.l.borrow_getters.get(*f as usize)) {
+                    ([arg], Some(Some((owner_ty, value_ty, offset))))
+                        if arg.ty == *owner_ty
+                            && v.ty == *value_ty
+                            && matches!(&arg.e, TExpr::Local(_)) =>
+                    {
+                        self.expr(arg);
+                        field_op(&mut self.code, *value_ty, *offset, false);
                     }
-                    self.call(self.l.func(*f));
+                    _ => {
+                        // Fail closed when the proof and this exact call site
+                        // disagree. Never substitute a load of a wrong type.
+                        for a in args {
+                            self.expr(a);
+                        }
+                        self.call(self.l.func(*f));
+                    }
                 }
             }
             TExpr::Builtin(b, x, y) => {
@@ -1297,10 +1303,11 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 /// body is one scalar field read from its readonly borrowed class formal.
 /// A mutable loan, a local, a control-flow path, a hook, a checked-state
 /// access, or any effectful call falls back to the original function ABI.
-fn verified_borrow_getter(f: &TFunc) -> Option<(Type, u32)> {
-    if f.params.len() != 1
-        || !matches!(f.params[0], Type::Class(_))
-        || !matches!(f.param_ownership.as_slice(), [ParamOwnership::BorrowRead])
+fn verified_borrow_getter(f: &TFunc) -> Option<(Type, Type, u32)> {
+    let [owner_ty @ Type::Class(_)] = f.params.as_slice() else {
+        return None;
+    };
+    if !matches!(f.param_ownership.as_slice(), [ParamOwnership::BorrowRead])
         || !f.locals.is_empty()
     {
         return None;
@@ -1311,12 +1318,13 @@ fn verified_borrow_getter(f: &TFunc) -> Option<(Type, u32)> {
         return None;
     };
     if !matches!(&obj.e, TExpr::Local(0))
+        || obj.ty != *owner_ty
         || !matches!(*ty, Type::Int | Type::Bool | Type::Float)
         || f.ret != *ty
     {
         return None;
     }
-    Some((*ty, *offset))
+    Some((*owner_ty, *ty, *offset))
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
