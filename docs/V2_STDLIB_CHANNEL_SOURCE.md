@@ -66,8 +66,8 @@ The three regression guests are:
 - `tests/fixtures/pass/239-v2-rendezvous-for-await.atto`
 - `tests/fixtures/pass/240-v2-rendezvous-close-wakes-reader.atto`
 
-`tests/node-v2-channel-guest.mjs` compiles and executes **15** positive and
-negative channel fixtures (six successful, nine expected guest denials)
+`tests/node-v2-channel-guest.mjs` compiles and executes **20** positive and
+negative channel fixtures (ten successful, ten expected guest denials)
 as actual independent Wasm guests. These now cover direct rendezvous,
 for-await rendezvous, close/wakeup, invalid capacities, legacy two-port
 actor pipe ownership admission, and closed-versus-empty immediate read.
@@ -121,8 +121,31 @@ pretend that terminal closure is transient emptiness. Three additional
 guest cases cover open-empty, post-close drain, and terminal immediate
 read, including stdout-before-denial order.
 
-These improvements do **not** implement cancellation of pending `nb`
-Futures. The v2 runtime currently does not expose a verified cancellation
-token / removal protocol. Cancellation remains **NOT_IMPLEMENTED** until
-registrations are safely unlinked under a defined scheduler contract.
-There is no claim of guest PASS without stepful exact-head execution.
+## Explicit pending-reader cancellation (staged, not verified)
+
+The v2 Rust/Wasm backend now exposes `channel.cancel_read(future)` for a
+`Future<Option<T>>` returned by `nb readch channel` on a `Channel<T>`.
+The compiler checks the precise element type. The backend-owned `.atto`
+helper `__chan_cancel_read` scans the channel's pending reader queue and
+unlinks a matched registration, updating both the head and tail when needed
+without a scheduler suspension. It returns true only on an actual removal;
+already delivered, closed, or wrong-channel Futures return false unchanged.
+A revoked future has terminal status 2; awaiting it traps with dedicated
+guest panic code **15**, rather than masquerading as an ordinary EOF `None`.
+Repeated cancellation is idempotently false. Cancellation cannot mint
+permissions to access an actor DATA channel.
+
+Four successful and one trap-positive `.atto` fixtures cover FIFO/tail
+repair, wrong-channel rejection, already-delivered and closed Futures,
+idempotence, and await-after-cancellation. A sixth source fixture must fail
+compilation for a mismatched `Future<Option<bool>>` passed to a
+`Channel<int>`. The Node real-guest gate now contains **20** runnable
+cases. These are staged tests: no exact-head compiler/guest evidence exists
+until a runner executes the actual `.atto` guests.
+
+**Limitations:** this is explicit pending-*read* cancellation only. The
+underlying cooperative runtime still lacks a general cancellation token
+for pending sends, automatic cancellation on task exit, dynamic select
+registrations, lifecycle-safe actor-pipeline bridge cancellation and
+domain-crossing Futures. Do not report full cancellation parity or a
+runtime PASS on the basis of source-only checks.
