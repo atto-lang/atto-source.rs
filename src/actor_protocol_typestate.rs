@@ -641,6 +641,14 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
 /// Parse actual AttoLang tokens; validate state machines and the restricted
 /// sequential call syntax. No runtime code is permitted through this gate.
 pub fn inspect_tokens(t: &[Token]) -> R<Option<ProtocolIndex>> {
+    // The authority type is compiler-minted only. A textual type name is
+    // never evidence that a handle was authenticated, even if a protocol
+    // declaration is present in the same compilation unit.
+    if let Some((i, _)) = t.iter().enumerate().find(|(_, token)|
+        matches!(&token.tok, Tok::Ident(name) if name == "ProtocolHandle")) {
+        return Err(err(t, i, "E_PROTOCOL_UNPROVEN_STATE",
+            "protocol handle cannot be constructed, cast, shared or forged in source"));
+    }
     let mut index = ProtocolIndex::default();
     let mut i = 0;
     while i < t.len() {
