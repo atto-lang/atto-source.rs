@@ -1,13 +1,10 @@
 // expect-error: E_BORROW
-// A read-only loan of immutable Option<int> is a call-scoped projection,
-// never an owned return. Requiring a named owner is not enough: the borrow
-// must stay inside a resolved synchronous call argument.
-fnc option_value(): Option<int> { return Some(42); }
-fnc leak(Option<int> owner): Option<int> {
+// Returning a borrowed affine class owner cannot manufacture owned identity.
+// Option<int> is Copy; this negative intentionally uses a non-Copy payload.
+define class Payload as
+  pub val int value = 42;
+end
+fnc leak(Payload owner): Payload {
   return borrow! owner;
 }
-pub fnc main(): int {
-  val original = option_value();
-  val copied_owner = leak(original);
-  return 0;
-}
+pub fnc main(): int { return 0; }
