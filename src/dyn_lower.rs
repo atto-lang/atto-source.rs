@@ -236,7 +236,8 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             // take! of a named owner. The regular checker validates its class
             // type, loan state, and invalidates the moved source local.
             if !word(&t, i + 5, "take") || !is(&t, i + 6, Tok::Bang)
-                || ident(&t, i + 7).is_none() || !is(&t, i + 8, Tok::RParen) {
+                || ident(&t, i + 7).is_none() || !is(&t, i + 8, Tok::RParen)
+                || !is(&t, i + 9, Tok::Semi) {
                 return Err(err(t[i].pos, "E_DYN_OWNERSHIP",
                     "owned Dyn constructor requires Dyn<I>(take! named_owner)"));
             }
@@ -266,20 +267,24 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 "browser owned Dyn supports only single-argument function parameters and local val/let bindings"));
         }
         if bind {
+            // An owned-erasure initializer must be ONE complete expression.
+            // Never admit a valid-looking take! prefix followed by another
+            // cast, arithmetic, alias operation, or side-effectful suffix.
             let direct_take = word(&t, i + 6, "take") && is(&t, i + 7, Tok::Bang)
-                && ident(&t, i + 8).is_some();
+                && ident(&t, i + 8).is_some() && is(&t, i + 9, Tok::Semi);
             let constructed = dyn_type(&t, i + 6) == Some(interface)
                 && constructor_sites.contains(&(i + 6));
             // Constructor sites may appear later in this same token scan.
             let constructed = constructed || (dyn_type(&t, i + 6) == Some(interface)
                 && is(&t, i + 10, Tok::LParen) && word(&t, i + 11, "take")
                 && is(&t, i + 12, Tok::Bang) && ident(&t, i + 13).is_some()
-                && is(&t, i + 14, Tok::RParen));
+                && is(&t, i + 14, Tok::RParen)
+                && is(&t, i + 15, Tok::Semi));
             let checked_as = cast_sites.contains(&(i + 12))
                 || cast_sites.contains(&(i + 10));
             if !direct_take && !constructed && !checked_as {
                 return Err(err(t[i].pos, "E_DYN_OWNERSHIP",
-                    "Dyn local requires take! owner, Dyn<I>(take! owner), or (take! owner) as Dyn<I>"));
+                    "owned Dyn initializer must be one complete take!, constructor, or checked-as expression"));
             }
         }
         if binders.insert(var.to_owned(), (interface.to_owned(), i + 4)).is_some() {
