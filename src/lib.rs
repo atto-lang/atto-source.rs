@@ -9,6 +9,7 @@
 pub mod ast;
 pub mod check;
 mod future_typed_v1;
+mod actor_future_typed_v1;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
@@ -46,6 +47,11 @@ pub fn compile_portable_v5(source: &str) -> Result<Vec<u8>, Diagnostic> {
 /// guest-v5 AOT lifecycle, with an extra checked-source contract marker.
 pub fn compile_future_int_aot(source: &str) -> Result<Vec<u8>, Diagnostic> {
     compile_inner(source, 6)
+}
+/// Single-reply ActorFuture<int>, including compile-time actor/key routing
+/// manifest. The actor incarnation is bound by the trusted Worker host.
+pub fn compile_actor_future_int_aot(source:&str)->Result<Vec<u8>,Diagnostic>{
+    compile_inner(source,7)
 }
 fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
@@ -149,6 +155,9 @@ fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnost
     if portable_version==6 {
         future_typed_v1::lower(&mut program)?;
     }
+    let actor_awaits=if portable_version==7 {
+        Some(actor_future_typed_v1::lower(&mut program)?)
+    } else {None};
     let typed = check::check(&program)?;
     let bytes = match portable_version {
         4 => wasm::emit_portable_v4(&typed).ok_or_else(|| Diagnostic::new(
@@ -163,6 +172,10 @@ fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnost
             Pos {line:1,col:1},"E_UNSUPPORTED",
             "typed Future<int> requires a closed, statically verified scalar pending-future frame without unsupported effects"
         ))?),
+        7 => actor_future_typed_v1::mark(wasm::emit_portable_v5(&typed).ok_or_else(|| Diagnostic::new(
+            Pos {line:1,col:1},"E_UNSUPPORTED",
+            "typed ActorFuture<int> requires statically owned actor requests and a fully AOT pending-future frame"
+        ))?,actor_awaits.as_deref().expect("actor manifest must exist")),
         _ => wasm::emit(&typed),
     };
     if bytes.len() > wasm::MAX_OUTPUT {
@@ -249,6 +262,11 @@ mod abi {
     pub extern "C" fn compile_future_int(length:i32)->i32 {
         compile_inner_abi(length,6)
     }
+    /// Bounded actor-scoped request/reply source contract, host incarnation bound.
+    #[no_mangle]
+    pub extern "C" fn compile_actor_future_int(length:i32)->i32{
+        compile_inner_abi(length,7)
+    }
     fn compile_inner_abi(length:i32,portable_version:u8)->i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
@@ -294,6 +312,7 @@ mod abi {
                 4=>super::compile_portable_v4(source),
                 5=>super::compile_portable_v5(source),
                 6=>super::compile_future_int_aot(source),
+                7=>super::compile_actor_future_int_aot(source),
                 _=>super::compile(source),
             };
             match compilation {
