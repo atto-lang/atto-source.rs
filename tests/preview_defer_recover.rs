@@ -67,6 +67,13 @@ fn canonical_exception_bangs_preserve_strict_type_effect_guards() {
     reject("E_TYPE", r#"pub fnc main(): int { throw! 7; }"#);
     reject("E_TYPE", r#"pub fnc main(): int { raise! "string"; }"#);
     reject("E_UNSUPPORTED", r#"pub fnc main(): int { panic! Error("fatal"); }"#);
+    // Canonical trap! cannot be assigned to historical Option<T>.
+    reject("E_TYPE", r#"
+        pub fnc main(): int {
+            val Option<int> impossible = trap! 42;
+            return 0;
+        }
+    "#);
     reject("E_TRAP_ERROR_JOIN", r#"
         fnc old(): Result<int,string> { return Ok(42); }
         pub fnc main(): int {

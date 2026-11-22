@@ -379,7 +379,7 @@ mod canonical_exception_bang_tests {
             ("trapped! 42", ""),
             ("copy! owned", ""),
             ("\"trap! throw! raise! panic!\"", ""),
-            ("// trap! throw! raise! panic!\\n42", ""),
+            ("// trap! throw! raise! panic!\n42", ""),
             ("/* trap! throw! raise! panic! */ 42", ""),
         ];
         for (source, expected) in cases {
