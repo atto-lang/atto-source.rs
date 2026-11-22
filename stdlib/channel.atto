@@ -86,6 +86,20 @@ suspends fnc __chan_recv(int c): int {
     if __load(c, 32) != 0 then
       __panic(9);
     fi
+    // A capacity-zero channel cannot buffer. A polling reader never
+    // advertises a rendezvous partner to __chan_offer, so both tasks would
+    // suspend forever. Register exactly one pending read, then await its
+    // completion. A close resolves that future as None.
+    if __load(c, 0) == 0 then
+      val pending = __chan_nb(c);
+      val ready = await __await(pending);
+      // A DATA graph must never turn an old suspended public read into a
+      // backdoor after claiming this channel.
+      if __load(c, 56) != 0 then __panic(10); fi
+      if __load(c, 64) != 0 then __panic(10); fi
+      if ready == 0 then __panic(9); fi
+      return __load(ready, 0);
+    fi
     __suspend();
   done
 }
@@ -102,6 +116,15 @@ suspends fnc __chan_recv_user_opt(int c): int {
     fi
     if __load(c, 32) != 0 then
       return 0;
+    fi
+    // for-await readers on rendezvous channels also need to register,
+    // rather than spin without a partner for a suspended producer.
+    if __load(c, 0) == 0 then
+      val pending = __chan_nb(c);
+      val ready = await __await(pending);
+      if __load(c, 56) != 0 then __panic(10); fi
+      if __load(c, 64) != 0 then __panic(10); fi
+      return ready;
     fi
     __suspend();
   done
