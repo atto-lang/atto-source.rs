@@ -1,4 +1,5 @@
-// Real actor guest regression: namespace header must not change dispatch.
+// Candidate namespace actor guest; run only with namespace-aware linker.
+// TARGET_NOT_EXECUTED; do not count as a generic unlinked pass fixture.
 // expect-exit: 0
 // expect-stdout: 42
 use namespace std.actor.example;
