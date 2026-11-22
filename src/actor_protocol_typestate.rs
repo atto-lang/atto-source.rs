@@ -246,6 +246,8 @@ impl Protocol {
 }
 fn bindings(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
     let mut i = 0;
+    let mut declared_actors = BTreeSet::new();
+    let mut defined_actors = BTreeSet::new();
     while i < t.len() {
         let decl = i + usize::from(word(t, i, "pub"));
         if !word(t, decl, "define") && !word(t, decl, "declare") {
@@ -274,9 +276,17 @@ fn bindings(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     return Err(err(t, kind_at, "E_PROTOCOL_IMPLEMENTATION_MISMATCH",
                         "only the existing actor kind may implement a protocol"));
                 }
-                if index.actors.insert(actor_name.clone(), contract).is_some() {
+                if index.actors.get(&actor_name).is_some_and(|p| p != &contract) {
+                    return Err(err(t, kind_at, "E_PROTOCOL_IMPLEMENTATION_MISMATCH",
+                        "actor cannot bind two incompatible protocols"));
+                }
+                index.actors.insert(actor_name.clone(), contract);
+                let declared = if word(t, decl, "define") {
+                    &mut defined_actors
+                } else { &mut declared_actors };
+                if !declared.insert(actor_name.clone()) {
                     return Err(err(t, kind_at, "E_PROTOCOL_DUPLICATE",
-                        "actor has multiple protocol declarations"));
+                        "duplicate actor declaration or definition for this protocol"));
                 }
             }
             if at(t, j) != Some(&Tok::Comma) { break; }
