@@ -45,7 +45,7 @@ fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
     // "alloc.arena". Never reinterpret these as ordinary source files.
     // This linker still supports only one-hop relative .atto files; a real
     // built-in import needs the separate compiler-owned module table.
-    let canonical_builtin = ["core", "alloc", "std"].iter().any(|root| {
+    let canonical_builtin = ["core", "alloc", "std"].into_iter().any(|root| {
         value == *root || value.strip_prefix(root)
             .is_some_and(|tail| tail.starts_with('.'))
     });
