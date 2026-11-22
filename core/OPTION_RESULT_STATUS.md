@@ -5,6 +5,12 @@ diverge in implementation from Java, Rust and other backends. Public semantics,
 not shared source blobs, are the intended parity boundary.
 
 **State: SOURCE_CANDIDATE; compiler admission and guest execution NOT_VERIFIED.**
+Both files declare file-scoped `use namespace core;` and an explicitly public
+module. A namespace is not an ambient import: callers still require a verified,
+explicit module edge. `tests/core_option_result_namespace.rs` checks lexical
+namespace identity and denies duplicate/late declarations; it does **not**
+validate generic runtime support.
+
 The files under `core` are *not* automatically linked into the compiler's
 standard library. Nominal type constructors and runtime representation remain
 compiler primitives. These files must not create a host-language shim.
@@ -40,6 +46,7 @@ Backend note: Rust/Wasm compiler: preserve existing parser and Wasm emission. Ty
 - `tests/core_option_result/negative_nonexhaustive.atto`: must reject a
   partial Option match with no guest artifact.
 
-Only Rust currently wires these new scalar fixtures into a native compiler
-unit-test source. All other backends need real compiler harness integration,
-and Rust itself still needs a stepful exact-head test receipt.
+Rust wires scalar fixtures into a compiler unit test that requests real Node
+Wasm execution, with explicit guest result checks. That test is committed but
+has no observed stepful exact-head CI receipt; other backends require their
+own executable source-level admission.
