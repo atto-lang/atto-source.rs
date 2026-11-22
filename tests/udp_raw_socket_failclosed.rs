@@ -30,20 +30,29 @@ impl Drop for Input { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
 
 #[test]
 fn browser_compiler_rejects_unimplemented_raw_udp_host_calls() {
-    // Guard against a fake green result from a CLI that rejects ALL input.
+    // Prove that the *same temporary path profile* is accepted for valid
+    // source. Otherwise every negative could pass due to path sandboxing.
+    let positive = Input::new("fnc main(): int { return 42; }");
     let baseline = Command::new(env!("CARGO_BIN_EXE_attoc"))
-        .arg("--check").arg("tests/fixtures/pass/01-answer.atto")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .arg("--check").arg(&positive.0)
         .output().expect("launch real compiler positive control");
-    assert!(baseline.status.success(), "valid scalar baseline must compile");
+    assert_eq!(baseline.status.code(), Some(0), "valid scalar --check failed");
+    assert!(baseline.stdout.is_empty());
     assert!(baseline.stderr.is_empty());
+    let compiled = Command::new(env!("CARGO_BIN_EXE_attoc"))
+        .arg(&positive.0).output().expect("compile real positive Wasm");
+    assert_eq!(compiled.status.code(), Some(0), "valid scalar compilation failed");
+    assert!(compiled.stdout.starts_with(b"\\0asm\\x01\\0\\0\\0"),
+        "valid scalar control did not produce Wasm binary");
+    assert!(compiled.stderr.is_empty());
     let source = Input::new(
         "fnc main(): int { return network.bind_udp(\"127.0.0.1\", 0); }");
     for flags in [vec!["--check"], vec![]] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_attoc"));
         command.args(flags).arg(&source.0);
         let output = command.output().expect("run real attoc compiler");
-        assert!(!output.status.success(), "browser compiler accepted raw UDP host API");
+        assert_eq!(output.status.code(), Some(1),
+            "raw UDP needs a compiler-owned negative, not CLI misuse/crash");
         assert!(output.stdout.is_empty(),
             "unsupported browser raw UDP must never emit a wasm module or PASS");
         assert!(!output.stderr.is_empty(), "unsupported raw UDP needs a diagnostic");
@@ -58,7 +67,8 @@ fn browser_compiler_does_not_treat_udp_policy_source_model_as_guest_proof() {
         "fnc main(): int { return std.net.udp.bind(0); }");
     let output = Command::new(env!("CARGO_BIN_EXE_attoc"))
         .arg("--check").arg(&source.0).output().expect("run attoc");
-    assert!(!output.status.success(), "unknown std.net.udp socket binding accepted");
+    assert_eq!(output.status.code(), Some(1),
+        "unsupported socket binding must fail as a source diagnostic");
     assert!(output.stdout.is_empty());
     assert!(!output.stderr.is_empty());
 }
