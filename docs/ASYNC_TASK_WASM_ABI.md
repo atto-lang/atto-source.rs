@@ -44,20 +44,20 @@ The guest host can schedule over `queueMicrotask`, web timers, and approved asyn
 
 ### Implemented opt-in v3 scalar slice (2026-11-21)
 
-The v3 marker (custom section name \`atto.browser.guest.v3\`, payload byte \`03\`) is emitted **only** for closed-world source compiled to one public scalar \`main(): int\` with no parameters, locals, imports beyond the existing \`atto.cooperate\` compatibility import, actors, closures, tasks, heap, exceptions, I/O, or data. The body contains 1–8 straight-line literal \`await N;\` statements, with the final instruction exactly \`return await N;\`. For example:
+The v3 marker (custom section name `atto.browser.guest.v3`, payload byte `03`) is emitted **only** for closed-world source compiled to one public scalar `main(): int` with no parameters, locals, imports beyond the existing `atto.cooperate` compatibility import, actors, closures, tasks, heap, exceptions, I/O, or data. The body contains 1–8 straight-line literal `await N;` statements, with the final instruction exactly `return await N;`. For example:
 
-\`\`\`atto
+```atto
 pub susp fnc main(): int {
   await 41;
   return await 42;
 }
-\`\`\`
+```
 
-The v3 host **must not invoke legacy \`main\`**, which still contains the JSPI/v2 compatibility import. For v3 execution, the host provides a fail-closed \`atto.cooperate\` stub that throws if unexpectedly reached. The host executes only the new v3 exports, and **never uses \`WebAssembly.Suspending\` or \`WebAssembly.promising\`**. Each \`task_start_v3\` returns \`PENDING\` and schedules a separate synchronous guest turn for each \`task_resume_v3\`. The last resume completes with \`DONE\`, \`task_result_v3\` reads the i64 slot, and \`task_drop_v3\` zeroes owner, epoch, program counter and result. The last accepted epoch is intentionally retained as a monotonic lifetime anti-replay tombstone.
+The v3 host **must not invoke legacy `main`**, which still contains the JSPI/v2 compatibility import. For v3 execution, the host provides a fail-closed `atto.cooperate` stub that throws if unexpectedly reached. The host executes only the new v3 exports, and **never uses `WebAssembly.Suspending` or `WebAssembly.promising`**. Each `task_start_v3` returns `PENDING` and schedules a separate synchronous guest turn for each `task_resume_v3`. The last resume completes with `DONE`, `task_result_v3` reads the i64 slot, and `task_drop_v3` zeroes owner, epoch, program counter and result. The last accepted epoch is intentionally retained as a monotonic lifetime anti-replay tombstone.
 
-This is a **single-instance single-slot frame in private Wasm globals**, not a task heap arena. No concurrent tasks per instance, pointer/borrow spills, arbitrary expression evaluation, general \`Future<T>\` state machines, I/O await, cross-Worker ticket authentication, supervisory failure statuses, untrusted tenant execution guarantees, or physical mutex guard cleanup is implied. Owner IDs and epochs fence identity but are not cryptographic capabilities. A code-signature or trusted compiler artifact admission policy remains necessary before arbitrary guest modules can be run. A stalled or malicious synchronous guest cannot be preempted by the single-threaded JS host.
+This is a **single-instance single-slot frame in private Wasm globals**, not a task heap arena. No concurrent tasks per instance, pointer/borrow spills, arbitrary expression evaluation, general `Future<T>` state machines, I/O await, cross-Worker ticket authentication, supervisory failure statuses, untrusted tenant execution guarantees, or physical mutex guard cleanup is implied. Owner IDs and epochs fence identity but are not cryptographic capabilities. A code-signature or trusted compiler artifact admission policy remains necessary before arbitrary guest modules can be run. A stalled or malicious synchronous guest cannot be preempted by the single-threaded JS host.
 
-Real source-compiled lifecycle tests: \`node tests/portable-v3-e2e.mjs\` after building \`target/release/attoc\`; browser acceptance: \`node tests/browser-async-e2e.mjs\` after building the wasm32 compiler. On 2026-11-21 the source-exact private Actions runner passed the native Node real-Wasm lifecycle, duplicate/stale/cancel/drop assertions, and Chromium module-Worker v3 execution with 3 distinct quanta for 2 awaits and 1 frame drop. The separate legacy JSPI path remains enabled and independently tested. Both PRs remain Draft; no public playground release is implied.
+Real source-compiled lifecycle tests: `node tests/portable-v3-e2e.mjs` after building `target/release/attoc`; browser acceptance: `node tests/browser-async-e2e.mjs` after building the wasm32 compiler. On 2026-11-21 the source-exact private Actions runner passed the native Node real-Wasm lifecycle, duplicate/stale/cancel/drop assertions, and Chromium module-Worker v3 execution with 3 distinct quanta for 2 awaits and 1 frame drop. The separate legacy JSPI path remains enabled and independently tested. Both PRs remain Draft; no public playground release is implied.
 
 ### Choosing a Wasm async integration
 
