@@ -32,6 +32,6 @@ jobs:
       - name: Exercise binary-safe policy classifier with synthetic source-free cases
         shell: bash
         run: bash tests/private-ci-export-policy-guard-test.sh
-      - name: Require private source export to remain disabled
+      - name: Require comments-only policy or one exact reviewed carrier ID
         shell: bash
         run: bash scripts/private-ci-export-policy-guard.sh .github/private-ci-approved-repositories.txt
