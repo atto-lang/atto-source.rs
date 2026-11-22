@@ -1,0 +1,32 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Cancel tail registration, then enqueue a new reader. The next
+// writer must never deliver to the cancelled Future or stale tail node.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val first = nb readch ch;
+  val removed = nb readch ch;
+  if !ch.cancel_read(removed) then return 90; fi
+  if ch.cancel_read(removed) then return 91; fi
+  val next = nb readch ch;
+  val producer = task {
+    ch.send(20);
+    ch.send(22);
+    ch.close();
+    return 0;
+  };
+  val first_value = await first;
+  val next_value = await next;
+  val a: int = match first_value over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  val b: int = match next_value over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  await producer;
+  val total = a + b;
+  stdio.println(total);
+  return total;
+}
