@@ -7,6 +7,9 @@ on:
       - "tests/actor-future-source.test.mjs"
       - "contracts/std-actor-v1/**"
       - "tests/actor_std_native_guest.rs"
+      - "tests/namespace_relative_function_imports.rs"
+      - "src/import_link.rs"
+      - "src/namespace.rs"
       - ".github/workflows/std-actor-guest.yml"
   workflow_dispatch:
 
@@ -35,7 +38,7 @@ jobs:
           test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
           git diff --exit-code --quiet HEAD --
           test -z "$(git ls-files --others --exclude-standard)"
-          for file in stdlib/actor/policy.atto stdlib/actor/guest_smoke.atto stdlib/actor/guest_edges.atto stdlib/actor/future.atto; do
+          for file in src/import_link.rs tests/actor_std_native_guest.rs tests/namespace_relative_function_imports.rs stdlib/actor/policy.atto stdlib/actor/guest_smoke.atto stdlib/actor/guest_edges.atto stdlib/actor/future.atto; do
             test -f "$file" && test ! -L "$file"
             test "$(git hash-object --no-filters "$file")" = "$(git rev-parse "HEAD:$file")"
           done
@@ -44,7 +47,7 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.85.1 --profile minimal
       - name: Compile actual native Atto namespace and relative import
-        run: cargo +1.85.1 test --locked --test actor_std_native_guest -- --nocapture
+        run: cargo +1.85.1 test --locked --test actor_std_native_guest --test namespace_relative_function_imports -- --nocapture
       - name: Build exact-head production Atto compiler
         run: cargo +1.85.1 build --locked --release --bin attoc
       - name: Execute source contracts and compiled Wasm actor policy guests
