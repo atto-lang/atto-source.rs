@@ -165,3 +165,12 @@ fn mutable_loan_of_a_protocol_handle_is_rejected() {
         "let disconnected = await spawn Connection();"),
         "E_PROTOCOL_AFFINE_HANDLE");
 }
+
+#[test]
+fn public_protocol_visibility_spelling_is_accepted_only_as_type_contract() {
+    for spelling in ["pub define protocol", "define pub protocol"] {
+        let source = GOOD.replacen("define protocol", spelling, 1);
+        assert!(inspect_source(&source).unwrap().is_some());
+        rejects(&source, "E_PROTOCOL_RUNTIME_UNSUPPORTED");
+    }
+}
