@@ -1,41 +1,25 @@
-# Compile-time-proved Atto design contracts: restricted Rust/Wasm v1
+# Design contracts: executable dynamic scalar requires/ensures v2
 
-**Status:** real source frontend change; **tests not yet executed on an admitted runner.** Normative target: [atto-spec #211](https://github.com/atto-lang/atto-spec/pull/211). This first implementation slice deliberately does **not** claim dynamic design-by-contract, runtime `ContractViolationError`, actor supervision, or cross-backend parity.
+**Status:** proposed real parser, typed IR and Wasm code generation in [compiler PR #516](https://github.com/atto-lang/atto-source.rs/pull/516), guided by [spec PR #211](https://github.com/atto-lang/atto-spec/pull/211). **CI NOT EXECUTED**: no compiled guest or cargo test result is verified yet.
 
-## Exact compiler behavior
+## Supported contract profile
 
-The production Rust/browser parser recognizes `requires predicate;`, `ensures |result| -> predicate;` between a named callable's return/effect header and body; class/actor members may declare `invariant predicate;` (actor: `invariant |s| -> predicate;`). Maximum 64 callable clauses; contract words are reserved and cannot become ordinary identifiers. This also applies before every alternate browser compiler fast path can publish Wasm.
+The source parser preserves up to 64 requires/ensures clauses on ordinary functions and class methods. Requires must precede ensures, and result binders may not shadow parameters or self. The typed compiler accepts **boolean, readonly scalar expressions**, including comparisons and logical/ternary compositions over int/bool values. It rejects unsupported effects, calls, mutation, ownership operations and checked arithmetic in predicates rather than silently dropping checks. Constant true predicates are erased by proof; constant false is rejected.
 
-Only a **syntactically proven** pure Boolean `true`, or one or more unary `!` applied to `true`/`false` resulting in `true`, can be compiled. They are erased because their truth is a sound static proof; the guest is otherwise unchanged. Constant `false` is rejected with `E_CONTRACT_ALWAYS_FALSE`. Obviously non-Boolean scalar predicates and bare non-Boolean parameter/result binders produce `E_CONTRACT_NOT_BOOL`. Unknown or dynamic predicates — even a plausible Boolean parameter, field or function call — produce `E_CONTRACT_UNSUPPORTED` **before any guest artifact**; no backend can silently elide them or convert them into assumptions. Invalid result binders and invariant placements are rejected.
+The checks execute inside the callee, after argument binding and before its body. For dynamic ensures, the return type must be int or bool. Each ordinary return expression is evaluated **exactly once**, saved in a compiler-owned local, then checked by each postcondition before being returned. Nested if/block/loop explicit return paths are instrumented.
 
-```atto
-fnc main() -> int
-  requires true;
-  ensures |r| -> !false;
-::
-  return 42;
-end
-```
+**Fails closed:** dynamic actor-method contracts, class/actor invariants, generator contracts, result types other than int/bool, early propagation through question-mark, try/catch/finally/defer/recover cleanup, iterator-owned returns, generic/module/visibility rewrites and unverified imports. Their runtime and ownership contracts are not yet implemented.
 
-The example is an **AOT candidate test**, not evidence that `cargo test` or Wasm guest execution has passed.
+## Noncatchable runtime failure
 
-## Deliberate gaps
+The browser Wasm emitter emits distinct panic codes: 7 = failed requires; 8 = failed ensures. It stores this in the exported panic_code global, then emits the Wasm unreachable trap. The failure is not a guest throw tag and cannot be intercepted by an ordinary catch or trap. This is **not yet a typed ContractViolationError object**, actor supervisor CONTROL notice, or cross-backend parity.
 
-- No `requires value > 0`, `ensures |r| -> r > 0`, class state invariant or actor critical-write invariant execution. These are **not** compiled. Dynamic contracts need checked `bool` typed IR, transitive effect/loan analysis, CFG instrumentation for every successful and `?` return, cleanup-aware panic on a separate control channel, and a typed `ContractViolationError` with actor supervisor delivery.
-- No claim of generic methods, full out-of-line `mtd` syntax or return-first `::` compatibility until those independent parser features land; this changes neither keyword spellings nor return semantics.
-- No runtime flags to disable checks. No interpreter, reflection, JIT, runtime code generation or fallbacks. The compiler does **not** treat unchecked predicates as LLVM/Wasm optimization preconditions.
-- No class/actor invariant AST or runtime metadata survives for the **proven-true** case; that is intentional static elimination, not proof of lifecycle or runtime invariant checking.
-- No ordinary `std.assert` changes. That separately proposed API stays `import module assert from pkg "std.assert"; assert.true(...)`.
+The compiler generates closed-world guest Wasm statically: no guest interpreter, runtime code generation, dynamic host reflection or silent fallback. Contract-bearing sources use the canonical parser → typed checker → Wasm emitter path directly, preventing specialized fast paths from losing contracts.
 
-## Verification
+## Required validation
 
-`cargo test --locked --test design_contracts_static_aot` is the focused **real Rust compiler** suite. It checks successful Wasm emission for true clauses, parser-only actor/class cases, strict failures for false/non-Boolean/dynamic predicates, misplaced binders, and invalid headers; all failures must produce **no output artifact**.
+The focused Rust tests at tests/design_contracts_static_aot.rs compile real source programs and verify negative no-artifact diagnostics. The guest tests at tests/design_contracts_guest.mjs use the compiled attoc binary to generate Wasm, execute the guest in Node's native WebAssembly engine, and check return values and panic codes. The exact-head CI workflow runs both suites after verifying source and test Git blob IDs.
 
-The workflow `.github/workflows/design-contracts-static-aot.yml` pins checkout to current PR head, checks working-tree and blob SHA, executes the focused Rust suite, and explicitly excludes real Wasm guest execution from its claim. Until admitted CI runs, report **NOT_EXECUTED**. If source-org Actions are blocked before steps, run the exact SHA/tree via an authorized private alternate org using a token-free Git object mirror with per-blob verification. Do not treat source-only checks, a zero-step run or partial mirror as a passing compiled guest.
+Until the relevant jobs execute with nonempty steps, report **NOT EXECUTED**. A zero-step failure is infrastructure blockage. A private alternate organization may run a token-free exact-tree mirror only if every source Git blob and the resulting tree SHA are verified.
 
-## Next compiler slice
-
-1. Attach bounded, source-spanned contract expressions to the typed AST/IR, with result binder scope and whole-call-graph purity.
-2. Emit contracts on the callee side; preserve return identity and check all CFG normal exits, including early `?` and `return`/`^`.
-3. Implement typed non-catchable `ContractViolationError` panic with actor CONTROL supervision and deterministic cleanup, then executed Wasm AOT guest and compile-negative receipts.
-4. Extend formatter round-trip and independent Java/LLVM/.NET/Forge/Wasm backend parity without weakening the full guest AOT rule.
+The standard library assert module is independent of language-level requires/ensures; this change does not introduce a global catchable assertion builtin.
