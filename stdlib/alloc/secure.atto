@@ -73,6 +73,11 @@ define module secure as
     // unavailable until compiler/runtime enforce a volatile/opaque wipe,
     // destroy all aliases and own deallocation on every exit path.
     pub secure_clear(mut self)(): void {
+      // Do the best-effort logical scrub and revoke access before reporting
+      // that secret-safe erasure is unavailable. This never returns success.
+      if !self.closed; do
+        self.logical_clear();
+      fi
       rt fail("alloc/secure: guaranteed zeroization requires backend support");
     }
   end
