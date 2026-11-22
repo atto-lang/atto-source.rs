@@ -138,3 +138,30 @@ fn unrelated_scalar_compilation_remains_executable() {
     let bytes = compile("pub fnc main(): int { return 42; }").expect("independent scalar guest");
     assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
 }
+
+#[test]
+fn live_authority_cannot_escape_by_argument_return_or_unchecked_call() {
+    rejects(&GOOD.replace("val connecting = disconnected.call(Connect());",
+        "ordinary(disconnected);\n  val connecting = disconnected.call(Connect());"),
+        "E_PROTOCOL_UNPROVEN_STATE");
+    rejects(&GOOD.replace("val connecting = disconnected.call(Connect());",
+        "disconnected.send(Connect());\n  val connecting = disconnected.call(Connect());"),
+        "E_PROTOCOL_UNPROVEN_STATE");
+    rejects(&GOOD.replace("val connecting = disconnected.call(Connect());",
+        "val owned = copy! disconnected;\n  val connecting = disconnected.call(Connect());"),
+        "E_PROTOCOL_AFFINE_HANDLE");
+}
+
+#[test]
+fn a_completed_ticket_name_cannot_be_reissued() {
+    let bad = GOOD.replace("val querying = connected.call(Query());",
+        "val connecting = connected.call(Query());");
+    rejects(&bad, "E_PROTOCOL_AFFINE_HANDLE");
+}
+
+#[test]
+fn mutable_loan_of_a_protocol_handle_is_rejected() {
+    rejects(&GOOD.replace("val disconnected = await spawn Connection();",
+        "let disconnected = await spawn Connection();"),
+        "E_PROTOCOL_AFFINE_HANDLE");
+}
