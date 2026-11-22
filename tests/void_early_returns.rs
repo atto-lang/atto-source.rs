@@ -116,3 +116,14 @@ fn guard_void_returns_still_check_type_and_termination() {
         "fnc process_explicit() -> void\n    guard false { ^ void } else ^ void end\nend\npub fnc main(): int { process_explicit(); ^ 42; }"
     ).is_err(), "mixed brace/else guard must reject");
 }
+
+
+#[test]
+fn braced_guard_preserves_outer_keyword_if_else() {
+    accepts("pub fnc main(): int { if true then guard true { ^ 7; } else ^ 9; fi ^ 42; }");
+    accepts("pub fnc main(): int { if true then guard true else ^ 7; end else ^ 9; fi ^ 42; }");
+    let invalid = compile(
+        "pub fnc main(): int { guard true { ^ 7; } else ^ 9; end ^ 42; }"
+    ).expect_err("standalone mixed guard delimiters must reject");
+    assert_eq!(invalid.code, "E_GUARD_ELSE_NOT_REQUIRED", "{invalid}");
+}
