@@ -171,7 +171,7 @@ fn parse_protocol(t: &[Token], start: usize) -> R<(Protocol, usize)> {
     Ok((protocol, i))
 }
 fn validate_protocol(p: &Protocol) -> R<()> {
-    let diagnostic = |code, message| Diagnostic::new(p.pos, code, message);
+    let diagnostic = |code: &'static str, message: &'static str| Diagnostic::new(p.pos, code, message);
     if !p.states.contains(&p.initial) || p.terminal.is_empty() ||
         p.terminal.iter().any(|s| !p.states.contains(s)) {
         return Err(diagnostic("E_PROTOCOL_STATE", "initial or terminal state is undeclared"));
@@ -191,7 +191,8 @@ fn validate_protocol(p: &Protocol) -> R<()> {
         }
     }
     let mut reachable = BTreeSet::from([p.initial.clone()]);
-    let mut todo = VecDeque::from([p.initial.clone()]);
+    let mut todo = VecDeque::new();
+    todo.push_back(p.initial.clone());
     while let Some(state) = todo.pop_front() {
         for rule in p.transitions.iter().filter(|r| r.from == state) {
             if reachable.insert(rule.to.clone()) { todo.push_back(rule.to.clone()); }
@@ -385,7 +386,7 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                 }
                 let message = match at(t, i+7) {Some(Tok::Ident(v)) => v.clone(), _ => unreachable!()};
                 let next = index.protocols[&handle.protocol].check_send(&handle.states, &message)?;
-                if !matches!(next.response, Response::Unary(_)) {
+                if !matches!(&next.response, Response::Unary(_)) {
                     return Err(err(t, i+7, "E_PROTOCOL_REPLY_MISMATCH",
                         "stream transition requires an EOF-checked stream lease, not call()"));
                 }
