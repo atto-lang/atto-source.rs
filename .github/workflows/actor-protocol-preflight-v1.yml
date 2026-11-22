@@ -1,0 +1,26 @@
+name: Actor protocol static preflight (no guest execution)
+on:
+  pull_request:
+    paths:
+      - 'src/actor_protocol_typestate.rs'
+      - 'src/lib.rs'
+      - 'tests/actor_protocol_typestate_source.rs'
+      - '.github/workflows/actor-protocol-preflight-v1.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/actor_protocol_typestate.rs'
+      - 'src/lib.rs'
+      - 'tests/actor_protocol_typestate_source.rs'
+      - '.github/workflows/actor-protocol-preflight-v1.yml'
+permissions:
+  contents: read
+jobs:
+  compiler-source-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Static AttoLang protocol diagnostics (NO guest actor runtime)
+        run: cargo test --test actor_protocol_typestate_source --locked
