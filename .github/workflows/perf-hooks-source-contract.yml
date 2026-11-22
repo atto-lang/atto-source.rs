@@ -4,6 +4,8 @@ on:
     paths:
       - 'stdlib/perf.atto'
       - 'core/perf_policy.atto'
+      - 'src/perf_probe_registry.rs'
+      - 'src/lib.rs'
       - 'tests/perf_policy_source.test.mjs'
       - 'tests/perf_policy_guest.test.mjs'
       - 'stdlib/perf_ids.atto'
@@ -60,6 +62,8 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
+      - name: Test allocation-free fixed perf counter registry
+        run: cargo test --locked --lib perf_probe_registry
       - name: Build real Atto Rust compiler
         run: cargo build --locked --bin attoc
       - name: Compile and execute genuine Wasm perf policy guests
