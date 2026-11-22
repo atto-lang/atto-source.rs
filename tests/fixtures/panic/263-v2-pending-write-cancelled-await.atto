@@ -1,0 +1,9 @@
+// expect-panic: 15
+// A reclaimed pending write is revoked, not a successful Future.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val ticket = ch.send_pending(42);
+  val recovered = ch.cancel_write(ticket);
+  val acknowledged = await ticket;
+  return 0;
+}
