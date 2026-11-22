@@ -49,6 +49,9 @@ try {
   const first = guest(main, provider, 200);
   const second = guest(main, provider, 200);
   assert.deepEqual(first, second, 'identical source must emit byte-identical Wasm');
+  guest(main,
+    'use namespace std.http; pub fnc unrelated(): int { return 3; } ' + provider,
+    200);
   guest('import const status_valid as ok from "./config.atto"; pub fnc main(): int {return ok;}',
     provider, 200);
   guest('import const flag from "./config.atto"; pub fnc main(): int {if flag then return 1; else return 0; fi}',
@@ -60,6 +63,7 @@ try {
   rejected('import const status_valid from "./config.atto"; pub fnc main(): int {status_valid = 5; return 0;}',
     provider, 'E_ASSIGN_CONST');
   rejected(main, 'define const int status_valid = 200;', 'E_PRIVATE');
+  rejected(main, 'pub fnc status_valid(): int { return 200; }', 'E_IMPORT_KIND');
   rejected(main, 'define pub const int status_valid = "bad";', 'E_CONST_TYPE');
   rejected(main, 'define pub const string status_valid = std.env.read_env("status_valid");',
     'E_UNSUPPORTED');
