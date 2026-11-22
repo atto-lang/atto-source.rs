@@ -4,7 +4,7 @@
 
 ## Supported contract profile
 
-The source parser preserves up to 64 requires/ensures clauses on ordinary functions and class methods. Requires must precede ensures, and result binders may not shadow parameters or self. The typed compiler accepts **boolean, readonly scalar expressions**, including comparisons and logical/ternary compositions over int/bool values. It rejects unsupported effects, calls, mutation, ownership operations and checked arithmetic in predicates rather than silently dropping checks. Constant true predicates are erased by proof; constant false is rejected.
+The source parser preserves up to 64 requires/ensures clauses on ordinary functions and methods, but this first guest-executable profile is **top-level scalar functions only**; nominal class/actor/enum/collection source with contract keywords is blocked before emission. Requires must precede ensures, and result binders may not shadow parameters or self. The typed compiler accepts **boolean, readonly scalar expressions**, including comparisons and logical/ternary compositions over int/bool values. It rejects unsupported effects, calls, mutation, ownership operations and checked arithmetic in predicates rather than silently dropping checks. Constant true predicates are erased by proof; constant false is rejected.
 
 The checks execute inside the callee, after argument binding and before its body. For dynamic ensures, the return type must be int or bool. Each ordinary return expression is evaluated **exactly once**, saved in a compiler-owned local, then checked by each postcondition before being returned. Nested if/block/loop explicit return paths are instrumented.
 
