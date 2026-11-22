@@ -1,0 +1,7 @@
+// Negative: the same binding may not be dropped twice.
+pub fnc main(): int {
+  let x = 42;
+  drop! x;
+  drop! x;
+  return 0;
+}
