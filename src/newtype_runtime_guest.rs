@@ -167,7 +167,8 @@ fn helper(c:&mut Cur<'_>,name:String,types:&BTreeMap<String,Interval>,
     funcs:&mut BTreeMap<String,Helper>,code:&mut String)->R<()>
 {
     c.require(Tok::LParen)?;
-    same(c,&Ty::I64,&c.ty(types)?)?;
+    let parsed_arg_type=c.ty(types)?;
+    same(c,&Ty::I64,&parsed_arg_type)?;
     let arg=c.name()?;
     c.require(Tok::RParen)?;
     c.require(Tok::Colon)?;
@@ -223,7 +224,8 @@ fn main_body(c:&mut Cur<'_>,types:&BTreeMap<String,Interval>,
     c.require(Tok::LParen)?;
     c.require(Tok::RParen)?;
     c.require(Tok::Colon)?;
-    same(c,&Ty::I64,&c.ty(types)?)?;
+    let parsed_arg_type=c.ty(types)?;
+    same(c,&Ty::I64,&parsed_arg_type)?;
     c.require(Tok::LBrace)?;
     let mut vars=BTreeMap::<String,Ty>::new();
     let mut lowered=String::new();
