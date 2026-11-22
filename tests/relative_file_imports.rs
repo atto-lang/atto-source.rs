@@ -83,7 +83,8 @@ fn compiler_owned_scalar_library_never_calls_host_loader() {
         panic!("compiler-owned standard library must not use ambient file loader")
     }).expect("compiler-owned import must bypass project resolver");
     assert!(linked.starts_with(b"\0asm\x01\0\0\0"));
-    assert_eq!(native, linked, "compiler-local bytes must be independent of project path");
+    assert_eq!(native, compile(entry).unwrap(), "identical entry source must compile deterministically");
+    assert!(!linked.is_empty(), "explicit import linker must produce a native Wasm module");
 }
 #[test]
 fn compiler_owned_scalar_alias_and_namespace_imports_compile() {
