@@ -246,6 +246,9 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    /// Count enclosing keyword-delimited if bodies so a nested braced if
+    /// cannot consume the outer if's closing 'fi'.
+    keyword_if_depth: u32,
     state_method: bool,
     state_binder: Option<String>,
 }
@@ -315,6 +318,7 @@ impl Parser {
             array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            keyword_if_depth: 0,
             state_method: false,
             state_binder: None,
         }
@@ -2690,6 +2694,7 @@ impl Parser {
                 }
             }
         } else {
+            self.keyword_if_depth += 1;
             self.eat(&Tok::Semi);
             if !(self.eat_word("then") || self.eat_word("do")) {
                 return Err(self.expected("'then'"));
@@ -2719,11 +2724,17 @@ impl Parser {
                     break;
                 }
             }
+            self.keyword_if_depth -= 1;
         }
-        // Braced statement-if closes with '}'. Do NOT consume a following
-        // 'fi': it can belong to a surrounding then/fi-style statement-if.
-        // This is the independently tested disambiguation rule from #87.
-        if !braced && !self.eat_word("fi") {
+        // Braced if closes with '}'. Accept one optional legacy 'fi' only
+        // when it cannot be the sole terminator of an enclosing keyword-if.
+        // Two adjacent 'fi' tokens explicitly close inner and outer ifs.
+        if braced {
+            if self.is_word("fi")
+                && (self.keyword_if_depth == 0 || self.word_at(1) == Some("fi")) {
+                self.advance();
+            }
+        } else if !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
