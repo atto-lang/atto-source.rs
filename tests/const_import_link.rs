@@ -81,7 +81,7 @@ fn imported_constant_cannot_be_written_or_used_as_callable() {
 
 #[test]
 fn source_size_path_type_and_runtime_effects_fail_closed() {
-    assert_eq!(error("import const x from \"../escape.atto\"; pub fnc main(): int {return x;}",
+    assert_eq!(error("import const x from \"../../escape.atto\"; pub fnc main(): int {return x;}",
         "define pub const int x = 1;"), "E_IMPORT_PATH");
     assert_eq!(error("import const x from \"./config.atto\"; pub fnc main(): int {return x;}",
         "define pub const int x = \"wrong\";"), "E_CONST_TYPE");
