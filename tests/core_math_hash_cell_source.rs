@@ -49,3 +49,25 @@ fn borrowing_admission_is_policy_not_a_granted_loan() {
     assert!(!write(0,true));
     assert!(CELL.contains("not borrow tokens"));
 }
+
+
+#[test]
+fn core_cell_owner_admission_is_bounded_policy_not_a_live_loan() {
+    for name in ["valid_loan_state", "can_owner_read", "can_owner_write",
+                 "can_move_owner", "can_suspend_unpinned"] {
+        assert!(CELL.contains(&format!("pub fnc {name}(")),
+                "missing compiler-owned Atto predicate: {name}");
+    }
+    for (readers, writer, valid, writable) in [
+        (0_i64, false, true, true), (1, false, true, false),
+        (65_535, false, true, false), (65_536, false, false, false),
+        (-1, false, false, false), (0, true, true, false),
+        (1, true, false, false)
+    ] {
+        assert_eq!((0..=65_535).contains(&readers) &&
+                   (!writer || readers == 0), valid);
+        assert_eq!(readers == 0 && !writer, writable);
+    }
+    assert!(!CELL.contains("pub fnc issue_loan("));
+    // A host-only Rust reference cannot certify an Atto compiler guest.
+}
