@@ -309,8 +309,19 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
 fn guard_has_nonreturn_exit(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|stmt| match stmt {
         Stmt::Throw(..) | Stmt::Raise(..) | Stmt::Break(..) | Stmt::Continue(..) => true,
-        Stmt::Block(body) | Stmt::StateWrite { body, .. } =>
+        Stmt::Block(body) | Stmt::StateWrite { body, .. }
+        | Stmt::While { body, .. } | Stmt::Loop { body, .. }
+        | Stmt::ForIn { body, .. } | Stmt::Defer { body, .. }
+        | Stmt::Recover { body, .. } =>
             guard_has_nonreturn_exit(body),
+        Stmt::For { init, update, body, .. } =>
+            guard_has_nonreturn_exit(body)
+                || init.as_ref().is_some_and(|s| guard_has_nonreturn_exit(std::slice::from_ref(s.as_ref())))
+                || update.as_ref().is_some_and(|s| guard_has_nonreturn_exit(std::slice::from_ref(s.as_ref()))),
+        Stmt::Try { body, catch, finally, .. } =>
+            guard_has_nonreturn_exit(body)
+                || catch.as_ref().is_some_and(|(_, b)| guard_has_nonreturn_exit(b))
+                || finally.as_ref().is_some_and(|b| guard_has_nonreturn_exit(b)),
         Stmt::If { arms, otherwise, .. } =>
             arms.iter().any(|(_, b)| guard_has_nonreturn_exit(b))
                 || otherwise.as_ref().is_some_and(|b| guard_has_nonreturn_exit(b)),
