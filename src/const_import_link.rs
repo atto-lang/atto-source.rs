@@ -12,6 +12,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{self, Tok, Token};
+use crate::parser::Parser;
 
 type R<T> = Result<T, Diagnostic>;
 const MAX_FILES: usize = 16;
@@ -114,6 +115,7 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
             i += 1;
             continue;
         }
+        let declaration_start = i;
         let public = if word(&tokens, i, "pub") { i += 1; true } else { false };
         if word(&tokens, i, "fnc") {
             // Preserve negative kind evidence without executing or linking
@@ -147,6 +149,19 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
                 }
                 i += 1;
                 if depth == 0 { break; }
+            }
+            // A function in a constant provider must still be a syntactically
+            // valid Atto function. Without this check, an unused malformed
+            // function could be silently skipped while publishing a valid
+            // constant-import guest. This preflight never executes its body.
+            let mut one_function = tokens[declaration_start..i].to_vec();
+            one_function.push(Token { tok: Tok::Eof, pos });
+            let mut parser = Parser::new(one_function);
+            let parsed = parser.parse_program()?;
+            if parsed.funcs.len() != 1 || !parsed.classes.is_empty()
+                || !parsed.actors.is_empty() || !parsed.enums.is_empty() {
+                return Err(fail(pos, "E_UNSUPPORTED",
+                    "constant provider contains unsupported function declaration"));
             }
             if exports.insert(name.clone(), ConstExport { public, value: None }).is_some() {
                 return Err(fail(pos, "E_DUPLICATE", format!("duplicate imported export '{name}'")));
