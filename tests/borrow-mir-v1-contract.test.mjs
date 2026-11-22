@@ -247,7 +247,7 @@ export function assess(manifest, receipts = []) {
     'E_CONTRACT_VERSION');
   ensure(JSON.stringify(manifest.backends) === JSON.stringify(BACKENDS), 'E_BACKEND_SET');
   ensure(manifest.cases.length === 24, 'E_CASE_COUNT');
-  ensure(new Set(manifest.cases.map(c => c.id)).size === 22, 'E_CASE_ID_REUSE');
+  ensure(new Set(manifest.cases.map(c => c.id)).size === 24, 'E_CASE_ID_REUSE');
   ensure(JSON.stringify(manifest.evidencePolicy?.allowedStatuses) ===
     JSON.stringify([...accepted]), 'E_STATUS_CONTRACT');
   ensure(JSON.stringify(manifest.evidencePolicy?.certifiedRequires) ===
