@@ -41,7 +41,7 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
-      - name: Compile and execute Rust-owned .atto scalar assertions in real Wasm guests
+      - name: Compile and execute 21 imported .atto scalar Wasm guests and 8 compiler negatives
         env:
           ATTOC: target/release/attoc
         run: node tests/testing-scalar-atto-guest.mjs
