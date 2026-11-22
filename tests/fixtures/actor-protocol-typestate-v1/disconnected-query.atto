@@ -1,0 +1,25 @@
+define protocol ConnectionProtocol as
+  initial Disconnected
+  state Disconnected as
+    on Connect(Config) -> Connected replies ConnectedAck
+    on Close -> Closed replies ClosedAck
+  end
+  state Connected as
+    on Query(Sql) -> Connected replies QueryReply
+    on Close -> Closed replies ClosedAck
+    on Subscribe(Topic) -> Connected streams DataEvent
+  end
+  terminal state Closed
+end
+define actor Connection implements ConnectionProtocol as end
+pub fnc main(): int {
+  val disconnected = await spawn Connection();
+  val connecting = disconnected.call(Query());
+  val (ack, connected) = await connecting?;
+  val querying = connected.call(Query());
+  val (rows, still_connected) = await querying?;
+  val closing = still_connected.call(Close());
+  val (_, closed) = await closing?;
+  closed.complete_protocol();
+  return 0;
+}
