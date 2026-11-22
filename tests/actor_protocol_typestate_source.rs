@@ -263,3 +263,31 @@ fn unimplemented_actor_and_reserved_state_names_fail_closed() {
         "define protocol state");
     rejects(&reserved_protocol, "E_PROTOCOL_SYNTAX");
 }
+
+#[test]
+fn consumed_authority_and_settled_reply_are_invalid_after_completion() {
+    let used_after = GOOD.replace(
+        "closed.complete_protocol();",
+        "closed.complete_protocol();\n  log(closed);");
+    rejects(&used_after, "E_PROTOCOL_AFFINE_HANDLE");
+    let retired_ticket = GOOD.replace(
+        "closed.complete_protocol();",
+        "closed.complete_protocol();\n  log(closing);");
+    rejects(&retired_ticket, "E_PROTOCOL_AFFINE_HANDLE");
+    let retired_earlier_ticket = GOOD.replace(
+        "closed.complete_protocol();",
+        "closed.complete_protocol();\n  log(connecting);");
+    rejects(&retired_earlier_ticket, "E_PROTOCOL_AFFINE_HANDLE");
+}
+
+#[test]
+fn outstanding_obligations_are_reported_at_end_of_callable() {
+    let no_close = GOOD.replace(
+        "  closed.complete_protocol();",
+        "");
+    rejects(&no_close, "E_PROTOCOL_TERMINAL_INCOMPLETE");
+    let pending = GOOD.replace(
+        "  val (ack, connected) = await connecting?;",
+        "  // reply intentionally omitted");
+    rejects(&pending, "E_PROTOCOL_REPLY_REQUIRED");
+}
