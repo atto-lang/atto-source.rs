@@ -30,6 +30,8 @@ pub mod check;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
+/// Typed stage-plan admission for lazy iterator/stream APIs (no executable ABI).
+pub mod iterator_stream_admission;
 pub mod lexer;
 pub mod io_shorthand;
 pub mod detached_io;
@@ -119,6 +121,14 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // The browser has a bounded Generator<int> guest ABI but not a general
+    // Iterator<T>, AsyncIterator<T> or Stream<T> runtime. Validate nominal
+    // generic shape first, then fail closed: never erase a lazy protocol into
+    // a scalar, eager collection or synchronous callback at emission time.
+    if let Some(candidate) = iterator_stream_admission::inspect(&original_tokens)?.first() {
+        return Err(Diagnostic::new(candidate.pos, "E_UNSUPPORTED_TYPE",
+            "typed Iterable/Iterator/AsyncIterator/Stream protocol recognized, but lazy stages, owned cursors and cancellation-aware guest lowering are not implemented in this browser backend"));
+    }
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
