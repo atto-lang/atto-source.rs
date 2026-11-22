@@ -56,6 +56,10 @@ const endStyleFunctions = [
   'fnc process_explicit() -> void\n    guard false { ^ void }\nend',
   'fnc process_explicit() -> void\n    guard true else ^ void end\nend',
   'fnc process_explicit() -> void\n    guard true { ^ void }\nend',
+  'fnc overflow_if_called(int v): bool { return v + 1 > 0; }\nfnc process_explicit() -> void\n    guard false, overflow_if_called(9223372036854775807) else ^ void end\nend',
+  'fnc overflow_if_called(int v): bool { return v + 1 > 0; }\nfnc process_explicit() -> void\n    guard false, overflow_if_called(9223372036854775807) { ^ void }\nend',
+  'fnc overflow_if_called(int v): bool { return v + 1 > 0; }\nfnc process_explicit() -> void\n    guard true | overflow_if_called(9223372036854775807) else ^ void end\nend',
+  'fnc overflow_if_called(int v): bool { return v + 1 > 0; }\nfnc process_explicit() -> void\n    guard true | overflow_if_called(9223372036854775807) { ^ void }\nend',
 ];
 const goodSources = [
   ...goodBodies.map(body =>
