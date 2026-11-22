@@ -27,8 +27,16 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Compile one `.atto` source file to a guest WebAssembly module.
+/// Compile one `.atto` source file to the existing guest Wasm profile.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, false)
+}
+/// Explicit portable-v4 target. Unsupported source is a diagnostic, never a
+/// silently downgraded v3 or JSPI module. Every emitted function is guest AOT.
+pub fn compile_portable_v4(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, true)
+}
+fn compile_inner(source: &str, portable_v4: bool) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -128,7 +136,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         parser::Parser::new(toks).parse_program()?
     };
     let typed = check::check(&program)?;
-    let bytes = wasm::emit(&typed);
+    let bytes = if portable_v4 {
+        wasm::emit_portable_v4(&typed).ok_or_else(|| Diagnostic::new(
+            Pos {line:1,col:1},"E_UNSUPPORTED",
+            "portable-v4 requires a closed, 1–8 await straight-line scalar int task; arbitrary futures, effects, branches and reference spills are not implemented"
+        ))?
+    } else { wasm::emit(&typed) };
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -193,9 +206,17 @@ mod abi {
         STATE.with(|s| s.borrow().col)
     }
 
-    /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
+    /// Existing Wasm compiler entrypoint, unchanged for old playground hosts.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_inner_abi(length,false)
+    }
+    /// Explicit v4 browser compiler entrypoint. Never silently selects JSPI.
+    #[no_mangle]
+    pub extern "C" fn compile_v4(length: i32) -> i32 {
+        compile_inner_abi(length,true)
+    }
+    fn compile_inner_abi(length:i32,portable_v4:bool)->i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -236,7 +257,10 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            let compilation=if portable_v4 {
+                super::compile_portable_v4(source)
+            } else { super::compile(source) };
+            match compilation {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0
