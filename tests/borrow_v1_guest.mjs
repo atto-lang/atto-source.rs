@@ -119,8 +119,7 @@ for (const [kind, names] of [['pass', pass], ['fail', fail]]) {
         status:'PASSED', expected:{compile:'success',native_exit:Number(expected[1]),
           browser_exit:Number(expected[1]),stdout:''},
         actual:{native_compile_exit:local.status,browser_compile:'success',
-          native_guest_exit:run.value.toString(),
-          browser_guest_exit:run.value.toString(),native_wasm_sha256:sha256(local.stdout)}
+          guest_exit:run.value.toString(),native_wasm_sha256:sha256(local.stdout)}
       });
     } else {
       const expected = source.match(/^\/\/ expect-error: (\w+)$/m);
