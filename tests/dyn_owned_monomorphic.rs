@@ -55,7 +55,7 @@ fn checked_as_owned_erasure_compiles_with_the_same_guest_bytes() {
     ] {
         let src = POSITIVE.replace("Dyn<Printable>(take! concrete)", rhs);
         let wasm = compile(&src).unwrap_or_else(|e| panic!("{rhs}: {e}"));
-        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert!(wasm.starts_with(&[0, 97, 115, 109, 1, 0, 0, 0]));
         assert_eq!(wasm, canonical, "{rhs}: owned erasure must be equivalent");
     }
 }
