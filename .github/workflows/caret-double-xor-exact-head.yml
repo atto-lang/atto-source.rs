@@ -13,6 +13,8 @@ on:
       - 'src/wasm.rs'
       - 'tests/bitwise*'
       - 'tests/float*'
+      - 'tests/void_early_returns.rs'
+      - 'tests/void_return_guest.mjs'
       - 'tests/fixtures/pass/bitwise-*'
       - 'tests/fixtures/fail/bitwise-*'
       - 'tests/fixtures/pass/float-int-division.atto'
@@ -55,7 +57,7 @@ jobs:
       - name: Compile real parser unit and negative/no-artifact fixtures
         env:
           RUST_MIN_STACK: '16777216'
-        run: cargo test --locked --test bitwise_ops --test float_division_ops --test fixtures
+        run: cargo test --locked --test bitwise_ops --test float_division_ops --test void_early_returns --test fixtures
       - name: Build production native attoc
         run: cargo build --locked --release --bin attoc
       - name: Execute generated Wasm and prove old caret leaves no artifacts
@@ -70,7 +72,9 @@ jobs:
       - name: Execute wasm32 compiler generated guest and native byte equality
         env:
           ATTOC: target/release/attoc
-        run: node tests/bitwise_browser_compiler.mjs
+        run: |
+          node tests/bitwise_browser_compiler.mjs
+          node tests/void_return_guest.mjs
       - name: Report bounded proof only
         run: |
           echo 'RECEIPT scope=rust_native_compiler+wasm32_compiler+compiled_wasm_guest'
