@@ -2634,20 +2634,33 @@ impl Parser {
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
-    /// A guard is an else-free early-exit check. Its failure branch runs only
-    /// when the predicate is false, and every path through that branch must
-    /// leave the enclosing function. Lower to an ordinary typed 'if !cond'
-    /// so the existing Rust/Wasm checker and emitter enforce bool typing,
-    /// checked effects, lexical scoping, and exactly-once predicate evaluation.
+    /// Both guard spellings use exactly the same early-exit lowering:
+    /// `guard cond { terminal }` and `guard cond else terminal end`.
+    /// A failed predicate executes the body, and all its paths must exit.
+    /// Nested statements consume their own delimiters; the final `end`
+    /// belongs to the guard, not to the enclosing callable.
     fn parse_guard(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("guard")?;
         let predicate = self.parse_cond_head()?;
-        if *self.peek() != Tok::LBrace {
+        let failure = if *self.peek() == Tok::LBrace {
+            let failure = self.parse_block()?;
+            // Preserve existing rejection of mixed guard delimiters;
+            // `else` is valid only for the keyword-delimited form.
+            if self.is_word("else") {
+                return Err(Diagnostic::new(self.pos(),
+                    "E_GUARD_ELSE_NOT_REQUIRED",
+                    "braced guard already contains its failure block; remove 'else'"));
+            }
+            failure
+        } else if self.eat_word("else") {
+            let failure = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            failure
+        } else {
             return Err(Diagnostic::new(self.pos(), "E_GUARD",
-                "guard requires a braced failure branch"));
-        }
-        let failure = self.parse_block()?;
+                "guard needs '{ ... }' or 'else ... end' failure branch"));
+        };
         if !guard_failure_exits(&failure) {
             return Err(Diagnostic::new(pos, "E_GUARD",
                 "guard failure branch must exit the enclosing function on every path"));
