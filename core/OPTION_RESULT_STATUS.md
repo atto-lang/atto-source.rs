@@ -126,3 +126,28 @@ linking, general affine ADT payload layouts and AOT cleanup are still
 unverified. Do not promote these until each has its own compiled
 positive and typed-negative receipt. A source-only Node metadata
 suite does not certify the compiled Wasm behavior.
+
+### Correction: concrete Option/Result borrow marker is Copy, not a loan
+
+A follow-up audit removed the special `args()` path that had accepted
+`borrow! Option<int>` / `borrow! Result<int,string>` without a
+borrow-qualified formal-parameter mode. That bypass is not permitted.
+Instead, these two current concrete tagged-sum profiles are now explicitly
+classified as Copy because their payloads (int and immutable string) are
+Copy. Their normal value-consumption path therefore preserves the source
+local, and `borrow! owner` on these types is only a non-destructive Copy
+projection. It does **not** establish a lifetime-bearing loan, nor may it
+be used as evidence for generic `borrow Option<T>` / `borrow Result<T,E>`
+formals or affine payload behavior.
+
+The class-owner `E_BORROW` negative still exercises the existing lexical
+loan checker; an attempted return of `borrow! owner` for a non-Copy
+class must be rejected. `Option<Payload>` remains
+`E_UNSUPPORTED_TYPE`. Temporary and mutable ADT borrow attempts are
+still expected to reject with `E_BORROW`. The test method/fixture comments
+now distinguish Copy-carrier reuse from real class-loan semantics.
+
+This distinction is deliberately conservative: **the Rust browser compiler
+does not yet implement general borrowed Option/Result parameters**. The
+positive Copy-carrier guest and class-loan negative must both execute on the
+exact source head before any claim is promoted.
