@@ -3709,7 +3709,7 @@ impl<'a> FnCx<'a> {
                 // Also forbid temporary ADT operands: a borrowed carrier must
                 // name a still-live owner at this call boundary.
                 let value = self.value(inner)?;
-                if matches!(inner.kind, ExprKind::Var(_))
+                if matches!(&inner.kind, ExprKind::Var(_))
                     && matches!(value.ty, Type::OptionInt | Type::ResultIntStr)
                 {
                     return Ok(value);
