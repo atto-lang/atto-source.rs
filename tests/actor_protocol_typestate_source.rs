@@ -20,11 +20,11 @@ fn connection_protocol_is_checked_from_actual_atto_tokens() {
     assert_eq!(p.initial, "Disconnected");
     assert!(p.terminal.contains("Closed"));
     assert_eq!(p.transitions.len(), 5);
-    assert_eq!(p.check_send(&["Disconnected".into()], "Connect").unwrap().next_states, ["Connected"]);
+    assert_eq!(p.check_send(&["Disconnected".into()], "Connect").unwrap().next_states, vec!["Connected".to_string()]);
     assert_eq!(p.check_send(&["Connected".into()], "Query").unwrap().response,
         Response::Unary("QueryReply".into()));
     assert_eq!(p.check_send(&["Connected".into(), "Disconnected".into()], "Close")
-        .unwrap().next_states, ["Closed"]);
+        .unwrap().next_states, vec!["Closed".to_string()]);
     assert_eq!(p.check_send(&["Disconnected".into()], "Query").unwrap_err().code,
         "E_PROTOCOL_ILLEGAL_MESSAGE_STATE");
     assert_eq!(p.check_send(&["Connected".into(), "Disconnected".into()], "Query")
