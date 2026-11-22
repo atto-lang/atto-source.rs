@@ -21,7 +21,7 @@ file loader for this module. The single-source `compile()` path admits
 this built-in without granting ambient relative-file imports; those still
 require `compile_with_imports` and a trusted loader.
 
-The script compiles actual imports for 17 deterministic positive cases,
+The script compiles actual imports for 21 deterministic positive cases,
 launches the native attoc compiler, validates emitted guest WebAssembly,
 instantiates it on Node and checks the **actual guest main return** and
 panic status. Eight additional negative compiler cases reject unsupported
