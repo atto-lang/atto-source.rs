@@ -192,3 +192,51 @@ fn checked_handle_preflight_has_finite_depth_for_untrusted_ast_builders() {
     program.funcs[0].body = vec![block];
     assert_eq!(check::check(&program).unwrap_err().code, "E_NESTING");
 }
+
+
+#[test]
+fn left_associative_chains_keep_parser_capacity_without_hiding_checked_handles() {
+    // The parser permits a 250-term, left-deep arithmetic tree, but the
+    // security gate previously treated each Binary link as true recursion
+    // and rejected normal source at 128. Verify iterative scanning still
+    // rejects a hidden ref! at any place on that same left spine.
+    let values = vec!["1"; 250];
+    let original = format!("pub fnc main(): int {{ return {}; }}", values.join(" + "));
+    let wasm = atto_compiler::compile(&original)
+        .expect("250-term source chain must pass the bounded handle scanner");
+    assert!(wasm.starts_with(b"\0asm"));
+    for at in [0usize, 120, 249] {
+        let mut terms = values.clone();
+        terms[at] = "ref! 1";
+        let source = format!("pub fnc main(): int {{ return {}; }}", terms.join(" + "));
+        let err = atto_compiler::compile(&source).expect_err(
+            "unsupported checked handle must be found anywhere along binary spine");
+        assert_eq!(err.code, "E_UNSUPPORTED_HANDLE", "index {at}: {err:?}");
+    }
+    let over = format!("pub fnc main(): int {{ return {}; }}",
+        vec!["1"; 3000].join(" + "));
+    assert_eq!(atto_compiler::compile(&over).unwrap_err().code, "E_NESTING");
+}
+
+#[test]
+fn synthetic_binary_spine_still_has_an_explicit_security_bound() {
+    // A direct AST caller can bypass parsing, but not the checked-handle
+    // security work budget or finite binary-chain depth check.
+    use atto_compiler::{ast::{BinOp, Func, Program, Type}, check, diag::Pos};
+    let pos = Pos { line: 1, col: 1 };
+    let scalar = || Expr { pos, kind: ExprKind::Int(Some(1)) };
+    let mut current = scalar();
+    for _ in 0..300 {
+        current = Expr {
+            pos,
+            kind: ExprKind::Binary(BinOp::Add, Box::new(current), Box::new(scalar())),
+        };
+    }
+    let mut program = Program::default();
+    program.funcs.push(Func {
+        name: "main".into(), pos,
+        is_generator: false, is_pure: false, params: Vec::new(),
+        ret: Type::Int, body: vec![Stmt::Return(Some(current), pos)]
+    });
+    assert_eq!(check::check(&program).unwrap_err().code, "E_NESTING");
+}

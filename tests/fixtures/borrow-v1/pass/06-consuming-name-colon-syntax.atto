@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Named parameter: take! class is the same ownership contract.
+define class Person as pub let int age = 42; end
+fnc read_once(p: take! Person): int { return p.age; }
+pub fnc main(): int {
+    let p = new Person();
+    return read_once(take! p);
+}

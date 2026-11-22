@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// borrow-v1 cannot pretend a mutable class formal is a read-only loan.
+// Reject before guest output until transitive write-effect and exclusive
+// argument borrowing are fully modeled.
+define class Person as pub let int age = 21; end
+fnc inspect(Person mut p): int { return p.age; }
+pub fnc main(): int { return 42; }

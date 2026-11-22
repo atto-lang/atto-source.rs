@@ -1360,33 +1360,60 @@ impl Parser {
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
 
+    /// A consuming formal must be explicitly marked in the declaration:
+    /// `fnc move(take! Foo owner)` or `fnc move(owner: take! Foo)`.
+    /// The bang is attached, just as for expression-level ownership tokens.
+    /// This is *not* a general ownership type; borrow-v1 enforces the class
+    /// restriction and caller take! proof after resolving nominal types.
+    fn take_formal_marker(&mut self) -> R<bool> {
+        if !self.is_word("take") || *self.peek_at(1) != Tok::Bang {
+            return Ok(false);
+        }
+        let at = self.pos();
+        let bang = self.toks[self.i + 1].pos;
+        if bang.line != at.line || bang.col != at.col + 4 {
+            return Err(Diagnostic::new(at, "E_SYNTAX",
+                "consuming parameter marker requires attached 'take!'"));
+        }
+        self.advance(); // take
+        self.advance(); // !
+        Ok(true)
+    }
+
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
-        // compatibility form `name: type [mut]`
-        if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+        let consuming = self.take_formal_marker()?;
+        // compatibility form `name: [take!] type [mut]`
+        if !consuming && matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, pos) = self.ident("a parameter name")?;
             self.advance();
+            let consuming = self.take_formal_marker()?;
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, pos);
+            return self.finish_param(name, ty, mutable, consuming, pos);
         }
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
         let (name, pos) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, pos)
+        self.finish_param(name, ty, mutable, consuming, pos)
     }
 
-    fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
+    fn finish_param(&self, name: String, ty: Type, mutable: bool,
+                    consuming: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
+        }
+        if consuming && (mutable || !matches!(ty, Type::Named(_) | Type::Class(_))) {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "take! formal requires a non-mutable declared class type"));
         }
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        Ok(Param { name, ty, mutable, consuming, pos })
     }
 
     // ----------------------------------------------------------- statements

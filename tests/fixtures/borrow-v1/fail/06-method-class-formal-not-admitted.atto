@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// No mixture of migrated function loans and legacy method moves.
+define class Person as pub let int age = 21; end
+define class Reader as
+  pub read(Person p): int { return p.age; }
+end
+pub fnc main(): int { return 42; }

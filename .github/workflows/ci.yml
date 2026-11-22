@@ -38,6 +38,52 @@ jobs:
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
           sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
+      - name: Execute borrow-v1 compiler guests and zero-artifact ownership negatives
+        env:
+          ATTOC: target/release/attoc
+          EXPECTED_BORROW_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          node tests/borrow_v1_guest.mjs \
+            target/wasm32-unknown-unknown/release/atto_compiler.wasm \
+            | tee "$RUNNER_TEMP/borrow-v1-evidence.log"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import {execFileSync} from 'node:child_process';
+          const text = fs.readFileSync(process.env.RUNNER_TEMP + '/borrow-v1-evidence.log','utf8');
+          const line = text.split(/\r?\n/).find(x=>x.startsWith('ATTO_BORROW_V1_EVIDENCE='));
+          assert.ok(line,'missing machine-readable compiler guest receipt');
+          const receipt = JSON.parse(line.slice('ATTO_BORROW_V1_EVIDENCE='.length));
+          const git = (...args) => execFileSync('git',args,{encoding:'utf8'}).trim();
+          assert.equal(receipt.schema,'atto.borrow-v1.guest-evidence.v1');
+          assert.equal(receipt.evidence_category,'COMPILED_GUEST');
+          assert.equal(receipt.status,'PASSED');
+          assert.equal(receipt.source_head,process.env.EXPECTED_BORROW_HEAD);
+          assert.equal(receipt.source_tree,git('rev-parse','HEAD^{tree}'));
+          assert.equal(receipt.positive_fixtures,6);
+          assert.equal(receipt.negative_fixtures,14);
+          assert.equal(receipt.executed_cases,20);
+          assert.equal(receipt.cases.length,20);
+          assert.match(receipt.native_compiler_sha256,/^[a-f0-9]{64}$/);
+          assert.match(receipt.browser_compiler_sha256,/^[a-f0-9]{64}$/);
+          assert.ok(receipt.compiler_toolchain.length>0);
+          assert.equal(receipt.target,'wasm32-unknown-unknown');
+          assert.ok(receipt.cases.every(x=>x.status==='PASSED' && x.category==='COMPILED_GUEST'));
+          assert.ok(receipt.cases.every(x=>/^[a-f0-9]{64}$/.test(x.fixture_sha256)));
+          assert.ok(receipt.cases.filter(x=>x.expected.compile==='success').every(x=>
+            x.actual.guest_exit===String(x.expected.browser_exit) &&
+            x.actual.native_compile_exit===0 && x.actual.browser_compile==='success'));
+          assert.ok(receipt.cases.filter(x=>x.expected.compile==='rejected').every(x=>
+            x.actual.browser_diagnostic===x.expected.diagnostic &&
+            x.actual.native_diagnostic_contains_expected &&
+            x.actual.browser_artifact_bytes===0 && x.actual.native_artifact_bytes===0));
+          fs.mkdirSync('target/evidence',{recursive:true});
+          fs.writeFileSync('target/evidence/borrow-v1-evidence.json',JSON.stringify(receipt,null,2)+'\n');
+          console.log('BORROW_V1_RECEIPT_VALIDATED=PASS');
+          JS
+          echo 'BORROW_V1_COMPILED_GUEST=EXECUTED; SOURCE_ONLY_MODEL=FALSE'
+
       - name: Reject adversarial mailbox histories before compiled guest tests
         run: node --test tests/actor-trace-refinement.test.mjs
       - name: Conformance - wasm32 compiler, guest execution, native-vs-wasm byte parity
@@ -66,6 +112,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/wasm32-unknown-unknown/release/atto_compiler.wasm dist/atto_compiler.wasm
+          cp target/evidence/borrow-v1-evidence.json dist/borrow-v1-evidence.json
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           import crypto from 'node:crypto';

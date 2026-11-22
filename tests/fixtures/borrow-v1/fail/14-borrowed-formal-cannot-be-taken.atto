@@ -1,0 +1,11 @@
+// expect-error: E_BORROW
+define class Person as pub let int age = 21; end
+fnc move_owned(take! Person p): Person { return p; }
+fnc steal(Person borrowed): int {
+    let moved = move_owned(take! borrowed);
+    return moved.age;
+}
+pub fnc main(): int {
+    let p = new Person();
+    return steal(p);
+}

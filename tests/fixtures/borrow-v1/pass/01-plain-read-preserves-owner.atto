@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Bare class formal is a checked non-owning parameter in borrow-v1 only.
+define class Person as pub let int age = 21; end
+fnc read(Person p): int { return p.age; }
+pub fnc main(): int {
+  let p = new Person();
+  return read(p) + read(p);
+}
