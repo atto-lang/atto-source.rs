@@ -190,13 +190,13 @@ fn identical_source_conformance_negatives_are_compiler_diagnostics() {
 #[test]
 fn forward_actor_declaration_may_match_exact_protocol_definition() {
     let src = GOOD.replace("define actor Connection implements ConnectionProtocol as end",
-        "declare actor Connection implements ConnectionProtocol;\n" +
-        "define actor Connection implements ConnectionProtocol as end");
+        concat!("declare actor Connection implements ConnectionProtocol;\n",
+            "define actor Connection implements ConnectionProtocol as end"));
     assert_eq!(inspect_source(&src).unwrap().unwrap().completed_handles, 1);
     rejects(&src, "E_PROTOCOL_RUNTIME_UNSUPPORTED");
     let bad = GOOD.replace("define actor Connection implements ConnectionProtocol as end",
-        "define actor Connection implements ConnectionProtocol as end\n" +
-        "define actor Connection implements ConnectionProtocol as end");
+        concat!("define actor Connection implements ConnectionProtocol as end\n",
+            "define actor Connection implements ConnectionProtocol as end"));
     rejects(&bad, "E_PROTOCOL_DUPLICATE");
 }
 
@@ -298,8 +298,8 @@ fn outstanding_obligations_are_reported_at_end_of_callable() {
 fn textual_protocol_handle_is_not_minted_by_an_adjacent_protocol_declaration() {
     let forged = GOOD.replace(
         "val disconnected = await spawn Connection();",
-        "val fake: ProtocolHandle<Connection, Connected> = none;\n" +
-        "  val disconnected = await spawn Connection();");
+        concat!("val fake: ProtocolHandle<Connection, Connected> = none;\n",
+            "  val disconnected = await spawn Connection();"));
     rejects(&forged, "E_PROTOCOL_UNPROVEN_STATE");
 }
 
