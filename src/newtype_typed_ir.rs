@@ -222,8 +222,8 @@ mod tests {
         assert!(!g.identical(&a, &b));
         assert_eq!(g.get(&a).unwrap().representation_bits, 64);
         assert_eq!(g.declare("+pkgA", "Port", bounds, p()).unwrap_err().code, "E_DUPLICATE");
-        assert_eq!(g.validate_const(&a, 1, p()), Ok(()));
-        assert_eq!(g.validate_const(&a, 65535, p()), Ok(()));
+        assert!(g.validate_const(&a, 1, p()).is_ok());
+        assert!(g.validate_const(&a, 65535, p()).is_ok());
         assert_eq!(g.validate_const(&a, 0, p()).unwrap_err().code, "E_RANGE_INVALID");
         assert_eq!(g.validate_const(&a, 65536, p()).unwrap_err().code, "E_RANGE_INVALID");
     }
