@@ -2378,6 +2378,16 @@ impl<'a> Checker<'a> {
             Ty::PipeHandle => Err(err(pos, "E_UNSUPPORTED",
                 "PipeHandle methods are gated until cancellation, borrow release and TenantVM lifecycle admission are verified")),
             Ty::Channel(item) => match name {
+                "cancel_read" => {
+                    // Cancellation is explicit and only accepts the Future
+                    // returned by nb readch on this element type. Runtime
+                    // queue membership binds it to the exact same channel.
+                    // False means already completed / not this channel.
+                    let e = self.plain_args(name, args, 1, pos)?[0];
+                    let pending_type = Ty::Future(Box::new(Ty::Option(item.clone())));
+                    let pending = self.typed(e, &pending_type)?;
+                    Ok((self.rt("__chan_cancel_read", vec![recv, pending]), Ty::Bool, false))
+                }
                 "close" => {
                     self.plain_args(name, args, 0, pos)?;
                     let call = self.rt("__chan_close", vec![recv]);
@@ -2398,7 +2408,7 @@ impl<'a> Checker<'a> {
                     self.plain_args(name, args, 0, pos)?;
                     Ok((self.rt_scall("__chan_recv", vec![recv]), (**item).clone(), true))
                 }
-                _ => Err(type_err(pos, format!("a channel has close(), send(v) and receive(), not '{name}'"))),
+                _ => Err(type_err(pos, format!("a channel supports close(), send(v), receive() and cancel_read(future), not '{name}'"))),
             },
             Ty::Actor(i) => {
                 // Experimental single-tenant guest lifetime controls. A real
