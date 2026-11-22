@@ -149,6 +149,10 @@ fnc __chan_try(int c): int {
   if __load(c, 8) > 0 then
     return __some(__chan_take(c));
   fi
+  // None means EMPTY and still open, not terminal EOF. Otherwise a
+  // caller cannot distinguish an unavailable message from a drained,
+  // closed capability. Buffered items must be delivered before this trap.
+  if __load(c, 32) != 0 then __panic(9); fi
   return 0;
 }
 
