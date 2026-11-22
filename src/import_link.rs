@@ -13,6 +13,12 @@ const RESERVED: &str = "__atto_file_import_";
 const MAX_FILES: usize = 16;
 const MAX_BINDINGS: usize = 256;
 const MAX_TOKENS: usize = 32768;
+const BUILTIN_TEST_SCALAR_KEY: &str = "__atto_compiler_owned_testing_scalar";
+const BUILTIN_TEST_SCALAR_SOURCE: &str = include_str!("../stdlib/testing_scalar.atto");
+const TEST_SCALAR_ALIASES: [&str; 4] = [
+    "std/testing_scalar", "std/testing_scalar.atto",
+    "atto.std/testing_scalar", "atto.std/testing_scalar.atto"
+];
 
 fn word(t: Option<&Token>, name: &str) -> bool {
     matches!(t.map(|x| &x.tok), Some(Tok::Ident(s)) if s == name)
@@ -41,6 +47,14 @@ fn token(tok: Tok, pos: Pos) -> Token { Token { tok, pos } }
 fn ident(s: &str, pos: Pos) -> Token { token(Tok::Ident(s.to_owned()), pos) }
 
 fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
+    // A synthetic path with no .atto suffix cannot collide with any
+    // filesystem import (all relative file imports require .atto).
+    if TEST_SCALAR_ALIASES.contains(&value) {
+        return Ok(PathBuf::from(BUILTIN_TEST_SCALAR_KEY));
+    }
+    if value.starts_with("std/") || value.starts_with("atto.std/") {
+        return Err(diagnostic(pos, "E_UNSUPPORTED", "unknown compiler-owned standard library import"));
+    }
     if !(value.starts_with("./") || value.starts_with("../")) || value.contains('\\') || value.contains('\0') {
         return Err(diagnostic(pos, "E_IMPORT_PATH", "file import requires a relative ./ or ../ path"));
     }
@@ -86,6 +100,13 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
         i += 1;
         let mut namespace = None;
         let mut names = Vec::new();
+        // Canonical typed function-import spelling is an optional modifier
+        // on the already admitted named-function source linker.
+        let typed_function_import = word(toks.get(i), "fnc");
+        if typed_function_import { i += 1; }
+        if typed_function_import && toks.get(i).is_some_and(|t| t.tok == Tok::Star) {
+            return Err(diagnostic(pos, "E_SYNTAX", "typed function import requires explicit function names"));
+        }
         if toks.get(i).is_some_and(|t| t.tok == Tok::Star) {
             i += 1;
             require_word(toks, &mut i, "as", pos)?;
@@ -219,8 +240,12 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             if units.len() >= MAX_FILES {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "too many imported files"));
             }
-            let text = load(&imp.path).map_err(|e| diagnostic(imp.pos, "E_IMPORT",
-                format!("cannot load source {}: {:?}", imp.path.display(), e.kind())))?;
+            let text = if imp.path == Path::new(BUILTIN_TEST_SCALAR_KEY) {
+                BUILTIN_TEST_SCALAR_SOURCE.to_owned()
+            } else {
+                load(&imp.path).map_err(|e| diagnostic(imp.pos, "E_IMPORT",
+                    format!("cannot load source {}: {:?}", imp.path.display(), e.kind())))?
+            };
             if text.len() > crate::SOURCE_CAP {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "imported file exceeds 64 KiB"));
             }
