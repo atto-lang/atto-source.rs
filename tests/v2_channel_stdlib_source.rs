@@ -43,6 +43,12 @@ const CANCEL_AWAIT_TRAPS: &str =
     include_str!("fixtures/panic/247-v2-cancel-read-await-traps.atto");
 const CANCEL_WRONG_TYPE: &str =
     include_str!("fixtures/fail/247-v2-cancel-read-wrong-payload-type.atto");
+const CANCEL_HEAD: &str =
+    include_str!("fixtures/pass/251-v2-cancel-read-head-preserves-fifo.atto");
+const CANCEL_MIDDLE: &str =
+    include_str!("fixtures/pass/252-v2-cancel-read-middle-preserves-fifo.atto");
+const CANCEL_FORGED: &str =
+    include_str!("fixtures/fail/248-v2-cancel-read-nonfuture-denial.atto");
 
 
 #[test]
@@ -252,6 +258,8 @@ fn cancellation_guest_fixtures_compile_and_bad_future_type_fails_closed() {
         ("delivered Future cannot be cancelled", CANCEL_DELIVERED),
         ("close completion cannot be revoked", CANCEL_CLOSED),
         ("await cancelled Future is panic 15", CANCEL_AWAIT_TRAPS),
+        ("cancel head preserves FIFO", CANCEL_HEAD),
+        ("cancel middle preserves FIFO", CANCEL_MIDDLE),
     ] {
         let wasm = atto_compiler::v2::compile(atto_compiler::lexer::lex(src)
             .unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
@@ -263,4 +271,8 @@ fn cancellation_guest_fixtures_compile_and_bad_future_type_fails_closed() {
         .expect("type-negative source lexes")).expect_err("wrong Future<Option<T>> must fail");
     assert_eq!(invalid.code, "E_TYPE",
         "wrong-element-type pending Future cannot revoke this channel's readers");
+    let forged = atto_compiler::v2::compile(atto_compiler::lexer::lex(CANCEL_FORGED)
+        .expect("forged-Future negative source lexes")).expect_err("integer is not a Future");
+    assert_eq!(forged.code, "E_TYPE",
+        "user numbers may not forge a cancellation registration capability");
 }
