@@ -119,7 +119,7 @@ fn unrelated_scalar_compilation_remains_executable() {
 fn live_authority_cannot_escape_by_argument_return_or_unchecked_call() {
     rejects(&GOOD.replace("val connecting = disconnected.call(Connect());",
         "ordinary(disconnected);\n  val connecting = disconnected.call(Connect());"),
-        "E_PROTOCOL_UNPROVEN_STATE");
+        "E_PROTOCOL_CFG_UNSUPPORTED");
     rejects(&GOOD.replace("val connecting = disconnected.call(Connect());",
         "disconnected.send(Connect());\n  val connecting = disconnected.call(Connect());"),
         "E_PROTOCOL_UNPROVEN_STATE");
@@ -194,4 +194,72 @@ fn forward_actor_declaration_may_match_exact_protocol_definition() {
         "define actor Connection implements ConnectionProtocol as end\n" +
         "define actor Connection implements ConnectionProtocol as end");
     rejects(&bad, "E_PROTOCOL_DUPLICATE");
+}
+
+#[test]
+fn nonlinear_control_flow_never_becomes_an_accidental_linear_proof() {
+    for guard in [
+        "if true then",
+        "loop",
+        "try",
+        "while true do",
+        "match 1 over",
+        "select",
+    ] {
+        let bad = GOOD.replace("val disconnected = await spawn Connection();",
+            &format!("{guard}\n  val disconnected = await spawn Connection();"));
+        rejects(&bad, "E_PROTOCOL_CFG_UNSUPPORTED");
+    }
+}
+
+#[test]
+fn early_return_and_unverified_effects_do_not_preserve_authority() {
+    let early = GOOD.replace("val connecting = disconnected.call(Connect());",
+        "return 1;\n  val connecting = disconnected.call(Connect());");
+    rejects(&early, "E_PROTOCOL_CFG_UNSUPPORTED");
+    let before_spawn = GOOD.replace("val disconnected = await spawn Connection();",
+        "return 0;\n  val disconnected = await spawn Connection();");
+    rejects(&before_spawn, "E_PROTOCOL_CFG_UNSUPPORTED");
+    for operation in [
+        "await external_task();",
+        "spawn Other();",
+        "unknown_side_effect();",
+        "{ unrelated(); }",
+    ] {
+        let bad = GOOD.replace("val connecting = disconnected.call(Connect());",
+            &format!("{operation}\n  val connecting = disconnected.call(Connect());"));
+        rejects(&bad, "E_PROTOCOL_CFG_UNSUPPORTED");
+    }
+}
+
+#[test]
+fn message_payload_and_spawn_constructor_cannot_hide_affine_handles_or_effects() {
+    let aliased = GOOD.replace("disconnected.call(Connect())",
+        "disconnected.call(Connect(disconnected))");
+    rejects(&aliased, "E_PROTOCOL_AFFINE_HANDLE");
+    let side_effect = GOOD.replace("disconnected.call(Connect())",
+        "disconnected.call(Connect(revoke_authority()))");
+    rejects(&side_effect, "E_PROTOCOL_CFG_UNSUPPORTED");
+    let field_getter = GOOD.replace("disconnected.call(Connect())",
+        "disconnected.call(Connect(config.value))");
+    rejects(&field_getter, "E_PROTOCOL_CFG_UNSUPPORTED");
+    let bad_spawn = GOOD.replace("await spawn Connection()",
+        "await spawn Connection(revoke_authority())");
+    rejects(&bad_spawn, "E_PROTOCOL_CFG_UNSUPPORTED");
+    let missing_parentheses = GOOD.replace("await spawn Connection()",
+        "await spawn Connection");
+    rejects(&missing_parentheses, "E_PROTOCOL_SYNTAX");
+}
+
+#[test]
+fn unimplemented_actor_and_reserved_state_names_fail_closed() {
+    let declaration_only = GOOD.replace(
+        "define actor Connection implements ConnectionProtocol as end",
+        "declare actor Connection implements ConnectionProtocol;");
+    rejects(&declaration_only, "E_PROTOCOL_UNPROVEN_STATE");
+    let reserved = GOOD.replace("initial Disconnected", "initial if");
+    rejects(&reserved, "E_PROTOCOL_SYNTAX");
+    let reserved_protocol = GOOD.replace("define protocol ConnectionProtocol",
+        "define protocol state");
+    rejects(&reserved_protocol, "E_PROTOCOL_SYNTAX");
 }
