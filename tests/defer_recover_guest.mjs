@@ -23,7 +23,7 @@ const cases = [
           on Err(e) -> { stdio.println(e.message); return 42; }
         end
       }`,
-    stdout: 'bang original\\n', value: 42n,
+    stdout: 'bang original\n', value: 42n,
   },
   {
     name: 'canonical trap bang remains flat for an already returned Err',
@@ -35,7 +35,7 @@ const cases = [
           on Err(e) -> { stdio.println(e.message); return 43; }
         end
       }`,
-    stdout: 'existing Err\\n', value: 43n,
+    stdout: 'existing Err\n', value: 43n,
   },
   {
     name: 'canonical raise bang bypasses catch and reaches recover',
@@ -49,7 +49,7 @@ const cases = [
         catch (Error e) { stdio.println("UNEXPECTED catch"); return 0; }
       }
       pub fnc main(): int { return f(); }`,
-    stdout: 'bang raise\\n', value: 44n,
+    stdout: 'bang raise\n', value: 44n,
   },
   {
     name: 'annotated caught throw is safe in defer and preserves normal result',
