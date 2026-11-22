@@ -15,7 +15,8 @@ The Worker now imports `MonotonicSleepProvider`, which:
   per timer, retained from the existing preview).
 - Measures time once with `performance.now()` and rechecks the same deadline
   after every host wake. Spurious/early timer events rearm only the remaining
-  duration, never resolve the JSPI Promise early.
+  duration, never resolve the JSPI Promise early. Nonfinite or regressed
+  clock samples fail closed and release the pending timer slot.
 - Enqueues even zero-delay timers to a later event-loop turn.
 - Tracks pending-registration capacity and releases it exactly once on
   completion, `AbortSignal` cancellation, or scheduling failure.
@@ -25,7 +26,8 @@ The Worker now imports `MonotonicSleepProvider`, which:
   suspension and reentry. The production playground creates a dedicated Worker
   per Run and terminates it on completion/timeout.
 
-Unit evidence must be **executed** from the same helper used in the Worker:
+Unit evidence now includes eight cases (including regressed/nonfinite
+clock readings). Unit evidence must be **executed** from the same helper used in the Worker:
 `node --test tests/browser-async/monotonic-sleep.test.mjs`.
 Full compiler-backed browser evidence additionally requires building the
 native Rust compiler + wasm32 compiler and executing the real guest Wasm in
