@@ -1,7 +1,7 @@
 // Exact-compiler executable Wasm guest tests for the bounded relative-file
 // literal constant import subset. Requires a built attoc; no mocked compiler.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -65,6 +65,19 @@ try {
     'E_UNSUPPORTED');
   rejected('import const status_valid from "std.http"; pub fnc main(): int {return 0;}',
     provider, 'E_IMPORT_PATH');
+
+  // The real CLI must canonicalize requested paths and reject an imported
+  // symlink to source outside the source project's canonical directory.
+  const external = mkdtempSync(join(tmpdir(), 'atto-const-import-outside-'));
+  try {
+    writeFileSync(join(external, 'secret.atto'), provider);
+    symlinkSync(join(external, 'secret.atto'), join(dir, 'escape.atto'));
+    rejected('import const status_valid from "./escape.atto"; pub fnc main(): int {return 0;}',
+      provider, 'E_IMPORT');
+  } finally {
+    rmSync(join(dir, 'escape.atto'), { force: true });
+    rmSync(external, { recursive: true, force: true });
+  }
 
   console.log('PASS: real compiled scalar const imports, deterministic Wasm guests and fail-closed cases');
 } finally {
