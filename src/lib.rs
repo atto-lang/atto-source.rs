@@ -44,6 +44,7 @@ pub mod import_link;
 pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
+pub mod dependency_lock;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;
