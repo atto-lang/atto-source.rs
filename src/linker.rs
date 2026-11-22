@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 type R<T> = Result<T, Diagnostic>;
 const MAX_UNITS: usize = 64;
 const MAX_IMPORTS: usize = 32;
+const BUILTIN_ALLOC_PREFIX: &str = "__atto_builtin/alloc/";
+const BUILTIN_ALIGNED_PATH: &str = "__atto_builtin/alloc/aligned.atto";
 
 #[derive(Clone, Copy, Debug)]
 pub struct LinkUnit<'a> {
@@ -120,6 +122,24 @@ fn package_ok(package: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'@'))
 }
 fn relative_path(from: &str, rel: &str, pos: Pos) -> R<String> {
+    // Only authenticated compiler-bundled alloc source can own this reserved
+    // namespace. A local file named "atto.alloc" never grants import rights.
+    if rel.starts_with("atto.alloc/") || rel.starts_with("alloc/") {
+        return match rel {
+            "atto.alloc/aligned" | "atto.alloc/aligned.atto"
+            | "alloc/aligned" | "alloc/aligned.atto" => {
+                Ok(BUILTIN_ALIGNED_PATH.to_string())
+            }
+            "atto.alloc/stats" | "atto.alloc/stats.atto"
+            | "alloc/stats" | "alloc/stats.atto"
+            | "atto.alloc/secure" | "atto.alloc/secure.atto"
+            | "alloc/secure" | "alloc/secure.atto" => {
+                Err(err(pos, "E_UNSUPPORTED",
+                    "alloc/stats and alloc/secure require unimplemented owned-class and secure wipe lowering"))
+            }
+            _ => Err(err(pos, "E_IMPORT_PATH", "unknown compiler-owned alloc module")),
+        };
+    }
     let (prefix, suffix) = if let Some(rest) = rel.strip_prefix("./") {
         ("relative", rest)
     } else if let Some(rest) = rel.strip_prefix('+') {
@@ -140,8 +160,8 @@ fn relative_path(from: &str, rel: &str, pos: Pos) -> R<String> {
     } else {
         format!("{dir}/{suffix}")
     };
-    if !path_ok(&resolved) {
-        return Err(err(pos, "E_IMPORT_PATH", "invalid canonical import destination"));
+    if !path_ok(&resolved) || resolved.starts_with(BUILTIN_ALLOC_PREFIX) {
+        return Err(err(pos, "E_IMPORT_PATH", "invalid or reserved canonical import destination"));
     }
     Ok(resolved)
 }
@@ -573,12 +593,13 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
     if units.is_empty() || units.len() > MAX_UNITS {
         return Err(err(Pos::default(), "E_SOURCE_LIMIT", "invalid linked source-unit count"));
     }
-    if !path_ok(entry_path) {
+    if !path_ok(entry_path) || entry_path.starts_with(BUILTIN_ALLOC_PREFIX) {
         return Err(err(Pos::default(), "E_IMPORT_PATH", "entry source path is not canonical"));
     }
     let mut files = BTreeMap::new();
     for unit in units {
-        if !path_ok(unit.path) || !package_ok(unit.package) {
+        if !path_ok(unit.path) || unit.path.starts_with(BUILTIN_ALLOC_PREFIX)
+            || !package_ok(unit.package) {
             return Err(err(
                 Pos::default(),
                 "E_IMPORT_PATH",
@@ -597,6 +618,24 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
         if files.insert(unit.path, unit).is_some() {
             return Err(err(Pos::default(), "E_DUPLICATE", "duplicate canonical source file path"));
         }
+    }
+    // Never accept a caller-supplied bundle. The only compiler-owned source
+    // is embedded at build time and is admitted solely when an import names it.
+    const ALIGNED: &str = include_str!("../stdlib/alloc/aligned.atto");
+    let bundled_aligned = LinkUnit {
+        path: BUILTIN_ALIGNED_PATH,
+        package: "atto-alloc@1.0.0",
+        source: ALIGNED,
+    };
+    let mut needs_aligned = false;
+    for unit in units {
+        let parsed_header = header(unit.source, unit.path)?;
+        if parsed_header.imports.iter().any(|imp| imp.path == BUILTIN_ALIGNED_PATH) {
+            needs_aligned = true;
+        }
+    }
+    if needs_aligned {
+        files.insert(BUILTIN_ALIGNED_PATH, &bundled_aligned);
     }
     let root = files.get(entry_path).ok_or_else(|| {
         err(
