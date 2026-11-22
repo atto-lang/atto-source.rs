@@ -49,6 +49,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/io_shorthand_guest.mjs
+      - name: Compile and execute SHA-pinned native Atto HTTP/FS pure-policy guest
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/hosted_io_pure_policy_guest.mjs
       - name: Execute bitwise operators in native-generated Wasm guests
         env:
           ATTOC: target/release/attoc

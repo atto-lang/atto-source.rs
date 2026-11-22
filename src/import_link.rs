@@ -1,6 +1,7 @@
 //! Bounded first executable relative-file import profile.
 //! File loading is caller supplied, without compiler network or filesystem access.
-//! Only one-hop braced functions are admitted; all other imports fail closed.
+//! Allows one-hop braced-file functions and two sealed, compiler-embedded
+//! hosted-std *pure-policy* packages only. Never authorizes HTTP/FS I/O.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -62,9 +63,39 @@ fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
     }
     Ok(path)
 }
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SealedStd {
+    HttpPolicy,
+    FsPolicyBundle,
+}
+impl SealedStd {
+    fn source(self) -> String {
+        match self {
+            Self::HttpPolicy => include_str!("../stdlib/std/http_response_policy.atto").to_owned(),
+            Self::FsPolicyBundle => {
+                // Compiler-embedded, bounded pure Atto sources only.
+                // This never grants a host filesystem capability or exports
+                // File/read_file/open/stream runtime functions.
+                let mut source = include_str!("../stdlib/std/fs_text_policy.atto").to_owned();
+                source.push('\n');
+                source.push_str(include_str!("../stdlib/std/fs_api_policy.atto"));
+                source.push('\n');
+                source.push_str(include_str!("../stdlib/std/fs_io_policy.atto"));
+                source
+            }
+        }
+    }
+    fn source_path(self) -> &'static str {
+        match self {
+            Self::HttpPolicy => "stdlib/std/http_response_policy.atto",
+            Self::FsPolicyBundle => "stdlib/std/fs_text_policy.atto",
+        }
+    }
+}
+
 struct Import {
     path: PathBuf,
+    sealed_std: Option<SealedStd>,
     namespace: Option<String>,
     names: Vec<(String, String)>,
     pos: Pos,
@@ -109,20 +140,45 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
             }
         }
         require_word(toks, &mut i, "from", pos)?;
-        if word(toks.get(i), "pkg") {
-            return Err(diagnostic(pos, "E_UNSUPPORTED", "package imports require a package resolver"));
-        }
-        let value = match toks.get(i).map(|t| &t.tok) {
-            Some(Tok::Str(s)) => s,
-            _ => return Err(diagnostic(pos, "E_SYNTAX", "expected quoted source file")),
+        // Canonical built-ins use bare quoted module identities. External
+        // package imports retain explicit pkg and never masquerade as std.*.
+        let external_pkg = word(toks.get(i), "pkg");
+        if external_pkg { i += 1; }
+        let source = match toks.get(i).map(|t| &t.tok) {
+            Some(Tok::Str(s)) if !s.is_empty() => s.as_str(),
+            _ => return Err(diagnostic(pos, "E_SYNTAX", "expected nonempty quoted import source")),
         };
-        let path = import_path(logical, value, pos)?;
+        if external_pkg && source != "std.http" && source != "std.fs" {
+            return Err(diagnostic(pos, "E_UNSUPPORTED",
+                "third-party packages require a verified package resolver"));
+        }
+        // Exact std.http/std.fs from-pkg selectors remain transitional
+        // compatibility spellings for pinned older guest fixtures. They are
+        // NEVER loaded as external packages. New source uses bare std names.
+        let sealed_std = match source {
+            "std.http" => Some(SealedStd::HttpPolicy),
+            "std.fs" => Some(SealedStd::FsPolicyBundle),
+            _ => None,
+        };
+        let (path, sealed_std) = if let Some(sealed) = sealed_std {
+            (PathBuf::from(sealed.source_path()), Some(sealed))
+        } else {
+            let reserved = ["core", "alloc", "std"].into_iter().any(|root| {
+                source == root || source.strip_prefix(root)
+                    .is_some_and(|tail| tail.starts_with('.'))
+            });
+            if reserved {
+                return Err(diagnostic(pos, "E_STDLIB_UNLINKED",
+                    "compiler built-in is not registered for this backend"));
+            }
+            (import_path(logical, source, pos)?, None)
+        };
         i += 1;
         if toks.get(i).is_none_or(|t| t.tok != Tok::Semi) {
             return Err(diagnostic(pos, "E_SYNTAX", "expected ';' after file import"));
         }
         i += 1;
-        result.push(Import { path, namespace, names, pos });
+        result.push(Import { path, sealed_std, namespace, names, pos });
         if result.len() > MAX_BINDINGS {
             return Err(diagnostic(pos, "E_SOURCE_LIMIT", "too many import declarations"));
         }
@@ -201,7 +257,28 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         return Err(diagnostic(Pos { line: 1, col: 1 }, "E_IMPORT_PATH", "logical path must be project-relative"));
     }
     let lexed = lexer::lex(source)?;
-    let (imports, root) = imports(&lexed, logical)?;
+    // Namespace headers are recognized and validated by the canonical
+    // namespace normalizer, not silently swallowed as ordinary identifiers.
+    // For this restricted single-file/function import profile, the header is
+    // compile-time source metadata. Its declared namespace cannot mint an
+    // external package authority or relax the import allowlist.
+    let import_tokens = if word(lexed.get(0), "use")
+        && (word(lexed.get(1), "namespace")
+            || (word(lexed.get(1), "default") && word(lexed.get(2), "namespace")))
+    {
+        let normalized = crate::namespace::normalize(&lexed, Some(logical))?;
+        let end = normalized.iter().position(|t| t.tok == Tok::Semi)
+            .ok_or_else(|| diagnostic(lexed[0].pos, "E_SYNTAX",
+                "namespace declaration must end with a semicolon"))?;
+        if word(normalized.get(end + 1), "import") {
+            normalized[end + 1..].to_vec()
+        } else {
+            lexed.clone()
+        }
+    } else {
+        lexed.clone()
+    };
+    let (imports, root) = imports(&import_tokens, logical)?;
     if imports.is_empty() { return Ok(lexed); }
     reject_forged_names(&root)?;
     let mut parser = Parser::new(root.clone());
@@ -211,16 +288,23 @@ where F: FnMut(&Path) -> std::io::Result<String> {
     }
     let root_names: BTreeSet<_> = program.funcs.iter().map(|f| f.name.clone()).collect();
     let mut units = Vec::<FileUnit>::new();
-    let mut by_path = BTreeMap::<PathBuf, usize>::new();
+    let mut by_path = BTreeMap::<(PathBuf, Option<SealedStd>), usize>::new();
     let mut bound = BTreeMap::<String, Binding>::new();
 
     for imp in &imports {
-        let id = if let Some(id) = by_path.get(&imp.path) { *id } else {
+        let key = (imp.path.clone(), imp.sealed_std);
+        let id = if let Some(id) = by_path.get(&key) { *id } else {
             if units.len() >= MAX_FILES {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "too many imported files"));
             }
-            let text = load(&imp.path).map_err(|e| diagnostic(imp.pos, "E_IMPORT",
-                format!("cannot load source {}: {:?}", imp.path.display(), e.kind())))?;
+            // Sealed builtin sources are compiler-embedded, never loaded from the
+            // caller's mutable package tree. External packages remain denied.
+            let text = if let Some(sealed) = imp.sealed_std {
+                sealed.source()
+            } else {
+                load(&imp.path).map_err(|e| diagnostic(imp.pos, "E_IMPORT",
+                    format!("cannot load source {}: {:?}", imp.path.display(), e.kind())))?
+            };
             if text.len() > crate::SOURCE_CAP {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "imported file exceeds 64 KiB"));
             }
@@ -242,7 +326,7 @@ where F: FnMut(&Path) -> std::io::Result<String> {
                 if t.tok != Tok::Eof { rewritten.push(t.clone()); }
             }
             let id = units.len();
-            by_path.insert(imp.path.clone(), id);
+            by_path.insert(key, id);
             units.push(FileUnit { module, funcs, tokens: rewritten });
             id
         };

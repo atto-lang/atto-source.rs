@@ -6,6 +6,8 @@
 //! This is a subset compiler: every construct outside the admitted subset is
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
+/// Proposed browser filesystem ABI gate; no Wasm guest imports until approved lowering.
+pub mod browser_fs_abi_v1;
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
@@ -113,7 +115,37 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    compile_prelexed(lexer::lex(source)?, logical_path)
+    let lexed = lexer::lex(source)?;
+    // A single-file/browser compiler cannot access the host filesystem.
+    // It may link the compiler-embedded, explicitly allowlisted *pure-policy*
+    // std modules, but every relative source import still fails without a
+    // caller-supplied loader. Never turn this into an ambient FS/HTTP grant.
+    let first = lexed.first().map(|t| &t.tok);
+    let second = lexed.get(1).map(|t| &t.tok);
+    let third = lexed.get(2).map(|t| &t.tok);
+    let namespace_header = matches!(first,
+        Some(lexer::Tok::Ident(word)) if word == "use")
+        && (matches!(second, Some(lexer::Tok::Ident(word)) if word == "namespace")
+            || (matches!(second, Some(lexer::Tok::Ident(word)) if word == "default")
+                && matches!(third, Some(lexer::Tok::Ident(word)) if word == "namespace")));
+    // A standalone namespace must stay on the ordinary namespace checker:
+    // routing it through the synthetic main.atto path would change the
+    // expected E_NAMESPACE_PATH diagnostic into E_NAMESPACE_DEPTH.
+    let header_then_import = namespace_header
+        && lexed.iter().position(|t| t.tok == lexer::Tok::Semi)
+            .is_some_and(|at| matches!(lexed.get(at + 1).map(|t| &t.tok),
+                Some(lexer::Tok::Ident(word)) if word == "import"));
+    let import_entry = matches!(first,
+        Some(lexer::Tok::Ident(word)) if word == "import") || header_then_import;
+    let tokens = if import_entry {
+        let logical = logical_path.unwrap_or_else(|| std::path::Path::new("main.atto"));
+        import_link::lower(source, logical, |_| Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied, "single-file compiler cannot load source files"
+        )))?
+    } else {
+        lexed
+    };
+    compile_prelexed(tokens, logical_path)
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
