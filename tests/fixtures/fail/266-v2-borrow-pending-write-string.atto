@@ -1,0 +1,7 @@
+// expect-error: E_BORROW
+// Text buffers cannot enter cancellable writes without move tracking.
+pub suspends fnc main(): int {
+  val ch = Channel<string>.bounded(0);
+  val ticket = ch.send_pending("hello");
+  return 0;
+}
