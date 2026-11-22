@@ -1,0 +1,17 @@
+// Real actor guest regression: namespace header must not change dispatch.
+// expect-exit: 0
+// expect-stdout: 42
+use namespace std.actor.example;
+
+define actor Echo as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value + 2);
+    return;
+  }
+end
+
+pub fnc main(): int {
+  val actor = spawn Echo();
+  actor.send(40);
+  return 0;
+}
