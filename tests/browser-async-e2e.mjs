@@ -256,9 +256,9 @@ try{
   assert.equal(await evaluate('window.__attoLastPortableResumes'),2);
   assert.equal(await evaluate('window.__attoLastPortableCleanups'),1,
     'completed Wasm frame must be explicitly dropped');
-  assert.match(await run(
+  assert.equal(await run(
     'pub susp fnc main(): int { val answer: int = 42; await 41; return await answer; }',
-    'main() -> 42'),/^main\\(\\) -> 42$/,
+    'main() -> 42'),'main() -> 42',
     'compiled local must survive real Chromium Worker suspension');
   assert.equal(await evaluate('window.__attoLastPortableTurns'),3,
     'local spilling still requires independent compiler-generated quanta');
