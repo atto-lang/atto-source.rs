@@ -64,6 +64,7 @@ fn typed_purity_and_return_capability_fail_closed() {
     rejected("fnc check(int x) -> bool { return x > 0; } fnc guarded(int x) -> int requires check(x); { return x; } fnc main() -> int { return guarded(1); }", "E_CONTRACT_EFFECT");
     rejected("fnc guarded(int x) -> int requires x + 1 > 0; { return x; } fnc main() -> int { return guarded(1); }", "E_CONTRACT_EFFECT");
     rejected("fnc main() -> void ensures |r| -> main() eq true; { return; }", "E_CONTRACT_UNSUPPORTED");
+    rejected("fnc guarded(int x) -> int requires x > 0; { return x; } fnc main() -> int { try { guarded(1); } finally { } return 42; }", "E_CONTRACT_UNSUPPORTED");
     rejected("fnc checked() -> int ensures |r| -> r; { return 1; } fnc main() -> int { return checked(); }", "E_CONTRACT_NOT_BOOL");
 }
 
