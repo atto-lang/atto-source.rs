@@ -95,3 +95,34 @@ ignored. Both cases are **NOT_EXECUTED** on an admitted exact-head runner.
 Until a full real compiler run proves the feature, this branch remains
 draft; existing generic borrow classes or namespace linkage may fail.
 Do not downgrade the tests to host-only success to make a CI badge green.
+
+### Bounded concrete ADT borrow checker extension — 2026-11-22
+
+The actual Rust compiler's `src/check.rs` now admits explicit
+`borrow! named_owner` *at a synchronous call site* for only the
+already-specialized, immutable guest types `Option<int>` and
+`Result<int,string>`. It evaluates the owner exactly once and checks
+the original local's moved/exclusive-loan state. This narrow shared
+read does not expose a writable payload, create a new non-Copy owner,
+or extend the owner's lifetime. A temporary ADT, mutable ADT borrow,
+generic `Option<Payload>`, and escaped affine class loan remain
+rejected; no unsupported type is silently upgraded to an owned ABI.
+
+The executable Rust test `borrowed_option_result_tags_execute_wasm_and_preserve_copy_owners`
+now uses only the browser compiler's admitted concrete ADT types and
+requires **real WebAssembly guest execution returning 42**, then
+matches both original carrier values after the read calls. The
+`borrowed_affine_payload_escape_requires_ownership_diagnostic` test
+now checks an actually reachable class-owner `E_BORROW`, rather than
+mistaking the unsupported `Option<Payload>` parser error for semantic
+proof. Additional tests independently require
+`E_UNSUPPORTED_TYPE` for `Option<Payload>` and `E_BORROW` for
+temporary/mutable ADT loans.
+
+**Evidence classification: AUTHORED / NOT_EXECUTED on a current
+compiler runner.** The generic source `core/option.atto` and
+`core/result.atto` borrowed formals, consuming helpers, import
+linking, general affine ADT payload layouts and AOT cleanup are still
+unverified. Do not promote these until each has its own compiled
+positive and typed-negative receipt. A source-only Node metadata
+suite does not certify the compiled Wasm behavior.
