@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,32 @@ for (const [fixture, label] of [
       if (Object.hasOwn(instance.exports, 'panic_code')) {
         assert.equal(instance.exports.panic_code.value, 0, 'unexpected guest trap');
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// True compiler-negative probes: no Wasm, no host-policy simulation.
+// A source namespace cannot mint a missing import, and a malformed namespace
+// cannot be silently normalized into an executable guest.
+for (const [fixture, expectedCode] of [
+  ['contracts/std-actor-v1/namespace-implicit-import.reject.atto', 'E_UNBOUND'],
+  ['contracts/std-actor-v1/namespace-duplicate.reject.atto', 'E_DUPLICATE'],
+  ['contracts/std-actor-v1/namespace-after-declaration.reject.atto', 'E_SYNTAX'],
+]) {
+  test('std.actor negative compiler fixture rejects before artifact: ' + fixture, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'atto-actor-negative-'));
+    const output = join(dir, 'unexpected.wasm');
+    try {
+      const result = spawnSync(compiler, [fixture, '-o', output],
+        { cwd: root, encoding: 'utf8', timeout: 60000, windowsHide: true });
+      assert.equal(result.error, undefined, 'actual compiler required: ' + String(result.error));
+      assert.equal(result.signal, null, 'compiler terminated by signal: ' + String(result.stderr));
+      assert.notEqual(result.status, 0, 'compiler incorrectly accepted ' + fixture);
+      assert.match(String(result.stderr), new RegExp('\\b' + expectedCode + '\\b'),
+        'failure must have the expected semantic diagnostic, not an unrelated parser error');
+      assert.equal(existsSync(output), false, 'negative test must not publish an executable Wasm artifact');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
