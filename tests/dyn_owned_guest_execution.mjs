@@ -40,6 +40,10 @@ const negatives = [
   ['borrowed erasure', source.replace('Dyn<Printable>(take! concrete)', 'Dyn<Printable>(borrow! concrete)'), 'E_DYN_OWNERSHIP'],
   ['object result', source.replace('describe(): string;', 'describe(): Greeting;'), 'E_DYN_ABI'],
   ['concrete escape', source.replace('stdio.println(display(erased));', 'val Greeting alias = erased;'), 'E_DYN_INTERFACE'],
+  ['borrowed checked as', source.replace('Dyn<Printable>(take! concrete)', '(borrow! concrete) as Dyn<Printable>'), 'E_DYN_OWNERSHIP'],
+  ['untyped checked as', source.replace('val Dyn<Printable> erased = Dyn<Printable>(take! concrete)', 'val erased = (take! concrete) as Dyn<Printable>'), 'E_DYN_OWNERSHIP'],
+  ['mismatched checked as', source.replace('Dyn<Printable>(take! concrete)', '(take! concrete) as Dyn<Missing>'), 'E_DYN_INTERFACE'],
+  ['cast use after move', source.replace('Dyn<Printable>(take! concrete)', '(take! concrete) as Dyn<Printable>').replace('stdio.println(display(erased));', 'stdio.println(concrete.describe());'), 'E_MOVED'],
   ['missing vtable', source.replace('fnc display(', [
     'define class Farewell implements Printable as',
     '  pub describe(): string { return "goodbye"; }',
@@ -84,6 +88,22 @@ try {
   const {proc, output} = await compileNative(source, 'positive');
   assert.equal(proc.status, 0, 'native compiler rejected Dyn fixture: ' + proc.stderr);
   const nativeGuest = await readFile(output);
+  // Constructor, explicitly checked 'as', and contextual owned erasure
+  // must compile to the same real guest, without a runtime cast fallback.
+  for (const [i, rhs] of [
+    '(take! concrete) as Dyn<Printable>',
+    'take! concrete as Dyn<Printable>',
+    'take! concrete'
+  ].entries()) {
+    const variant = source.replace('Dyn<Printable>(take! concrete)', rhs);
+    const {proc: equalProc, output: equalPath} = await compileNative(variant, 'positive-variant-' + i);
+    assert.equal(equalProc.status, 0, rhs + ': ' + equalProc.stderr);
+    const equalNative = await readFile(equalPath);
+    assert.deepEqual(equalNative, nativeGuest, rhs + ': native byte-for-byte parity');
+    const equalBrowser = compileBrowser(variant);
+    assert.equal(equalBrowser.ok, true, rhs + ': browser compiler must accept');
+    assert.deepEqual(Buffer.from(equalBrowser.guest), nativeGuest, rhs + ': browser byte parity');
+  }
   const browserPositive = compileBrowser(source);
   assert.equal(browserPositive.ok, true, 'wasm32 compiler rejected same source');
   assert.deepEqual(Buffer.from(browserPositive.guest), nativeGuest,
