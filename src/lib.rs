@@ -34,6 +34,8 @@ pub mod lexer;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+/// Immutable profile-aware canonical names visible without explicit imports.
+pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
 pub mod scalar_generic;
 /// Checked single-source module functions; external imports remain unlinked.
