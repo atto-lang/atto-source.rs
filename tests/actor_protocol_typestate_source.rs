@@ -286,8 +286,7 @@ fn outstanding_obligations_are_reported_at_end_of_callable() {
         "  closed.complete_protocol();",
         "");
     rejects(&no_close, "E_PROTOCOL_TERMINAL_INCOMPLETE");
-    let pending = GOOD.replace(
-        "  val (ack, connected) = await connecting?;",
-        "  // reply intentionally omitted");
+    let cut = GOOD.find("  val (ack, connected) = await connecting?;").unwrap();
+    let pending = format!("{}\n}}\n", &GOOD[..cut]);
     rejects(&pending, "E_PROTOCOL_REPLY_REQUIRED");
 }
