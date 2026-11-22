@@ -335,6 +335,22 @@ impl Parser {
             Err(self.expected(what))
         }
     }
+    /// In a type annotation, contiguous `Future<int>=value` lexes the
+    /// final two characters as `>=`. Split only at a proved generic closing
+    /// delimiter; ordinary expressions keep the comparison token intact.
+    fn expect_type_gt(&mut self,what:&str)->R<()> {
+        if *self.peek()==Tok::Ge {
+            if self.toks.len()>=crate::lexer::MAX_TOKENS {
+                return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT",
+                    "too many tokens after generic assignment normalization"));
+            }
+            let pos=self.pos();
+            self.toks[self.i].tok=Tok::Gt;
+            self.toks.insert(self.i+1,Token{tok:Tok::Assign,
+                pos:Pos{line:pos.line,col:pos.col+1}});
+        }
+        self.expect(Tok::Gt,what)
+    }
     fn expect_word(&mut self, w: &str) -> R<()> {
         if self.eat_word(w) {
             Ok(())
@@ -468,7 +484,7 @@ impl Parser {
             "Option" => {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Option payload")?;
+                self.expect_type_gt( "'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
                     Type::ResultIntStr => Type::OptionResultIntStr,
@@ -479,7 +495,7 @@ impl Parser {
             "Channel" => {
                 self.expect(Tok::Lt, "'<' after Channel")?;
                 let item=self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Channel item")?;
+                self.expect_type_gt( "'>' after Channel item")?;
                 if item!=Type::Int {
                     return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
                         "browser channel ABI v1 admits only Channel<int>"));
@@ -489,7 +505,7 @@ impl Parser {
             "Future" => {
                 self.expect(Tok::Lt, "'<' after Future")?;
                 let result=self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Future payload")?;
+                self.expect_type_gt( "'>' after Future payload")?;
                 match result {
                     Type::Int => Type::FutureInt,
                     Type::ResultOptionIntIoError => Type::FutureReadInt,
@@ -500,7 +516,7 @@ impl Parser {
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
                 let inner = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Generator item type")?;
+                self.expect_type_gt( "'>' after Generator item type")?;
                 if inner != Type::Int {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "the browser generator frontend currently recognizes only Generator<int>"));
@@ -512,7 +528,7 @@ impl Parser {
                 let good = self.parse_type()?;
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Result types")?;
+                self.expect_type_gt( "'>' after Result types")?;
                 match (good,bad) {
                     (Type::Int,Type::Str) => Type::ResultIntStr,
                     (Type::OptionInt,Type::IoError) => Type::ResultOptionIntIoError,
@@ -537,7 +553,7 @@ impl Parser {
             "ActorRef" => {
                 self.expect(Tok::Lt, "'<' after ActorRef")?;
                 let (actor, apos) = self.ident("an actor name")?;
-                self.expect(Tok::Gt, "'>'")?;
+                self.expect_type_gt( "'>'")?;
                 Type::NamedRef(self.type_name(actor, apos))
             }
             "ActorMail" => {
@@ -1096,7 +1112,7 @@ impl Parser {
         }
         self.advance();
         let payload = self.parse_type()?;
-        self.expect(Tok::Gt, "'>'")?;
+        self.expect_type_gt( "'>'")?;
         let (mail, _) = self.ident("a mail parameter name")?;
         if *self.peek() == Tok::Comma {
             return Err(Diagnostic::new(
@@ -3247,7 +3263,7 @@ impl Parser {
                     need_type = true;
                     continue;
                 }
-                self.expect(Tok::Gt, "'>' after lambda type arguments")?;
+                self.expect_type_gt( "'>' after lambda type arguments")?;
                 spelling.push('>');
                 generic_depth -= 1;
             }
@@ -3395,7 +3411,7 @@ impl Parser {
             Tok::Ident(s) => match s.as_str() {
                 "Channel" if *self.peek_at(1)==Tok::Lt => {
                     self.advance();self.expect(Tok::Lt,"'<'")?;
-                    self.expect_word("int")?;self.expect(Tok::Gt,"'>'")?;
+                    self.expect_word("int")?;self.expect_type_gt("'>'")?;
                     self.expect(Tok::Dot,"'.'")?;self.expect_word("bounded")?;
                     ExprKind::Call("$atto_ch_open".into(),self.parse_args()?)
                 },
