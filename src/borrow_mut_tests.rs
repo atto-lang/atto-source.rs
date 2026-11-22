@@ -99,8 +99,8 @@ fn readonly_borrowed_getter_elides_call_without_copying_guest_handle() {
 
     let typed = typed(&implicit);
     let main = typed.funcs.iter().find(|f| f.name == "main").expect("main");
-    assert!(main.locals.iter().all(|ty| *ty != Type::Class(0)),
-        "a borrowed call must not allocate a second class-handle local");
+    assert_eq!(main.locals.iter().filter(|ty| **ty == Type::Class(0)).count(), 1,
+        "the caller needs only its original owned class local, not a second borrowed handle");
 }
 
 #[test]
