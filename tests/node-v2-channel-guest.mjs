@@ -14,6 +14,7 @@ const cases = [
   ['pass/238-v2-rendezvous-direct-readch.atto', 42, '42\n', 0],
   ['pass/239-v2-rendezvous-for-await.atto', 42, '42\n', 0],
   ['pass/240-v2-rendezvous-close-wakes-reader.atto', 42, '42\n', 0],
+  ['pass/245-v2-try-read-open-empty-and-closed-drain.atto', 42, '42\n', 0],
   ['panic/235-v2-negative-bounded-channel.atto', null, '', 14],
   ['panic/236-v2-negative-other-capacity.atto', null, '', 14],
   ['panic/237-v2-negative-legacy-channel-constructor.atto', null, '', 14],
@@ -21,6 +22,8 @@ const cases = [
   ['panic/242-v2-legacy-pipe-consumer-pending-read-denial.atto', null, '', 10],
   ['panic/243-v2-legacy-pipe-producer-preloaded-denial.atto', null, '', 10],
   ['panic/244-v2-legacy-pipe-consumer-preloaded-denial.atto', null, '', 10],
+  ['panic/245-v2-try-read-closed-empty-denial.atto', null, '', 9],
+  ['panic/246-v2-try-read-after-drain-denial.atto', null, '42\n', 9],
 ];
 
 function runSingleGuest(path) {
