@@ -14,6 +14,8 @@ The checks execute inside the callee, after argument binding and before its body
 
 The browser Wasm emitter emits distinct panic codes: 7 = failed requires; 8 = failed ensures. It stores this in the exported panic_code global, then emits the Wasm unreachable trap. The failure is not a guest throw tag and cannot be intercepted by an ordinary catch or trap. This is **not yet a typed ContractViolationError object**, actor supervisor CONTROL notice, or cross-backend parity.
 
+A **module-wide** typed-IR gate also rejects contracts alongside any `try`, `finally`, `defer`, `recover` or owned `for-in` iterator cleanup, even if cleanup belongs to a different function: an uncatchable fatal contract trap must never silently skip mandatory cleanup in a caller. This prohibition will be lifted only after verified cleanup-aware panic lowering.
+
 The compiler generates closed-world guest Wasm statically: no guest interpreter, runtime code generation, dynamic host reflection or silent fallback. Contract-bearing sources use the canonical parser → typed checker → Wasm emitter path directly, preventing specialized fast paths from losing contracts.
 
 ## Required validation
