@@ -773,23 +773,20 @@ impl Emit<'_> {
                 // callee call/parameter handoff. Evaluate the argument once
                 // on the stack, then load its scalar field in place.
                 // A missing proof always uses the original call ABI.
-                match (args.as_slice(), self.l.borrow_getters.get(*f as usize)) {
-                    ([arg], Some(Some((owner_ty, value_ty, offset))))
-                        if arg.ty == *owner_ty
-                            && v.ty == *value_ty
-                            && matches!(&arg.e, TExpr::Local(_)) =>
-                    {
-                        self.expr(arg);
-                        field_op(&mut self.code, *value_ty, *offset, false);
+                if let Some((value_ty, offset)) =
+                    verified_borrow_getter_call(v, *f, args, &self.l.borrow_getters)
+                {
+                    // Evaluation is once: one local.get followed by one
+                    // ordinary scalar field load, with no call or wrapper.
+                    self.expr(&args[0]);
+                    field_op(&mut self.code, value_ty, offset, false);
+                } else {
+                    // Fail closed when the callee proof and this exact call
+                    // site disagree. Preserve original evaluation order/ABI.
+                    for a in args {
+                        self.expr(a);
                     }
-                    _ => {
-                        // Fail closed when the proof and this exact call site
-                        // disagree. Never substitute a load of a wrong type.
-                        for a in args {
-                            self.expr(a);
-                        }
-                        self.call(self.l.func(*f));
-                    }
+                    self.call(self.l.func(*f));
                 }
             }
             TExpr::Builtin(b, x, y) => {
@@ -1327,6 +1324,22 @@ fn verified_borrow_getter(f: &TFunc) -> Option<(Type, Type, u32)> {
     Some((*owner_ty, *ty, *offset))
 }
 
+/// Do not trust an accessor proof without checking its *current* call-site
+/// type and source shape. A nonlocal or mismatched value stays a normal call.
+fn verified_borrow_getter_call(
+    value: &TE, function: u32, args: &[TE],
+    proofs: &[Option<(Type, Type, u32)>],
+) -> Option<(Type, u32)> {
+    let [arg] = args else { return None };
+    let (owner_ty, value_ty, offset) = *proofs.get(function as usize)?.as_ref()?;
+    if arg.ty != owner_ty || value.ty != value_ty ||
+        !matches!(&arg.e, TExpr::Local(_))
+    {
+        return None;
+    }
+    Some((value_ty, offset))
+}
+
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
@@ -1658,4 +1671,104 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         section(&mut out, 0, a);
     }
     out
+}
+
+#[cfg(test)]
+mod borrow_getter_elision_proof_tests {
+    use super::*;
+
+    fn readonly_getter() -> TFunc {
+        TFunc {
+            name: "read".to_string(),
+            params: vec![Type::Class(0)],
+            param_ownership: vec![ParamOwnership::BorrowRead],
+            ret: Type::Int,
+            locals: Vec::new(),
+            body: vec![TStmt::Return(Some(TE {
+                ty: Type::Int,
+                e: TExpr::FieldGet {
+                    obj: Box::new(TE {
+                        ty: Type::Class(0),
+                        e: TExpr::Local(0),
+                    }),
+                    offset: 8,
+                },
+            }))],
+        }
+    }
+
+    #[test]
+    fn baev1_getter_proof_requires_exact_borrow_and_receiver_type() {
+        let good = readonly_getter();
+        assert_eq!(verified_borrow_getter(&good),
+            Some((Type::Class(0), Type::Int, 8)));
+
+        let mut writable = good.clone();
+        writable.param_ownership[0] = ParamOwnership::BorrowWrite;
+        assert_eq!(verified_borrow_getter(&writable), None);
+
+        let mut consuming = good.clone();
+        consuming.param_ownership[0] = ParamOwnership::Take;
+        assert_eq!(verified_borrow_getter(&consuming), None);
+
+        let mut legacy = good.clone();
+        legacy.param_ownership[0] = ParamOwnership::Legacy;
+        assert_eq!(verified_borrow_getter(&legacy), None);
+
+        let mut wrong_owner = good.clone();
+        if let TStmt::Return(Some(TE { e: TExpr::FieldGet { obj, .. }, .. })) =
+            &mut wrong_owner.body[0]
+        {
+            obj.ty = Type::Class(1);
+        }
+        assert_eq!(verified_borrow_getter(&wrong_owner), None);
+
+        let mut extra_local = good.clone();
+        extra_local.locals.push(Type::Class(0));
+        assert_eq!(verified_borrow_getter(&extra_local), None);
+
+        let mut extra_statement = good.clone();
+        extra_statement.body.insert(0, TStmt::Expr(TE {
+            e: TExpr::I64(1), ty: Type::Int
+        }));
+        assert_eq!(verified_borrow_getter(&extra_statement), None);
+
+        let mut protected_field = good.clone();
+        if let TStmt::Return(Some(TE { e, .. })) = &mut protected_field.body[0] {
+            if let TExpr::FieldGet { obj, offset } = e {
+                *e = TExpr::StateFieldRead {
+                    obj: obj.clone(), offset: *offset,
+                };
+            }
+        }
+        assert_eq!(verified_borrow_getter(&protected_field), None);
+    }
+
+    #[test]
+    fn baev1_call_elision_requires_single_local_arg_and_exact_types() {
+        let plan = verified_borrow_getter(&readonly_getter());
+        let plans = vec![plan];
+        let result = TE {
+            e: TExpr::Call(0, vec![]), ty: Type::Int
+        };
+        let local = TE { e: TExpr::Local(1), ty: Type::Class(0) };
+        assert_eq!(verified_borrow_getter_call(&result, 0, &[local.clone()], &plans),
+            Some((Type::Int, 8)));
+
+        assert_eq!(verified_borrow_getter_call(&result, 0, &[], &plans), None);
+        assert_eq!(verified_borrow_getter_call(&result, 1, &[local.clone()], &plans), None);
+
+        let mut wrong_arg = local.clone();
+        wrong_arg.ty = Type::Class(1);
+        assert_eq!(verified_borrow_getter_call(&result, 0, &[wrong_arg], &plans), None);
+
+        let mut wrong_result = result.clone();
+        wrong_result.ty = Type::Bool;
+        assert_eq!(verified_borrow_getter_call(&wrong_result, 0, &[local.clone()], &plans), None);
+
+        let computed = TE {
+            e: TExpr::Call(0, vec![]), ty: Type::Class(0)
+        };
+        assert_eq!(verified_borrow_getter_call(&result, 0, &[computed], &plans), None);
+    }
 }
