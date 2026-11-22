@@ -61,6 +61,10 @@ jobs:
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
           sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
+      - name: Compare 21 imported testing guests across native and wasm32 compiler binaries
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/testing-scalar-browser-compiler.mjs
       - name: Compile exact bitwise preview inside browser Wasm compiler and compare native guest bytes
         env:
           ATTOC: target/release/attoc
