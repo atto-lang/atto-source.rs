@@ -31,6 +31,7 @@ pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
+pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
@@ -85,14 +86,16 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
-    compile_inner(source, None)
+    let source = library::expand(source)?;
+    compile_inner(&source, None)
 }
 
 /// Compile with a caller-supplied logical, package-relative source file path.
 /// Required when the source declares `use default namespace[(N)];`.
 pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
     -> Result<Vec<u8>, Diagnostic> {
-    compile_inner(source, Some(logical_path))
+    let source = library::expand(source)?;
+    compile_inner(&source, Some(logical_path))
 }
 
 /// Compile a project entry with trusted caller-supplied relative source loading.
@@ -100,7 +103,8 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    let tokens = import_link::lower(source, logical_path, load)?;
+    let source = library::expand(source)?;
+    let tokens = import_link::lower(&source, logical_path, load)?;
     compile_prelexed(tokens, Some(logical_path))
 }
 

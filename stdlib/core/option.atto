@@ -1,0 +1,37 @@
+// core/option (atto-source.rs): helpers over the prelude Option<int>.
+define module option as
+  pub fnc is_some(Option<int> subject): bool {
+    match subject over
+      on Some(v) -> { return true; }
+      on None -> { return false; }
+    end
+  }
+  pub fnc is_none(Option<int> subject): bool {
+    match subject over
+      on Some(v) -> { return false; }
+      on None -> { return true; }
+    end
+  }
+  pub fnc unwrap_or(Option<int> subject, int fallback): int {
+    match subject over
+      on Some(v) -> { return v; }
+      on None -> { return fallback; }
+    end
+  }
+  pub fnc or(Option<int> left, Option<int> right): Option<int> {
+    match left over
+      on Some(v) -> { return Some(v); }
+      on None -> { return right; }
+    end
+  }
+  pub fnc from_bool(bool present, int value): Option<int> {
+    if present then return Some(value); fi
+    return None;
+  }
+  pub fnc ok_or(Option<int> subject, int code): Result<int, int> {
+    match subject over
+      on Some(v) -> { return Ok(v); }
+      on None -> { return Err(code); }
+    end
+  }
+end
