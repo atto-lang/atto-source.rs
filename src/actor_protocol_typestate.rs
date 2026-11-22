@@ -311,37 +311,62 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
     let mut steps = 0;
     let mut i = 0;
     while i < t.len() {
-        // val (reply, next_handle) = await pending?;
+        // val (reply[: ReplyType], next_handle) = await pending?;
+        // Optional nominal ascription is checked against the transition
+        // response type; unannotated reply type is inferred from the table.
         if (word(t, i, "val") || word(t, i, "let")) &&
             at(t, i + 1) == Some(&Tok::LParen) &&
-            at(t, i + 3) == Some(&Tok::Comma) &&
-            at(t, i + 5) == Some(&Tok::RParen) &&
-            at(t, i + 6) == Some(&Tok::Assign) && word(t, i + 7, "await")
+            matches!(at(t, i + 2), Some(Tok::Ident(_)))
         {
-            let next_name = match at(t, i + 4) {
-                Some(Tok::Ident(v)) => v.clone(),
-                _ => return Err(err(t, i, "E_PROTOCOL_SYNTAX", "invalid successor binder"))
-            };
-            let ticket_name = match at(t, i + 8) {
-                Some(Tok::Ident(v)) => v.clone(),
-                _ => return Err(err(t, i, "E_PROTOCOL_SYNTAX", "expected pending call"))
-            };
-            if let Some(ticket) = pending.remove(&ticket_name) {
-                if at(t, i + 9) != Some(&Tok::Question) {
-                    return Err(err(t, i, "E_PROTOCOL_REPLY_REQUIRED",
-                        "checked successful reply must precede next-state authority"));
+            let shift = if at(t, i + 3) == Some(&Tok::Colon) { 2 } else { 0 };
+            let typed_response = if shift == 2 {
+                match at(t, i + 4) {
+                    Some(Tok::Ident(v)) => Some(v.clone()),
+                    _ => return Err(err(t, i + 4, "E_PROTOCOL_SYNTAX",
+                        "expected nominal reply type"))
                 }
-                if ever_named.contains(&next_name) || pending.contains_key(&next_name) {
-                    return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE", "successor handle name reused"));
+            } else { None };
+            if at(t, i + 3 + shift) == Some(&Tok::Comma) &&
+                at(t, i + 5 + shift) == Some(&Tok::RParen) &&
+                at(t, i + 6 + shift) == Some(&Tok::Assign) &&
+                word(t, i + 7 + shift, "await")
+            {
+                let next_name = match at(t, i + 4 + shift) {
+                    Some(Tok::Ident(v)) => v.clone(),
+                    _ => return Err(err(t, i, "E_PROTOCOL_SYNTAX", "invalid successor binder"))
+                };
+                let ticket_name = match at(t, i + 8 + shift) {
+                    Some(Tok::Ident(v)) => v.clone(),
+                    _ => return Err(err(t, i, "E_PROTOCOL_SYNTAX", "expected pending call"))
+                };
+                if let Some(ticket) = pending.remove(&ticket_name) {
+                    if word(t, i, "let") {
+                        return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
+                            "successor protocol handle must be immutable"));
+                    }
+                    if at(t, i + 9 + shift) != Some(&Tok::Question) {
+                        return Err(err(t, i, "E_PROTOCOL_REPLY_REQUIRED",
+                            "checked successful reply must precede next-state authority"));
+                    }
+                    if typed_response.as_ref().is_some_and(|declared|
+                        ticket.response != Response::Unary(declared.clone())) {
+                        return Err(err(t, i + 4, "E_PROTOCOL_REPLY_MISMATCH",
+                            "reply binder nominal type disagrees with declared protocol response"));
+                    }
+                    if ever_named.contains(&next_name) || pending.contains_key(&next_name) {
+                        return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
+                            "successor handle name reused"));
+                    }
+                    // Awaiting success is not proof of execution here: this
+                    // checks static syntax only; the runtime must authenticate
+                    // correlation and commit before minting a successor.
+                    ever_named.insert(next_name.clone());
+                    handles.insert(next_name, Handle {
+                        protocol:ticket.protocol, states:ticket.successor
+                    });
+                    steps += 1;
+                    i += 10 + shift; continue;
                 }
-                // Awaiting success is not proof of execution here: this is a
-                // *static* shape check; runtime must authenticate correlation.
-                ever_named.insert(next_name.clone());
-                handles.insert(next_name, Handle {
-                    protocol:ticket.protocol, states:ticket.successor
-                });
-                steps += 1;
-                i += 10; continue;
             }
         }
         // val h0 = await spawn Actor(args);
