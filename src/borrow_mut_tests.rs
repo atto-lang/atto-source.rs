@@ -130,3 +130,43 @@ fn borrow_getter_elision_rejects_effects_and_mutable_formals() {
         crate::compile(&effect_direct).expect("direct read"),
         "exclusive mutable callee may write; it must not be treated as readonly");
 }
+
+#[test]
+fn borrow_getter_elision_preserves_nested_expression_lowering() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub let int value = 21; end
+        fnc inspect(Parcel p): int { return p.value; }
+        pub fnc main(): int {
+            let parcel = new Parcel();
+            return ACCESS;
+        }
+    "#;
+    let calls = source.replace("ACCESS",
+        "(inspect(parcel) + 1) * inspect(borrow! parcel)");
+    let direct = source.replace("ACCESS",
+        "(parcel.value + 1) * parcel.value");
+    assert_eq!(
+        crate::compile(&calls).expect("nested readonly calls compile"),
+        crate::compile(&direct).expect("nested direct field reads compile"),
+        "each proved readonly call must lower in expression order and without a runtime borrow wrapper"
+    );
+}
+
+#[test]
+fn borrow_getter_elision_never_rewrites_computed_getters() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub let int value = 21; end
+        fnc inspect_plus(Parcel p): int { return p.value + 1; }
+        pub fnc main(): int {
+            let parcel = new Parcel();
+            return ACCESS;
+        }
+    "#;
+    let call = source.replace("ACCESS", "inspect_plus(parcel)");
+    let direct = source.replace("ACCESS", "parcel.value + 1");
+    assert_ne!(
+        crate::compile(&call).expect("computed getter call compiles"),
+        crate::compile(&direct).expect("direct field arithmetic compiles"),
+        "a computed result is not the simple one-FieldGet typed-IR proof and must keep its call ABI"
+    );
+}
