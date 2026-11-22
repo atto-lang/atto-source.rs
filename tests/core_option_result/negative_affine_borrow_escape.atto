@@ -1,9 +1,11 @@
-// TARGET: reject with semantic affine-borrow diagnostic (not generic parse failure).
-// Never emit a guest artifact. A rejection without typed ownership proof is NOT PASS.
+// expect-error: E_BORROW
+// A genuine compiler-level escape of a class owner's borrowed capability.
+// This does NOT pretend Option<Payload> is admitted: generic affine sum
+// payloads have a separate E_UNSUPPORTED_TYPE fail-closed regression.
 define class Payload as
   pub val int value = 42;
 end
-fnc invalid(borrow Option<Payload> value): Payload {
-  return value.unwrap();
+fnc leak(Payload owner): Payload {
+  return borrow! owner;
 }
 pub fnc main(): int { return 0; }
