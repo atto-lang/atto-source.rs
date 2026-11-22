@@ -236,6 +236,8 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    /// Nesting depth of keyword-delimited if bodies; protects enclosing fi.
+    keyword_if_depth: u32,
     language_version: LanguageVersion,
     state_method: bool,
     state_binder: Option<String>,
@@ -294,6 +296,7 @@ impl Parser {
             type_names: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            keyword_if_depth: 0,
             language_version,
             state_method: false,
             state_binder: None,
@@ -2355,6 +2358,7 @@ impl Parser {
                 }
             }
         } else {
+            self.keyword_if_depth += 1;
             self.eat(&Tok::Semi);
             if !(self.eat_word("then") || self.eat_word("do")) {
                 return Err(self.expected("'then'"));
@@ -2384,11 +2388,16 @@ impl Parser {
                     break;
                 }
             }
+            self.keyword_if_depth -= 1;
         }
-        // Braced if arms are closed by '}'. The then/fi family needs an
-        // explicit 'fi'; do not consume an enclosing fi after a nested
-        // braced if.
-        if !braced && !self.eat_word("fi") {
+        // Braced if closes with '}'. Preserve a standalone optional legacy
+        // 'fi' but not the sole 'fi' closing an enclosing keyword if.
+        if braced {
+            if self.is_word("fi")
+                && (self.keyword_if_depth == 0 || self.word_at(1) == Some("fi")) {
+                self.advance();
+            }
+        } else if !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
