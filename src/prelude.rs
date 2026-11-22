@@ -123,3 +123,35 @@ pub fn recognized_type(name: &str) -> bool {
 pub fn core_constructor(name: &str) -> bool {
     resolve(name, Profile::Core).is_some_and(|b| b.kind == Kind::Constructor)
 }
+
+/// Safety category of a *resolved* canonical prelude name. This metadata
+/// never independently grants a loan, allocation, move or Sendable proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ownership {
+    /// ADT/aggregate copyability and sendability depend on payload members.
+    PayloadDependent,
+    /// A view; it cannot outlive the source owner.
+    BorrowedView,
+    /// Storage demands an admitted allocator/owned heap contract.
+    Owned,
+    /// Static contract rather than an owned runtime value.
+    Trait,
+}
+
+pub fn ownership(name: &str) -> Option<Ownership> {
+    let entry = BINDINGS.iter().find(|b| b.name == name)?;
+    Some(match entry.name {
+        "Slice" => Ownership::BorrowedView,
+        "String" | "List" | "Vec" | "Map" | "Set" | "Box"
+        | "HashMap" | "HashSet" | "Error" => Ownership::Owned,
+        _ if entry.kind == Kind::Trait => Ownership::Trait,
+        _ => Ownership::PayloadDependent,
+    })
+}
+
+/// Only the supported Option<T>/Result<T,E> carrier arities may participate in
+/// core ADT payload-dependent ownership rules. Never treat any user type that
+/// merely resembles a sum as a license to extract an owned borrowed payload.
+pub fn core_sum_carrier(name: &str, arity: usize) -> bool {
+    (name == "Option" && arity == 1) || (name == "Result" && arity == 2)
+}
