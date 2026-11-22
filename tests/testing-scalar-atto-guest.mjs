@@ -21,10 +21,13 @@ const cases = [
   ['not-equal-fail', 'not_equal_int(42, 42)', 1n],
   ['greater-pass', 'greater_than_int(42, 41)', 0n],
   ['greater-equal-fail', 'greater_than_int(42, 42)', 1n],
+  ['greater-below-fail', 'greater_than_int(41, 42)', 1n],
   ['less-pass', 'less_than_int(41, 42)', 0n],
   ['less-equal-fail', 'less_than_int(42, 42)', 1n],
+  ['less-above-fail', 'less_than_int(43, 42)', 1n],
   ['range-lower', 'in_range_int(40, 40, 42)', 0n],
   ['range-upper', 'in_range_int(42, 40, 42)', 0n],
+  ['range-middle', 'in_range_int(41, 40, 42)', 0n],
   ['range-below', 'in_range_int(39, 40, 42)', 1n],
   ['range-above', 'in_range_int(43, 40, 42)', 1n],
   ['range-inverted', 'in_range_int(41, 42, 40)', 1n],
@@ -32,6 +35,7 @@ const cases = [
   ['range-i64-max', 'in_range_int(9223372036854775807, -9223372036854775808, 9223372036854775807)', 0n],
   ['combined-pass', 'combine_status(equal_int(42, 42), less_than_int(41, 42))', 0n],
   ['combined-fail', 'combine_status(equal_int(42, 42), less_than_int(42, 41))', 1n],
+  ['combined-two-fail', 'combine_status(equal_int(41, 42), greater_than_int(42, 42))', 1n],
 ];
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const work = mkdtempSync(join(tmpdir(), 'atto-rs-testing-'));
