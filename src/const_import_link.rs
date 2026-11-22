@@ -21,7 +21,9 @@ const MAX_CONST_TOKENS: usize = 256;
 #[derive(Clone)]
 struct ConstExport {
     public: bool,
-    value: Vec<Tok>,
+    // None marks a known direct function export: selecting it as a constant
+    // produces E_IMPORT_KIND instead of an accidental E_UNBOUND or fallback.
+    value: Option<Vec<Tok>>,
 }
 
 fn fail(pos: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic {
@@ -98,8 +100,68 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
     let mut exports = BTreeMap::new();
     while tokens.get(i).is_some_and(|t| t.tok != Tok::Eof) {
         let pos = tokens[i].pos;
-        expect_word(&tokens, &mut i, "define", pos)?;
+        if i == 0 && word(&tokens, i, "use") {
+            i += 1;
+            expect_word(&tokens, &mut i, "namespace", pos)?;
+            get_ident(&tokens, &mut i, pos)?;
+            while tokens.get(i).is_some_and(|t| t.tok == Tok::Dot) {
+                i += 1;
+                get_ident(&tokens, &mut i, pos)?;
+            }
+            if tokens.get(i).is_none_or(|t| t.tok != Tok::Semi) {
+                return Err(fail(pos, "E_SYNTAX", "expected ';' after source namespace"));
+            }
+            i += 1;
+            continue;
+        }
         let public = if word(&tokens, i, "pub") { i += 1; true } else { false };
+        if word(&tokens, i, "fnc") {
+            // Preserve negative kind evidence without executing or linking
+            // imported functions. Only braced direct callable declarations
+            // are recognized; their bodies are never evaluated.
+            i += 1;
+            let name = get_ident(&tokens, &mut i, pos)?;
+            let start = i;
+            while tokens.get(i).is_some_and(|t| !matches!(t.tok, Tok::LBrace | Tok::Eof)) {
+                i += 1;
+                if i - start > 256 {
+                    return Err(fail(pos, "E_SOURCE_LIMIT", "imported function header exceeds budget"));
+                }
+            }
+            if tokens.get(i).is_none_or(|t| t.tok != Tok::LBrace) {
+                return Err(fail(pos, "E_EOF", "imported function requires a braced body"));
+            }
+            let mut depth = 0_usize;
+            loop {
+                match tokens.get(i).map(|t| &t.tok) {
+                    Some(Tok::LBrace) => {
+                        depth += 1;
+                        if depth > 128 {
+                            return Err(fail(pos, "E_SOURCE_LIMIT", "imported function body nesting exceeds 128"));
+                        }
+                    }
+                    Some(Tok::RBrace) => depth -= 1,
+                    Some(Tok::Eof) | None =>
+                        return Err(fail(pos, "E_EOF", "unterminated imported function body")),
+                    _ => {}
+                }
+                i += 1;
+                if depth == 0 { break; }
+            }
+            if exports.insert(name.clone(), ConstExport { public, value: None }).is_some() {
+                return Err(fail(pos, "E_DUPLICATE", format!("duplicate imported export '{name}'")));
+            }
+            if exports.len() > MAX_BINDINGS {
+                return Err(fail(pos, "E_SOURCE_LIMIT", "too many imported declarations"));
+            }
+            continue;
+        }
+        expect_word(&tokens, &mut i, "define", pos)?;
+        let public_define = if word(&tokens, i, "pub") { i += 1; true } else { false };
+        if public && public_define {
+            return Err(fail(pos, "E_SYNTAX", "duplicate pub modifier on constant"));
+        }
+        let public = public || public_define;
         expect_word(&tokens, &mut i, "const", pos)?;
         let ty = get_ident(&tokens, &mut i, pos)?;
         if !matches!(ty.as_str(), "int" | "bool" | "string") {
@@ -149,7 +211,7 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
             }
         };
         i += 1; // ';'
-        if exports.insert(name.clone(), ConstExport { public, value }).is_some() {
+        if exports.insert(name.clone(), ConstExport { public, value: Some(value) }).is_some() {
             return Err(fail(pos, "E_DUPLICATE", format!("duplicate file constant '{name}'")));
         }
         if exports.len() > MAX_BINDINGS {
@@ -258,7 +320,9 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             if !item.public {
                 return Err(fail(pos, "E_PRIVATE", format!("constant '{remote}' is not public")));
             }
-            bound.insert(local, item.value.clone());
+            let value = item.value.as_ref().ok_or_else(|| fail(pos, "E_IMPORT_KIND",
+                format!("export '{remote}' is a function, not a static constant")))?;
+            bound.insert(local, value.clone());
             if bound.len() > MAX_BINDINGS {
                 return Err(fail(pos, "E_SOURCE_LIMIT", "too many imported constant bindings"));
             }
