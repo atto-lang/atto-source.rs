@@ -1,0 +1,49 @@
+// Pure scalar cursor algorithms for separately owned arrays (no array borrow).
+// Cursor positions are values. No iterator may retain a dangling loan.
+// Callbacks are synchronous, in input order; no suspension is performed.
+use namespace atto.core.iter;
+  pub fnc valid_range(int start, int count, int total): bool {
+    if start < 0 || count < 0 || total < 0 then
+      return false;
+    fi
+    if start > total then
+      return false;
+    fi
+    return count <= total - start;
+  }
+
+  // consumed counts elements already visited; None means exhausted or
+  // invalid. The returned index is absolute within the original array.
+  pub fnc next_index(int start, int count, int consumed,
+                     int total): Option<int> {
+    if start < 0 || count < 0 || total < 0 || start > total then
+      return None;
+    fi
+    if count > total - start || consumed < 0 || consumed >= count then
+      return None;
+    fi
+    return Some(start + consumed);
+  }
+
+  pub fnc next_back_index(int start, int count, int consumed,
+                          int total): Option<int> {
+    if start < 0 || count < 0 || total < 0 || start > total then
+      return None;
+    fi
+    if count > total - start || consumed < 0 || consumed >= count then
+      return None;
+    fi
+    return Some(start + (count - 1 - consumed));
+  }
+
+  // Cursor may equal count to represent the end; no wraparound.
+  pub fnc advance_cursor(int count, int cursor,
+                         int steps): Option<int> {
+    if count < 0 || cursor < 0 || steps < 0 || cursor > count then
+      return None;
+    fi
+    if steps > count - cursor then
+      return None;
+    fi
+    return Some(cursor + steps);
+  }

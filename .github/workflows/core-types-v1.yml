@@ -1,0 +1,62 @@
+name: core/types source oracle and compiled Rust-Wasm guest
+on:
+  pull_request:
+    paths:
+      - 'core/types.atto'
+      - 'src/import_link.rs'
+      - 'tests/core_types_namespace_import.rs'
+      - 'tests/core-types-source.test.mjs'
+      - 'tests/core-types-matrix-source.test.mjs'
+      - 'tests/core-types-wasm-guest.mjs'
+      - 'tests/fixtures/core-types-v1/**'
+      - '.github/workflows/core-types-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Strict source-only model
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          node --test tests/core-types-source.test.mjs tests/core-types-matrix-source.test.mjs
+          echo 'CORE_TYPES_SOURCE_ONLY=PASS guest=NOT_PROVEN'
+  compiled-wasm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Build genuine Rust frontend from exact source
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          cargo test --locked --test core_types_namespace_import
+          cargo build --locked --bin attoc
+          test -x target/debug/attoc
+      - name: Execute two compiled Wasm guests and reject six negative compilations
+        env:
+          ATTOC: target/debug/attoc
+        run: node tests/core-types-wasm-guest.mjs
+      - name: Evidence limit
+        if: always()
+        run: echo 'Native Rust compiler -> compiled Wasm guest only. Does not prove browser-hosted compiler or other backends.' >> "$GITHUB_STEP_SUMMARY"

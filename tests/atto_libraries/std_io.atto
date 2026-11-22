@@ -1,0 +1,9 @@
+// expect-exit: 0
+// expect-stdout-json: "42\nanswer\n"
+import module io from "std/io";
+pub fnc main(): int {
+  io.write_int(42);
+  io.write_line("");
+  io.write_line("answer");
+  return 0;
+}

@@ -1,0 +1,4 @@
+// expect-reject
+// expect-error: unknown compiler-owned core module 'core/nope'
+import module nope from "core/nope";
+pub fnc main(): int { return 0; }

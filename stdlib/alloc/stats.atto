@@ -1,0 +1,86 @@
+// Atto-owned, explicitly instrumented allocation accounting.
+// Not a heap scanner: only a trusted allocator with authenticated receipts
+// may call record_allocation/record_release to obtain meaningful totals.
+// No atomicity or cross-actor sharing is implied; keep one exclusive owner.
+define module stats as
+  pub fnc fragmented_free_bytes(int free_bytes,
+                                int largest_free_extent): int {
+    if free_bytes < 0 || largest_free_extent < 0 ||
+       largest_free_extent > free_bytes; do
+      return -1;
+    fi
+    return free_bytes - largest_free_extent;
+  }
+
+  pub define class Ledger as
+    let int max_live_bytes;
+    let mut int live_bytes = 0;
+    let mut int peak_bytes = 0;
+    let mut int allocated_total = 0;
+    let mut int released_total = 0;
+    let mut int allocations = 0;
+    let mut int releases = 0;
+    let mut int failures = 0;
+
+    pub constructor(int max_live_bytes) {
+      if max_live_bytes < 1 || max_live_bytes > 2147483647; do
+        rt fail("alloc/stats: live byte budget outside 1..2147483647");
+      fi
+      self.max_live_bytes = max_live_bytes;
+    }
+
+    // Fail without mutating any counter on overflow, quota, or bad receipt.
+    pub record_allocation(mut self)(int bytes): bool {
+      if bytes < 1 || bytes > self.max_live_bytes - self.live_bytes ||
+         bytes > 2147483647 - self.allocated_total ||
+         self.allocations >= 2147483647; do
+        return false;
+      fi
+      self.live_bytes = self.live_bytes + bytes;
+      self.allocated_total = self.allocated_total + bytes;
+      self.allocations = self.allocations + 1;
+      if self.live_bytes > self.peak_bytes; do
+        self.peak_bytes = self.live_bytes;
+      fi
+      return true;
+    }
+
+    // Release bytes MUST come from an allocator-issued, single-use receipt.
+    // Merely passing a byte count cannot prove valid deallocation.
+    pub record_release(mut self)(int bytes): bool {
+      if bytes < 1 || bytes > self.live_bytes ||
+         self.releases >= self.allocations ||
+         bytes > 2147483647 - self.released_total; do
+        return false;
+      fi
+      self.live_bytes = self.live_bytes - bytes;
+      self.released_total = self.released_total + bytes;
+      self.releases = self.releases + 1;
+      return true;
+    }
+
+    pub record_failure(mut self)(): bool {
+      if self.failures >= 2147483647; do
+        return false;
+      fi
+      self.failures = self.failures + 1;
+      return true;
+    }
+
+    pub live(): int { return self.live_bytes; }
+    pub peak(): int { return self.peak_bytes; }
+    pub total_allocated(): int { return self.allocated_total; }
+    pub total_released(): int { return self.released_total; }
+    pub allocation_count(): int { return self.allocations; }
+    pub release_count(): int { return self.releases; }
+    pub failure_count(): int { return self.failures; }
+    pub outstanding_count(): int { return self.allocations - self.releases; }
+    pub remaining_budget(): int {
+      return self.max_live_bytes - self.live_bytes;
+    }
+  end
+
+  pub fnc ledger(int max_live_bytes): Ledger {
+    return new Ledger(max_live_bytes);
+  }
+end

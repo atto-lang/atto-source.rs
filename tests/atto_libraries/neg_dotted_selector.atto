@@ -1,0 +1,4 @@
+// expect-reject
+// Dotted strings are package identities, never library selectors.
+import module fs from "std.fs";
+pub fnc main(): int { return 0; }

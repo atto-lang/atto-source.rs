@@ -1,0 +1,4 @@
+// expect-reject
+// expect-error-llvm: unknown function
+import module num from "core/num";
+pub fnc main(): int { return num.not_a_function(1); }
