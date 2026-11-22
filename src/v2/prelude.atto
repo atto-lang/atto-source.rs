@@ -109,6 +109,10 @@ suspends fnc __await(int f): int {
   // State 2 is exclusively the cancelled terminal state. Never expose
   // cancelled registrations as false EOF or a stale delivered payload.
   if __load(f, 0) == 2 then __panic(15); fi
+  // Pending write Futures retain their payload after close (state 3).
+  // The consumer may recover it exactly once via cancel_write().
+  if __load(f, 0) == 3 then __panic(8); fi
+  if __load(f, 0) == 4 then __panic(15); fi
   __set_rt(4, 1);
   return __load(f, 8);
 }
@@ -400,6 +404,9 @@ fnc __actor_channel_actor_try(int src, int ch, int dst): int {
   // condition claims the producer/channel/consumer on rejection.
   if __load(ch, 8) != 0 then return __box(1, 8); fi
   if __load(ch, 40) != 0 then return __box(1, 8); fi
+  // Registered writers also own pending public DATA; no actor graph may
+  // race an outstanding value or silently steal its recovery right.
+  if __load(ch, 72) != 0 then return __box(1, 8); fi
 
   // Reserve owner state and construct a non-forgeable handle before the
   // scheduler is permitted to run the bridge. Each handle is a guest
@@ -461,6 +468,7 @@ fnc __actor_pipe_channel(int a, int ch): int {
   // The checked three-part PipeHandle path enforces the same condition.
   if __load(ch, 8) != 0 then __panic(10); fi
   if __load(ch, 40) != 0 then __panic(10); fi
+  if __load(ch, 72) != 0 then __panic(10); fi
   __store(ch, 56, a);
   __store(a, 8, ch);
   __store(a, 24, 1);
@@ -479,6 +487,7 @@ fnc __channel_pipe_actor(int ch, int a): int {
   // pending public nb reader into the DATA graph.
   if __load(ch, 8) != 0 then __panic(10); fi
   if __load(ch, 40) != 0 then __panic(10); fi
+  if __load(ch, 72) != 0 then __panic(10); fi
   __store(ch, 64, a);
   __store(a, 48, ch);
   // The bridge is a guest task and borrows no host thread. It suspends on
