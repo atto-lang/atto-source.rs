@@ -117,3 +117,9 @@ pub fn protected_identity(name: &str) -> bool {
 pub fn recognized_type(name: &str) -> bool {
     BINDINGS.iter().any(|b| b.name == name && b.kind != Kind::Constructor)
 }
+
+/// The core ADT variants are implicitly visible in every source file.
+/// Typechecking still validates their argument count and contextual ADT type.
+pub fn core_constructor(name: &str) -> bool {
+    resolve(name, Profile::Core).is_some_and(|b| b.kind == Kind::Constructor)
+}
