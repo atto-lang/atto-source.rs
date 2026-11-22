@@ -50,3 +50,34 @@ Rust wires scalar fixtures into a compiler unit test that requests real Node
 Wasm execution, with explicit guest result checks. That test is committed but
 has no observed stepful exact-head CI receipt; other backends require their
 own executable source-level admission.
+
+## Borrow-only source API & affine ownership admission (2026-11-22)
+
+This backend-owned draft now includes `option.is_some_borrowed<T>`,
+`option.is_none_borrowed<T>`, `result.is_ok_borrowed<T,E>` and
+`result.is_err_borrowed<T,E>`. Each formal is `borrow Option<T>` or
+`borrow Result<T,E>` and may only inspect the nominal active tag. This
+**does not authorize extraction, moving or dropping a payload** from a
+loan. These helpers are source **candidates**, not compiler-verified
+admitted APIs; a backend without typed generic borrowed formals must
+reject rather than erase ownership.
+
+The new fixture `tests/core_option_result/borrowed_read_42.atto`
+requires the real compiler to admit two read-only loans, preserve the
+original owners for subsequent `unwrap` and execute an actual guest that
+returns `42`. The separate
+`tests/core_option_result/negative_affine_borrow_escape.atto`
+requires a *typed ownership* rejection of borrowed `Option<Payload>`
+`unwrap`; a syntax error, unsupported class construct or generic parse
+failure alone must **NOT** count as a borrow-checker PASS. No guest
+artifact may be emitted for this negative case.
+
+Remaining proof obligations: no loan-to-owner promotion through
+`flatten`, `map`, `and_then`, `transpose`, `or_else` or callback;
+exactly-once destructor of each consumed affine active variant;
+loan lifetimes through match arms, exceptions, suspension and actor
+handoff; and separate AOT/sanitizer evidence where applicable.
+The source-local CI runner has not supplied a stepful compiled guest
+receipt for these new cases. Private compiler-source export requires an
+independently approved exact snapshot and destination and must not
+be inferred from a token-free mirroring technique.
