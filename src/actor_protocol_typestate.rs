@@ -109,8 +109,12 @@ fn parse_protocol(t: &[Token], start: usize) -> R<(Protocol, usize)> {
             let pos = i; i += 1;
             require_word(t, &mut i, "state")?;
             let state = name(t, &mut i)?;
-            if !terminal.insert(state) {
+            if !terminal.insert(state.clone()) {
                 return Err(err(t, pos, "E_PROTOCOL_DUPLICATE", "duplicate terminal state"));
+            }
+            states.insert(state);
+            if states.len() > MAX_STATES {
+                return Err(err(t, pos, "E_PROTOCOL_BUDGET", "too many protocol states"));
             }
         } else if word(t, i, "state") {
             i += 1;
@@ -372,7 +376,6 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
                         "pending call must have a fresh immutable val binding"));
                 }
-                require_tok(t, &mut (i + 6), Tok::LParen).ok(); // outer delimiter checked below
                 if at(t, i+6) != Some(&Tok::LParen) || !matches!(at(t, i+7), Some(Tok::Ident(_))) {
                     return Err(err(t, i, "E_PROTOCOL_SYNTAX", "call requires nominal message"));
                 }
