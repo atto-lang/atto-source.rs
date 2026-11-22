@@ -63,6 +63,7 @@ try {
   rejected(main, 'define pub const int status_valid = "bad";', 'E_CONST_TYPE');
   rejected(main, 'define pub const string status_valid = std.env.read_env("status_valid");',
     'E_UNSUPPORTED');
+  rejected(main, 'x'.repeat(65537), 'E_IMPORT'); // native loader rejects oversized source
   rejected('import const status_valid from "std.http"; pub fnc main(): int {return 0;}',
     provider, 'E_IMPORT_PATH');
 
