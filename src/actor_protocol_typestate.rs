@@ -495,6 +495,10 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
             return Err(err(t, i.saturating_sub(1), "E_PROTOCOL_BUDGET", "too many protocol proof steps"));
         }
     }
+    if steps > MAX_STEPS {
+        return Err(Diagnostic::new(t.last().map_or(Pos::default(), |x| x.pos),
+            "E_PROTOCOL_BUDGET", "too many protocol proof steps"));
+    }
     if !pending.is_empty() {
         return Err(Diagnostic::new(t.last().map_or(Pos::default(), |x| x.pos),
             "E_PROTOCOL_REPLY_REQUIRED", "unresolved protocol reply obligation"));
