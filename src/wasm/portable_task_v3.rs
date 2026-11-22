@@ -14,9 +14,9 @@ const AWAITED:u32=6; const LOCAL_BASE:u32=7;
 const INVALID:i64=-1; const PENDING:i64=1; const DONE:i64=2; const CANCELLED:i64=4;
 
 #[derive(Clone, Copy)]
-enum ScalarOperand { Literal(i64), Local(u32) }
-struct Step { assignments:Vec<(u32,ScalarOperand)>, await_operand:ScalarOperand }
-pub(super) struct PortableTaskV3 { steps:Vec<Step>, locals:usize }
+pub(super) enum ScalarOperand { Literal(i64), Local(u32) }
+pub(super) struct Step { pub(super) assignments:Vec<(u32,ScalarOperand)>, pub(super) await_operand:ScalarOperand }
+pub(super) struct PortableTaskV3 { pub(super) steps:Vec<Step>, pub(super) locals:usize }
 impl PortableTaskV3 {
     // Keep v3 narrow: typed local assignment plus exactly one scalar await per
     // step. This is fully emitted control flow, NOT a runtime interpreter.
