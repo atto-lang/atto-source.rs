@@ -402,3 +402,47 @@ fn borrowed_formal_cannot_transfer_its_borrowed_alias() {
     "#;
     assert_eq!(borrow_v1(source).unwrap_err().code, "E_BORROW");
 }
+
+#[test]
+fn nested_local_type_index_forgery_returns_diagnostic_in_both_compiler_modes() {
+    // Public AST APIs can receive transformed source from another frontend.
+    // A stale body-local annotation used to index type_names unchecked and
+    // could panic before emitting a typed ownership rejection. The same
+    // fail-closed resolver must run in legacy and opt-in borrow-v1 modes.
+    use atto_compiler::{ast::{Stmt, Type}, check, lexer, parser::Parser};
+    let source = r#"
+        pub fnc safe(): int {
+            val int answer = 42;
+            return answer;
+        }
+        pub fnc main(): int { return safe(); }
+    "#;
+    for forged in [
+        Type::Named(u32::MAX),
+        Type::BorrowNamed(u32::MAX),
+        Type::NamedRef(u32::MAX),
+        Type::Callable(u32::MAX),
+        Type::Class(u32::MAX),
+        Type::BorrowClass(u32::MAX),
+        Type::Enum(u32::MAX),
+        Type::ActorRef(u32::MAX),
+    ] {
+        let mut p = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+        match &mut p.funcs[0].body[0] {
+            Stmt::Bind { ty, .. } => *ty = Some(forged),
+            other => panic!("expected local typed binding: {other:?}"),
+        }
+        for (mode, result) in [
+            ("legacy", check::check(&p)),
+            ("borrow-v1", check::check_borrow_v1(&p)),
+        ] {
+            let diagnostic = result.expect_err(
+                "forged local type must not bypass compiler ownership/type checking");
+            assert_eq!(diagnostic.code, "E_UNKNOWN_TYPE",
+                "mode={mode} forged={forged:?}");
+        }
+    }
+    // Ordinary typed locals still compile; this isn't an always-reject gate.
+    assert!(compile_with_mode(source, OwnershipMode::BorrowV1)
+        .expect("valid annotation remains executable").starts_with(b"\\0asm"));
+}
