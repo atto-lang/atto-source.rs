@@ -28,6 +28,7 @@ use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep,
 
 mod generator_runtime;
 mod channel_guest;
+mod portable_task_v3;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
@@ -1047,6 +1048,9 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    // Only a closed, compiler-proved scalar literal-await profile admits v3.
+    // Other guests keep the existing JSPI/v2 byte contract unchanged.
+    let portable_v3 = portable_task_v3::PortableTaskV3::from_program(p);
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
@@ -1222,6 +1226,13 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         bodies.push(e.code);
     }
 
+    // Five ordinary Wasm functions resume the bounded mutable-global frame.
+    // No WebAssembly.Suspending or dynamic interpreter is involved.
+    let portable_first_idx = portable_v3.as_ref().map(|_| layout.func(p.funcs.len() as u32));
+    if let Some(profile) = &portable_v3 {
+        profile.append_functions(&mut types, &mut func_types, &mut bodies);
+    }
+
     // The tag has no JS import/export. Each instance gets its own identity,
     // so no host exception or foreign guest tag can be forged as an ordinary
     // Atto throw. Unaffected modules retain their original section layout.
@@ -1271,7 +1282,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
     uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
-        + u64::from(!p.generators.is_empty()));
+        + u64::from(!p.generators.is_empty()) + if portable_v3.is_some() { 5 } else { 0 });
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
         let heap_start = ((p.data.len() as i64 + 7) & !7)
@@ -1287,10 +1298,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     if !p.generators.is_empty() {
         gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // frame freelist head
     }
+    if let Some(profile) = &portable_v3 { profile.global_defs(&mut gsec); }
     section(&mut out, 6, gsec);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 } + u64::from(has_tasks));
+    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 } + u64::from(has_tasks) + if portable_v3.is_some() { 5 } else { 0 });
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -1314,6 +1326,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         name(&mut exp, "task_invoke");
         exp.push(0x00);
         uleb(&mut exp, task_invoke_idx as u64);
+    }
+    if let (Some(profile), Some(first)) = (&portable_v3, portable_first_idx) {
+        profile.append_exports(&mut exp, first);
     }
     section(&mut out, 7, exp);
 
@@ -1358,6 +1373,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         .chain(p.funcs.iter().map(|f| f.name.clone()))
         .collect();
     if has_tasks { all.push("atto.task_invoke".into()); }
+    if let Some(profile) = &portable_v3 { profile.append_names(&mut all); }
     if !p.generators.is_empty() {
         all.extend([
             "atto.generator_new", "atto.generator_check_ptr",
@@ -1401,6 +1417,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         let mut marker = Vec::new();
         name(&mut marker, "atto.async");
         marker.push(2); // JSPI + mandatory cooperative yield; old v1 guests must fail closed
+        section(&mut out, 0, marker);
+    }
+    if let Some(_) = &portable_v3 {
+        let mut marker = Vec::new();
+        name(&mut marker, "atto.browser.guest.v3");
+        marker.push(3); // fixed-slot portable AOT scalar-await profile
         section(&mut out, 0, marker);
     }
     if use_channel {
