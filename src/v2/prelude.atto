@@ -451,6 +451,11 @@ fnc __actor_pipe_channel(int a, int ch): int {
   if __load(__load(a, 0), 32) != 0 then __panic(10); fi
   if __load(a, 8) != 0 then __panic(10); fi
   if __load(ch, 56) != 0 then __panic(10); fi
+  // Legacy two-part setup is still an ownership admission. Never claim a
+  // channel with preexisting DATA or a waiting public nb/readch receiver.
+  // The checked three-part PipeHandle path enforces the same condition.
+  if __load(ch, 8) != 0 then __panic(10); fi
+  if __load(ch, 40) != 0 then __panic(10); fi
   __store(ch, 56, a);
   __store(a, 8, ch);
   __store(a, 24, 1);
@@ -465,6 +470,10 @@ fnc __channel_pipe_actor(int ch, int a): int {
   if __load(__load(a, 0), 32) != 0 then __panic(10); fi
   if __load(ch, 64) != 0 then __panic(10); fi
   if __load(a, 48) != 0 then __panic(10); fi
+  // Attaching an actor sink must not redirect prior public writes or a
+  // pending public nb reader into the DATA graph.
+  if __load(ch, 8) != 0 then __panic(10); fi
+  if __load(ch, 40) != 0 then __panic(10); fi
   __store(ch, 64, a);
   __store(a, 48, ch);
   // The bridge is a guest task and borrows no host thread. It suspends on
