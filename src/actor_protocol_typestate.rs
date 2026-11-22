@@ -58,6 +58,9 @@ fn name(t: &[Token], i: &mut usize) -> R<String> {
     match at(t, *i) {
         Some(Tok::Ident(v)) if v.len() <= 96 &&
             !crate::parser::is_reserved(v) &&
+            !matches!(v.as_str(),
+                "protocol" | "state" | "initial" | "terminal" |
+                "on" | "replies" | "streams") &&
             v.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') &&
             v.chars().all(|c| c.is_alphanumeric() || c == '_') => {
             *i += 1;
@@ -424,6 +427,10 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
             let handle = match at(t, i+1) {Some(Tok::Ident(v)) => v.clone(), _ => unreachable!()};
             let actor = match at(t, i+5) {Some(Tok::Ident(v)) => v.clone(), _ => String::new()};
             if let Some(contract) = index.actors.get(&actor) {
+                if returned {
+                    return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
+                        "protocol authority cannot be created after an earlier return"));
+                }
                 if word(t, i, "let") || ever_named.contains(&handle) ||
                     pending.contains_key(&handle) {
                     return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
