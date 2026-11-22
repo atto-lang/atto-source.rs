@@ -43,3 +43,26 @@ fn imported_symbol_typo_is_not_an_ambient_global() {
     let err = link(&typo, WS, QUIC, COMPUTE).expect_err("missing member must fail");
     assert!(matches!(err.code, "E_UNBOUND" | "E_UNKNOWN_NAME" | "E_MEMBER" | "E_CALL"), "unexpected diagnostic: {err}");
 }
+
+#[test]
+fn unsupported_host_remainder_operator_never_emits_a_guest() {
+    // Rust/Wasm explicitly does not lower '%' in this compiler subset.
+    // A source change cannot silently inherit a different backend's feature.
+    const VALID: &str = "(a - (a / 2) * 2)";
+    assert!(WS.contains(VALID), "positive fixture must use supported scalar math");
+    let unsupported = WS.replacen(VALID, "a % 2", 1);
+    let err = link(GUEST, &unsupported, QUIC, COMPUTE)
+        .expect_err("unsupported remainder operator must not produce Wasm");
+    assert_eq!(err.code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn unqualified_internal_module_call_does_not_gain_ambient_authority() {
+    const QUALIFIED: &str = "websocket.websocket_valid_opcode(";
+    assert!(WS.contains(QUALIFIED), "expected explicit module-owned helper call");
+    let unqualified = WS.replacen(QUALIFIED, "websocket_valid_opcode(", 1);
+    let err = link(GUEST, &unqualified, QUIC, COMPUTE)
+        .expect_err("unqualified same-module helper must not be ambient");
+    assert!(matches!(err.code, "E_UNBOUND" | "E_UNKNOWN_NAME" | "E_TYPE" | "E_CALL"),
+        "unexpected unqualified call rejection: {err}");
+}
