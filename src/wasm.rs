@@ -89,6 +89,9 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
+        // Only the explicit actor-future profile may lower this handle;
+        // ordinary source cannot manufacture an ActorFuture by type ascription.
+        Type::ActorFutureInt |
         Type::FutureInt | Type::ChannelInt | Type::IoError |
         Type::FutureReadInt | Type::ResultOptionIntIoError |
         Type::ResultChannelIntIoError | Type::ResultVoidIoError => Some(I32),
