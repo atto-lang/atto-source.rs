@@ -90,7 +90,9 @@ fn group_end(t: &[Token], open: usize) -> R<usize> {
 }
 fn parse_protocol(t: &[Token], start: usize) -> R<(Protocol, usize)> {
     let mut i = start;
+    if word(t, i, "pub") { i += 1; }
     require_word(t, &mut i, "define")?;
+    if word(t, i, "pub") { i += 1; }
     require_word(t, &mut i, "protocol")?;
     let protocol_name = name(t, &mut i)?;
     require_word(t, &mut i, "as")?;
@@ -481,7 +483,12 @@ pub fn inspect_tokens(t: &[Token]) -> R<Option<ProtocolIndex>> {
     let mut index = ProtocolIndex::default();
     let mut i = 0;
     while i < t.len() {
-        if word(t, i, "define") && word(t, i+1, "protocol") {
+        let protocol_header = (word(t, i, "define") &&
+            (word(t, i+1, "protocol") ||
+             (word(t, i+1, "pub") && word(t, i+2, "protocol")))) ||
+            (word(t, i, "pub") && word(t, i+1, "define") &&
+                word(t, i+2, "protocol"));
+        if protocol_header {
             let (protocol, next) = parse_protocol(t, i)?;
             if index.protocols.insert(protocol.name.clone(), protocol).is_some() {
                 return Err(err(t, i, "E_PROTOCOL_DUPLICATE", "duplicate protocol declaration"));
