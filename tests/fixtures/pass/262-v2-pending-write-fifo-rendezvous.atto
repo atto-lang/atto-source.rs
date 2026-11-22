@@ -1,0 +1,24 @@
+// expect-exit: 42
+// expect-stdout: 42
+// A second registered writer cannot leapfrog the first on cap=0.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val first = ch.send_pending(20);
+  val second = ch.send_pending(22);
+  val a = nb readch ch;
+  val b = nb readch ch;
+  val ack1 = await first;
+  val ack2 = await second;
+  val va = await a;
+  val vb = await b;
+  val int one = match va over on Some(v) -> v, on None -> 0, end;
+  val int two = match vb over on Some(v) -> v, on None -> 0, end;
+  val int ok1 = match ack1 over on None -> 1, on Some(_) -> 0, end;
+  val int ok2 = match ack2 over on None -> 1, on Some(_) -> 0, end;
+  if ok1 != 1 then return 91; fi
+  if ok2 != 1 then return 92; fi
+  ch.close();
+  val total = one + two;
+  stdio.println(total);
+  return total;
+}
