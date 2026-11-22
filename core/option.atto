@@ -3,7 +3,7 @@
 // Option<T>/Some/None remain compiler-provided nominal sum values.
 // No heap, OS, actor, host Optional, runtime reflection or implicit clone.
 use namespace core;
-define module option as
+define pub module option as
   pub fnc flatten<T>(Option<Option<T>> value): Option<T> {
     return match value over
       on Some(inner) -> inner,
