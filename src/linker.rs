@@ -275,7 +275,7 @@ fn imported_module(imp: &Import, dependency: &LinkUnit<'_>, entry_package: &str)
         }
         // Internal executable bridge only. No new user-facing module
         // declaration or runtime namespace value is manufactured.
-        let bridged = format!("define pub module {} as\\n{}\\nend\\n", imp.name, hdr.body);
+        let bridged = format!("define pub module {} as\n{}\nend\n", imp.name, hdr.body);
         let synthetic_unit = LinkUnit {
             path: dependency.path,
             package: dependency.package,
