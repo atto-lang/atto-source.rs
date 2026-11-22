@@ -25,7 +25,7 @@ self.onmessage=async ({data})=>{
     const encoded=new TextEncoder().encode(data.source);
     if(encoded.length>api.input_capacity())throw new Error('source too big');
     new Uint8Array(api.memory.buffer,api.input_ptr(),encoded.length).set(encoded);
-    if(api.compile(encoded.length)!==0){
+    if((data.portableV4===true?api.compile_v4(encoded.length):api.compile(encoded.length))!==0){
       if(api.result_length()!==0)throw new Error('compiler emitted on rejection');
       const mem=new Uint8Array(api.memory.buffer);const start=api.error_ptr();let end=start;
       while(end<mem.length&&mem[end]&&end-start<256)end++;
@@ -52,6 +52,78 @@ self.onmessage=async ({data})=>{
       self.postMessage({ok:true,value:String(result),stdout:'',
         portableV3:true,portableTurns:host.stats.turns,
         portableResumes:host.stats.resumes,portableCleanups:host.stats.cleanups});
+      return;
+    }
+    if(data.portableV4===true){
+      const marker=WebAssembly.Module.customSections(guest,'atto.browser.guest.v4');
+      if(marker.length!==1||new Uint8Array(marker[0]).length!==1||
+         new Uint8Array(marker[0])[0]!==4||
+         WebAssembly.Module.customSections(guest,'atto.browser.guest.v3').length)
+        throw new Error('E_V4_MARKER');
+      const imports=WebAssembly.Module.imports(guest);
+      if(imports.length!==1||imports[0].module!=='atto'||
+         imports[0].name!=='cooperate'||imports[0].kind!=='function')
+        throw new Error('E_V4_IMPORT');
+      if(WebAssembly.Module.exports(guest).some(x=>x.kind==='memory'||x.kind==='table'))
+        throw new Error('E_V4_EXPORTED_ARENA');
+      const e=new WebAssembly.Instance(guest,{atto:{
+        cooperate(){throw Error('E_V4_JSPI_FORBIDDEN');}
+      }}).exports;
+      if(e.task_capacity_v4()!==16)throw new Error('E_V4_CAPACITY');
+      const loop=createWorkerControlLoop({
+        maxOwners:16,maxReady:64,maxControl:4,maxSuspended:16
+      });
+      let live=0,peak=0,turns=0,resumes=0,cleanups=0;
+      const runs=Array.from({length:16},(_,i)=>new Promise((resolve,reject)=>{
+        const owner='v4-'+i,ownerId=i+1,epoch=1;
+        let handle=0,finished=false;
+        if(!loop.attachOwner(owner,epoch)){reject(Error('E_V4_OWNER'));return;}
+        function step(){
+          if(finished)return;
+          turns++;
+          try {
+            if(!handle) {
+              handle=e.task_start_v4(ownerId,epoch);
+              if(handle<=0)throw Error('E_V4_START');
+              live++;peak=Math.max(peak,live);
+            } else {
+              const status=e.task_resume_v4(handle,ownerId,epoch);
+              resumes++;
+              if(status===2){
+                const value=e.task_result_v4(handle,ownerId,epoch);
+                if(e.task_drop_v4(handle,ownerId,epoch)!==0)throw Error('E_V4_DROP');
+                cleanups++;live--;finished=true;
+                loop.retireOwner(owner,epoch);
+                resolve(value);return;
+              }
+              if(status!==1)throw Error('E_V4_RESUME');
+            }
+            if(!loop.admitData(owner,epoch,step))throw Error('E_V4_QUOTA');
+          } catch(error) {
+            if(!finished){
+              finished=true;
+              if(handle) {
+                try{e.task_cancel_v4(handle,ownerId,epoch);}catch{}
+                try{if(e.task_drop_v4(handle,ownerId,epoch)===0){cleanups++;live--;}}catch{}
+              }
+              loop.retireOwner(owner,epoch);
+            }
+            reject(error);
+          }
+        }
+        if(!loop.admitData(owner,epoch,step)) {
+          finished=true;loop.retireOwner(owner,epoch);reject(Error('E_V4_ADMISSION'));
+        }
+      }));
+      try {
+        const values=await Promise.all(runs);
+        if(peak!==16||turns!==48||resumes!==32||cleanups!==16||
+           live!==0||loop.stats.owners!==0||values.some(x=>x!==42n))
+          throw Error('E_V4_EXECUTION_INVARIANT');
+        self.postMessage({ok:true,value:'42',stdout:'',portableV4:true,
+          portableV4Peak:peak,portableV4Turns:turns,portableV4Resumes:resumes,
+          portableV4Cleanups:cleanups});
+      } finally {loop.close();}
       return;
     }
     if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
