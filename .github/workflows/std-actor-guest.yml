@@ -4,6 +4,8 @@ on:
     paths:
       - "stdlib/actor/**"
       - "tests/actor-stdlib-**"
+      - "tests/actor-future-source.test.mjs"
+      - "contracts/std-actor-v1/**"
       - "tests/actor_std_native_guest.rs"
       - ".github/workflows/std-actor-guest.yml"
   workflow_dispatch:
@@ -26,4 +28,4 @@ jobs:
       - name: Build real frontend/compiler
         run: cargo build --locked --release --bin attoc
       - name: Execute source and real Wasm guest tests
-        run: node --test tests/actor-stdlib-source.test.mjs tests/actor-stdlib-guest.test.mjs
+        run: node --test tests/actor-stdlib-source.test.mjs tests/actor-future-source.test.mjs tests/actor-stdlib-guest.test.mjs
