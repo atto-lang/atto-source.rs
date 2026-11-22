@@ -26,8 +26,8 @@ The Worker now imports `MonotonicSleepProvider`, which:
   suspension and reentry. The production playground creates a dedicated Worker
   per Run and terminates it on completion/timeout.
 
-Unit evidence now includes eight cases (including regressed/nonfinite
-clock readings). Unit evidence must be **executed** from the same helper used in the Worker:
+Unit evidence now includes nine cases (including regressed/nonfinite
+clock readings and mid-wakeup regression). Unit evidence must be **executed** from the same helper used in the Worker:
 `node --test tests/browser-async/monotonic-sleep.test.mjs`.
 Full compiler-backed browser evidence additionally requires building the
 native Rust compiler + wasm32 compiler and executing the real guest Wasm in
