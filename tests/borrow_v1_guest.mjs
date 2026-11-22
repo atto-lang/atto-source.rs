@@ -2,6 +2,8 @@
 // borrow-v1 profile. No source-free oracle and no silent fallback to legacy.
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {join} from 'node:path';
 
@@ -81,11 +83,24 @@ const fail = [
   '14-borrowed-formal-cannot-be-taken.atto',
 ];
 const positiveBytes = [];
+const caseReceipts = [];
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+const git = (...args) => {
+  const p = spawnSync('git', args, {encoding:'utf8'});
+  assert.equal(p.status, 0, 'git provenance command');
+  return p.stdout.trim();
+};
+const compilerVersion = spawnSync('rustc', ['--version'], {encoding:'utf8'});
+assert.equal(compilerVersion.status, 0, 'rustc toolchain identity');
+const browserBytes = await readFile(browser);
+const nativeBytes = readFileSync(native);
 let decisions = 0;
 for (const [kind, names] of [['pass', pass], ['fail', fail]]) {
   for (const name of names) {
     const path = join('tests/fixtures/borrow-v1', kind, name);
     const source = await readFile(path, 'utf8');
+    const sourceBytes = Buffer.from(source, 'utf8');
+    const sourceSha256 = sha256(sourceBytes);
     const guest = compileGuest(source);
     const local = spawnSync(native, ['--borrow-v1', path], {encoding: null, maxBuffer: 8 * 1024 * 1024});
     assert.equal(local.error, undefined, name);
@@ -99,6 +114,14 @@ for (const [kind, names] of [['pass', pass], ['fail', fail]]) {
       assert.equal(run.value, BigInt(expected[1]), name + ': guest return');
       assert.equal(run.output, '', name + ': no hidden console effects');
       positiveBytes.push(guest.wasm);
+      caseReceipts.push({
+        fixture:name, fixture_sha256:sourceSha256, category:'COMPILED_GUEST',
+        status:'PASSED', expected:{compile:'success',native_exit:Number(expected[1]),
+          browser_exit:Number(expected[1]),stdout:''},
+        actual:{native_compile_exit:local.status,browser_compile:'success',
+          native_guest_exit:executeGuest(guest.wasm).value.toString(),
+          browser_guest_exit:run.value.toString(),native_wasm_sha256:sha256(local.stdout)}
+      });
     } else {
       const expected = source.match(/^\/\/ expect-error: (\w+)$/m);
       assert.ok(expected, name);
@@ -107,6 +130,15 @@ for (const [kind, names] of [['pass', pass], ['fail', fail]]) {
       assert.equal(local.status, 1, name + ': native admitted invalid source');
       assert.equal(local.stdout.length, 0, name + ': native emitted guest on rejection');
       assert.ok(local.stderr.toString().includes(expected[1]), name + ': native diagnostic');
+      caseReceipts.push({
+        fixture:name, fixture_sha256:sourceSha256, category:'COMPILED_GUEST',
+        status:'PASSED', expected:{compile:'rejected',diagnostic:expected[1],
+          emitted_artifacts:0},
+        actual:{native_compile_exit:local.status,browser_diagnostic:guest.code,
+          browser_diagnostic_text:guest.diagnostic,
+          native_diagnostic_contains_expected:local.stderr.toString().includes(expected[1]),
+          browser_artifact_bytes:api.result_length(),native_artifact_bytes:local.stdout.length}
+      });
     }
     decisions++;
   }
@@ -123,6 +155,28 @@ assert.equal(oldBrowser.code, 'E_MOVED');
 assert.equal(oldNative.status, 1);
 assert.equal(oldNative.stdout.length, 0);
 assert.ok(oldNative.stderr.toString().includes('E_MOVED'));
+const receipt = {
+  schema:'atto.borrow-v1.guest-evidence.v1',
+  evidence_category:'COMPILED_GUEST',
+  status:'PASSED',
+  source_head:git('rev-parse','HEAD'),
+  source_tree:git('rev-parse','HEAD^{tree}'),
+  compiler_toolchain:compilerVersion.stdout.trim(),
+  target:'wasm32-unknown-unknown',
+  native_compiler_sha256:sha256(nativeBytes),
+  browser_compiler_sha256:sha256(browserBytes),
+  browser_compiler_bytes:browserBytes.length,
+  native_compiler_path:native,
+  browser_compiler_path:browser,
+  positive_fixtures:pass.length,
+  negative_fixtures:fail.length,
+  executed_cases:decisions,
+  cases:caseReceipts,
+  default_abi:'LEGACY_MOVES_UNCHANGED'
+};
+assert.equal(caseReceipts.length, decisions);
+assert.ok(caseReceipts.every(x=>x.status==='PASSED'));
+console.log('ATTO_BORROW_V1_EVIDENCE='+JSON.stringify(receipt));
 console.log('PASS borrow-v1 guest: ' + pass.length +
   ' executed positive guests, ' + fail.length +
   ' zero-artifact negative diagnostics, ' + decisions +
