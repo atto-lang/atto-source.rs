@@ -8,13 +8,14 @@ fn main() -> ExitCode {
         Some("--portable-v4") => (4,&args[1..]),
         Some("--portable-v5") => (5,&args[1..]),
         Some("--future-int-aot") => (6,&args[1..]),
+        Some("--actor-future-int-aot") => (7,&args[1..]),
         _ => (0,&args[..]),
     };
     let (input, output) = match rest {
         [i] => (i.clone(), None),
         [i, o, out] if o == "-o" => (i.clone(), Some(out.clone())),
         _ => {
-            eprintln!("usage: attoc [--portable-v4|--portable-v5|--future-int-aot] <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--portable-v4|--portable-v5|--future-int-aot|--actor-future-int-aot] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -29,6 +30,7 @@ fn main() -> ExitCode {
         4 => atto_compiler::compile_portable_v4(&source),
         5 => atto_compiler::compile_portable_v5(&source),
         6 => atto_compiler::compile_future_int_aot(&source),
+        7 => atto_compiler::compile_actor_future_int_aot(&source),
         _ => atto_compiler::compile(&source),
     };
     match result {
