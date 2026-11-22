@@ -2180,6 +2180,68 @@ fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
     Ok(())
 }
 
+/// Strict, closed-world dynamic-contract expression subset. Deliberately
+/// excludes calls, allocation, string/field/state access, ownership effects,
+/// checked arithmetic (which can panic on overflow), and suspension.
+/// This is narrower than general pure fnc, pending effect-row verification.
+fn contract_scalar_expr(value: &TE) -> bool {
+    match &value.e {
+        TExpr::I64(_) | TExpr::Bool(_) => true,
+        TExpr::Local(_) => matches!(value.ty, Type::Int | Type::Bool),
+        TExpr::Not(inner) => contract_scalar_expr(inner),
+        TExpr::Bin(op, a, b) => matches!(
+            op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or
+        ) && contract_scalar_expr(a) && contract_scalar_expr(b),
+        TExpr::Ternary(c, a, b) =>
+            contract_scalar_expr(c) && contract_scalar_expr(a) && contract_scalar_expr(b),
+        _ => false,
+    }
+}
+
+/// Postconditions must see the exact normal return value, evaluated once.
+/// Never rewrite an early ADT `?` without first proving its return edge.
+fn contract_rewrite_returns(
+    body: &mut [TStmt], checks: &[TStmt], ret: Type, result_slot: Option<u32>,
+) {
+    for stmt in body {
+        match stmt {
+            TStmt::Return(v) => {
+                let old = v.take();
+                let mut sequence = Vec::new();
+                let returned = match (old, result_slot) {
+                    (Some(value), Some(slot)) => {
+                        sequence.push(TStmt::Set(slot, value));
+                        Some(TE { e: TExpr::Local(slot), ty: ret })
+                    }
+                    (value, None) => value,
+                    (None, Some(_)) => None, // rejected by the typed return checker
+                };
+                sequence.extend_from_slice(checks);
+                sequence.push(TStmt::Return(returned));
+                *stmt = TStmt::Block(sequence);
+            }
+            TStmt::If(arms, other) => {
+                for (_, then_body) in arms {
+                    contract_rewrite_returns(then_body, checks, ret, result_slot);
+                }
+                if let Some(other) = other {
+                    contract_rewrite_returns(other, checks, ret, result_slot);
+                }
+            }
+            TStmt::Loop { body, update, .. } => {
+                contract_rewrite_returns(body, checks, ret, result_slot);
+                contract_rewrite_returns(update, checks, ret, result_slot);
+            }
+            TStmt::Block(inner) | TStmt::StateCriticalWrite(inner) =>
+                contract_rewrite_returns(inner, checks, ret, result_slot),
+            // A dynamic postcondition is rejected up front if any of these
+            // resources/control paths are present (see body_check below).
+            _ => {}
+        }
+    }
+}
+
 /// Verified callable signature and its source body. Grouping this
 /// context avoids long positional argument lists where receiver/return
 /// authority could accidentally be swapped between checker call sites.
@@ -2237,12 +2299,82 @@ fn body_check(
         cx.trace = Some(trace);
     }
     cx.scopes.push(Vec::new());
+
+    // Check clauses against the *same* resolved symbols as the callable body.
+    // No implicit copy, ownership transfer, hidden guest call or capability
+    // widening is permitted in a contract predicate.
+    let mut preconditions = Vec::new();
+    let mut postconditions = Vec::new();
+    let mut result_slot = None;
+    for clause in contracts {
+        if matches!(owner, Owner::Actor { .. }) {
+            return Err(Diagnostic::new(clause.pos, "E_CONTRACT_UNSUPPORTED",
+                "actor contracts require authenticated supervisor CONTROL panic delivery"));
+        }
+        let is_post = matches!(&clause.kind, ContractKind::Ensures { .. });
+        let binder = match &clause.kind {
+            ContractKind::Requires => None,
+            ContractKind::Ensures { binder } => {
+                if !matches!(ret, Type::Int | Type::Bool) {
+                    return Err(Diagnostic::new(clause.pos, "E_CONTRACT_UNSUPPORTED",
+                        "dynamic ensures currently requires a copyable int/bool return value"));
+                }
+                let slot = match result_slot {
+                    Some(slot) => slot,
+                    None => {
+                        let slot = cx.temp(ret, clause.pos)?;
+                        result_slot = Some(slot);
+                        slot
+                    }
+                };
+                Some((binder.as_str(), slot))
+            }
+        };
+        if let Some((name, slot)) = binder {
+            cx.scopes.push(vec![Local {
+                name: name.to_string(), slot, ty: ret,
+                mutable: false, mail: None,
+            }]);
+        }
+        let predicate = cx.value(&clause.predicate);
+        if binder.is_some() { cx.pop_scope(); }
+        let predicate = predicate?;
+        if predicate.ty != Type::Bool {
+            return Err(Diagnostic::new(clause.predicate.pos, "E_CONTRACT_NOT_BOOL",
+                "dynamic contract predicate must have type bool"));
+        }
+        if !contract_scalar_expr(&predicate) {
+            return Err(Diagnostic::new(clause.predicate.pos, "E_CONTRACT_EFFECT",
+                "contract predicate requires readonly scalar expressions; no calls, overflow, allocation, I/O or ownership effects"));
+        }
+        let kind = if is_post { ContractFault::Ensures } else { ContractFault::Requires };
+        let guard = TStmt::ContractCheck { predicate, kind };
+        if is_post { postconditions.push(guard); }
+        else { preconditions.push(guard); }
+    }
+
     let checked = cx.stmts(body);
     let unwind = cx.unwind;
     let checked = checked.and_then(|mut tbody| {
-        if let Some((ret, saved, msg, kind, pending)) = unwind {
-            tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
+        if !postconditions.is_empty() {
+            if unwind.is_some()
+                || stmt_exists(&tbody, &|stmt| matches!(stmt,
+                    TStmt::Try { .. } | TStmt::ForIn { .. } |
+                    TStmt::Defer { .. } | TStmt::Recover { .. } |
+                    TStmt::UnwindFrame { .. }))
+                || any_in_stmts(&tbody, &|expr| matches!(expr.e, TExpr::AdtPropagate { .. }))
+            {
+                return Err(Diagnostic::new(pos, "E_CONTRACT_UNSUPPORTED",
+                    "ensures requires a verified normal return path; ? propagation, iterators and cleanup scopes are not yet supported"));
+            }
+            contract_rewrite_returns(&mut tbody, &postconditions, ret, result_slot);
+            if ret == Type::Void { tbody.extend_from_slice(&postconditions); }
         }
+        let insert_at = if let Some((ret, saved, msg, kind, pending)) = unwind {
+            tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
+            1
+        } else { 0 };
+        tbody.splice(insert_at..insert_at, preconditions);
         if ret != Type::Void && !returns(&tbody) {
             let what = if matches!(owner, Owner::TopLevel) { "fnc" } else { "method" };
             return Err(Diagnostic::new(
