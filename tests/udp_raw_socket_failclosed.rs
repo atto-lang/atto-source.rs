@@ -30,6 +30,13 @@ impl Drop for Input { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
 
 #[test]
 fn browser_compiler_rejects_unimplemented_raw_udp_host_calls() {
+    // Guard against a fake green result from a CLI that rejects ALL input.
+    let baseline = Command::new(env!("CARGO_BIN_EXE_attoc"))
+        .arg("--check").arg("tests/fixtures/pass/01-answer.atto")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output().expect("launch real compiler positive control");
+    assert!(baseline.status.success(), "valid scalar baseline must compile");
+    assert!(baseline.stderr.is_empty());
     let source = Input::new(
         "fnc main(): int { return network.bind_udp(\"127.0.0.1\", 0); }");
     for flags in [vec!["--check"], vec![]] {
