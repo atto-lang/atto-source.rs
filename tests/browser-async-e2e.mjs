@@ -315,10 +315,11 @@ try{
   // the SAME real compiled v5 guest ABI. The separate source marker proves
   // that this is not silently reusing the untyped integer-key frontend.
   await evaluate('window.__attoFutureIntAot=true');
-  const futureSource='pub susp fnc main(): int { '+
+  const futureSource='pub susp fnc await_future<T>(take! Future<T> receipt) -> T { return await receipt; } '+
+    'pub susp fnc main(): int { '+
     'val key:int=41; val first:Future<int>=pending_future_int(key); '+
-    'await take! first; val second:Future<int>=pending_future_int(42); '+
-    'return await take! second; }';
+    'await await_future<int>(take! first); val second:Future<int>=pending_future_int(42); '+
+    'return await await_future<int>(take! second); }';
   assert.equal(await run(futureSource,'main() -> 42'),'main() -> 42');
   assert.equal(await evaluate('window.__attoV5Peak'),16);
   assert.equal(await evaluate('window.__attoV5Starts'),16);
@@ -335,9 +336,10 @@ try{
   // Chromium's actual wasm32 Rust compiler emits the ActorFuture source
   // manifest; the nested actor Worker authenticates per-request replies.
   await evaluate('window.__attoActorFutureIntAot=true');
-  const actorFutureSource='pub susp fnc main():int { '+
-    'val a:ActorFuture<int>=actor_future_int(7,41); await take! a; '+
-    'val b:ActorFuture<int>=actor_future_int(7,42); return await take! b; }';
+  const actorFutureSource='pub susp fnc await_actor<T>(take! ActorFuture<T> reply) -> T { return await reply; } '+
+    'pub susp fnc main():int { '+
+    'val a:ActorFuture<int>=actor_future_int(7,41); await await_actor<int>(take! a); '+
+    'val b:ActorFuture<int>=actor_future_int(7,42); return await await_actor<int>(take! b); }';
   assert.equal(await run(actorFutureSource,'main() -> 42'),'main() -> 42');
   assert.equal(await evaluate('window.__attoActorFuturePeak'),16);
   assert.equal(await evaluate('window.__attoActorFutureRequests'),32);

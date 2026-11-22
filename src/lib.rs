@@ -10,6 +10,7 @@ pub mod ast;
 pub mod check;
 mod future_typed_v1;
 mod actor_future_typed_v1;
+mod native_future_generic_v1;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
@@ -61,7 +62,7 @@ fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnost
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let toks = lexer::lex(source)?;
+    let toks = native_future_generic_v1::lower(lexer::lex(source)?,portable_version)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {

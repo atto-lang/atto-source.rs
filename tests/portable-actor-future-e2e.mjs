@@ -10,11 +10,12 @@ import {createWorkerControlLoop} from '../runtime/browser/worker-control-loop.mj
 import {createActorFutureHostV1,verifyActorFutureGuestV1}
   from '../runtime/browser/actor-future-host-v1.mjs';
 
-const source=`pub susp fnc main():int {
+const source=`pub susp fnc await_actor<T>(take! ActorFuture<T> reply) -> T { return await reply; }
+pub susp fnc main():int {
   val first:ActorFuture<int>=actor_future_int(7,41);
-  await take! first;
+  await await_actor<int>(take! first);
   val second:ActorFuture<int>=actor_future_int(7,42);
-  return await take! second;
+  return await await_actor<int>(take! second);
 }`;
 const temp=await mkdtemp(join(tmpdir(),'atto-actor-future-'));
 try {

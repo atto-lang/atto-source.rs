@@ -11,12 +11,13 @@ import {createWorkerControlLoop} from '../runtime/browser/worker-control-loop.mj
 import {createPortableTaskHostV5,verifyPortableTaskGuestV5}
   from '../runtime/browser/portable-task-host-v5.mjs';
 
-const source=`pub susp fnc main(): int {
+const source=`pub susp fnc await_future<T>(take! Future<T> receipt) -> T { return await receipt; }
+pub susp fnc main(): int {
   val key: int=41;
   val first: Future<int>=pending_future_int(key);
-  await take! first;
+  await await_future<int>(take! first);
   val second: Future<int>=pending_future_int(42);
-  return await take! second;
+  return await await_future<int>(take! second);
 }`;
 const temp=await mkdtemp(join(tmpdir(),'atto-typed-future-'));
 try{

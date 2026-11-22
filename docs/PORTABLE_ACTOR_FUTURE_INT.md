@@ -109,3 +109,47 @@ incarnation-fencing and trusted Worker-host semantics remain unchanged.
 Evidence is pending exact-head native Rust tests, actual AOT guest
 execution in Node/Chromium and separate independent backend receipts.
 Do not count source-only inspection or zero-step CI as execution.
+
+
+## Native generic Future await-adapter specialization — bounded implementation
+
+Source-first native Atto supports the canonical generic signature as a
+**closed-world, same-file, token-verified identity adapter**:
+
+```atto
+pub susp fnc await_future<T>(take! Future<T> receipt) -> T {
+  return await receipt;
+}
+pub susp fnc main(): int {
+  val receipt: Future<int> = pending_future_int(41);
+  return await await_future<int>(take! receipt);
+}
+```
+
+Only the exact `T=int` substitution, exact `pub susp fnc` identity-await
+body, attached `take!` formal and explicit `await` call are admitted.
+The compiler rewrites this one proven body into the already verified
+single-use AOT await path before the ordinary parser, typed checker and
+portable-v5 emitter. The checked Future provenance remains entirely under
+the existing `future_typed_v1` single-observation gate; no userland runtime
+code, closure, boxed generic value, JIT or dynamic dispatcher is introduced.
+
+For actor replies, `await_actor<T>(take! ActorFuture<T> reply)->T` has the
+same strict `T=int` instantiation on the dedicated ActorFuture AOT profile.
+The actor incarnation and reply authority are still authenticated by the
+trusted Worker host. The two profiles cannot be freely interchanged.
+
+**Not yet supported:** imported/cross-file `.atto` modules, the complete
+`define module future_family` library import, general callable instantiation,
+`TaskFuture<T>`, `ActorFuture<Result<T,E>>`, streaming, arbitrary T, E,
+control-right splitting, reference-bearing continuation frames, generic
+combinators and independently linked object code. Any divergent adapter body,
+unknown generic instantiation, implicit/borrowed argument, or double await
+must fail closed with no AOT guest. Link to the separate borrower-checker
+[PR #346](https://github.com/atto-lang/atto-source.rs/pull/346) when adding
+general ownership-mode signature metadata.
+
+Native Rust positive/negative and actual Node/Chromium AOT guest tests are
+registered in the compiler repository; on-head execution is **pending**,
+not proof. No external private-source carrier use is authorized without
+[independent policy approval](https://github.com/atto-lang/atto-platform-conformance/issues/548).
