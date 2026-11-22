@@ -1,0 +1,9 @@
+// TARGET: reject with semantic affine-borrow diagnostic (not generic parse failure).
+// Never emit a guest artifact. A rejection without typed ownership proof is NOT PASS.
+define class Payload as
+  pub val int value = 42;
+end
+fnc invalid(borrow Option<Payload> value): Payload {
+  return value.unwrap();
+}
+pub fnc main(): int { return 0; }
