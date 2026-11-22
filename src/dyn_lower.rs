@@ -354,3 +354,56 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     }
     Ok(out)
 }
+
+
+#[cfg(test)]
+mod checked_as_tests {
+    use super::*;
+
+    fn source(rhs: &str) -> String {
+        format!(
+            "define pub interface Printable as describe(): string; end \
+             define class Greeting implements Printable as end \
+             pub fnc main(): int {{ \
+               val Dyn<Printable> erased = {rhs}; return 0; \
+             }}"
+        )
+    }
+
+    #[test]
+    fn token_lowering_preserves_take_and_removes_checked_as_carrier() {
+        for rhs in [
+            "Dyn<Printable>(take! concrete)",
+            "(take! concrete) as Dyn<Printable>",
+            "take! concrete as Dyn<Printable>",
+            "take! concrete",
+        ] {
+            let text = source(rhs);
+            let tokens = crate::lexer::lex(&text).unwrap();
+            let lowered = lower(tokens).unwrap_or_else(|e| panic!("{rhs}: {e}"));
+            assert!(!lowered.iter().any(|t|
+                matches!(&t.tok, Tok::Ident(word) if word == "Dyn")),
+                "{rhs}: unlowered Dyn type");
+            assert!(lowered.windows(2).any(|w|
+                word(&w[0..], 0, "Greeting") && word(&w[0..], 1, "erased")),
+                "{rhs}: missing checked concrete carrier");
+            assert!(lowered.windows(2).any(|w|
+                word(&w[0..], 0, "take") && w[1].tok == Tok::Bang),
+                "{rhs}: lowered expression lost explicit take!");
+        }
+    }
+
+    #[test]
+    fn token_lowering_rejects_unsafe_owned_dyn_casts() {
+        for rhs in [
+            "concrete as Dyn<Printable>",
+            "(borrow! concrete) as Dyn<Printable>",
+            "(take! new Greeting()) as Dyn<Printable>",
+            "(take! concrete) as Dyn<Missing>",
+            "42 as Dyn<Printable>",
+        ] {
+            assert!(lower(crate::lexer::lex(&source(rhs)).unwrap()).is_err(),
+                "{rhs}: unsound Dyn conversion admitted");
+        }
+    }
+}
