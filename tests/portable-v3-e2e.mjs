@@ -102,6 +102,22 @@ try {
   assert.equal(beforeStart.stats.cleanups,0);
   while(noStartTurns.length)noStartTurns.shift()();
   console.log('PASS portable v3: cancel-before-start does not create a Wasm frame');
+
+  const shutdownTurns=[];
+  const shutdownLoop=createWorkerControlLoop({postTurn:fn=>shutdownTurns.push(fn)});
+  const shutdown=createPortableTaskHostV3({
+    module,loop:shutdownLoop,owner:'shutdown-guest',ownerId:7,epoch:1});
+  const abandoned=shutdown.run();abandoned.catch(()=>{});
+  shutdownTurns.shift()(); // allocate the Wasm frame; queue next resume
+  assert.equal(shutdown.stats.frameLive,true);
+  shutdownLoop.close(); // scheduler no longer able to dispatch CONTROL or DATA
+  assert.equal(shutdown.cancel(),true,'explicit shutdown must remain revocable');
+  await assert.rejects(abandoned,/E_V3_SCHEDULER_CLOSED/);
+  assert.equal(shutdown.stats.frameLive,false,'shutdown must physically drop frame');
+  assert.equal(shutdown.stats.cleanups,1);
+  assert.equal(shutdown.stats.resumes,0,'no resume on closed scheduler');
+  console.log('PASS portable v3: closed scheduler still revokes Promise and drops frame');
+
 } finally {
   await rm(temp,{recursive:true,force:true});
 }
