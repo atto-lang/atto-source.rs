@@ -1858,11 +1858,15 @@ impl Parser {
             }
             return self.parse_return_match(pos);
         }
+        // Explicit `void` in return position is a no-value marker,
+        // never a value expression. The ordinary checker still rejects
+        // `^ void` / `return void` in a non-void callable.
+        let explicit_void = self.eat_word("void");
         let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
             || matches!(self.word_at(0),
                 Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
         let expr_start = self.i;
-        let value = if at_end { None } else { Some(self.parse_expr()?) };
+        let value = if explicit_void || at_end { None } else { Some(self.parse_expr()?) };
         // 'return p |> susp |f| -> await f >> val x: T;' or
         // '^ p |> susp |f| -> await f >> val x: T;'
         // are equivalent to an explicit checked binding then return x.
