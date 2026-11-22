@@ -48,7 +48,7 @@ fn compiles_deterministic_real_v3_exports_only_for_closed_scalar_profile() {
 #[test]
 fn never_advertise_portable_v3_for_unlowered_await_forms() {
     for src in [
-        "pub susp fnc main(): int { val x=41; return await x; }",
+        "pub susp fnc main(): int { val x=41; return await x + 1; }",
         "pub susp fnc main(): int { return await 42 + 1; }",
         "pub susp fnc main(): int { val f=task {return 42;}; return await f; }",
         "pub susp fnc main(): int { if true then return await 42; fi return 41; }",
@@ -57,6 +57,33 @@ fn never_advertise_portable_v3_for_unlowered_await_forms() {
         if let Ok(wasm)=compile(src) {
             assert_eq!(custom_section_payload(&wasm,"atto.browser.guest.v3"),None,
                 "unsupported code must never claim portable continuation parity: {src}");
+        }
+    }
+}
+
+#[test]
+fn compiles_live_scalar_local_spills_across_multiple_awaits() {
+    for src in [
+        "pub susp fnc main(): int { val x: int = 42; await 41; return await x; }",
+        "pub susp fnc main(): int { val a: int = 41; await a; val b: int = 42; return await b; }",
+        "pub susp fnc main(): int { val a: int = 41; val b: int = a; await b; return await a; }",
+    ] {
+        let wasm=compile(src).expect("scalar local spill must compile");
+        assert_eq!(custom_section_payload(&wasm,"atto.browser.guest.v3"),Some(vec![3]),"{src}");
+        assert_eq!(wasm,compile(src).unwrap(),"deterministic source-generated frames");
+    }
+}
+#[test]
+fn never_advertise_v3_for_non_scalar_or_unevaluated_local_expression() {
+    for src in [
+        "pub susp fnc main(): int { val flag: bool = true; await 41; return await 42; }",
+        "pub susp fnc main(): int { val a: int = 40 + 2; await 41; return await a; }",
+        "pub susp fnc main(): int { val a: int = 41; await a + 1; return await a; }",
+        "pub susp fnc main(): int { val a: int = 41; return await a + 1; }",
+    ] {
+        if let Ok(wasm)=compile(src) {
+            assert_eq!(custom_section_payload(&wasm,"atto.browser.guest.v3"),None,
+                "unsupported local expression cannot claim v3: {src}");
         }
     }
 }
