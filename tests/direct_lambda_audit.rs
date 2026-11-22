@@ -38,7 +38,7 @@ fn forged_ast_private_function_name_rejects_collision() {
     program.funcs.push(Func {
         name: "$lambda_0".to_string(), pos, is_generator: false, is_pure: false,
         declared_effects: None,
-        params: vec![], ret: Type::Int,
+        params: vec![], ret: Type::Int, contracts: vec![],
         body: vec![Stmt::Return(Some(Expr {
             kind: ExprKind::Int(Some(0)), pos,
         }), pos)],
