@@ -94,6 +94,40 @@ fn group_end(t: &[Token], open: usize) -> R<usize> {
     }
     Err(err(t, open, "E_PROTOCOL_SYNTAX", "unterminated call"))
 }
+/// This restricted preflight cannot prove effects in arbitrary argument
+/// expressions. Only already-evaluated bare names and scalar literals are
+/// admissible; no nested calls, accessors, lambdas or protocol authorities.
+fn check_payload(t: &[Token], open: usize, close: usize,
+                 protected: &BTreeSet<String>) -> R<()> {
+    let mut need_value = true;
+    for i in open+1..close {
+        let item = at(t, i);
+        if need_value {
+            match item {
+                Some(Tok::Ident(v)) if protected.contains(v) =>
+                    return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
+                        "protocol authority cannot be embedded in an argument")),
+                Some(Tok::Ident(v)) if !crate::parser::is_reserved(v) ||
+                    matches!(v.as_str(), "true" | "false" | "null") => {},
+                Some(Tok::Int(_)) | Some(Tok::Float(_)) | Some(Tok::Str(_)) => {},
+                _ => return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
+                    "stateful call arguments require proven effect-free scalar values")),
+            }
+            need_value = false;
+        } else if item == Some(&Tok::Comma) {
+            need_value = true;
+        } else {
+            return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
+                "stateful call argument expressions require typed/effect CFG proof"));
+        }
+    }
+    if need_value && close > open + 1 {
+        return Err(err(t, close, "E_PROTOCOL_SYNTAX",
+            "empty or trailing protocol argument"));
+    }
+    Ok(())
+}
+
 fn parse_protocol(t: &[Token], start: usize) -> R<(Protocol, usize)> {
     let mut i = start;
     if word(t, i, "pub") { i += 1; }
@@ -441,6 +475,7 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                         "protocol actor spawn requires a parenthesized constructor"));
                 }
                 let constructor_end = group_end(t, i+6)?;
+                check_payload(t, i+6, constructor_end, &ever_named)?;
                 let initial = index.protocols[contract].initial.clone();
                 ever_named.insert(handle.clone());
                 handles.insert(handle, Handle {protocol:contract.clone(), states:vec![initial]});
@@ -483,6 +518,7 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     return Err(err(t, i+8, "E_PROTOCOL_SYNTAX", "message must be constructed"));
                 }
                 let close_inner = group_end(t, i+8)?;
+                check_payload(t, i+8, close_inner, &ever_named)?;
                 if at(t, close_inner+1) != Some(&Tok::RParen) {
                     return Err(err(t, close_inner+1, "E_PROTOCOL_SYNTAX",
                         "expected end of state-changing call"));
@@ -526,6 +562,15 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
             if pending.contains_key(h) {
                 return Err(err(t, i, "E_PROTOCOL_REPLY_REQUIRED",
                     "pending protocol call used without authenticated await/result binding"));
+            }
+        }
+        // The source proof has no effect inference for unknown operations
+        // that can revoke a state (timers, supervisor changes, callbacks).
+        // Do not let arbitrary effects sit between live affine transitions.
+        if !handles.is_empty() || !pending.is_empty() {
+            if at(t, i) != Some(&Tok::Semi) {
+                return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
+                    "unverified operation while protocol authority/reply is live"));
             }
         }
         // An affine authority cannot be duplicated via a plain binding,
