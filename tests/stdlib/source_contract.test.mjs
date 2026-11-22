@@ -36,6 +36,17 @@ function verify(source, fixture) {
     for (const match of fixture.matchAll(/(?<![\w.])(?:websocket|quic|compute)_[a-z0-9_]+\s*\(/g)) {
       assert.fail("unqualified guest call bypasses required module import: " + match[0]);
     }
+    // The Rust/Wasm frontend deliberately rejects '%' until its checked scalar
+    // remainder semantics are lowered. Each backend must own a valid source
+    // implementation rather than assuming another backend's operator set.
+    for (const name of names) {
+      assert.doesNotMatch(source[name], /%/, name + " requires unsupported remainder operator");
+      const withoutDecls = source[name].replace(
+        /\bpub\s+fnc\s+[a-z][a-z0-9_]*\s*\(/g, "pub fnc (");
+      const bare = new RegExp("(?<![\\w.])" + name + "_[a-z0-9_]+\\s*\\(", "g");
+      assert.equal([...withoutDecls.matchAll(bare)].length, 0,
+        name + " must explicitly qualify same-module function calls");
+    }
   } else {
     const imports = {};
     for (const match of fixture.matchAll(/import fnc ([\s\S]*?) from '\.\.\/\.\.\/stdlib\/std\/([a-z]+)';/g)) {
