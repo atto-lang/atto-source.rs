@@ -220,6 +220,9 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    /// Nesting depth of keyword-delimited statement-if bodies. The token
+    /// 'else' directly after a completed braced guard can belong to that if.
+    keyword_if_depth: u32,
     state_method: bool,
     state_binder: Option<String>,
 }
@@ -345,6 +348,7 @@ impl Parser {
             task_funcs: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            keyword_if_depth: 0,
             state_method: false,
             state_binder: None,
         }
@@ -2322,7 +2326,7 @@ impl Parser {
             let failure = self.parse_block()?;
             // Mixing the brace and keyword delimiters creates an ambiguous
             // second branch. Keep the original explicit diagnostic.
-            if self.is_word("else") {
+            if self.is_word("else") && self.keyword_if_depth == 0 {
                 return Err(Diagnostic::new(self.pos(), "E_GUARD_ELSE_NOT_REQUIRED",
                     "braced guard already contains its failure block; do not append 'else'"));
             }
@@ -2382,6 +2386,7 @@ impl Parser {
                 }
             }
         } else {
+            self.keyword_if_depth += 1;
             self.eat(&Tok::Semi);
             if !(self.eat_word("then") || self.eat_word("do")) {
                 return Err(self.expected("'then'"));
@@ -2411,6 +2416,7 @@ impl Parser {
                     break;
                 }
             }
+            self.keyword_if_depth -= 1;
         }
         if !self.eat_word("fi") {
             return Err(Diagnostic::new(
