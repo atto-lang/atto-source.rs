@@ -1,19 +1,26 @@
-// Standalone scalar substrate probe: real compiler execution required.
-// Expected main result 42, without implicit Option/Result coercion.
+// expect-exit: 42
+// Compiler-backed scalar Option<int> / Result<int,string> smoke.
+// Nested match uses the actually admitted Rust browser compiler grammar.
 fnc optional_value(bool enabled): Option<int> {
-  if !enabled; do return None; fi
+  if !enabled then
+    return None;
+  fi
   return Some(40);
 }
-fnc checked_value(int input): Result<int, int> {
-  if input < 0; do return Err(-1); fi
+fnc checked_value(int input): Result<int,string> {
+  if input < 0 then
+    return Err("negative");
+  fi
   return Ok(input);
 }
 pub fnc main(): int {
-  return match optional_value(true) over
-    on None -> 1,
-    on Some(value) -> match checked_value(2) over
-      on Err(_) -> 2,
-      on Ok(extra) -> value + extra,
-    end,
-  end;
+  match optional_value(true) over
+    on Some(left) -> {
+      match checked_value(2) over
+        on Ok(right) -> { return left + right; }
+        on Err(message) -> { return 2; }
+      end
+    }
+    on None -> { return 1; }
+  end
 }
