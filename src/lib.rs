@@ -29,14 +29,19 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compile one `.atto` source file to the existing guest Wasm profile.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
-    compile_inner(source, false)
+    compile_inner(source, 0)
 }
 /// Explicit portable-v4 target. Unsupported source is a diagnostic, never a
 /// silently downgraded v3 or JSPI module. Every emitted function is guest AOT.
 pub fn compile_portable_v4(source: &str) -> Result<Vec<u8>, Diagnostic> {
-    compile_inner(source, true)
+    compile_inner(source, 4)
 }
-fn compile_inner(source: &str, portable_v4: bool) -> Result<Vec<u8>, Diagnostic> {
+/// Explicit externally-pending i64 future profile. All suspend/resume paths
+/// are compiled ahead of time. Unsupported syntax fails closed.
+pub fn compile_portable_v5(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, 5)
+}
+fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -136,12 +141,17 @@ fn compile_inner(source: &str, portable_v4: bool) -> Result<Vec<u8>, Diagnostic>
         parser::Parser::new(toks).parse_program()?
     };
     let typed = check::check(&program)?;
-    let bytes = if portable_v4 {
-        wasm::emit_portable_v4(&typed).ok_or_else(|| Diagnostic::new(
+    let bytes = match portable_version {
+        4 => wasm::emit_portable_v4(&typed).ok_or_else(|| Diagnostic::new(
             Pos {line:1,col:1},"E_UNSUPPORTED",
             "portable-v4 requires a closed, 1–8 await straight-line scalar int task; arbitrary futures, effects, branches and reference spills are not implemented"
-        ))?
-    } else { wasm::emit(&typed) };
+        ))?,
+        5 => wasm::emit_portable_v5(&typed).ok_or_else(|| Diagnostic::new(
+            Pos {line:1,col:1},"E_UNSUPPORTED",
+            "portable-v5 requires a closed straight-line 1–8 await i64-keyed future task; general Future<T>, branches, reference spills and dynamic effects are not implemented"
+        ))?,
+        _ => wasm::emit(&typed),
+    };
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -209,14 +219,19 @@ mod abi {
     /// Existing Wasm compiler entrypoint, unchanged for old playground hosts.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
-        compile_inner_abi(length,false)
+        compile_inner_abi(length,0)
     }
     /// Explicit v4 browser compiler entrypoint. Never silently selects JSPI.
     #[no_mangle]
     pub extern "C" fn compile_v4(length: i32) -> i32 {
-        compile_inner_abi(length,true)
+        compile_inner_abi(length,4)
     }
-    fn compile_inner_abi(length:i32,portable_v4:bool)->i32 {
+    /// Explicit v5 i64 pending-future guest output; v4/v3 are unaffected.
+    #[no_mangle]
+    pub extern "C" fn compile_v5(length:i32)->i32 {
+        compile_inner_abi(length,5)
+    }
+    fn compile_inner_abi(length:i32,portable_version:u8)->i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -257,9 +272,11 @@ mod abi {
                     )
                 }
             };
-            let compilation=if portable_v4 {
-                super::compile_portable_v4(source)
-            } else { super::compile(source) };
+            let compilation=match portable_version {
+                4=>super::compile_portable_v4(source),
+                5=>super::compile_portable_v5(source),
+                _=>super::compile(source),
+            };
             match compilation {
                 Ok(bytes) => {
                     st.bytes = bytes;
