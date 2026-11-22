@@ -13,14 +13,83 @@ use namespace types;
 pub fnc int_value_bits() -> int { return 64; }
 "#;
 
-fn compile_with_imported(source: &str) -> Result<Vec<u8>, atto_compiler::Diagnostic> {
-    compile_with_imports(ENTRY, Path::new("src/main.atto"), |path| {
+fn compile_entry(entry: &str, source: &str) -> Result<Vec<u8>, atto_compiler::Diagnostic> {
+    compile_with_imports(entry, Path::new("src/main.atto"), |path| {
         if path == Path::new("src/types.atto") {
             Ok(source.to_owned())
         } else {
             Err(std::io::Error::new(std::io::ErrorKind::NotFound, "unapproved import path"))
         }
     })
+}
+
+fn compile_with_imported(source: &str) -> Result<Vec<u8>, atto_compiler::Diagnostic> {
+    compile_entry(ENTRY, source)
+}
+
+#[test]
+fn entry_namespace_precedes_imports_and_remains_visible_after_linker_injection() {
+    let entry = r#"
+use namespace application;
+import * as types from "./types.atto";
+pub fnc main() -> int { return types.int_value_bits(); }
+"#;
+    let wasm = compile_entry(entry, EXPLICIT_NAMESPACE)
+        .expect("entry namespace must remain the first declaration after synthetic module linking");
+    assert!(wasm.starts_with(&[0, 97, 115, 109]));
+}
+
+#[test]
+fn rejects_late_and_duplicate_namespace_headers_in_importing_entry() {
+    for (entry, code) in [
+        (r#"import * as types from "./types.atto";
+use namespace late;
+pub fnc main() -> int { return types.int_value_bits(); }"#, "E_SYNTAX"),
+        (r#"use namespace first;
+use namespace second;
+import * as types from "./types.atto";
+pub fnc main() -> int { return types.int_value_bits(); }"#, "E_DUPLICATE"),
+    ] {
+        let error = compile_entry(entry, EXPLICIT_NAMESPACE)
+            .expect_err("header placement must be checked before imports are stripped");
+        assert_eq!(error.code, code, "{error}");
+    }
+}
+
+#[test]
+fn rejects_private_and_unbound_namespace_exports() {
+    let private = "use namespace types; fnc int_value_bits() -> int { return 64; }";
+    let error = compile_with_imported(private).expect_err("private import cannot cross source unit");
+    assert_eq!(error.code, "E_PRIVATE");
+
+    let missing = "use namespace types; pub fnc other_name() -> int { return 64; }";
+    let error = compile_with_imported(missing).expect_err("missing exported function cannot be invented");
+    assert_eq!(error.code, "E_UNBOUND");
+}
+
+#[test]
+fn denies_entry_binding_collisions_path_traversal_and_internal_symbol_spoofing() {
+    let collision = r#"
+import * as types from "./types.atto";
+pub fnc types() -> int { return 0; }
+pub fnc main() -> int { return types.int_value_bits(); }
+"#;
+    let error = compile_entry(collision, EXPLICIT_NAMESPACE)
+        .expect_err("import cannot shadow local callable");
+    assert_eq!(error.code, "E_DUPLICATE");
+
+    let traversal = r#"
+import * as types from "../../secret.atto";
+pub fnc main() -> int { return 0; }
+"#;
+    let error = compile_entry(traversal, EXPLICIT_NAMESPACE)
+        .expect_err("source-file imports cannot escape the logical package root");
+    assert_eq!(error.code, "E_IMPORT_PATH");
+
+    let forged = "use namespace types; pub fnc __atto_file_import_0() -> int { return 64; }";
+    let error = compile_with_imported(forged)
+        .expect_err("reserved generated module prefix cannot be supplied by guest source");
+    assert_eq!(error.code, "E_RESERVED");
 }
 
 #[test]
