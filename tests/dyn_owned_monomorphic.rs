@@ -47,6 +47,59 @@ fn inferred_owned_erasure_is_also_accepted() {
 }
 
 #[test]
+fn checked_as_owned_erasure_compiles_with_the_same_guest_bytes() {
+    let canonical = compile(POSITIVE).expect("constructor form");
+    for rhs in [
+        "(take! concrete) as Dyn<Printable>",
+        "take! concrete as Dyn<Printable>",
+    ] {
+        let src = POSITIVE.replace("Dyn<Printable>(take! concrete)", rhs);
+        let wasm = compile(&src).unwrap_or_else(|e| panic!("{rhs}: {e}"));
+        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(wasm, canonical, "{rhs}: owned erasure must be equivalent");
+    }
+}
+
+#[test]
+fn checked_as_requires_matching_typed_target_and_an_owned_named_source() {
+    for rhs in [
+        "(borrow! concrete) as Dyn<Printable>",
+        "(concrete) as Dyn<Printable>",
+        "(take! new Greeting()) as Dyn<Printable>",
+        "(take! concrete) as Dyn<Other>",
+        "(take! concrete) as Dyn<Printable> as Dyn<Printable>",
+        "42 as Dyn<Printable>",
+    ] {
+        let src = POSITIVE.replace("Dyn<Printable>(take! concrete)", rhs);
+        // An unknown Dyn interface may diagnose before checking the cast
+        // pattern; both errors must fail without publishing a guest.
+        let diagnostic = compile(&src).expect_err("unsafe as Dyn<I> must fail");
+        assert!(
+            diagnostic.code == "E_DYN_OWNERSHIP" || diagnostic.code == "E_DYN_INTERFACE",
+            "{rhs}: {diagnostic}"
+        );
+    }
+    error(&POSITIVE.replace(
+        "val Dyn<Printable> erased = Dyn<Printable>(take! concrete);",
+        "val Greeting erased = (take! concrete) as Dyn<Printable>;",
+    ), "E_DYN_OWNERSHIP");
+    error(&POSITIVE.replace(
+        "val Dyn<Printable> erased = Dyn<Printable>(take! concrete);",
+        "val erased = (take! concrete) as Dyn<Printable>;",
+    ), "E_DYN_OWNERSHIP");
+}
+
+#[test]
+fn checked_as_preserves_use_after_move_and_interface_visibility() {
+    let cast = POSITIVE.replace(
+        "Dyn<Printable>(take! concrete)", "(take! concrete) as Dyn<Printable>");
+    error(&cast.replace(EXIT,
+        "stdio.println(concrete.describe()); return 0;"), "E_MOVED");
+    error(&cast.replace(EXIT,
+        "stdio.println(erased.secret()); return 0;"), "E_DYN_INTERFACE");
+}
+
+#[test]
 fn moved_source_owner_is_unusable() {
     let src = POSITIVE.replace(
         EXIT,
