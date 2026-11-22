@@ -1393,6 +1393,7 @@ impl Parser {
     fn parse_static_contract_clauses(&mut self, params: &[Param], ret: Type) -> R<Vec<ContractClause>> {
         let mut count = 0usize;
         let mut contracts = Vec::new();
+        let mut seen_ensures = false;
         loop {
             let kind = match self.word_at(0) {
                 Some("requires") => "requires",
@@ -1400,6 +1401,11 @@ impl Parser {
                 _ => break,
             };
             let pos = self.pos();
+            if kind == "requires" && seen_ensures {
+                return Err(Diagnostic::new(pos, "E_CONTRACT_ORDER",
+                    "requires must precede ensures in a callable signature"));
+            }
+            if kind == "ensures" { seen_ensures = true; }
             count += 1;
             if count > 64 {
                 return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
@@ -1409,9 +1415,9 @@ impl Parser {
             let binder = if kind == "ensures" {
                 self.expect(Tok::Pipe, "'|' opening an ensures result binder")?;
                 let (name, name_pos) = self.ident("an ensures result binder")?;
-                if params.iter().any(|p| p.name == name) {
+                if name == "self" || params.iter().any(|p| p.name == name) {
                     return Err(Diagnostic::new(name_pos, "E_CONTRACT_BINDER",
-                        "ensures result binder must not shadow a callable parameter"));
+                        "ensures result binder must not shadow self or a callable parameter"));
                 }
                 self.expect(Tok::Pipe, "'|' closing the ensures result binder")?;
                 self.expect(Tok::Arrow, "'->' after ensures result binder")?;
