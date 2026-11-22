@@ -14,6 +14,11 @@ use crate::diag::Diagnostic;
 use crate::lexer::Token;
 
 const PRELUDE: &str = include_str!("prelude.atto");
+// Source-owned guest channel ABI. The compiler injects these Atto routines at
+// the preserved prelude site, so scheduler/actor declarations keep their order.
+const CHANNEL_SOURCE: &str = include_str!("../../stdlib/channel.atto");
+const CHANNEL_SOURCE_SLOT: &str = "// @atto-stdlib-channel-source";
+
 
 /// The shared lexer emits `&&` and `||` as two adjacent single-character
 /// tokens (the legacy parser depends on that). The v2 grammar was written for
@@ -42,7 +47,15 @@ pub fn fuse_operators(toks: Vec<Token>) -> Vec<Token> {
 
 pub fn compile(toks: Vec<Token>) -> Result<Vec<u8>, Diagnostic> {
     let program = parse::Parser::new(fuse_operators(toks)).parse_program()?;
-    let prelude_toks = fuse_operators(crate::lexer::lex(PRELUDE).expect("the runtime prelude lexes"));
+    // Preserve the exact prelude declaration order while moving channel
+    // implementation to a backend-owned .atto source module. A missing or
+    // repeated slot is a compiler packaging error, never a silent omission.
+    assert_eq!(PRELUDE.matches(CHANNEL_SOURCE_SLOT).count(), 1,
+        "exactly one std/channel prelude insertion site is required");
+    let runtime_prelude = PRELUDE.replacen(CHANNEL_SOURCE_SLOT, CHANNEL_SOURCE, 1);
+    let prelude_toks = fuse_operators(
+        crate::lexer::lex(&runtime_prelude).expect("the runtime prelude and std/channel lex")
+    );
     let prelude = parse::Parser::new(prelude_toks).parse_program().expect("the runtime prelude parses");
     let module = check::check(&program, &prelude)?;
     Ok(emit::emit(&module))
