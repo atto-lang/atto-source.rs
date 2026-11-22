@@ -108,6 +108,20 @@ fn boundary_guest_exposes_every_public_std_helper() {
 
 const BORROW_CORE: &str = include_str!("stdlib/protocol_borrow_core.atto");
 
+#[test]
+fn core_borrow_guest_uses_two_shared_loans_then_exclusive_loan_then_take() {
+    let first = BORROW_CORE.find("val reader = borrow! buffer;").unwrap();
+    let second = BORROW_CORE.find("val second_reader = borrow! buffer;").unwrap();
+    let writer = BORROW_CORE.find("val writer = borrow! mut buffer;").unwrap();
+    let moved = BORROW_CORE.find("val transferred = take! buffer;").unwrap();
+    assert!(first < second && second < writer && writer < moved,
+        "expected shared×2 -> exclusive -> transfer ordering");
+    assert_eq!(BORROW_CORE.matches("borrow! buffer;").count(), 2);
+    assert_eq!(BORROW_CORE.matches("borrow! mut buffer;").count(), 1);
+    assert_eq!(BORROW_CORE.matches("take! buffer;").count(), 1);
+}
+
+
 fn borrow_core_mutation(before: &str, after: &str, expected: &str) {
     assert_eq!(BORROW_CORE.matches(before).count(), 1, "mutation anchor must be unique");
     let mutant = BORROW_CORE.replacen(before, after, 1);
