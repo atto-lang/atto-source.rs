@@ -87,6 +87,8 @@ jobs:
         run: node --check scripts/verify-real-browser-compiler.mjs
       - name: Test strict real compiler ABI diagnostic decoding before Rust setup
         run: node --test tests/compiler-diagnostic.test.mjs
+      - name: Test native attoc failures cannot masquerade as negative preview parity
+        run: node --test tests/native-attoc-strict.test.mjs
       - name: Test source-free bounded Wasm guest ABI and panic oracles
         run: node --test tests/compiler-smoke-guest-oracle.test.mjs
       - name: Install pinned Rust toolchain and Wasm target
