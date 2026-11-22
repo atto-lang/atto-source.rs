@@ -1,0 +1,23 @@
+// expect-exit: 42
+// expect-stdout: 42
+// for await must register as a zero-capacity receiver on each iteration.
+// Close after the last successful handoff must terminate iteration.
+suspends fnc produce(Channel<int> ch): void {
+  writech ch, 20;
+  writech ch, 22;
+  ch.close();
+}
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val producer = task {
+    await produce(ch);
+    return 0;
+  };
+  let total = 0;
+  for await item in ch do
+    total += item;
+  done
+  await producer;
+  stdio.println(total);
+  return total;
+}
