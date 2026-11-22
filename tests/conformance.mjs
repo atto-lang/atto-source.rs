@@ -9,6 +9,7 @@
 // usage: node tests/conformance.mjs [compiler.wasm]
 import assert from 'node:assert/strict';
 import { auditPlaygroundPreviews } from './playground-preview-audit.mjs';
+import { nativeAttocBytes } from './native-attoc-strict.mjs';
 import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -185,9 +186,8 @@ function runJava(path) {
   const rejected = all.split('\n').some(l => /oreslang: /.test(l) && !l.includes(JAVA_SHUTDOWN_RACE));
   return { status: r.status, stdout: r.stdout, rejected, race };
 }
-function nativeBytes(path) {
-  const r = spawnSync(attoc, [path], { maxBuffer: 1 << 22 });
-  return r.status === 0 ? new Uint8Array(r.stdout) : null;
+function nativeBytes(path, expectedFailure = null) {
+  return nativeAttocBytes(attoc, path, expectedFailure);
 }
 
 let passed = 0, javaChecked = 0, nativeChecked = 0;
