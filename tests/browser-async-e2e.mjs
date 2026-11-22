@@ -18,6 +18,7 @@ const files=new Map([
   ['/runtime/browser/worker-control-loop-v1.mjs',[new URL('../runtime/browser/worker-control-loop-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/worker-control-loop.mjs',[new URL('../runtime/browser/worker-control-loop.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/portable-task-host-v3.mjs',[new URL('../runtime/browser/portable-task-host-v3.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/portable-task-host-v4.mjs',[new URL('../runtime/browser/portable-task-host-v4.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/wasm-jspi-control-bridge-v1.mjs',[new URL('../runtime/browser/wasm-jspi-control-bridge-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
