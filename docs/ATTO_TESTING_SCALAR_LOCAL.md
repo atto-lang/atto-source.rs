@@ -13,17 +13,27 @@ cargo build --locked --bin attoc
 ATTOC=target/debug/attoc node tests/testing-scalar-atto-guest.mjs
 ```
 
-The script loads the actual compiler-local .atto source, adds a small
-main() invocation for each of 17 deterministic cases, launches the native
-attoc compiler, validates emitted guest WebAssembly, instantiates it on
-Node and checks the **actual guest main return** and panic status. It
-records source/compiler/Wasm SHA-256 values and refuses a missing compiler
-or missing guest artifact. These checks are **not executed** merely by
-adding the file and no exact-head CI pass is claimed.
+The bounded compiler-owned import linker now resolves canonical
+`import fnc in_range_int from "std/testing_scalar";` and the
+`atto.std/testing_scalar` disambiguation aliases directly from
+`include_str!("../stdlib/testing_scalar.atto")`. It cannot call a project
+file loader for this module. The single-source `compile()` path admits
+this built-in without granting ambient relative-file imports; those still
+require `compile_with_imports` and a trusted loader.
 
-This is not an implicit std import implementation. It is source composition
-for independently executable test fixtures, pending a compiler-owned
-`std/testing_scalar` importer and a fuller TestCase/TestSuite runner.
+The script compiles actual imports for 17 deterministic positive cases,
+launches the native attoc compiler, validates emitted guest WebAssembly,
+instantiates it on Node and checks the **actual guest main return** and
+panic status. Eight additional negative compiler cases reject unsupported
+or forged library paths, unexported names, duplicates, collisions and
+untrusted relative files, requiring nonzero compiler status and no
+emitted Wasm. The script records source/compiler/Wasm SHA-256 values and
+refuses a missing compiler or missing guest artifact. These checks are
+**not executed** merely by adding the file and no exact-head CI pass
+is claimed.
+
+This is a narrow compiler-owned import, **not** general package importing,
+a full TestCase/TestSuite runner, or a source graph resolver.
 There is no guest ORES_TEST protocol, property checker, actor test runner,
 native AOT or Java/LLVM guest evidence in this candidate. The public
 scalar truth table, not implementation source identity, is the parity target.
