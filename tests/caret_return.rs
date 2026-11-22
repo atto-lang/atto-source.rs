@@ -84,6 +84,8 @@ fn void_early_returns_compile_in_both_if_families() {
     for src in [
         "fnc early_exit() -> void { if true { ^; } } pub fnc main(): int { early_exit(); ^ 42; }",
         "fnc early_exit() -> void { if true { ^ void; } } pub fnc main(): int { early_exit(); ^ 42; }",
+        "fnc early_exit() -> void { if true { ^ void; } fi } pub fnc main(): int { early_exit(); ^ 42; }",
+        "fnc early_exit() -> void { if true then if true { ^ void; } fi fi } pub fnc main(): int { early_exit(); ^ 42; }",
         "fnc early_exit() -> void { if true { ^ void } } pub fnc main(): int { early_exit(); ^ 42; }",
         "fnc early_exit() -> void { do if true then ^ fi } pub fnc main(): int { early_exit(); ^ 42; }",
         "fnc early_exit() -> void { do if true then ^ void fi } pub fnc main(): int { early_exit(); ^ 42; }",
