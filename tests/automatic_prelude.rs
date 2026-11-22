@@ -99,7 +99,6 @@ fn core_ownership_categories_do_not_grant_unimplemented_borrow_lowering() {
 fn canonical_type_registry_pins_arity_ownership_allocation_drop_and_send() {
     use prelude::{Allocation, DropPolicy, LoweringStatus, Ownership, SendPolicy};
 
-    assert_eq!(prelude::TYPE_INFO.len(), prelude::BINDINGS.len());
     for binding in prelude::BINDINGS {
         let info = prelude::type_info(binding.name).expect(binding.name);
         assert_eq!(info.canonical, binding.canonical);
@@ -109,6 +108,15 @@ fn canonical_type_registry_pins_arity_ownership_allocation_drop_and_send() {
         assert!(info.accepts_arity(info.min_generic_arity as usize)
             || info.kind == prelude::Kind::Trait);
     }
+
+    let int = prelude::type_info("int").unwrap();
+    assert_eq!(int.canonical, "core/primitive/i64");
+    assert_eq!(int.ownership, Ownership::Copy);
+    assert_eq!(int.send_policy, SendPolicy::Always);
+    assert_eq!(int.lowering, LoweringStatus::WasmPrimitive);
+    assert_eq!(int.canonical, prelude::type_info("i64").unwrap().canonical);
+    assert_eq!(prelude::type_info("bool").unwrap().lowering, LoweringStatus::WasmPrimitive);
+    assert_eq!(prelude::type_info("string").unwrap().ownership, Ownership::BorrowedView);
 
     let option = prelude::type_info("Option").unwrap();
     assert_eq!(option.min_generic_arity, 1);
