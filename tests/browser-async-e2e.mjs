@@ -309,6 +309,27 @@ try{
   await evaluate('window.__attoPortableV5=false');
   console.log('PASS portable v5: Chromium wasm32 compiler -> AOT pending future guest -> nested Worker MessagePort bearer completions');
 
+  // Typed Future<int> declarations are statically checked and lowered to
+  // the SAME real compiled v5 guest ABI. The separate source marker proves
+  // that this is not silently reusing the untyped integer-key frontend.
+  await evaluate('window.__attoFutureIntAot=true');
+  const futureSource='pub susp fnc main(): int { '+
+    'val key:int=41; val first:Future<int>=pending_future_int(key); '+
+    'await first; val second:Future<int>=pending_future_int(42); '+
+    'return await second; }';
+  assert.equal(await run(futureSource,'main() -> 42'),'main() -> 42');
+  assert.equal(await evaluate('window.__attoV5Peak'),16);
+  assert.equal(await evaluate('window.__attoV5Starts'),16);
+  assert.equal(await evaluate('window.__attoV5Completions'),32);
+  assert.equal(await evaluate('window.__attoV5Resumes'),32);
+  assert.equal(await evaluate('window.__attoV5Drops'),16);
+  assert.match(await run(
+    'pub susp fnc main():int { val f:Future<int>=pending_future_int(41); '+
+      'await f; return await f; }','E_MOVED'),/E_MOVED/,
+    'a moved Future<int> must not admit an executable guest');
+  await evaluate('window.__attoFutureIntAot=false');
+  console.log('PASS typed Future<int>: Chromium wasm32 Rust compiler executes 16 linear owned futures in nested Worker');
+
   const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
   assert.match(await run(readyAwait,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,'two immediate awaits must both yield the browser worker');
