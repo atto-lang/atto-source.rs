@@ -5,6 +5,7 @@ on:
       - 'src/actor_protocol_typestate.rs'
       - 'src/lib.rs'
       - 'tests/actor_protocol_typestate_source.rs'
+      - 'tests/fixtures/actor-protocol-typestate-v1/**'
       - '.github/workflows/actor-protocol-preflight-v1.yml'
   push:
     branches: [main]
@@ -12,6 +13,7 @@ on:
       - 'src/actor_protocol_typestate.rs'
       - 'src/lib.rs'
       - 'tests/actor_protocol_typestate_source.rs'
+      - 'tests/fixtures/actor-protocol-typestate-v1/**'
       - '.github/workflows/actor-protocol-preflight-v1.yml'
 permissions:
   contents: read
