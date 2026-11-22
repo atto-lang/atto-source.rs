@@ -1,3 +1,6 @@
+// Native Rust/Wasm linker: explicitly exported Atto module namespace.
+// Source remains independently maintained in this backend.
+define pub module compute as
 // Backend-owned Atto source: rs; independent implementation lifecycle.
 // std/compute: source-native, checked SIMD/GPU descriptors and launch math.
 // This module never grants a device/driver handle or starts a GPU kernel.
@@ -96,3 +99,5 @@ pub fnc compute_upload_admit(
   return buffer_is_live && host_to_device_allowed &&
          compute_buffer_range_fits(offset, length, buffer_length);
 }
+
+end
