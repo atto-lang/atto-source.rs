@@ -213,9 +213,18 @@ pub struct TE {
     pub ty: Type,
 }
 
+/// Fatal non-catchable contract check channel (not ordinary throw).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContractFault {
+    Requires,
+    Ensures,
+}
+
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Condition must be typed bool, readonly and effect-free.
+    ContractCheck { predicate: TE, kind: ContractFault },
     /// Compiler-planned scalar i64 cell store inside an owned Array allocation.
     /// Its offset is checked against the resolved nominal layout/length.
     CollectionStore { array: TE, offset: u32, value: TE },
@@ -831,6 +840,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     }
     for f in &p.funcs {
         if f.is_generator {
+            if !f.contracts.is_empty() {
+                return Err(Diagnostic::new(f.pos, "E_CONTRACT_UNSUPPORTED",
+                    "generator contract checks require verified yield/continuation lowering"));
+            }
             precheck_generator_body(&f.body, &p.funcs)?;
             // Build the exact bounded resume graph before the ABI-v2 gate.
             // It is a compiler IR only; no generator guest artifact is emitted.
@@ -1250,7 +1263,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             &g,
             BodyCheckInput {
                 owner: Owner::TopLevel, named: &named, mail: None,
-                ret, body: &f.body, label: &f.name, pos: f.pos,
+                ret, body: &f.body, contracts: &f.contracts, label: &f.name, pos: f.pos,
             },
             &mut imports, &mut data,
         )?;
@@ -1295,7 +1308,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &g,
                 BodyCheckInput {
                     owner, named: &named, mail: None, ret: Type::Void,
-                    body: &k.body, label: "constructor", pos: k.pos,
+                    body: &k.body, contracts: &[], label: "constructor", pos: k.pos,
                 },
                 &mut imports, &mut data,
             )?;
@@ -1397,7 +1410,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &g,
                 BodyCheckInput {
                     owner, named: &named, mail: None, ret: mi.ret,
-                    body: &m.body, label: &label, pos: m.pos,
+                    body: &m.body, contracts: &m.contracts, label: &label, pos: m.pos,
                 },
                 &mut imports, &mut data,
             )?;
@@ -1428,7 +1441,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &g,
                 BodyCheckInput {
                     owner, named: &named, mail: Some((r.mail.as_str(), info.payload)),
-                    ret: Type::Void, body: &r.body, label: &label, pos: r.pos,
+                    ret: Type::Void, body: &r.body, contracts: &[], label: &label, pos: r.pos,
                 },
                 &mut imports, &mut data,
             )?;
@@ -1463,7 +1476,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &g,
                 BodyCheckInput {
                     owner, named: &named, mail: None, ret: mi.ret,
-                    body: &m.body, label: &label, pos: m.pos,
+                    body: &m.body, contracts: &m.contracts, label: &label, pos: m.pos,
                 },
                 &mut imports, &mut data,
             )?;
@@ -2176,6 +2189,7 @@ struct BodyCheckInput<'a> {
     mail: Option<(&'a str, Type)>,
     ret: Type,
     body: &'a [Stmt],
+    contracts: &'a [ContractClause],
     label: &'a str,
     pos: Pos,
 }
@@ -2186,7 +2200,7 @@ fn body_check(
     imports: &mut Vec<Import>,
     data: &mut Vec<u8>,
 ) -> R<(Vec<TStmt>, Vec<Type>)> {
-    let BodyCheckInput { owner, named, mail, ret, body, label, pos } = input;
+    let BodyCheckInput { owner, named, mail, ret, body, contracts, label, pos } = input;
     // This is shared by inline class constructors and out-of-line headers
     // after they are lowered to the same production ClassDecl AST.
     if matches!(owner, Owner::Class { ctor: true, .. }) {
