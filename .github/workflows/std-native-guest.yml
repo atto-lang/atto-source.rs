@@ -37,6 +37,6 @@ jobs:
       - name: Compile linked Atto units and test negative imports
         run: cargo +1.85.1 test --locked --test stdlib_native_guest -- --nocapture
       - name: Compile genuine .atto source to guest Wasm
-        run: cargo +1.85.1 run --locked --quiet --example stdlib_native_guest -- "$RUNNER_TEMP/atto-stdlib.wasm" "$RUNNER_TEMP/atto-stdlib-mutation.wasm"
-      - name: Execute all 37 checks inside WebAssembly
-        run: node tests/stdlib_native_guest_wasm.test.mjs "$RUNNER_TEMP/atto-stdlib.wasm" "$RUNNER_TEMP/atto-stdlib-mutation.wasm"
+        run: cargo +1.85.1 run --locked --quiet --example stdlib_native_guest -- "$RUNNER_TEMP/atto-stdlib.wasm" "$RUNNER_TEMP/atto-stdlib-mutation.wasm" "$RUNNER_TEMP/atto-stdlib-boundaries.wasm"
+      - name: Execute 37 smoke and 109 boundary checks inside real WebAssembly
+        run: node tests/stdlib_native_guest_wasm.test.mjs "$RUNNER_TEMP/atto-stdlib.wasm" "$RUNNER_TEMP/atto-stdlib-mutation.wasm" "$RUNNER_TEMP/atto-stdlib-boundaries.wasm"
