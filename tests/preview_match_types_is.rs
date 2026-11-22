@@ -54,7 +54,9 @@ fn statically_known_string_and_bool_tags_select_matching_type_arms() {
 #[test]
 fn signed_numeric_any_literals_compile_as_checked_monomorphic_guests() {
     // The published playground example previously rejected the two-token -42.
-    let negative_site = SITE.replace("val value: Any = 42;", "val value: Any = -42;");
+    let negative_site = SITE
+        .replace("val value: Any = 42;", "val value: Any = -42;")
+        .replace("value eq 42 then", "value eq -42 then");
     assert_ne!(negative_site, SITE, "the published fixture changed unexpectedly");
     pass(&negative_site);
 
