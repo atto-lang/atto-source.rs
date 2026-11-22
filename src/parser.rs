@@ -1359,12 +1359,11 @@ impl Parser {
             // separator before explicit semicolon/return statements. Until
             // the versioned header migration (#185), preserve both spellings
             // without relaxing the checked return contract.
-            // A guard is lowered into a Stmt::If with a nested return.
-            // In an arrow-typed end body, this is still an explicit
-            // statement even when there is no top-level Return node.
-            // Keep comma/end tail-expression selection unchanged for
-            // every other body form.
-            let starts_with_guard = self.is_word("guard");
+            // In an arrow-typed void callable, any syntactically explicit
+            // statement/end body may fall through. This covers sequences of
+            // guards and side effects; comma/end bodies still fall back to
+            // their legacy parser, and non-void implicit-tail results are
+            // preserved by requiring a top-level return/throw.
             let mut trial = self.clone();
             if let Ok(body) = trial.parse_explicit_end_body() {
                 // A lone final expression still means a comma/end *implicit*
@@ -1373,8 +1372,13 @@ impl Parser {
                 // The current compatibility profile admits explicit-return
                 // bodies only when a top-level terminal is present. Fully
                 // branch-terminal explicit bodies await the versioned grammar.
-                if body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..)))
-                    || (starts_with_guard && matches!(body.as_slice(), [Stmt::If { .. }])) {
+                // A void-typed callable is permitted to fall through. Multiple
+                // guard/if statements and ordinary effects are explicit
+                // statement/end syntax even without a top-level return.
+                // Non-void callables still require an explicit top-level exit
+                // here, preserving legacy comma/end implicit-tail behavior.
+                if ret == Type::Void
+                    || body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..))) {
                     *self = trial;
                     return Ok(body);
                 }
