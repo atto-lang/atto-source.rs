@@ -1,0 +1,65 @@
+name: Exact-head dual-guard and caret void integration
+on:
+  push:
+    branches:
+      - integration/guard-void-main-20261122
+  pull_request:
+    paths:
+      - src/parser.rs
+      - tests/guard_void_integration.rs
+      - tests/void_return_guest.mjs
+      - .github/workflows/guard-void-integration-exact-head.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-compiler-and-wasm-guests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact event head without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check full tree identity, no hidden worktree differences
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "EXACT_SOURCE_SHA=$(git rev-parse HEAD)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse HEAD^{tree})"
+      - name: Install pinned Rust and wasm target
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.85.1
+          rustc --version
+          cargo --version
+          node --version
+      - name: Check Rust formatting and all source tests
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked --all-targets --no-fail-fast
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Build native Atto compiler and hosted wasm32 compiler
+        run: |
+          cargo build --locked --release --bin attoc
+          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+      - name: Execute real void guard guests with browser/native byte equality
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/void_return_guest.mjs
+      - name: Record tested scope without asserting other backends
+        run: |
+          echo 'RECEIPT integration_scope=guard_caret_void_rust_and_wasm'
+          echo 'RECEIPT java_llvm_net_forge=NOT_EXECUTED'
