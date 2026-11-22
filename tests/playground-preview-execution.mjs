@@ -4,9 +4,9 @@
 // Native CLI vs wasm32 browser compiler bytes must match for all 43 samples.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { auditPlaygroundPreviews } from './playground-preview-audit.mjs';
+import { nativeAttocBytes } from './native-attoc-strict.mjs';
 import { formatJavaDouble } from './java-double.mjs';
 import { createStateRuntime } from './browser/state-runtime.mjs';
 import { BROWSER_MAX_ACTORS, BROWSER_MAX_MAILBOX } from './actor-trace-refinement.mjs';
@@ -150,9 +150,8 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
 
 const attoc = process.env.ATTOC;
 assert.ok(attoc, 'ATTOC must name the exact-tree native compiler for byte parity');
-function nativeBytes(path) {
-  const r = spawnSync(attoc, [path], { maxBuffer: 1 << 22 });
-  return r.status === 0 ? new Uint8Array(r.stdout) : null;
+function nativeBytes(path, expectedFailure = null) {
+  return nativeAttocBytes(attoc, path, expectedFailure);
 }
 const result = await auditPlaygroundPreviews({ compile, runGuest, nativeBytes });
 assert.equal(result.total, 43);
