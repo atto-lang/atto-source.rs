@@ -99,3 +99,19 @@ fn all_invalid_void_marker_expressions_fail_closed() {
         compile(src).expect_err("void is not a runtime value");
     }
 }
+
+
+#[test]
+fn nested_nonreturn_escapes_cannot_hide_before_caret_void() {
+    for failure in [
+        "while true { throw Error(\"bad\"); } ^ void;",
+        "loop { raise Error(\"bad\"); } ^ void;",
+        "try { throw Error(\"bad\"); } catch (Error e) { ^ void; } ^ void;",
+    ] {
+        let source = format!(
+            "fnc process_explicit() -> void {{ guard false else {failure} end }} {}",
+            entry()
+        );
+        rejects(&source, "E_GUARD");
+    }
+}
