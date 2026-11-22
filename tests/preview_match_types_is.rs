@@ -58,9 +58,18 @@ fn signed_numeric_any_literals_compile_as_checked_monomorphic_guests() {
         .replace("val value: Any = 42;", "val value: Any = -42;")
         .replace("value eq 42 then", "value eq -42 then");
     assert_ne!(negative_site, SITE, "the published fixture changed unexpectedly");
+    assert!(SITE.contains("value eq 42 then"), "guard spelling drifted");
+    assert!(negative_site.contains("value eq -42 then"), "negative guard was not updated");
     pass(&negative_site);
 
-    for number in ["-42", "-0", "-9_223_372_036_854_775_808", "-0b101010"] {
+    for number in [
+        "-42",
+        "- 42",
+        "-/* whitespace/comment */42",
+        "-0",
+        "-9_223_372_036_854_775_808",
+        "-0b101010",
+    ] {
         let source = format!(r#"
             fnc classify(Any value): int {{
                 match value over
@@ -113,6 +122,14 @@ fn signed_any_literal_proof_still_rejects_computation_and_unsafe_shapes() {
             return classify(value);
         }
     "#, "E_INTEGER_RANGE");
+    // A mutable initializer cannot inherit the static tag of a checked Any val.
+    err(r#"
+        fnc classify(Any value): int { return 42; }
+        pub fnc main(): int {
+            let value: Any = -42;
+            return classify(value);
+        }
+    "#, "E_UNSUPPORTED_TYPE");
 }
 
 #[test]
