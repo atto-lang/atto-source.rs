@@ -148,14 +148,13 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
             Some(Tok::Str(s)) if !s.is_empty() => s.as_str(),
             _ => return Err(diagnostic(pos, "E_SYNTAX", "expected nonempty quoted import source")),
         };
-        if external_pkg {
-            if source == "std.http" || source == "std.fs" {
-                return Err(diagnostic(pos, "E_SYNTAX",
-                    "compiler built-ins must be imported without pkg"));
-            }
+        if external_pkg && source != "std.http" && source != "std.fs" {
             return Err(diagnostic(pos, "E_UNSUPPORTED",
                 "third-party packages require a verified package resolver"));
         }
+        // Exact std.http/std.fs from-pkg selectors remain transitional
+        // compatibility spellings for pinned older guest fixtures. They are
+        // NEVER loaded as external packages. New source uses bare std names.
         let sealed_std = match source {
             "std.http" => Some(SealedStd::HttpPolicy),
             "std.fs" => Some(SealedStd::FsPolicyBundle),
