@@ -19,6 +19,9 @@ const files=new Map([
   ['/runtime/browser/worker-control-loop.mjs',[new URL('../runtime/browser/worker-control-loop.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/portable-task-host-v3.mjs',[new URL('../runtime/browser/portable-task-host-v3.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/portable-task-host-v4.mjs',[new URL('../runtime/browser/portable-task-host-v4.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/portable-task-host-v5.mjs',[new URL('../runtime/browser/portable-task-host-v5.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/worker-completion-capability-v1.mjs',[new URL('../runtime/browser/worker-completion-capability-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/v5-completer.mjs',[new URL('./browser-async/v5-completer.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/wasm-jspi-control-bridge-v1.mjs',[new URL('../runtime/browser/wasm-jspi-control-bridge-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
@@ -287,6 +290,25 @@ try{
     'v4 must not fall back to JSPI/partial guest emission');
   await evaluate('window.__attoPortableV4=false');
   console.log('PASS portable v4: wasm32 Rust compiler emits 16 live Wasm-owned frames in Chromium Worker without JSPI');
+  // The wasm32-compiled Rust compiler emits real guest-v5 code. A nested
+  // module Worker with dedicated MessagePorts holds back the first 16
+  // completion tickets; guests must remain genuinely suspended.
+  await evaluate('window.__attoPortableV5=true');
+  const portableV5Source=
+    'pub susp fnc main(): int { val key: int=41; await key; return await 42; }';
+  assert.equal(await run(portableV5Source,'main() -> 42'),'main() -> 42');
+  assert.equal(await evaluate('window.__attoV5Peak'),16);
+  assert.equal(await evaluate('window.__attoV5Starts'),16);
+  assert.equal(await evaluate('window.__attoV5Completions'),32);
+  assert.equal(await evaluate('window.__attoV5Resumes'),32);
+  assert.equal(await evaluate('window.__attoV5Drops'),16);
+  assert.match(await run(
+    'pub susp fnc main(): int { val x: int=41+1; return await x; }',
+    'E_UNSUPPORTED'),/E_UNSUPPORTED/,
+    'v5 must never downgrade unsupported Future expressions to JSPI');
+  await evaluate('window.__attoPortableV5=false');
+  console.log('PASS portable v5: Chromium wasm32 compiler -> AOT pending future guest -> nested Worker MessagePort bearer completions');
+
   const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
   assert.match(await run(readyAwait,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,'two immediate awaits must both yield the browser worker');
