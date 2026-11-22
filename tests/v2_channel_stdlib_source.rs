@@ -49,6 +49,8 @@ const CANCEL_MIDDLE: &str =
     include_str!("fixtures/pass/252-v2-cancel-read-middle-preserves-fifo.atto");
 const CANCEL_FORGED: &str =
     include_str!("fixtures/fail/248-v2-cancel-read-nonfuture-denial.atto");
+const CANCEL_GRAPH_ADMISSION: &str =
+    include_str!("fixtures/pass/253-v2-cancel-read-releases-graph-admission.atto");
 
 
 #[test]
@@ -260,6 +262,7 @@ fn cancellation_guest_fixtures_compile_and_bad_future_type_fails_closed() {
         ("await cancelled Future is panic 15", CANCEL_AWAIT_TRAPS),
         ("cancel head preserves FIFO", CANCEL_HEAD),
         ("cancel middle preserves FIFO", CANCEL_MIDDLE),
+        ("cancel frees checked DATA graph admission", CANCEL_GRAPH_ADMISSION),
     ] {
         let wasm = atto_compiler::v2::compile(atto_compiler::lexer::lex(src)
             .unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
