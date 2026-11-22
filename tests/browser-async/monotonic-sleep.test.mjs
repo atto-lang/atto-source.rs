@@ -111,6 +111,28 @@ test('invalid duration and invalid clock values fail closed without registering 
   assert.equal(invalid.pending,0);
 });
 
+test('regressing monotonic readings fail closed and release admission',async()=>{
+  const h=clockHarness(1);
+  const pending=h.sleep.sleep(100);
+  h.fireAt(-1);
+  await assert.rejects(pending,/invalid or regressed monotonic clock/);
+  assert.equal(h.sleep.pending,0);
+  assert.equal(h.count(),0);
+  const next=h.sleep.sleep(1);
+  h.fireAt(1);
+  await next;
+  assert.equal(h.sleep.pending,0);
+});
+
+test('nonfinite monotonic readings after registration fail closed',async()=>{
+  const h=clockHarness();
+  const pending=h.sleep.sleep(100);
+  h.fireAt(NaN);
+  await assert.rejects(pending,/invalid or regressed monotonic clock/);
+  assert.equal(h.sleep.pending,0);
+  assert.equal(h.count(),0);
+});
+
 test('failed scheduling revokes the admission slot',async()=>{
   const invalid=new MonotonicSleepProvider({
     schedule:()=>{throw new Error('scheduler shutdown')}
