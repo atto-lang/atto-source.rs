@@ -273,11 +273,28 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         return Ok(None);
     }
     reject_reserved(&tokens)?;
-    if !word(&tokens, 0, "import") {
-        return Err(fail(tokens[0].pos, "E_UNSUPPORTED",
-            "executable constant file imports require import declarations first"));
-    }
+    // A namespace header is legal before import declarations. Preserve its
+    // original tokens for namespace::normalize and the production checker:
+    // this bounded literal linker must not silently discard source identity.
     let mut i = 0usize;
+    if word(&tokens, i, "use") {
+        let pos = tokens[i].pos;
+        if !word(&tokens, i + 1, "namespace") && !word(&tokens, i + 1, "default") {
+            return Err(fail(pos, "E_SYNTAX", "expected namespace header before const imports"));
+        }
+        while tokens.get(i).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) {
+            i += 1;
+        }
+        if tokens.get(i).is_none_or(|t| t.tok != Tok::Semi) {
+            return Err(fail(pos, "E_SYNTAX", "unterminated namespace header"));
+        }
+        i += 1;
+    }
+    if !word(&tokens, i, "import") {
+        return Err(fail(tokens[i.min(tokens.len() - 1)].pos, "E_UNSUPPORTED",
+            "executable constant file imports require import declarations after the namespace header"));
+    }
+    let prefix = tokens[..i].to_vec();
     let mut loaded = BTreeMap::<PathBuf, BTreeMap<String, ConstExport>>::new();
     let mut bound = BTreeMap::<String, Vec<Tok>>::new();
     while word(&tokens, i, "import") {
@@ -343,7 +360,7 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             }
         }
     }
-    let mut output = Vec::new();
+    let mut output = prefix;
     for (j, item) in tokens[i..].iter().enumerate() {
         if let Tok::Ident(name) = &item.tok {
             if let Some(value) = bound.get(name) {
