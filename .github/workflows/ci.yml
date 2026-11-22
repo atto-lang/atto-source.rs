@@ -87,6 +87,8 @@ jobs:
         run: node --check scripts/verify-real-browser-compiler.mjs
       - name: Test strict real compiler ABI diagnostic decoding before Rust setup
         run: node --test tests/compiler-diagnostic.test.mjs
+      - name: Test native attoc failures cannot masquerade as negative preview parity
+        run: node --test tests/native-attoc-strict.test.mjs
       - name: Test source-free bounded Wasm guest ABI and panic oracles
         run: node --test tests/compiler-smoke-guest-oracle.test.mjs
       - name: Install pinned Rust toolchain and Wasm target
@@ -158,6 +160,14 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
+      - name: Strict 43-preview compiler and guest parity gate (no unverified admissions)
+        # The broad conformance report is deliberately descriptive. This
+        # independent gate fails if any of the 23 executable oracles becomes
+        # unsupported, any of the 20 tracked unsupported previews is silently
+        # admitted without an oracle, or native-vs-wasm32 byte parity drifts.
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/playground-preview-execution.mjs
 
       - name: Shared scalar-v1 native vs wasm32 byte parity with guest execution
         env:

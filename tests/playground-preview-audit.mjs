@@ -19,7 +19,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
   const raw = await readFile(new URL('MANIFEST.tsv', corpus), 'utf8');
   const pairs = raw.split('\n').filter(line => line && !line.startsWith('#'))
     .map(line => line.split('\t'));
-  assert.equal(pairs.length, 43, 'every public preview has a pinned blob');
+  assert.equal(pairs.length, 43, 'every tracked compatibility preview has a pinned blob');
   assert.ok(pairs.every(([name, sha]) =>
     /^[a-z-]+$/.test(name) && /^[a-f0-9]{40}$/.test(sha)));
   const names = pairs.map(([name]) => name);
@@ -42,7 +42,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       assert.ok(result.line >= 1 && result.col >= 1, name + ': source position');
       outcome.unsupported.push({ name, code: result.code });
       if (nativeBytes) {
-        assert.equal(nativeBytes(fileURLToPath(url)), null,
+        assert.equal(nativeBytes(fileURLToPath(url), result), null,
           name + ': native host must reject same source');
         outcome.nativeCompared++;
       }
