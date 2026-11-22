@@ -151,7 +151,7 @@ pub enum DropPolicy {
 pub enum SendPolicy { Always, PayloadDependent, NeverBorrowed, ProofRequired, NotApplicable }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LoweringStatus { WasmScalarAdt, LegacyStringView, ContractOnly }
+pub enum LoweringStatus { WasmPrimitive, WasmScalarAdt, LegacyStringView, ContractOnly }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeInfo {
@@ -188,6 +188,23 @@ const fn type_info(
 /// CONTRACT_ONLY entries are discoverable for specification/conformance but
 /// MUST still fail closed in this backend until real lowering exists.
 pub const TYPE_INFO: &[TypeInfo] = &[
+    type_info("int","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
+    type_info("Int","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("i64","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
+    type_info("i8","core/primitive/i8",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("i16","core/primitive/i16",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("i32","core/primitive/i32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("uint","core/primitive/u64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("u8","core/primitive/u8",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("u16","core/primitive/u16",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("u32","core/primitive/u32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("u64","core/primitive/u64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("bool","core/primitive/bool",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
+    type_info("Bool","core/primitive/bool",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("float","core/primitive/f64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("f32","core/primitive/f32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("f64","core/primitive/f64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("string","core/primitive/string-view",Scope::Core,Kind::Type,0,0,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::LegacyStringView),
     type_info("Option","core/option/Option",Scope::Core,Kind::Type,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
     type_info("Some","core/option/Some",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
     type_info("None","core/option/None",Scope::Core,Kind::Constructor,0,0,Ownership::PayloadDependent,Allocation::None,DropPolicy::None,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
