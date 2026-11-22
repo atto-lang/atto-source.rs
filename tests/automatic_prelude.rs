@@ -54,7 +54,7 @@ fn real_option_and_result_variants_compile_without_imports() {
     // This source is already pinned by a successful compiler fixture.
     let src = include_str!("playground_previews/result-option-end.atto");
     let wasm = compile(src).expect("builtin core ADTs must compile without explicit imports");
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(compile(src).unwrap(), wasm, "deterministic Wasm");
 }
 
