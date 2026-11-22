@@ -115,3 +115,28 @@ fn nested_nonreturn_escapes_cannot_hide_before_caret_void() {
         rejects(&source, "E_GUARD");
     }
 }
+
+
+#[test]
+fn multiple_void_guards_are_explicit_end_statements() {
+    for function in [
+        "fnc process_explicit() -> void\n    guard true else ^ void end\n    guard false { ^ void }\nend",
+        "fnc process_explicit() -> void\n    guard true { ^ void }\n    guard false else ^ void end\nend",
+        "fnc process_explicit() -> void\n    val x = 1;\n    guard false else ^ void end\nend",
+        "fnc process_explicit() -> void\n    guard true else ^ void end\n    val x = 1;\nend",
+        "fnc process_explicit() -> void\n    guard true { ^ void }\nend",
+    ] {
+        accepts(&format!("{function}\n{}", entry()));
+    }
+}
+
+#[test]
+fn multiple_nonvoid_guards_without_success_return_still_reject() {
+    for function in [
+        "fnc process_explicit() -> int\n    guard true else ^ 2 end\n    guard false { ^ 3 }\nend",
+        "fnc process_explicit() -> int\n    guard false else ^ 2 end\nend",
+    ] {
+        let source = format!("{function}\npub fnc main(): int {{ ^ process_explicit(); }}");
+        compile(&source).expect_err("nonvoid function must not silently fall through");
+    }
+}
