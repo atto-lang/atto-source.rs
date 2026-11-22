@@ -61,6 +61,7 @@ impl Type {
             Type::Float => "float",
             Type::Str => "string",
             Type::FutureInt => "Future<int>",
+            Type::ActorFutureInt => "ActorFuture<int>",
             Type::ChannelInt => "Channel<int>",
             Type::IoError => "IoError",
             Type::FutureReadInt => "Future<Result<Option<int>,IoError>>",
