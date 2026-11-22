@@ -1,0 +1,12 @@
+// expect-exit: 29
+// The original Error handle survives a source throw across a call boundary.
+// expect-stdout: original Error retained
+fnc fail_with(Error error): int throws(Error) { throw error; }
+pub fnc main(): int {
+  val Error original = Error("original Error retained");
+  val Result<int,Error> result = trap fail_with(original);
+  match result over
+    on Ok(v) -> { return v; }
+    on Err(e) -> { stdio.println(e.message); return 29; }
+  end
+}

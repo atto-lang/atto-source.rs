@@ -1,0 +1,17 @@
+// expect-exit: 52
+// expect-stdout: continued
+// Successful Result<void,Error>? must leave no stray ADT pointer on Wasm stack.
+fnc completed(): Result<void,Error> { return Ok(); }
+fnc checked(): Result<void,Error> {
+  val Result<void,Error> r = trap completed();
+  r?;
+  stdio.println("continued");
+  return Ok();
+}
+pub fnc main(): int {
+  val Result<void,Error> r = checked();
+  match r over
+    on Ok -> { return 52; }
+    on Err(e) -> { return 0; }
+  end
+}

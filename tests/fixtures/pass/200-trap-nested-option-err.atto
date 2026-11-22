@@ -1,0 +1,10 @@
+// expect-exit: 31
+// expect-stdout: missing record
+fnc maybe(): Result<Option<int>,Error> { return Err(Error("missing record")); }
+pub fnc main(): int {
+  val Result<Option<int>,Error> result = trap maybe();
+  match result over
+    on Ok(choice) -> { return 0; }
+    on Err(e) -> { stdio.println(e.message); return 31; }
+  end
+}

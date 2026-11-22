@@ -1,0 +1,8 @@
+// expect-exit: 42
+fnc parse_id(string text): Result<int,Error> { return int.parse(text); }
+pub fnc main(): int {
+  match parse_id("9223372036854775808") over
+    on Err() -> { return 42; }
+    on Ok(_) -> { return 0; }
+  end
+}

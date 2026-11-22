@@ -1,4 +1,0 @@
-// expect-error: E_TYPE
-// The browser slice cannot yet represent Option<void>; never drop the layer.
-fnc work(): void { stdio.println("work"); return; }
-pub fnc main(): int { val outcome = trap work(); return 0; }

@@ -1,0 +1,10 @@
+// expect-exit: 42
+// Trapping a Result returned by trap itself must not add another layer.
+fnc answer(): int { return 42; }
+pub fnc main(): int {
+  val Result<int,Error> outcome = trap trap answer();
+  match outcome over
+    on Ok(n) -> { return n; }
+    on Err(e) -> { return 0; }
+  end
+}

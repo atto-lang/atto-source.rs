@@ -1,0 +1,12 @@
+// expect-panic: 1
+// expect-stdout: before
+// Overflow panic must bypass the ordinary-throw tag 0 trap handler.
+pub fnc main(): int {
+  stdio.println("before");
+  val int x = 9223372036854775807;
+  val Result<int,Error> result = trap (x + 1);
+  match result over
+    on Ok(v) -> { return v; }
+    on Err(e) -> { stdio.println("INVALID PANIC CAPTURE"); return 0; }
+  end
+}

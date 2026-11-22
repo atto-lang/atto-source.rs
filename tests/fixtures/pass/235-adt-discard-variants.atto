@@ -1,0 +1,9 @@
+// expect-exit: 42
+// Both empty parentheses and underscore discard a variant payload.
+fnc answer(): Result<int,Error> { return Ok(9); }
+pub fnc main(): int {
+  return match answer() over
+    on Ok() -> 42,
+    on Err(_) -> 0
+  end;
+}

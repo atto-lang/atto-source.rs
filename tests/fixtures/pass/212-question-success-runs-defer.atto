@@ -1,0 +1,16 @@
+// expect-exit: 50
+// expect-stdout: normal cleanup
+fnc ok(): Result<int,Error> { return Ok(49); }
+fnc checked(): Result<int,Error> {
+  defer || -> { stdio.println("normal cleanup"); };
+  val Result<int,Error> r = trap ok();
+  val int n = r?;
+  return Ok(n + 1);
+}
+pub fnc main(): int {
+  val Result<int,Error> r = checked();
+  match r over
+    on Ok(n) -> { return n; }
+    on Err(e) -> { return 0; }
+  end
+}

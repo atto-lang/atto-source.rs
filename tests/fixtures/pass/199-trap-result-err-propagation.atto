@@ -1,0 +1,15 @@
+// expect-exit: 30
+// expect-stdout: propagated Error
+fnc already_failed(): Result<int,Error> { return Err(Error("propagated Error")); }
+fnc check(): Result<int,Error> {
+  val Result<int,Error> result = trap already_failed();
+  val int n = result?;
+  return Ok(n + 1);
+}
+pub fnc main(): int {
+  val Result<int,Error> result = check();
+  match result over
+    on Ok(v) -> { return v; }
+    on Err(e) -> { stdio.println(e.message); return 30; }
+  end
+}

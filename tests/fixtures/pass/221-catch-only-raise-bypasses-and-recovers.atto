@@ -1,0 +1,30 @@
+// expect-exit: 54
+// expect-stdout: recovered raise
+// expect-stdout: recovered throw
+// A raised tag bypasses catch(Error), and the handler-depth state
+// must be restored before the next independent ordinary recovery.
+fnc escalate(): int raises(Error) {
+  try {
+    raise Error("escalated");
+  } catch (Error caught) {
+    stdio.println("INVALID ordinary catch");
+    return 0;
+  }
+}
+fnc recover_raise(): int {
+  recover (|int n| -> |err, c| -> {
+    stdio.println("recovered raise");
+    return n;
+  })(22);
+  return escalate();
+}
+fnc recover_throw(): int {
+  recover (|int n| -> |err, c| -> {
+    stdio.println("recovered throw");
+    return n;
+  })(32);
+  throw Error("later");
+}
+pub fnc main(): int {
+  return recover_raise() + recover_throw();
+}

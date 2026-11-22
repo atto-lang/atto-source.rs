@@ -1,0 +1,7 @@
+// expect-error: E_TRAP_ERROR_JOIN
+// Returned Err(string) and thrown Error require explicit lossless joining.
+fnc old(): Result<int,string> { return Ok(42); }
+pub fnc main(): int {
+  val result = trap old();
+  return 0;
+}

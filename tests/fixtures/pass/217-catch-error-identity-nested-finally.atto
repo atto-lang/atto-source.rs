@@ -1,0 +1,35 @@
+// expect-exit: 51
+// expect-stdout: inner finally
+// expect-stdout: outer finally
+// expect-stdout: outer defer
+// catch (Error caught) retains the same handle that the callee threw.
+// Identically spelled messages on a different Error are not identical.
+fnc fail_with(Error e): int throws(Error) { throw e; }
+fnc checked(Error original): Result<int,Error> {
+  defer || -> { stdio.println("outer defer"); };
+  try {
+    try {
+      val int n = fail_with(original);
+      return Ok(n);
+    } catch (Error caught) {
+      if caught.is_same_instance(original) then
+        return Err(caught);
+      else
+        return Err(Error("lost original"));
+      fi
+    } finally { stdio.println("inner finally"); }
+  } finally { stdio.println("outer finally"); }
+}
+pub fnc main(): int {
+  val Error original = Error("identical message");
+  val Error distinct = Error("identical message");
+  val Result<int,Error> r = checked(original);
+  match r over
+    on Ok(n) -> { return 0; }
+    on Err(e) -> {
+      if e.is_same_instance(original) then
+        if e.is_same_instance(distinct) then return 0; else return 51; fi
+      else return 0; fi
+    }
+  end
+}

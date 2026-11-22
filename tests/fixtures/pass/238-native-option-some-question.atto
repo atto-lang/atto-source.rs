@@ -1,0 +1,12 @@
+// expect-exit: 42
+fnc present(): Option<int> { return Some(40); }
+fnc checked(): Option<int> {
+  val answer = present()?;
+  return Some(answer + 2);
+}
+pub fnc main(): int {
+  return match checked() over
+    on Some(n) -> n,
+    on None -> 0
+  end;
+}

@@ -1,0 +1,11 @@
+// expect-exit: 9
+// No value payload is invented for Ok(void).
+fnc work(): void { stdio.println("done"); return; }
+pub fnc main(): int {
+  val Result<void,Error> result = trap work();
+  match result over
+    on Ok -> { return 9; }
+    on Err(e) -> { return 0; }
+  end
+}
+// expect-stdout: done

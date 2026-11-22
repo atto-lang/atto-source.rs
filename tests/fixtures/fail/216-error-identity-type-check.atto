@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+pub fnc main(): int {
+  val Error e = Error("message");
+  if e.is_same_instance(42) then return 1; fi
+  return 0;
+}

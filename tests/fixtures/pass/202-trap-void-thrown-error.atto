@@ -1,0 +1,10 @@
+// expect-exit: 37
+// expect-stdout: no completion
+fnc fail(): void throws(Error) { throw Error("no completion"); }
+pub fnc main(): int {
+  val Result<void,Error> result = trap fail();
+  match result over
+    on Ok -> { return 0; }
+    on Err(e) -> { stdio.println(e.message); return 37; }
+  end
+}

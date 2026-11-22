@@ -1,0 +1,15 @@
+// expect-exit: 17
+// None is retained inside Ok(None), never converted into Err.
+fnc maybe(): Option<int> { return None; }
+pub fnc main(): int {
+  val Result<Option<int>,Error> result = trap maybe();
+  match result over
+    on Err(e) -> { return 0; }
+    on Ok(choice) -> {
+      match choice over
+        on None -> { return 17; }
+        on Some(n) -> { return n; }
+      end
+    }
+  end
+}

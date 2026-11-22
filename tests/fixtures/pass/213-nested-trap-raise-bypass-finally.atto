@@ -1,0 +1,18 @@
+// expect-exit: 48
+// expect-stdout: finally
+// expect-stdout: defer
+// expect-stdout: recover
+// Nested traps must not convert raise into Err or leave catch-depth active.
+fnc escalate(): int raises(Error) { raise Error("raised"); }
+fnc checked(): int {
+  recover (|int v| -> |err, c| -> { stdio.println("recover"); return v; })(48);
+  defer || -> { stdio.println("defer"); };
+  try {
+    val Result<int,Error> r = trap trap escalate();
+    return 0;
+  } catch (Error e) {
+    stdio.println("UNEXPECTED CATCH");
+    return 1;
+  } finally { stdio.println("finally"); }
+}
+pub fnc main(): int { return checked(); }
