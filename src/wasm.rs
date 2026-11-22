@@ -7,6 +7,7 @@
 //!   3 = object heap exhausted; 4 = invalid generator handle/state;
 //!   5 = generator per-pull dispatch budget exhausted;
 //!   6 = logical stack exhausted: a recursive call exceeded [`MAX_CALL_DEPTH`]
+//!   7 = invalid signed-i64 shift distance (must be 0..63), no modulo masking
 //! * export `memory` when strings, classes, or actors exist;
 //!   actor-only modules receive one private 64 KiB page per instance;
 //!   with classes it is a fixed, non-growable [`HEAP_PAGES`]-page memory
@@ -40,6 +41,8 @@ pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 /// Logical stack exhausted (spec chapter 25): a call inside a recursive call
 /// cycle would exceed [`MAX_CALL_DEPTH`] live guest frames.
 pub const PANIC_STACK: i32 = 6;
+/// Shift distances outside [0,63] must fail before Wasm's implicit count masking.
+pub const PANIC_SHIFT_DISTANCE: i32 = 7;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -118,8 +121,10 @@ const H_ADD: u32 = 0;
 const H_SUB: u32 = 1;
 const H_MUL: u32 = 2;
 const H_NEG: u32 = 3;
+/// Always present: checked runtime shift count -> unchanged shift count.
+const H_SHIFT_COUNT: u32 = 4;
 /// present only when the program has classes
-const H_ALLOC: u32 = 4;
+const H_ALLOC: u32 = 5;
 // string helpers, present only when the program has string values; they
 // follow H_ALLOC (or H_NEG) at `Layout::str_base + offset`
 const S_BYTES_EQ: u32 = 0;
@@ -743,6 +748,12 @@ impl Emit<'_> {
                 // execute in source order even when the left decides truth.
                 self.expr(a);
                 self.expr(b);
+                // Wasm masks shift counts modulo 64. Validate the evaluated
+                // right operand exactly once, preserving left-to-right guest
+                // effects and the original i64 count for the shift opcode.
+                if matches!(op, BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                    self.call(self.l.helper(H_SHIFT_COUNT));
+                }
                 let int = a.ty == Type::Int;
                 if a.ty == Type::Float {
                     self.op(match op {
@@ -770,7 +781,7 @@ impl Emit<'_> {
                     BinOp::BitAnd => self.op(0x83), // i64.and
                     BinOp::BitOr => self.op(0x84),  // i64.or
                     BinOp::BitXor => self.op(0x85), // i64.xor
-                    BinOp::Shl => self.op(0x86),    // i64.shl (count mod 64)
+                    BinOp::Shl => self.op(0x86),    // i64.shl (prechecked count)
                     BinOp::AShr => self.op(0x87),   // i64.shr_s
                     BinOp::LShr => self.op(0x88),   // i64.shr_u
                     BinOp::And => self.op(0x71), // i32.and
@@ -1172,6 +1183,17 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     c.extend_from_slice(&[0x51, 0x04, 0x40]);
     panic(&mut c, PANIC_OVERFLOW);
     c.extend_from_slice(&[0x0B, 0x42, 0, 0x20, 0, 0x7D, 0x0B]);
+    v.push((Sig(vec![I64], vec![I64]), no_locals.clone(), c));
+
+    // Validate i64 shift distances without any host imports or ambient state.
+    // The caller has already evaluated the left and right operands once;
+    // this helper preserves the right operand value on success and panics
+    // with a language-specific terminal fault before Wasm can mask it.
+    let mut c = vec![0x20, 0, 0x42, 0, 0x53, 0x04, 0x40]; // count < 0
+    panic(&mut c, PANIC_SHIFT_DISTANCE);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x42, 63, 0x55, 0x04, 0x40]); // count > 63
+    panic(&mut c, PANIC_SHIFT_DISTANCE);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x0B]); // return original count
     v.push((Sig(vec![I64], vec![I64]), no_locals.clone(), c));
 
     v

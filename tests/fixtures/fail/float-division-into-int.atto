@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+// Floating result must not silently narrow to an integer.
+pub fnc main(): int {
+  return 5 / 2;
+}

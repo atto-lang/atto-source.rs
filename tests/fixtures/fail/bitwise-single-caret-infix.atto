@@ -1,0 +1,3 @@
+// expect-error: E_SEMICOLON
+// Single caret cannot perform integer XOR in expression position.
+pub fnc main(): int { return 12 ^ 10; }

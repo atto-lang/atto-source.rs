@@ -1,7 +1,7 @@
 // Prove the actual wasm32 compiler (not JS emulation or native-only lowering)
 // compiles the exact website bitwise preview into executable guest Wasm.
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -43,6 +43,72 @@ function compile(sourceText) {
   return { ok: true, guest };
 }
 
+// Canonical operator spelling must execute through the real wasm32 compiler.
+const caretXorGuest = compile('pub fnc main(): int { ^ 12 ^^ 10; }');
+assert.equal(caretXorGuest.ok, true, caretXorGuest.diagnostic || 'caret/XOR compile');
+const caretXorModule = new WebAssembly.Module(caretXorGuest.guest);
+assert.deepEqual(WebAssembly.Module.imports(caretXorModule), [], 'caret/XOR guest has no imports');
+const caretXorRuntime = new WebAssembly.Instance(caretXorModule, { atto: {} });
+assert.equal(caretXorRuntime.exports.main(), 6n, 'return marker and XOR are unambiguous');
+assert.equal(caretXorRuntime.exports.panic_code.value, 0);
+
+// Standalone statement-leading ^ is return, never a side-effect-only prefix.
+const prefixReturn = compile('pub fnc main(): int { ^ 42; }');
+assert.equal(prefixReturn.ok, true, prefixReturn.diagnostic || 'prefix caret return');
+const prefixGuest = new WebAssembly.Instance(new WebAssembly.Module(prefixReturn.guest), { atto: {} });
+assert.equal(prefixGuest.exports.main(), 42n, 'prefix caret must exit the callable');
+assert.equal(prefixGuest.exports.panic_code.value, 0);
+
+// A valid boundary shift must preserve the signed-i64 bit pattern.
+const boundaryShift = compile('pub fnc main(): int { return 1 <<< 63; }');
+assert.equal(boundaryShift.ok, true, boundaryShift.diagnostic || 'shift 63 admission');
+const boundaryGuest = new WebAssembly.Instance(new WebAssembly.Module(boundaryShift.guest), { atto: {} });
+assert.equal(boundaryGuest.exports.main(), -9223372036854775808n);
+assert.equal(boundaryGuest.exports.panic_code.value, 0);
+
+// The same wasm32-hosted compiler must lower signed i64 division to f64,
+// not silently truncate the quotient and not emit an int-returning guest.
+const divisionSource = `fnc half(int numerator, int denominator): float {
+  return numerator / denominator;
+}
+pub fnc main(): int {
+  if half(5, 2) eq 2.5 then return 42; fi
+  return 1;
+}`;
+const division = compile(divisionSource);
+assert.equal(division.ok, true, division.diagnostic || 'int/int -> float compile');
+const divisionModule = new WebAssembly.Module(division.guest);
+assert.deepEqual(WebAssembly.Module.imports(divisionModule), []);
+const divisionGuest = new WebAssembly.Instance(divisionModule, { atto: {} });
+assert.equal(divisionGuest.exports.main(), 42n, 'integer division is floating');
+assert.equal(divisionGuest.exports.panic_code.value, 0);
+
+const rejectedTruncation = compile('pub fnc main(): int { return 5 / 2; }');
+assert.equal(rejectedTruncation.ok, false, 'float result must not narrow to int');
+assert.match(rejectedTruncation.diagnostic, /E_TYPE|E_RETURN_TYPE/);
+
+const rejectedShift = compile('pub fnc main(): int { return 1 <<< 64; }');
+assert.equal(rejectedShift.ok, false, 'invalid constant shift must not emit Wasm');
+assert.match(rejectedShift.diagnostic, /E_SHIFT_DISTANCE/);
+const rejectedNegativeShift = compile('pub fnc main(): int { return 1 >>> -1; }');
+assert.equal(rejectedNegativeShift.ok, false, 'negative shift must not emit Wasm');
+assert.match(rejectedNegativeShift.diagnostic, /E_SHIFT_DISTANCE/);
+const rejectedBooleanCaret = compile('pub fnc main(): int { val b = true ^^ false; return 42; }');
+assert.equal(rejectedBooleanCaret.ok, false, 'bool ^^ must not be bitwise integer XOR');
+assert.match(rejectedBooleanCaret.diagnostic, /E_TYPE/);
+
+
+const runtimeShift = compile('pub fnc main(): int { let distance: int = 64; return 1 <<< distance; }');
+assert.equal(runtimeShift.ok, true, runtimeShift.diagnostic || 'dynamic checked shift compile');
+const checkedShift = new WebAssembly.Instance(new WebAssembly.Module(runtimeShift.guest), { atto: {} });
+assert.throws(() => checkedShift.exports.main(), WebAssembly.RuntimeError);
+assert.equal(checkedShift.exports.panic_code.value, 7, 'must not mask dynamic shift by 63');
+const runtimeNegativeShift = compile('pub fnc main(): int { let distance: int = -1; return 1 >>> distance; }');
+assert.equal(runtimeNegativeShift.ok, true, runtimeNegativeShift.diagnostic || 'negative computed shift admission');
+const negativeShift = new WebAssembly.Instance(new WebAssembly.Module(runtimeNegativeShift.guest), { atto: {} });
+assert.throws(() => negativeShift.exports.main(), WebAssembly.RuntimeError);
+assert.equal(negativeShift.exports.panic_code.value, 7, 'negative dynamic count must not mask to 63');
+
 const compiled = compile(source);
 assert.equal(compiled.ok, true, compiled.diagnostic || 'preview must compile');
 const guestModule = new WebAssembly.Module(compiled.guest);
@@ -59,17 +125,27 @@ try {
   const nativeBytes = await readFile(out);
   assert.deepEqual(Buffer.from(compiled.guest), nativeBytes,
     'native and wasm32 compilers must emit byte-identical guest for exact preview');
+  const floatSource = join(tmp, 'float-division.atto');
+  const floatArtifact = join(tmp, 'float-division.wasm');
+  await writeFile(floatSource, divisionSource + '\n');
+  const nativeFloat = spawnSync(attoc, [floatSource, '-o', floatArtifact],
+    { encoding: 'utf8', timeout: 30000 });
+  assert.equal(nativeFloat.status, 0, nativeFloat.stderr);
+  assert.deepEqual(await readFile(floatArtifact), Buffer.from(division.guest),
+    'native and wasm32 compilers must produce byte-identical float division guests');
+
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }
 
 for (const [src, expected] of [
   ['pub fnc main(): int { return 0b2; }', 'E_INTEGER_LITERAL'],
-  ['pub fnc main(): int { return 1 ^ true; }', 'E_TYPE'],
+  ['pub fnc main(): int { return 1 ^^ true; }', 'E_TYPE'],
+  ['pub fnc main(): int { return 1 ^ 2; }', 'E_SEMICOLON'],
   ['pub fnc main(): int { return 0b; }', 'E_INTEGER_LITERAL'],
 ]) {
   const failure = compile(src);
   assert.equal(failure.ok, false, 'negative source cannot return a Wasm artifact');
   assert.ok(failure.diagnostic.includes(expected), failure.diagnostic);
 }
-console.log('PASS exact website bitwise source: wasm32 compiler -> guest Wasm = 188; native bytes equal; 3 negatives');
+console.log('PASS website bitwise Wasm guest, native bytes, floating division, checked shifts and source rejection');

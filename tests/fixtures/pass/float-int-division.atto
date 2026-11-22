@@ -1,0 +1,9 @@
+// expect-exit: 42
+// Canonical int/int -> float without integer truncation.
+fnc half(int numerator, int denominator): float {
+  return numerator / denominator;
+}
+pub fnc main(): int {
+  if half(5, 2) eq 2.5 then return 42; fi
+  return 1;
+}

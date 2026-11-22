@@ -8,11 +8,11 @@ fn source(expr: &str) -> String {
 #[test]
 fn bitwise_operations_compile_and_emit_wasm() {
     for expr in [
-        "12 & 10", "12 | 10", "12 ^ 10", "~12",
+        "12 & 10", "12 | 10", "12 ^^ 10", "~12",
         "8 <<< 2", "32 >>> 2", "-8 ashr 1",
         "1 + 2 <<< 3", "64 >>> 1 + 1",
-        "1 <<< 64", "-1 >>> 1",
-        "12 & 10 | 2 ^ 6", "(1 | 2) <<< 1",
+        "1 <<< 63", "-1 >>> 1",
+        "12 & 10 | 2 ^^ 6", "(1 | 2) <<< 1",
     ] {
         let bytes = compile(&source(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
         assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0", "{expr}");
@@ -22,8 +22,7 @@ fn bitwise_operations_compile_and_emit_wasm() {
 #[test]
 fn compound_assignment_uses_local_mutability_and_original_value() {
     for assignment in [
-        "x &= 10", "x |= 2", "x ^= 7",
-        "x <<<= 2", "x >>>= 1", "x ashr= 1",
+        "x &= 10", "x |= 2", "x <<<= 2", "x >>>= 1", "x ashr= 1",
     ] {
         let src = format!("pub fnc main(): int {{ let x: int = 12; {assignment}; return x; }}");
         compile(&src).unwrap_or_else(|e| panic!("{assignment}: {e}"));
@@ -34,7 +33,7 @@ fn compound_assignment_uses_local_mutability_and_original_value() {
 
 #[test]
 fn bitwise_is_strictly_integer_only() {
-    for expr in ["1.0 & 2", "1 | true", "true ^ false", "1.5 <<< 2",
+    for expr in ["1.0 & 2", "1 | true", "true ^^ false", "1.5 <<< 2",
                  "1 >>> 1.0", "1 ashr false", "~true"] {
         assert_eq!(compile(&source(expr)).unwrap_err().code, "E_TYPE", "{expr}");
     }
@@ -65,6 +64,26 @@ fn binary_literals_match_signed_int_range_and_reject_malformed_prefixes() {
 }
 
 #[test]
+fn canonical_caret_return_and_double_caret_xor_never_alias() {
+    for positive in [
+        "pub fnc main(): int { ^ 42; }",
+        "pub fnc main(): int { return 12 ^^ 10; }",
+        "pub fnc main(): int { ^ 12 ^^ 10; }",
+    ] {
+        compile(positive).unwrap_or_else(|error| panic!("{positive}: {error}"));
+    }
+    for negative in [
+        "pub fnc main(): int { return 12 ^ 10; }",
+        "pub fnc main(): int { return 12 ^ ^ 10; }",
+        "pub fnc main(): int { let x: int = 12; x ^= 3; return x; }",
+    ] {
+        let err = compile(negative).expect_err("old XOR spelling must not emit a guest");
+        assert_eq!(err.code, "E_SEMICOLON", "{negative}: {err}");
+    }
+    assert_eq!(compile(&source("true ^^ false")).unwrap_err().code, "E_TYPE");
+}
+
+#[test]
 fn existing_io_and_boolean_operators_are_unchanged() {
     compile("pub fnc main(): int { stdio.out << 42; return 0; }").unwrap();
     compile("pub fnc main(): int { if true | false then return 1; fi return 0; }").unwrap();
@@ -76,4 +95,16 @@ fn existing_io_and_boolean_operators_are_unchanged() {
     compile("pub fnc main(): int { if true && false || true then return 1; fi return 0; }").unwrap();
     assert!(compile(&source("1 << 2")).is_err()); // Not a bit shift
     assert!(compile(&source("8 >> 2")).is_err()); // Not a bit shift
+}
+
+#[test]
+fn shift_distances_are_checked_not_masked() {
+    for expr in ["1 <<< 64", "1 >>> 64", "1 ashr 65",
+                 "1 <<< -1", "1 >>> -1"] {
+        let err = compile(&source(expr)).expect_err("invalid literal shift count");
+        assert_eq!(err.code, "E_SHIFT_DISTANCE", "{expr}: {err}");
+    }
+    for expr in ["1 <<< 0", "1 <<< 63", "-1 >>> 63", "-8 ashr 63"] {
+        compile(&source(expr)).unwrap_or_else(|err| panic!("{expr}: {err}"));
+    }
 }

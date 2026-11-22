@@ -1,0 +1,2 @@
+// expect-error: E_SHIFT_DISTANCE
+pub fnc main(): int { return 1 >>> -1; }

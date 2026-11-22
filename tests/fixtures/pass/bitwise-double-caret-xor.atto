@@ -1,0 +1,4 @@
+// expect-exit: 6
+// java: rejects
+// A contiguous double caret is integer XOR, not a return marker.
+pub fnc main(): int { return 12 ^^ 10; }

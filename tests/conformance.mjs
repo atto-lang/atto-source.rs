@@ -425,17 +425,30 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// '%' is not a supported arithmetic operator, and a single infix '^'
+// cannot alias the statement-leading return marker. Both must fail before
+// guest emission; only a contiguous double caret is typed int XOR.
+for (const [op, expectedCode] of [['%', 'E_UNSUPPORTED'], ['^', 'E_SEMICOLON']]) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
-    assert.equal(r.code, 'E_UNSUPPORTED');
+    assert.equal(r.code, expectedCode);
     assert.equal('wasm' in r, false);
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+check('bitwise/contiguous-double-caret-executable-guest', () => {
+  const src = 'pub fnc main(): int { return 5 ^^ 2; }';
+  const r = compile(src);
+  assert.equal(r.ok, true, r.message);
+  assert.equal(runGuest(r.wasm).value, 7n);
+});
+check('bitwise/spaced-caret-is-not-xor', () => {
+  const r = compile('pub fnc main(): int { return 5 ^ ^ 2; }');
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'E_SEMICOLON');
+  assert.equal('wasm' in r, false);
+});
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {

@@ -4015,6 +4015,26 @@ impl<'a> FnCx<'a> {
                         "bitwise operator '{}' requires two int operands, found {} and {}",
                         op.symbol(), self.tn(a.ty), self.tn(b.ty))));
                 }
+                if matches!(op, BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                    // Literal distances are known at compile time. Reject
+                    // invalid values before emitting even a partial guest;
+                    // dynamic/compound distances are checked by the Wasm
+                    // helper after evaluating both source operands once.
+                    let static_distance = match &b.e {
+                        TExpr::I64(distance) => Some(*distance),
+                        TExpr::Neg(inner) => match &inner.e {
+                            TExpr::I64(magnitude) => magnitude.checked_neg(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(distance) = static_distance {
+                        if !(0..=63).contains(&distance) {
+                            return Err(Diagnostic::new(pos, "E_SHIFT_DISTANCE",
+                                "shift distance must be within 0..63"));
+                        }
+                    }
+                }
                 return Ok(TE {
                     e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
                     ty: Type::Int,
@@ -4070,15 +4090,11 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                if a.ty == Type::Int && b.ty == Type::Int {
-                    if *op == BinOp::Div {
-                        return Err(Diagnostic::new(
-                            pos,
-                            "E_UNSUPPORTED",
-                            "'/' on two ints is not admitted: whether int / int yields float or int is undecided (spec S-25); write a float operand, e.g. 7.0 / 2",
-                        ));
-                    }
-                } else {
+                // Canonical int / int produces binary64, never integer
+                // truncation. The existing IntToFloat typed IR already
+                // lowers to signed f64.convert_i64_s in wasm.rs. Both operands
+                // are converted exactly once before the f64 division.
+                if a.ty != Type::Int || b.ty != Type::Int || *op == BinOp::Div {
                     // Java binary numeric promotion: an int operand widens to float.
                     let widen = |v: TE| -> TE {
                         if v.ty == Type::Int {
@@ -4103,7 +4119,7 @@ impl<'a> FnCx<'a> {
             }
             let ty = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
-                BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::Div => unreachable!("division widens its operands before integer lowering"),
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr =>
                     unreachable!("bitwise operations handled before numeric promotion"),
