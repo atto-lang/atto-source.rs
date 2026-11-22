@@ -444,5 +444,5 @@ fn nested_local_type_index_forgery_returns_diagnostic_in_both_compiler_modes() {
     }
     // Ordinary typed locals still compile; this isn't an always-reject gate.
     assert!(compile_with_mode(source, OwnershipMode::BorrowV1)
-        .expect("valid annotation remains executable").starts_with(b"\\0asm"));
+        .expect("valid annotation remains executable").starts_with(b"\0asm"));
 }
