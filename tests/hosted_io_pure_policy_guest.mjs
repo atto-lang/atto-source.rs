@@ -1,5 +1,5 @@
 // Compile canonical .atto pure HTTP/FS policy via native Rust attoc and run guest Wasm.
-// This tests the actual sealed package import/linker path, NOT HTTP or filesystem I/O.
+// This tests the actual compiler-owned builtin import/linker path, NOT HTTP or filesystem I/O.
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync,readFileSync,writeFileSync,mkdirSync,rmSync} from 'node:fs';
@@ -12,6 +12,8 @@ const dir=mkdtempSync(join(tmpdir(),'atto-io-policy-guest-'));
 const sources=[
  ['../stdlib/std/http_response_policy.atto','22757dafe89bc9601d04c8726a09ddf676206c7e'],
  ['../stdlib/std/fs_text_policy.atto','0cd53216e91ef8de1a764ba5b80ce85c5796c1f2'],
+ ['../stdlib/std/fs_api_policy.atto','15f1fa0f8134938b04f0162c5a016fcca298bca5'],
+ ['../stdlib/std/fs_io_policy.atto','1e707afc2d19a5d80e16e0116beda541b66c7673'],
 ];
 const blobSha=data=>createHash('sha1').update('blob '+data.byteLength+'\0').update(data).digest('hex');
 for(const [path,sha] of sources){
@@ -40,8 +42,8 @@ const checks=[
 '}'
 ];
 const program=[
- 'import * as http from pkg "std.http";',
- 'import * as fs from pkg "std.fs";',
+ 'import * as http from "std.http";',
+ 'import * as fs from "std.fs";',
  ...checks
 ].join('\n')+'\n';
 try{
@@ -59,6 +61,23 @@ try{
    'scalar policy guest must not import ambient HTTP/FS host I/O');
  const instance=new WebAssembly.Instance(module,{});
  assert.equal(instance.exports.main(),42n,'compiled Atto policy returned the wrong value');
+
+ // Independent native .atto api/IO policy modules are sealed into std.fs.
+ // The guest returns 42 without any privileged host import.
+ const fullFsPolicy=compile([
+   'import * as fs from "std.fs";',
+   'pub fnc main(): int {',
+   '  if fs.fs_open_options_valid(true, false, false, false, false, false) == false then return 1; fi',
+   '  if fs.fs_io_next_chunk(10, 4, 8) != 4 then return 2; fi',
+   '  if fs.fs_copy_fits_budget(4, 2, 6, 9, 10) then return 3; fi',
+   '  return 42;',
+   '}'
+ ].join('\\n'));
+ assert.equal(fullFsPolicy.status,0,fullFsPolicy.stderr?.toString());
+ assert.ok(WebAssembly.validate(fullFsPolicy.stdout),'Atto fs policies must emit valid Wasm');
+ const fsModule=new WebAssembly.Module(fullFsPolicy.stdout);
+ assert.deepEqual(WebAssembly.Module.imports(fsModule),[],'no filesystem host imports');
+ assert.equal(new WebAssembly.Instance(fsModule,{}).exports.main(),42n);
  // Import source must come from pinned compiler-embedded bytes, not a
  // matching-looking untrusted local package or source directory.
  const forged=join(dir,'stdlib','std');
@@ -70,10 +89,11 @@ try{
  assert.deepEqual(repeated.stdout,compiled.stdout,'compiler must ignore forged stdlib source');
  for(const [label,source,code] of [
    ['unlisted package','import * as x from pkg "other.http"; pub fnc main(): int { return 42; }','E_UNSUPPORTED'],
-   ['unimplemented fetch','import * as http from pkg "std.http"; pub fnc main(): int { return http.get(1); }','E_UNBOUND'],
-   ['unimplemented filesystem','import * as fs from pkg "std.fs"; pub fnc main(): int { return fs.read_text(1); }','E_UNBOUND'],
-   ['duplicate binding','import * as x from pkg "std.http"; import * as x from pkg "std.fs"; pub fnc main(): int {return 0;}','E_DUPLICATE'],
-   ['forged reserved name','import * as http from pkg "std.http"; pub fnc __atto_file_import_0(): int {return 0;} pub fnc main(): int {return 42;}','E_RESERVED'],
+   ['unlinked std module','import * as missing from "std.absent"; pub fnc main(): int { return 42; }','E_STDLIB_UNLINKED'],
+   ['unimplemented fetch','import * as http from "std.http"; pub fnc main(): int { return http.get(1); }','E_UNBOUND'],
+   ['unimplemented filesystem','import * as fs from "std.fs"; pub fnc main(): int { return fs.read_text(1); }','E_UNBOUND'],
+   ['duplicate binding','import * as x from "std.http"; import * as x from "std.fs"; pub fnc main(): int {return 0;}','E_DUPLICATE'],
+   ['forged reserved name','import * as http from "std.http"; pub fnc __atto_file_import_0(): int {return 0;} pub fnc main(): int {return 42;}','E_RESERVED'],
  ]) {
    const result=compile(source);
    assert.equal(result.status,1,label+': '+result.stderr?.toString());
@@ -84,8 +104,8 @@ try{
  // The originally requested async GET -> file write/read guest program is
  // not lowered yet. Verify the production compiler emits no misleading Wasm.
  const realIo=compile([
-   'import * as http from pkg "std.http";',
-   'import * as fs from pkg "std.fs";',
+   'import * as http from "std.http";',
+   'import * as fs from "std.fs";',
    'pub susp fnc main(): int {',
    '  val response = await http.get("http://127.0.0.1:8080/data");',
    '  val body = await response.text();',
@@ -98,6 +118,8 @@ try{
    'unimplemented async HTTP/FS must not produce a success exit code');
  assert.equal(realIo.stdout.length,0,
    'unimplemented async HTTP/FS unexpectedly produced executable Wasm');
+ // Pinned 56-vector fixture retains historical from-pkg syntax to prove
+ // legacy imports still map to compiler-embedded std modules, never vendor IO.
  // Independent Rust/Wasm guest gate for the same canonical 56 signed-i64
  // vectors exercised by LLVM native AOT and .NET CoreCLR/NativeAOT.
  const vectorBytes=readFileSync(new URL('fixtures/hosted_policy_56_sealed_imports.atto',import.meta.url));
@@ -112,7 +134,7 @@ try{
    'pure policy vectors must not acquire HTTP/FS host capabilities');
  assert.equal(new WebAssembly.Instance(vectorModule,{}).exports.main(),42n,
    'compiled sealed-import guest disagreed with 56 canonical policy vectors');
- console.log('PASS compiled Atto sealed std HTTP/FS pure-policy imports: exit 42, zero host imports, 56 source vectors, five negatives and rejected async HTTP/FS');
+ console.log('PASS compiled Atto sealed std HTTP/FS pure-policy imports: exit 42, zero host imports, 56 source vectors, six negatives and rejected async HTTP/FS');
 } finally {
  rmSync(dir,{recursive:true,force:true});
 }
