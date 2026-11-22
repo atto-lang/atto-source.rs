@@ -5,6 +5,8 @@ import {createPortableTaskArenaHostV4,verifyPortableTaskGuestV4}
   from '/runtime/browser/portable-task-host-v4.mjs';
 import {createPortableTaskHostV5,verifyPortableTaskGuestV5}
   from '/runtime/browser/portable-task-host-v5.mjs';
+import {createActorFutureHostV1,verifyActorFutureGuestV1}
+  from '/runtime/browser/actor-future-host-v1.mjs';
 import {createJspiControlBridgeV1} from '/runtime/browser/wasm-jspi-control-bridge-v1.mjs';
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
@@ -29,7 +31,8 @@ self.onmessage=async ({data})=>{
     const encoded=new TextEncoder().encode(data.source);
     if(encoded.length>api.input_capacity())throw new Error('source too big');
     new Uint8Array(api.memory.buffer,api.input_ptr(),encoded.length).set(encoded);
-    if((data.portableFutureInt===true?api.compile_future_int(encoded.length):
+    if((data.portableActorFutureInt===true?api.compile_actor_future_int(encoded.length):
+      data.portableFutureInt===true?api.compile_future_int(encoded.length):
       data.portableV5===true?api.compile_v5(encoded.length):
       data.portableV4===true?api.compile_v4(encoded.length):api.compile(encoded.length))!==0){
       if(api.result_length()!==0)throw new Error('compiler emitted on rejection');
@@ -58,6 +61,59 @@ self.onmessage=async ({data})=>{
       self.postMessage({ok:true,value:String(result),stdout:'',
         portableV3:true,portableTurns:host.stats.turns,
         portableResumes:host.stats.resumes,portableCleanups:host.stats.cleanups});
+      return;
+    }
+    if(data.portableActorFutureInt===true){
+      verifyActorFutureGuestV1(guest);
+      const loop=createWorkerControlLoop({
+        maxOwners:16,maxReady:64,maxControl:4,maxSuspended:16
+      });
+      const notice=[];
+      const host=createActorFutureHostV1({module:guest,loop,
+        onSupervisorNotice:m=>notice.push(m)});
+      const actor=new Worker('/actor-future-completer.mjs',{type:'module'});
+      const {port1,port2}=new MessageChannel();
+      try {
+        await new Promise((resolve,reject)=>{
+          actor.onmessage=e=>{
+            if(e.data?.kind==='ready')resolve();
+          };
+          actor.onerror=()=>reject(Error('E_ACTOR_WORKER_START'));
+          actor.postMessage({kind:'bind',port:port2},[port2]);
+        });
+        host.registerActor({actorId:7,incarnation:1,controlPort:port1});
+        const tasks=Array.from({length:16},(_,i)=>host.spawn({
+          owner:'actorfuture-'+i,ownerId:i+1,epoch:1
+        }));
+        for(let i=0;i<70&&host.stats.requests!==16;i++)
+          await new Promise(r=>setTimeout(r,5));
+        await new Promise(r=>setTimeout(r,25));
+        const still=host.stats;
+        if(still.requests!==16||still.liveFrames!==16||
+           still.starts!==16||still.resumes!==0||still.completions!==0||
+           loop.stats.suspended!==16)
+          throw Error('E_ACTOR_FUTURE_PREMATURE');
+        actor.postMessage({kind:'release'});
+        const values=await Promise.all(tasks.map(t=>t.result));
+        const stats=host.stats;
+        if(values.some(v=>v!==42n)||stats.requests!==32||
+           stats.peak!==16||stats.completions!==32||
+           stats.resumes!==32||stats.drops!==16||
+           stats.liveFrames!==0||loop.stats.owners!==0)
+          throw Error('E_ACTOR_FUTURE_EXECUTION');
+        const stopped=host.stopActor({actorId:7,incarnation:1,
+          kind:'terminated',reason:'test actor shutdown'});
+        if(!stopped||notice.length!==1||notice[0].actorId!==7)
+          throw Error('E_ACTOR_FUTURE_SUPERVISOR_NOTICE');
+        self.postMessage({ok:true,value:'42',stdout:'',
+          portableActorFutureInt:true,
+          actorFuturePeak:stats.peak,actorFutureRequests:stats.requests,
+          actorFutureCompletions:stats.completions,
+          actorFutureDrops:stats.drops,actorFutureNotices:notice.length});
+      }finally{
+        host.close();loop.close();
+        port1.close();actor.terminate();
+      }
       return;
     }
     if(data.portableV5===true||data.portableFutureInt===true){
