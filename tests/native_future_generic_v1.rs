@@ -81,6 +81,9 @@ fn generic_adapter_definition_is_sealed_and_cannot_reinterpret_body(){
       FUTURE.replace("pub susp fnc","pub fnc"),
       FUTURE.replace("T> receipt) -> T","T> receipt) -> bool"),
       FUTURE.replace("pub susp fnc main():int", "pub susp fnc await_future<T>(take! Future<T> receipt) -> T { return await receipt; }\npub susp fnc main():int"),
+      FUTURE.replace("pub susp fnc await_future<T>", "define class X as pub susp fnc await_future<T>"),
+      FUTURE.replace("pub susp fnc await_future<T>", "define module future_family as pub susp fnc await_future<T>"),
+      FUTURE.replace("pub susp fnc await_future<T>", "import module other from \"stdlib/std/other.atto\"; pub susp fnc await_future<T>"),
     ];
     for candidate in bad {
         assert!(compile_future_int_aot(&candidate).is_err(),

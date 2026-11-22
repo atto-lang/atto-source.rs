@@ -105,6 +105,15 @@ pub fn lower(t:Vec<Token>,profile:u8)->Result<Vec<Token>,Diagnostic>{
         }
         i+=1;
     }
+    // This bounded profile is single translation-unit only. A helper inside
+    // a `define class/actor/module` (end-delimited) must never be erased
+    // as if it were a free function. The normal compiler still owns parsing
+    // these declarations; avoid guessing their nested scope boundaries.
+    if declared.iter().any(|present|*present)
+        && (0..t.len()).any(|at|word(&t,at,"define") || word(&t,at,"import")){
+        return Err(err(&t,0,"E_GENERIC_SCOPE",
+            "native generic Future adapter requires an independent free function; class, module and imported scopes are not linked"));
+    }
     let mut out=Vec::with_capacity(t.len());
     let mut i=0usize;
     while i<t.len(){
