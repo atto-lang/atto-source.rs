@@ -1,3 +1,6 @@
+// Native Rust/Wasm linker: explicitly exported Atto module namespace.
+// Source remains independently maintained in this backend.
+define pub module websocket as
 // Backend-owned Atto source: rs; independent implementation lifecycle.
 // std/websocket: RFC 6455 framing, fragmentation and admission in Atto.
 // No host sockets, SHA-1 handshake, TLS, buffer ownership, UTF-8 decoder or
@@ -125,3 +128,5 @@ pub fnc websocket_header_bytes(int seven_bit_length, bool masked): int {
   if masked then return 6 + extension_width; fi
   return 2 + extension_width;
 }
+
+end
