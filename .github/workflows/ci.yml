@@ -67,8 +67,16 @@ jobs:
           assert.equal(receipt.cases.length,20);
           assert.match(receipt.native_compiler_sha256,/^[a-f0-9]{64}$/);
           assert.match(receipt.browser_compiler_sha256,/^[a-f0-9]{64}$/);
+          assert.ok(receipt.compiler_toolchain.length>0);
+          assert.equal(receipt.target,'wasm32-unknown-unknown');
           assert.ok(receipt.cases.every(x=>x.status==='PASSED' && x.category==='COMPILED_GUEST'));
+          assert.ok(receipt.cases.every(x=>/^[a-f0-9]{64}$/.test(x.fixture_sha256)));
+          assert.ok(receipt.cases.filter(x=>x.expected.compile==='success').every(x=>
+            x.actual.guest_exit===String(x.expected.browser_exit) &&
+            x.actual.native_compile_exit===0 && x.actual.browser_compile==='success'));
           assert.ok(receipt.cases.filter(x=>x.expected.compile==='rejected').every(x=>
+            x.actual.browser_diagnostic===x.expected.diagnostic &&
+            x.actual.native_diagnostic_contains_expected &&
             x.actual.browser_artifact_bytes===0 && x.actual.native_artifact_bytes===0));
           fs.mkdirSync('target/evidence',{recursive:true});
           fs.writeFileSync('target/evidence/borrow-v1-evidence.json',JSON.stringify(receipt,null,2)+'\n');
