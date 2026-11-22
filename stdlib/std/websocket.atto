@@ -39,11 +39,11 @@ pub fnc websocket_frame_admit(
   int opcode, bool fin, bool masked, int payload_length, int frame_budget,
   bool from_client, bool fragmented_open, bool rsv_set
 ): bool {
-  if !websocket_valid_opcode(opcode) || rsv_set then return false; fi
+  if !websocket.websocket_valid_opcode(opcode) || rsv_set then return false; fi
   if payload_length < 0 || frame_budget < 0 then return false; fi
   if payload_length > frame_budget then return false; fi
   if from_client != masked then return false; fi
-  if websocket_control_opcode(opcode) then
+  if websocket.websocket_control_opcode(opcode) then
     if !fin || payload_length > 125 then return false; fi
     if opcode == 8 && payload_length == 1 then return false; fi
     return true;
@@ -55,8 +55,8 @@ pub fnc websocket_frame_admit(
 // 0 or 1 = new fragment-open state; -1 = protocol violation.
 // Control frames may interleave without affecting the fragmented message.
 pub fnc websocket_next_fragment_state(int opcode, bool fin, bool fragmented_open): int {
-  if !websocket_valid_opcode(opcode) then return -1; fi
-  if websocket_control_opcode(opcode) then
+  if !websocket.websocket_valid_opcode(opcode) then return -1; fi
+  if websocket.websocket_control_opcode(opcode) then
     if !fin then return -1; fi
     if fragmented_open then return 1; fi
     return 0;
@@ -94,7 +94,7 @@ pub fnc websocket_payload_fits(int payload_length, int available, int limit): bo
 // RFC 6455 XOR mask, source-implemented and byte-bounded; returns -1 on bad
 // input. Caller chooses the correct mask byte by payload position modulo 4.
 pub fnc websocket_mask_octet(int octet, int mask_octet): int {
-  if !websocket_valid_octet(octet) || !websocket_valid_octet(mask_octet) then
+  if !websocket.websocket_valid_octet(octet) || !websocket.websocket_valid_octet(mask_octet) then
     return -1;
   fi
   let a: int = octet;
@@ -102,7 +102,7 @@ pub fnc websocket_mask_octet(int octet, int mask_octet): int {
   let factor: int = 1;
   let result: int = 0;
   for (let int i = 0; i < 8; i = i + 1) {
-    if a % 2 != b % 2 then result = result + factor; fi
+    if (a - (a / 2) * 2) != (b - (b / 2) * 2) then result = result + factor; fi
     a = a / 2;
     b = b / 2;
     factor = factor * 2;
@@ -114,16 +114,16 @@ pub fnc websocket_mask_octet(int octet, int mask_octet): int {
 // A close payload of length zero is handled by the caller as "no status".
 // Returns -1 if either byte is malformed or the code is forbidden on the wire.
 pub fnc websocket_decode_close_code(int high, int low): int {
-  if !websocket_valid_octet(high) || !websocket_valid_octet(low) then
+  if !websocket.websocket_valid_octet(high) || !websocket.websocket_valid_octet(low) then
     return -1;
   fi
   let code: int = high * 256 + low;
-  if !websocket_valid_close_code(code) then return -1; fi
+  if !websocket.websocket_valid_close_code(code) then return -1; fi
   return code;
 }
 
 pub fnc websocket_header_bytes(int seven_bit_length, bool masked): int {
-  let extension_width: int = websocket_payload_length_width(seven_bit_length);
+  let extension_width: int = websocket.websocket_payload_length_width(seven_bit_length);
   if extension_width < 0 then return -1; fi
   if masked then return 6 + extension_width; fi
   return 2 + extension_width;
