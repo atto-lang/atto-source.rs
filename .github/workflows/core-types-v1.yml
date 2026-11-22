@@ -50,7 +50,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           cargo build --locked --bin attoc
           test -x target/debug/attoc
-      - name: Execute two compiled Wasm guests and reject four negative compilations
+      - name: Execute two compiled Wasm guests and reject six negative compilations
         env:
           ATTOC: target/debug/attoc
         run: node tests/core-types-wasm-guest.mjs

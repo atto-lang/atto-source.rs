@@ -22,7 +22,8 @@ try{
     console.log('CORE_TYPES_RS_WASM_GUEST='+fixture+':EXECUTED_EXIT_0');
   }
   for(const name of ['void-value-negative.atto','void-return-negative.atto',
-    'bool-truthiness-negative.atto','i64-literal-overflow-negative.atto']){
+    'bool-truthiness-negative.atto','i64-literal-overflow-negative.atto',
+    'wrong-arg-negative.atto','u64-outside-int-negative.atto']){
     const rejected=join(work,name+'.wasm');
     const r=spawnSync(compiler,[join(fixtures,name),'-o',rejected],{encoding:'utf8',timeout:120000});
     assert.notEqual(r.status,0,name+' unexpectedly compiled');
