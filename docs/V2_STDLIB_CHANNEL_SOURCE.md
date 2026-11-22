@@ -66,8 +66,8 @@ The three regression guests are:
 - `tests/fixtures/pass/239-v2-rendezvous-for-await.atto`
 - `tests/fixtures/pass/240-v2-rendezvous-close-wakes-reader.atto`
 
-`tests/node-v2-channel-guest.mjs` compiles and executes **20** positive and
-negative channel fixtures (ten successful, ten expected guest denials)
+`tests/node-v2-channel-guest.mjs` compiles and executes **22** positive and
+negative channel fixtures (twelve successful, ten expected guest denials)
 as actual independent Wasm guests. These now cover direct rendezvous,
 for-await rendezvous, close/wakeup, invalid capacities, legacy two-port
 actor pipe ownership admission, and closed-versus-empty immediate read.
@@ -135,11 +135,11 @@ guest panic code **15**, rather than masquerading as an ordinary EOF `None`.
 Repeated cancellation is idempotently false. Cancellation cannot mint
 permissions to access an actor DATA channel.
 
-Four successful and one trap-positive `.atto` fixtures cover FIFO/tail
+Six successful and one trap-positive `.atto` fixtures cover FIFO/head/middle/tail
 repair, wrong-channel rejection, already-delivered and closed Futures,
-idempotence, and await-after-cancellation. A sixth source fixture must fail
-compilation for a mismatched `Future<Option<bool>>` passed to a
-`Channel<int>`. The Node real-guest gate now contains **20** runnable
+idempotence, and await-after-cancellation. Two source fixtures must fail
+compilation for a mismatched `Future<Option<bool>>` or a forged integer
+passed to a `Channel<int>`. The Node real-guest gate now contains **22** runnable
 cases. These are staged tests: no exact-head compiler/guest evidence exists
 until a runner executes the actual `.atto` guests.
 
