@@ -5,7 +5,7 @@ use atto_compiler::{compile, lexer, parser::Parser};
 
 fn emitted(source: &str) {
     let wasm = compile(source).unwrap_or_else(|e| panic!("expected compiled guest: {e}"));
-    assert!(wasm.starts_with(b"\\0asm"), "must emit actual Wasm, not an empty stub");
+    assert!(wasm.starts_with(b"\0asm"), "must emit actual Wasm, not an empty stub");
 }
 
 fn rejected(source: &str, code: &str) {
