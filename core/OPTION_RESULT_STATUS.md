@@ -81,3 +81,17 @@ The source-local CI runner has not supplied a stepful compiled guest
 receipt for these new cases. Private compiler-source export requires an
 independently approved exact snapshot and destination and must not
 be inferred from a token-free mirroring technique.
+
+### Real Rust compiler/guest test entrypoints for borrow queries
+
+`tests/core_option_result_scalar.rs` now contains an actual Rust compiler
+`compile(...)` call for the new `borrowed_read_42.atto` target, and a
+Node `WebAssembly.instantiate` guest execution assertion for returned
+`42` with no benign host simulation fallback. A separate test compiles
+`negative_affine_borrow_escape.atto` and requires a typed borrow/ownership
+diagnostic (`E_OWNERSHIP`, `E_BORROW` or `E_MOVED`) with source position,
+**not** a lexical or syntax error. The test code is executable and not
+ignored. Both cases are **NOT_EXECUTED** on an admitted exact-head runner.
+Until a full real compiler run proves the feature, this branch remains
+draft; existing generic borrow classes or namespace linkage may fail.
+Do not downgrade the tests to host-only success to make a CI badge green.
