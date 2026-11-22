@@ -1,0 +1,29 @@
+name: Atto std.actor native namespace guest
+on:
+  pull_request:
+    paths:
+      - "stdlib/actor/**"
+      - "tests/actor-stdlib-**"
+      - "tests/actor_std_native_guest.rs"
+      - ".github/workflows/std-actor-guest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Compile actual native Atto namespace guest in Rust tests
+        run: cargo test --locked --test actor_std_native_guest
+      - name: Build real frontend/compiler
+        run: cargo build --locked --release --bin attoc
+      - name: Execute source and real Wasm guest tests
+        run: node --test tests/actor-stdlib-source.test.mjs tests/actor-stdlib-guest.test.mjs
