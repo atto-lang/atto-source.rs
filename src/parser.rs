@@ -1432,7 +1432,7 @@ impl Parser {
         let non_bool = match &predicate.kind {
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
             ExprKind::Var(name) => params.iter().any(|p| p.name == *name && p.ty != Type::Bool)
-                || result.is_some_and(|(binder, ty)| binder == name && ty != Type::Bool),
+                || result.is_some_and(|(binder, ty)| binder == name.as_str() && ty != Type::Bool),
             _ => false,
         };
         if non_bool {
