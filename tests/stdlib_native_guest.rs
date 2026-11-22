@@ -104,3 +104,72 @@ fn boundary_guest_exposes_every_public_std_helper() {
         }
     }
 }
+
+
+const BORROW_CORE: &str = include_str!("stdlib/protocol_borrow_core.atto");
+
+fn borrow_core_mutation(before: &str, after: &str, expected: &str) {
+    assert_eq!(BORROW_CORE.matches(before).count(), 1, "mutation anchor must be unique");
+    let mutant = BORROW_CORE.replacen(before, after, 1);
+    assert_ne!(mutant, BORROW_CORE, "negative test must modify actual Atto source");
+    let err = link(&mutant, WS, QUIC, COMPUTE)
+        .expect_err("unsafe borrowed ownership must not emit executable guest Wasm");
+    assert_eq!(err.code, expected, "unexpected compiler diagnostic: {err}");
+}
+
+#[test]
+fn scoped_core_borrows_can_call_real_protocol_atto_modules_and_move_after_end() {
+    let wasm = link(BORROW_CORE, WS, QUIC, COMPUTE)
+        .expect("positive borrowed buffer descriptor must compile through the real core checker");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "must emit a true Wasm guest");
+    assert_eq!(wasm, link(BORROW_CORE, WS, QUIC, COMPUTE).unwrap(),
+        "ownership-checking decisions must remain deterministic");
+}
+
+#[test]
+fn core_checker_rejects_owner_move_with_live_read_loan() {
+    borrow_core_mutation(
+        "val reader = borrow! buffer;",
+        "val reader = borrow! buffer;\n    val premature = take! buffer;",
+        "E_BORROW");
+}
+
+#[test]
+fn core_checker_rejects_mutation_through_shared_read_loan() {
+    borrow_core_mutation(
+        "val reader = borrow! buffer;",
+        "val reader = borrow! buffer;\n    reader.consumed = 9;",
+        "E_BORROW");
+}
+
+#[test]
+fn core_checker_rejects_conflicting_loan_while_writer_is_live() {
+    borrow_core_mutation(
+        "val writer = borrow! mut buffer;",
+        "val writer = borrow! mut buffer;\n    val conflicted = borrow! buffer;",
+        "E_BORROW");
+}
+
+#[test]
+fn core_checker_rejects_reading_owner_during_exclusive_loan() {
+    borrow_core_mutation(
+        "val writer = borrow! mut buffer;",
+        "val writer = borrow! mut buffer;\n    val leaked = buffer.capacity;",
+        "E_BORROW");
+}
+
+#[test]
+fn core_checker_rejects_use_after_take_even_when_protocol_call_is_legal() {
+    borrow_core_mutation(
+        "val transferred = take! buffer;",
+        "val transferred = take! buffer;\n  val stale = buffer.capacity;",
+        "E_MOVED");
+}
+
+#[test]
+fn core_checker_does_not_borrow_an_unowned_temporary_descriptor() {
+    borrow_core_mutation(
+        "val reader = borrow! buffer;",
+        "val reader = borrow! new BoundedBuffer();",
+        "E_BORROW");
+}
