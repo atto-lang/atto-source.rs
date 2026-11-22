@@ -75,11 +75,25 @@ fn source_path(logical: &Path, selector: &str, pos: Pos) -> R<PathBuf> {
     Ok(normalized)
 }
 
+fn reject_reserved(tokens: &[Token]) -> R<()> {
+    for item in tokens {
+        if let Tok::Ident(name) = &item.tok {
+            if name.starts_with("__atto_file_import_")
+                || name.starts_with("__atto_internal_module_") {
+                return Err(fail(item.pos, "E_RESERVED",
+                    "reserved compiler import/module identifier cannot occur in source"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
     if src.len() > crate::SOURCE_CAP {
         return Err(fail(Pos::default(), "E_SOURCE_LIMIT", "imported file exceeds byte limit"));
     }
     let tokens = lexer::lex(src)?;
+    reject_reserved(&tokens)?;
     let mut i = 0usize;
     let mut exports = BTreeMap::new();
     while tokens.get(i).is_some_and(|t| t.tok != Tok::Eof) {
@@ -181,6 +195,7 @@ where F: FnMut(&Path) -> std::io::Result<String> {
     if !has_typed {
         return Ok(None);
     }
+    reject_reserved(&tokens)?;
     if !word(&tokens, 0, "import") {
         return Err(fail(tokens[0].pos, "E_UNSUPPORTED",
             "executable constant file imports require import declarations first"));
