@@ -1166,8 +1166,11 @@ impl Parser {
                     };
                     let predicate = self.parse_expr()?;
                     self.terminator()?;
-                    self.validate_static_contract("invariant", &predicate, &[],
-                        binder.as_deref().map(|name| (name, Type::Bool)), mpos)?;
+                    if !self.validate_static_contract("invariant", &predicate, &[],
+                        binder.as_deref().map(|name| (name, Type::Bool)), mpos)? {
+                        return Err(Diagnostic::new(mpos, "E_CONTRACT_UNSUPPORTED",
+                            "dynamic class/actor invariants require checked lifecycle and supervisor lowering"));
+                    }
                 }
                 Some("fnc" | "method") => {
                     self.advance();
@@ -1387,8 +1390,9 @@ impl Parser {
     /// Only provable Boolean literals are executable in this initial AOT
     /// subset; all dynamic checks must fail closed before any guest artifact.
     /// Returning Result<()> avoids leaking unlowered contract clauses into AST.
-    fn parse_static_contract_clauses(&mut self, params: &[Param], ret: Type) -> R<()> {
+    fn parse_static_contract_clauses(&mut self, params: &[Param], ret: Type) -> R<Vec<ContractClause>> {
         let mut count = 0usize;
+        let mut contracts = Vec::new();
         loop {
             let kind = match self.word_at(0) {
                 Some("requires") => "requires",
@@ -1417,18 +1421,27 @@ impl Parser {
             };
             let predicate = self.parse_expr()?;
             self.expect(Tok::Semi, "';' after contract predicate")?;
-            self.validate_static_contract(kind, &predicate, params,
-                binder.as_deref().map(|name| (name, ret)), pos)?;
+            if !self.validate_static_contract(kind, &predicate, params,
+                binder.as_deref().map(|name| (name, ret)), pos)? {
+                contracts.push(ContractClause {
+                    kind: match binder {
+                        Some(binder) => ContractKind::Ensures { binder },
+                        None => ContractKind::Requires,
+                    },
+                    predicate,
+                    pos,
+                });
+            }
         }
         if self.is_word("invariant") {
             return Err(Diagnostic::new(self.pos(), "E_CONTRACT_PLACEMENT",
                 "invariant belongs in a class/actor body, not in a callable signature"));
         }
-        Ok(())
+        Ok(contracts)
     }
 
     fn validate_static_contract(&self, kind: &str, predicate: &Expr,
-        params: &[Param], result: Option<(&str, Type)>, pos: Pos) -> R<()> {
+        params: &[Param], result: Option<(&str, Type)>, pos: Pos) -> R<bool> {
         let non_bool = match &predicate.kind {
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
             ExprKind::Var(name) => params.iter().any(|p| p.name == *name && p.ty != Type::Bool)
@@ -1440,11 +1453,10 @@ impl Parser {
                 format!("{kind} predicate must be bool, not a non-boolean scalar")));
         }
         match static_contract_bool(predicate) {
-            Some(true) => Ok(()), // Sound proof: no runtime check is needed.
+            Some(true) => Ok(true), // Sound proof: no runtime check is needed.
             Some(false) => Err(Diagnostic::new(pos, "E_CONTRACT_ALWAYS_FALSE",
                 format!("{kind} is provably false"))),
-            None => Err(Diagnostic::new(pos, "E_CONTRACT_UNSUPPORTED",
-                format!("dynamic {kind} requires typed, effect-safe panic and return-path lowering; no guest code emitted"))),
+            None => Ok(false), // Retained in AST; checker must prove typed effect-safe guest lowering.
         }
     }
 
@@ -1455,7 +1467,7 @@ impl Parser {
         } = self.parse_named_callable_header("a method name")?;
         // For an explicit inferred result, the comma/end body still has a
         // checked tail return, never a silently discarded terminal expression.
-        self.parse_static_contract_clauses(&params, ret)?;
+        let contracts = self.parse_static_contract_clauses(&params, ret)?;
         let body = self.parse_callable_body(arrow_type, colon_type, return_first,
             if infer { Type::Int } else { ret })?;
         let ret = if infer { self.infer_callable_return(&body, &params)? } else { ret };
@@ -1466,6 +1478,7 @@ impl Parser {
             is_static,
             params,
             ret,
+            contracts,
             body,
         })
     }
@@ -1730,7 +1743,7 @@ impl Parser {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
         } = self.parse_named_callable_header("a function name")?;
         let declared_effects = self.parse_effect_clauses()?;
-        self.parse_static_contract_clauses(&params, ret)?;
+        let contracts = self.parse_static_contract_clauses(&params, ret)?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1753,6 +1766,7 @@ impl Parser {
             declared_effects,
             params,
             ret,
+            contracts,
             body,
         })
     }
