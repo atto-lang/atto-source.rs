@@ -1,14 +1,27 @@
-# Atto core slice, iter, cmp (first source-owned increment)
+# Rust browser Atto core slice/iter/cmp admission
 
-These are implementation files, not declarations of a runtime-provided safe Slice<T> or Iterator<T> ABI.
+The source-owned modules `core/slice.atto`, `core/iter.atto`, and
+`core/cmp.atto` are **scalar-only** for this backend: range checks,
+forward/reverse cursor movement, `Option<int>` checked operations,
+integer/boolean ordering, min/max and clamping. They use the existing
+`define pub module` and project-root `+core/name.atto` package linker.
+This is a path-local package import, **not** a trusted `atto.core/name`
+virtual module or an externally authenticated package registry.
 
-* `slice.atto`: allocation-free bounds-safe logical windows and integer element operations on pre-existing `Array<int>`.
-* `iter.atto`: allocation-free cursor arithmetic and callback-based fold/any/all/find/count on pre-existing arrays.
-* `cmp.atto`: int/bool total ordering, min/max/clamp, lexicographic array ordering and sortedness checks.
+Compiler admission is defined in `tests/core_slice_iter_cmp_package.rs`,
+which compiles the real sources and checks deterministic Wasm bytes; it
+does not by itself execute a guest. The scalar source fixture is
+`core/tests/slice_iter_cmp_smoke.atto`.
 
-All functions use signed `int` bounds; bounds are validated with subtraction after comparisons to avoid overflow. Invalid reads return `Option` rather than a sentinel, while invalid boolean predicates return false. Empty valid ranges are admitted and do not read elements. The `*_int` functions operate on copyable scalar elements only. Comparators produce -1/0/1 without subtraction overflow.
+The original array/callback algorithms are staged in
+`core/experimental/{slice,iter,cmp}_array.atto` and the extra fixtures
+`core/tests/slice_iter_cmp_edge_cases.atto` and
+`core/tests/iter_callbacks_smoke.atto` are **not executable on this
+browser backend yet**. In particular, no generic owned Array<T> guest
+lowering, borrow-lifetime enforcement, Slice<T>/SliceMut<T>, Iterator<T>
+or Ord trait dispatch is being claimed.
 
-## Explicitly not yet implemented
-A general `Slice<T>`/`SliceMut<T>` borrowed view and lifetime/generation enforcement, generic `Iterator<T>`/`IntoIterator<T>` and lazy adapters, zero-copy mutable chunk/split operations, an `Ordering` algebraic data type, and arbitrary `Ord` generic dispatch require type-checker/runtime support. A function accepting an `Array<int>` is not sufficient proof of memory safety or absence of underlying array allocation.
-
-The proposed import fixture is in `tests/slice_iter_cmp_smoke.atto`. It must only be counted as passing after each compiler wires `atto.core` package resolution and executes the fixture at the exact PR head. Do not report source presence as executed conformance. Independent backend implementations are permitted; match public semantics and negative bounds behavior.
+A general slice API must be compiler-owned borrower/owner checked and
+reject escapes, invalidation by owner mutations, aliasing mutable views,
+use-after-take, retained loans crossing await, and actor crossing.
+No runtime allocator or host imports may be used to bypass these gates.
