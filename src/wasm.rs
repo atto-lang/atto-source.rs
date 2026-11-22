@@ -25,7 +25,7 @@
 //! randomness, so identical input yields byte-identical modules on every host.
 
 use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
+use crate::check::{Builtin, ContractFault, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
 
@@ -40,6 +40,10 @@ pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 /// Logical stack exhausted (spec chapter 25): a call inside a recursive call
 /// cycle would exceed [`MAX_CALL_DEPTH`] live guest frames.
 pub const PANIC_STACK: i32 = 6;
+/// Runtime contract failures use noncatchable Wasm traps (not guest throw
+/// tags). Hosts can classify the failure without converting it to Result.
+pub const PANIC_CONTRACT_REQUIRES: i32 = 7;
+pub const PANIC_CONTRACT_ENSURES: i32 = 8;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -503,6 +507,17 @@ impl Emit<'_> {
 
     fn stmt(&mut self, s: &TStmt) {
         match s {
+            TStmt::ContractCheck { predicate, kind } => {
+                self.expr(predicate); // precisely once, typed bool (i32)
+                self.op(0x45); // i32.eqz
+                self.open(0x04, 0x40, Frame::Other); // if false, panic
+                let code = match kind {
+                    ContractFault::Requires => PANIC_CONTRACT_REQUIRES,
+                    ContractFault::Ensures => PANIC_CONTRACT_ENSURES,
+                };
+                panic(&mut self.code, code); // sets panic_code; unreachable
+                self.close();
+            }
             TStmt::Set(slot, v) => {
                 self.expr(v);
                 self.op(0x21);
