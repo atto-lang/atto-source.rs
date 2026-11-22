@@ -1,5 +1,6 @@
 import {createChannelIntGuestV1,verifyChannelIntGuestV1,CHANNEL_INT_V1_IMPORTS} from '/runtime/browser/channel_int_guest_v1.mjs';
 import {createWorkerControlLoop} from '/runtime/browser/worker-control-loop-v1.mjs';
+import {createPortableTaskHostV3} from '/runtime/browser/portable-task-host-v3.mjs';
 import {createJspiControlBridgeV1} from '/runtime/browser/wasm-jspi-control-bridge-v1.mjs';
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
@@ -37,6 +38,22 @@ self.onmessage=async ({data})=>{
     const asyncSections=WebAssembly.Module.customSections(guest,'atto.async');
     const useAsync=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1&&new Uint8Array(asyncSections[0])[0]===2;
     if(asyncSections.length&&!useAsync)throw new Error('invalid async marker');
+    // Explicitly selected AOT state-machine path: ordinary Wasm functions,
+    // no WebAssembly.Suspending or JSPI stack retention. Keep legacy main
+    // inaccessible to this host profile.
+    if(data.portableV3===true){
+      const taskLoop=createWorkerControlLoop({
+        maxOwners:1,maxReady:8,maxControl:4,maxSuspended:1
+      });
+      const host=createPortableTaskHostV3({
+        module:guest,loop:taskLoop,owner:'portable-wasm',ownerId:1,epoch:1
+      });
+      const result=await host.run();
+      self.postMessage({ok:true,value:String(result),stdout:'',
+        portableV3:true,portableTurns:host.stats.turns,
+        portableResumes:host.stats.resumes,portableCleanups:host.stats.cleanups});
+      return;
+    }
     if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
     const useChannel=WebAssembly.Module.customSections(guest,'atto.channel_int').length>0;
     if(useChannel&&!verifyChannelIntGuestV1(out,guest))throw new Error('invalid channel ABI marker');
