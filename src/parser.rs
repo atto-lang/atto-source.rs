@@ -289,14 +289,12 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
     Diagnostic::new(pos, "E_UNSUPPORTED", format!("{what} is not supported by the browser compiler yet"))
 }
 
-/// Conservative control-flow proof for guard's failure path. In particular,
-/// a break/continue, an if without else, or a match without exhaustiveness
-/// evidence cannot stand in for a guaranteed enclosing-function exit.
-/// Later checker stages may admit richer terminal constructs only after
-/// proving they cannot fall through.
+/// Conservative guard proof: every failure path must explicitly return
+/// from the enclosing callable. An exceptional exit does not satisfy this
+/// mandatory-return contract. The typed checker checks the return's type.
 fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
-        Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
+        Some(Stmt::Return(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
@@ -304,6 +302,22 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
                 && guard_failure_exits(other),
         _ => false,
     }
+}
+
+/// A throw/raise or loop escape cannot be hidden by a trailing return,
+/// including from nested arms. Guard lowering must fail closed.
+fn guard_has_nonreturn_exit(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Throw(..) | Stmt::Raise(..) | Stmt::Break(..) | Stmt::Continue(..) => true,
+        Stmt::Block(body) | Stmt::StateWrite { body, .. } =>
+            guard_has_nonreturn_exit(body),
+        Stmt::If { arms, otherwise, .. } =>
+            arms.iter().any(|(_, b)| guard_has_nonreturn_exit(b))
+                || otherwise.as_ref().is_some_and(|b| guard_has_nonreturn_exit(b)),
+        Stmt::Match { arms, .. } =>
+            arms.iter().any(|arm| guard_has_nonreturn_exit(&arm.body)),
+        _ => false,
+    })
 }
 
 impl Parser {
@@ -2664,9 +2678,9 @@ impl Parser {
             return Err(Diagnostic::new(self.pos(), "E_GUARD",
                 "guard needs '{ ... }' or 'else ... end' failure branch"));
         };
-        if !guard_failure_exits(&failure) {
+        if guard_has_nonreturn_exit(&failure) || !guard_failure_exits(&failure) {
             return Err(Diagnostic::new(pos, "E_GUARD",
-                "guard failure branch must exit the enclosing function on every path"));
+                "guard failure branch must explicitly return from the enclosing function on every path"));
         }
         Ok(Stmt::If {
             arms: vec![(
