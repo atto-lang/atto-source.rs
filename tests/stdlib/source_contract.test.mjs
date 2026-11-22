@@ -140,3 +140,24 @@ test("boundary auditor rejects missing imports, callsites, exports and bad case 
     websocket: sources.websocket.replace("pub fnc websocket_mask_octet", "fnc websocket_mask_octet")};
   assert.throws(() => verifyBoundary(boundary, removedExport));
 });
+
+
+test("bounded nonnegative i64 quotient/subtract identity matches remainder arithmetic", () => {
+  const max = (1n << 63n) - 1n;
+  const divisors = [1n, 2n, 4n, 8n, 16n, 255n, 256n, 65535n,
+    (1n << 62n), max];
+  const values = [0n, 1n, 2n, 3n, 7n, 8n, 63n, 64n, 125n, 126n,
+    255n, 256n, 15293n, 16384n, (1n << 62n)-1n, (1n << 62n), max-1n, max];
+  let state = 0x123456789abcdefn;
+  for (let i = 0; i < 2048; i++) {
+    state = (state * 6364136223846793005n + 1442695040888963407n) & max;
+    values.push(state);
+  }
+  for (const value of values) for (const divisor of divisors) {
+    const product = (value / divisor) * divisor;
+    assert.ok(product >= 0n && product <= value && product <= max,
+      "intermediate product must fit signed i64 and never exceed input");
+    assert.equal(value - product, value % divisor,
+      "backend-owned quotient/subtract expression changed remainder semantics");
+  }
+});
