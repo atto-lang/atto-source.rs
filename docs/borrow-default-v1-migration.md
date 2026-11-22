@@ -68,6 +68,6 @@ versioned migration profile does not ratify package-wide ownership defaults.
 
 ## Verification
 
-The source fixture corpus includes 4 expected executable guests and 11 rejected invalid programs. The native fixture harness and full native-vs-browser Wasm conformance harness pick them up automatically. To claim implementation, require exact source/carrier blob identity, positive real Wasm guest exit/stdout, negative expected diagnostics with **zero bytes emitted**, and regression tests proving the no-header legacy ABI remains owned.
+This stacked branch also carries the parent's four new same-call aliasing fixtures (two executable positives and two negative compiler cases), with Git blob identities matched across branches. Its separate mutable-call fixtures remain in place. All newly introduced cases are NOT_EXECUTED on the current head. The native fixture harness and full native-vs-browser Wasm conformance harness pick them up automatically. To claim implementation, require exact source/carrier blob identity, positive real Wasm guest exit/stdout, negative expected diagnostics with **zero bytes emitted**, and regression tests proving the no-header legacy ABI remains owned.
 
 The header is intentionally experimental and must be reviewed with [atto-spec #89](https://github.com/atto-lang/atto-spec/pull/89), [compiler #336](https://github.com/atto-lang/atto-source.rs/pull/336) and [PR #345](https://github.com/atto-lang/atto-source.rs/pull/345) before language-spec/formatter-wide adoption.
