@@ -4,14 +4,16 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (portable_v4, rest) = if args.first().is_some_and(|x| x=="--portable-v4") {
-        (true,&args[1..])
-    } else { (false,&args[..]) };
+    let (portable_version, rest) = match args.first().map(String::as_str) {
+        Some("--portable-v4") => (4,&args[1..]),
+        Some("--portable-v5") => (5,&args[1..]),
+        _ => (0,&args[..]),
+    };
     let (input, output) = match rest {
         [i] => (i.clone(), None),
         [i, o, out] if o == "-o" => (i.clone(), Some(out.clone())),
         _ => {
-            eprintln!("usage: attoc [--portable-v4] <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--portable-v4|--portable-v5] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -22,9 +24,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let result=if portable_v4 {
-        atto_compiler::compile_portable_v4(&source)
-    } else { atto_compiler::compile(&source) };
+    let result=match portable_version {
+        4 => atto_compiler::compile_portable_v4(&source),
+        5 => atto_compiler::compile_portable_v5(&source),
+        _ => atto_compiler::compile(&source),
+    };
     match result {
         Ok(bytes) => {
             if let Some(o) = output {
