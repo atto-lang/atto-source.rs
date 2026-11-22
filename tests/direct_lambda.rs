@@ -1,6 +1,6 @@
 //! First executable slice: typed private Wasm direct functions, no captures.
 use atto_compiler::{
-    ast::{ExprKind, Type}, check::{self, TExpr, TStmt}, lexer, parser::Parser
+    ast::Type, check::{self, TExpr, TStmt}, lexer, parser::Parser
 };
 
 fn checked(source: &str) -> check::TProgram {

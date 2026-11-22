@@ -111,6 +111,14 @@ impl TypedActorModule {
             _ if self.actors.iter().any(|a| a.name == name) =>
                 return Err(type_error(pos,
                     "actor values cannot be passed by value; use ActorRef<Actor>")),
+            // The target signature parser recognizes the spelling of these
+            // parameterized types, but this bounded receiver IR cannot lower
+            // them. Preserve the distinct unsupported-type diagnostic rather
+            // than misreporting an already-known family as unknown.
+            _ if name.starts_with("Option<") || name.starts_with("Result<")
+                || name.starts_with("Generator<") =>
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    format!("generic receiver signature type '{name}' is not supported"))),
             _ => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE",
                 format!("unknown receiver signature type '{name}'"))),
         })

@@ -1,0 +1,39 @@
+// Bounded virtual IPv4 router actor with two configured scalar routes.
+// Int mail: IPv4 destination (0..2^32-1), -1 = expired TTL event,
+// -2 = diagnostic counters. Other negative mail rejects.
+// Decisions use an actor-private two-entry route table:
+// 10.1.0.0/16 -> port 3, 10.0.0.0/8 -> port 2.
+// The caller remains responsible for parsing/authenticating real packets,
+// ingress interfaces, route provenance and updating IPv4 checksums.
+define actor VirtualRouter as
+    let int routed = 0;
+    let int dropped = 0;
+    let int last_port = -1;
+
+    receive(ActorMail<int> mail): void {
+        if mail.value == -1 then
+            self.dropped = self.dropped + 1;
+            self.last_port = -1;
+            stdio.println(-1);
+        elif mail.value == -2 then
+            stdio.println(self.routed);
+            stdio.println(self.dropped);
+            stdio.println(self.last_port);
+        else
+            let int egress = -1;
+            if mail.value >= 167837696 && mail.value < 167903232 then
+                egress = 3;
+            elif mail.value >= 167772160 && mail.value < 184549376 then
+                egress = 2;
+            fi
+            if egress >= 0 then
+                self.routed = self.routed + 1;
+            else
+                self.dropped = self.dropped + 1;
+            fi
+            self.last_port = egress;
+            stdio.println(egress);
+        fi
+        return;
+    }
+end

@@ -134,6 +134,15 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
     runtimes.get(main).abort();
     return { ok: false, panic: main.exports.panic_code.value, error: String(error), stdout: out };
   }
+  // Actor instances and main must never alias one Wasm linear memory.
+  // This checks per-instance isolation, not OS tenant isolation or GC policy.
+  if (actors.length > 0) {
+    const memories = [main.exports.memory, ...actors.map(a => a.instance.exports.memory)];
+    assert.ok(memories.every(m => m instanceof WebAssembly.Memory),
+      'all actor instances must export their own memory');
+    assert.equal(new Set(memories).size, memories.length,
+      'separate actors/main must not share a WebAssembly.Memory');
+  }
   for (const a of actors) {
     for (let seq = 0; seq < a.queue.length; seq++) {
       const messageId = a.queueIds[seq];
@@ -585,6 +594,183 @@ console.log('COMPILED_WASM_GUEST_TRACE actor_instances=' + tracedActorInstances 
   ' admitted_and_settled=' + tracedActorMessages +
   ' backend=browser-wasm guest=EXECUTED scheduling=serial-host-only');
 console.log(digests.length ? `artifact digests:\n${digests.join('\n')}` : '');
+
+// Exact, unchanged website reverse-pipeline preview. This must run as real
+// compiler-emitted guest Wasm, not a host-language expression substitution.
+const reversePipePath = join(here, 'functional-pipelines.atto');
+const reversePipeSource = await readFile(reversePipePath, 'utf8');
+check('site/functional-pipelines-source-identity-and-real-guest', () => {
+  const blob = createHash('sha1').update(Buffer.from('blob ' + Buffer.byteLength(reversePipeSource) + '\0'))
+    .update(reversePipeSource).digest('hex');
+  assert.equal(blob, 'a8d95c4be6f64812f68fb4178df693fe8d595c00', 'the website source must remain byte-identical');
+  const compiled = compile(reversePipeSource);
+  assert.equal(compiled.ok, true, compiled.message);
+  assert.ok(WebAssembly.validate(compiled.wasm));
+  assert.deepEqual(compile(reversePipeSource).wasm, compiled.wasm);
+  if (attoc) assert.deepEqual(nativeBytes(reversePipePath), compiled.wasm, 'native/wasi compiler guest byte parity');
+  const executed = runGuest(compiled.wasm);
+  assert.equal(executed.ok, true, executed.error);
+  assert.equal(executed.value, 83n);
+  assert.equal(executed.stdout, '');
+});
+check('pipe-left/right-associative-call-order-and-negative-admission', () => {
+  const source = [
+    'fnc twice(int x): int { return x * 2; }',
+    'fnc next(int x): int { return x + 1; }',
+    'pub fnc main(): int { return twice <| next <| 20; }',
+  ].join('\n');
+  const good = compile(source);
+  assert.equal(good.ok, true, good.message);
+  assert.equal(runGuest(good.wasm).value, 42n);
+  for (const bad of [
+    'pub fnc main(): int { return 42 <| 21; }',
+    'fnc twice(int x): int { return x * 2; } pub fnc main(): int { return twice <| true; }',
+    'fnc twice(int x): int { return x * 2; } pub fnc main(): int { return twice <|; }',
+  ]) {
+    const result = compile(bad);
+    assert.equal(result.ok, false, 'invalid reverse pipe admitted');
+    assert.equal('wasm' in result, false, 'invalid source emitted an artifact');
+    assert.match(result.code, /^E_[A-Z_]+$/);
+    assert.ok(result.line > 0 && result.col > 0);
+  }
+});
+
+// Single-expression callable bodies and both functional pipeline directions
+// must execute as compiled Wasm guests; host-only simulation is insufficient.
+const arrowPipePath = join(here, 'fixtures', 'pass', 'functional-pipelines-arrow.atto');
+const arrowPipeSource = await readFile(arrowPipePath, 'utf8');
+check('pipe/inline-arrow-bodies-with-reverse-and-forward-real-guest', () => {
+  const source = arrowPipeSource;
+  const compiled = compile(source);
+  assert.equal(compiled.ok, true, compiled.message);
+  assert.ok(WebAssembly.validate(compiled.wasm));
+  assert.deepEqual(compile(source).wasm, compiled.wasm);
+  if (attoc) assert.deepEqual(nativeBytes(arrowPipePath), compiled.wasm, 'native/wasm compiler byte parity');
+  const executed = runGuest(compiled.wasm);
+  assert.equal(executed.ok, true, executed.error);
+  assert.equal(executed.value, 83n);
+  assert.equal(executed.stdout, '');
+
+  const nested = compile([
+    'fnc twice(int x): int -> x * 2;',
+    'fnc next(int x): int -> x + 1;',
+    'pub fnc main(): int -> twice <| next <| 20;',
+  ].join('\n'));
+  assert.equal(nested.ok, true, nested.message);
+  assert.equal(runGuest(nested.wasm).value, 42n);
+
+  const grouped = compile([
+    'fnc twice(int x): int -> x * 2;',
+    'fnc next(int x): int -> x + 1;',
+    'pub fnc main(): int -> twice <| (20 |> next);',
+  ].join('\n'));
+  assert.equal(grouped.ok, true, grouped.message);
+  assert.equal(runGuest(grouped.wasm).value, 42n);
+});
+check('pipe/inline-arrow-invalid-return-and-terminator-fail-closed', () => {
+  for (const bad of [
+    'fnc twice(int x): int -> x * 2 pub fnc main(): int { return 42; }',
+    'fnc twice(int x): int -> true; pub fnc main(): int { return twice(2); }',
+    'fnc twice(int x): int -> { x * 2; } pub fnc main(): int { return twice(2); }',
+    'fnc twice(int x): int -> x * 2; fnc next(int x): int -> x + 1; pub fnc main(): int -> twice <| 20 |> next;',
+  ]) {
+    const result = compile(bad);
+    assert.equal(result.ok, false, 'invalid arrow body admitted');
+    assert.equal('wasm' in result, false, 'invalid source emitted Wasm');
+    assert.match(result.code, /^E_[A-Z_]+$/);
+    assert.ok(result.line > 0 && result.col > 0);
+  }
+});
+
+// Independent SHA-exact multi-argument functional spec edges. These are
+// real browser/Wasm guest executions, NOT a host-side pipe evaluator.
+for (const [name, expected, sha] of [
+  ['two-argument-61.atto',61n,'4089c524db1d076593994ad65acb5ca7f90eea32'],
+  ['preapplied-grouped-42.atto',42n,'9a89ada18865fead0d92a7de75415957fbb5f67f'],
+]) {
+  const file=join(here,'fixtures','pass','spec-functional-pipelines-edge',name);
+  const source=await readFile(file,'utf8');
+  check('pipe/spec-multiargument-real-wasm-guest/'+name,()=>{
+    const digest=createHash('sha1')
+      .update(Buffer.from('blob '+Buffer.byteLength(source)+'\0'))
+      .update(source).digest('hex');
+    assert.equal(digest,sha,name+': canonical edge source drift');
+    const compiled=compile(source);
+    assert.equal(compiled.ok,true,compiled.message);
+    assert.ok(WebAssembly.validate(compiled.wasm));
+    assert.deepEqual(compile(source).wasm,compiled.wasm);
+    if(attoc)assert.deepEqual(nativeBytes(file),compiled.wasm,
+      name+': native/Wasm compiler emitted different guest bytes');
+    const run=runGuest(compiled.wasm);
+    assert.equal(run.ok,true,run.error);
+    assert.equal(run.value,expected,name+': argument-0 insertion order');
+    assert.equal(run.stdout,'');
+  });
+}
+
+// Supplemental signed-int64 and authority edge conformance. These are real
+// compiler emitted Wasm bytes run in a WebAssembly instance; source hashes
+// independently match atto-spec#121. Invalid sources emit no Wasm artifact.
+for (const [name, sha, expected, kind] of [
+  ['signed-i64-min.atto','bbc22347d7ccb0a5be1a7c2193f11c5f2f4805cc',
+   -9223372036854775808n,'execute'],
+  ['checked-overflow.atto','59bb890b54addc1659065ab55cd565771523bfce',
+   null,'panic'],
+  ['reject-i64-positive-overflow.atto','2e584ee01ee74a3a31e282cf0116957f9ff95bd1',
+   'E_INTEGER_RANGE','reject'],
+  ['reject-i64-negative-underflow.atto','8b63b45e406db3e19aa793e0f7a627914623b9e0',
+   'E_INTEGER_RANGE','reject'],
+  ['reject-reserved-unsafe.atto','b159def3fa26ca6023395e1c546b95c1b929fd14',
+   null,'reject'],
+]) {
+  const file=join(here,'fixtures','spec-functional-pipelines-edge',name);
+  const bytes=await readFile(file);
+  check('pipe/spec-signed-i64-edge-real-wasm/'+name,()=>{
+    const hash=createHash('sha1')
+      .update(Buffer.from('blob '+bytes.length+'\0'))
+      .update(bytes).digest('hex');
+    assert.equal(hash,sha,'independent spec source Git blob identity');
+    const compiled=compile(decoder.decode(bytes));
+    if (kind==='reject') {
+      assert.equal(compiled.ok,false,name+': invalid source admitted');
+      assert.equal('wasm' in compiled,false,'invalid source emitted runnable Wasm');
+      if (expected !== null) assert.equal(compiled.code,expected,name+': diagnostic');
+      if (attoc) assert.equal(nativeBytes(file),null,
+        name+': Rust native compiler emitted rejected Wasm');
+      return;
+    }
+    assert.equal(compiled.ok,true,compiled.message);
+    assert.ok(WebAssembly.validate(compiled.wasm));
+    assert.deepEqual(compile(decoder.decode(bytes)).wasm,compiled.wasm,
+      name+': nondeterministic compiled Wasm output');
+    if (attoc) assert.deepEqual(nativeBytes(file),compiled.wasm,
+      name+': native/Wasm guest byte mismatch');
+    const observed=runGuest(compiled.wasm);
+    if (kind==='panic') {
+      assert.equal(observed.ok,false,'overflow must trap, not wrap');
+      assert.notEqual(observed.panic,0,'overflow must report guest panic code');
+      assert.equal(observed.stdout,'','failed guest must not emit a result');
+    } else {
+      assert.equal(observed.ok,true,observed.error);
+      assert.equal(observed.value,expected,'full signed 64-bit result preserved');
+      assert.equal(observed.stdout,'');
+    }
+  });
+}
+
+// Functional operators must not grant callable identity to actor/effect and
+// task control keywords. These are reserved even in the scalar subset.
+check('pipe/authority-and-task-keywords-are-not-function-names',()=>{
+  for (const keyword of ['unsafe','sync','task','pipe','rpipe']) {
+    const source='fnc '+keyword+'(int x): int -> x;\n'
+      +'pub fnc main(): int -> 42 |> '+keyword+';';
+    const result=compile(source);
+    assert.equal(result.ok,false,keyword+': admitted a reserved function name');
+    assert.equal('wasm' in result,false,keyword+': leaked compiled guest artifact');
+    assert.match(result.code,/^E_[A-Z_]+$/,keyword+': missing compiler diagnostic');
+  }
+});
+
 // Exact current site preview corpus. Rejections never count as executing a
 // feature; the report explicitly separates admitted, unsupported and guests.
 try {

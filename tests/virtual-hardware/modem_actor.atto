@@ -1,0 +1,96 @@
+// Bounded virtual modem actor with private state, epoch and in-flight bytes.
+// Commands: 1 power on, 2 dial, 3 remote answer, 4 carrier lock,
+// 5 hangup, 6 reset, 7 power off. Data ticket = gen * 1048576 + seq * 16 + 8;
+// ACK ticket = gen * 1048576 + seq * 16 + 9, with seq 1..65535.
+// Reject old epochs, duplicate ACKs, skipped sequences and bare 8/9.
+// -1 explicit stale test event, -2 print current session generation,
+// -3 print rejected-command count, -4 next send sequence,
+// -5 oldest unacknowledged sequence.
+// Every transition happens in the actor's serial receive handler.
+// This is NOT a UART/AT parser, actual transport, authentication, or timer.
+define actor VirtualModem as
+    let int state = 0;
+    let int generation = 1;
+    let int in_flight = 0;
+    let int next_send_sequence = 1;
+    let int oldest_ack_sequence = 1;
+    let int rejected = 0;
+
+    receive(ActorMail<int> mail): void {
+        // A valid DATA/ACK event must carry this actor's live session epoch.
+        // 8 and 9 alone are now rejected as unauthenticated legacy commands.
+        if mail.value >= 16 then
+            if mail.value == self.generation * 1048576 + self.next_send_sequence * 16 + 8 then
+                if self.state == 4 && self.in_flight <= 960 &&
+                   self.next_send_sequence < 65536 then
+                    self.in_flight = self.in_flight + 64;
+                    self.next_send_sequence = self.next_send_sequence + 1;
+                    stdio.println(self.in_flight);
+                else
+                    self.rejected = self.rejected + 1;
+                    stdio.println(-1);
+                fi
+            elif mail.value == self.generation * 1048576 + self.oldest_ack_sequence * 16 + 9 then
+                if self.state == 4 && self.in_flight >= 64 then
+                    self.in_flight = self.in_flight - 64;
+                    self.oldest_ack_sequence = self.oldest_ack_sequence + 1;
+                    stdio.println(self.in_flight);
+                else
+                    self.rejected = self.rejected + 1;
+                    stdio.println(-1);
+                fi
+            else
+                self.rejected = self.rejected + 1;
+                stdio.println(-1);
+            fi
+        elif mail.value == -1 then
+            // All old generation tickets are rejected; no state mutation.
+            self.rejected = self.rejected + 1;
+            stdio.println(-1);
+        elif mail.value == -2 then
+            stdio.println(self.generation);
+        elif mail.value == -3 then
+            stdio.println(self.rejected);
+        elif mail.value == -4 then
+            stdio.println(self.next_send_sequence);
+        elif mail.value == -5 then
+            stdio.println(self.oldest_ack_sequence);
+        else
+            let int next = -1;
+            if mail.value == 7 then
+                next = 0;
+            elif self.state == 0 && mail.value == 1 then
+                next = 1;
+            elif self.state == 1 && mail.value == 2 then
+                next = 2;
+            elif self.state == 2 && mail.value == 3 then
+                next = 3;
+            elif self.state == 3 && mail.value == 4 then
+                next = 4;
+            elif self.state >= 1 && (mail.value == 5 || mail.value == 6) then
+                next = 1;
+            fi
+            if next == -1 then
+                self.rejected = self.rejected + 1;
+                stdio.println(-1);
+            elif (mail.value == 2 || mail.value == 5 ||
+                  mail.value == 6 || mail.value == 7) &&
+                 self.generation >= 2147483647 then
+                // Prevent ABA generation wrapping; leave all state intact.
+                self.rejected = self.rejected + 1;
+                stdio.println(-1);
+            else
+                self.state = next;
+                if mail.value == 2 || mail.value == 5 ||
+                   mail.value == 6 || mail.value == 7 then
+                    self.generation = self.generation + 1;
+                    self.in_flight = 0;
+                    self.next_send_sequence = 1;
+                    self.oldest_ack_sequence = 1;
+                fi
+                stdio.println(self.state);
+            fi
+        fi
+        return;
+    }
+end

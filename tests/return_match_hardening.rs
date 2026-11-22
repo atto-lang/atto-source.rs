@@ -1,7 +1,11 @@
 //! Hard bounds and error recovery for the return-position match feature.
+use std::fmt::Write as _;
 #[test]
 fn return_match_arm_budget_fails_closed_and_compiler_recovers() {
-    let arms: String = (0..300).map(|i| format!("on {i} -> {i},\n")).collect();
+    let mut arms = String::new();
+    for i in 0..300 {
+        writeln!(&mut arms, "on {i} -> {i},").expect("writing a String cannot fail");
+    }
     let source = format!("pub fnc main(): int {{ return match 5 over\n{arms}default -> -1,\nend }}");
     let error = atto_compiler::compile(&source).expect_err("too many arms must be rejected");
     assert_eq!(error.code, "E_NESTING", "{error}");

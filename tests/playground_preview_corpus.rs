@@ -1,4 +1,4 @@
-//! Native atto_compiler coverage for the exact 42 published /play preview samples.
+//! Native atto_compiler coverage for the exact 43 published /play preview samples.
 //! This is a smoke test, NOT evidence that each preview is executable.
 use std::fs;
 use std::path::Path;
@@ -9,7 +9,7 @@ fn all_published_previews_compile_or_reject_with_a_diagnostic() {
     let manifest = fs::read_to_string(dir.join("MANIFEST.tsv")).expect("preview manifest");
     let entries: Vec<_> = manifest.lines()
         .filter(|s| !s.starts_with('#') && !s.is_empty()).collect();
-    assert_eq!(entries.len(), 42, "all 42 public previews must be represented");
+    assert_eq!(entries.len(), 43, "all 43 public previews must be represented");
     let files: Vec<_> = fs::read_dir(dir).unwrap().map(|e| {
         e.unwrap().file_name().to_string_lossy().into_owned()
     }).filter(|s| s.ends_with(".atto")).collect();

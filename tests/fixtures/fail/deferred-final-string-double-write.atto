@@ -1,0 +1,9 @@
+// expect-error: E_INIT_ONCE
+define class Label as
+    pub final string value;
+    constructor(string initial) {
+        self.value = initial;
+        self.value = initial;
+    }
+end
+pub fnc main(): int { return 0; }

@@ -61,8 +61,8 @@ fn reject_unknown_or_malformed_receiver() {
 fn reject_duplicate_or_misplaced_namespaces() {
     reject("declare actor A; declare actor A;", "E_DUPLICATE");
     reject("declare actor A; use namespace workers;", "E_SYNTAX");
-    reject("use namespace a; use namespace b;", "E_SYNTAX");
-    reject("use namespace a.b; declare actor A;", "E_SYNTAX");
+    reject("use namespace a; use namespace b;", "E_DUPLICATE");
+    assert_eq!(parse("use namespace a.b; declare actor A;").namespace.as_deref(), Some("a.b"));
 }
 #[test]
 fn reject_unclosed_or_too_deep_bodies() {

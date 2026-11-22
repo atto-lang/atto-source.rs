@@ -1,0 +1,53 @@
+// expect-exit: 42
+// Integration snapshot: atto-xo/atto-xo-interfaces/atto/wire_v1.atto (36707f69616180eb9f8b5eee068d339597bed548)
+// Atto XO paper/research-only wire v1 scalar contract projection.
+// JSON Schema in schemas/ is authoritative; this is not a generated codec.
+// Compile/execution parity must be proven separately on the target AttoLang compiler.
+pub fnc valid_v1_rank(int rank): bool {
+    return And(rank >= 1, rank <= 5);
+}
+
+pub fnc valid_v1_safe_id(int value): bool {
+    return And(value >= 1, value <= 9007199254740991);
+}
+
+pub fnc valid_v1_confidence_bps(int value): bool {
+    return And(value >= 0, value <= 10000);
+}
+
+pub fnc valid_v1_cost_bps(int value): bool {
+    return And(value >= 0, value <= 1000000);
+}
+
+pub fnc valid_v1_return_bps(int value): bool {
+    return And(value >= -1000000, value <= 1000000);
+}
+
+pub fnc valid_v1_publication_deadline(int started_at_ms, int publish_deadline_ms): bool {
+    return And(And(started_at_ms > 0, publish_deadline_ms >= started_at_ms),
+        publish_deadline_ms - started_at_ms == 480000);
+}
+
+
+pub fnc main(): int {
+  if valid_v1_rank(1),
+      valid_v1_rank(5),
+      !valid_v1_rank(0),
+      !valid_v1_rank(6),
+      valid_v1_safe_id(1),
+      valid_v1_safe_id(9007199254740991),
+      !valid_v1_safe_id(0),
+      !valid_v1_safe_id(9007199254740992),
+      valid_v1_confidence_bps(10000),
+      !valid_v1_confidence_bps(10001),
+      valid_v1_cost_bps(1000000),
+      !valid_v1_cost_bps(1000001),
+      valid_v1_return_bps(-1000000),
+      valid_v1_return_bps(1000000),
+      !valid_v1_return_bps(1000001),
+      valid_v1_publication_deadline(1000,481000),
+      !valid_v1_publication_deadline(1000,480999) then
+    return 42;
+  fi
+  return 0;
+}

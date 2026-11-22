@@ -1,0 +1,11 @@
+// expect-exit: 42
+pub fnc main(): int {
+    let x: int = 12;
+    x &= 10;
+    x |= 2;
+    x ^= 6;
+    x <<<= 2;
+    x >>>= 1;
+    x ashr= 1;
+    return x + (8 <<< 2) - (32 >>> 2) + (12 ^ 10);
+}

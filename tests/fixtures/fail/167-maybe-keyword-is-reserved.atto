@@ -1,0 +1,8 @@
+// expect-error: E_RESERVED
+// Future control-flow keyword cannot be silently declared as a function.
+pub fnc maybe(): int {
+  return 1;
+}
+pub fnc main(): int {
+  return 0;
+}

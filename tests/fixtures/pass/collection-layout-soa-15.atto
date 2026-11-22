@@ -1,0 +1,15 @@
+// expect-exit: 15
+define struct Particle {
+    x: int;
+    y: int;
+    velocity: int;
+}
+
+fnc main() -> int {
+    let particles: Array<Particle, layout=soa> = [
+        Particle(x=10, y=20, velocity=1),
+        Particle(x=30, y=40, velocity=2)
+    ];
+    particles[0].x += 5;
+    return particles.columns.x[0];
+}
