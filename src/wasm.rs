@@ -1310,7 +1310,7 @@ fn verified_borrow_getter(f: &TFunc) -> Option<(Type, u32)> {
     }))] = f.body.as_slice() else {
         return None;
     };
-    if !matches!(obj.e, TExpr::Local(0))
+    if !matches!(&obj.e, TExpr::Local(0))
         || !matches!(*ty, Type::Int | Type::Bool | Type::Float)
         || f.ret != *ty
     {
