@@ -59,6 +59,8 @@ pub mod nominal_lower;
 pub mod nominal_contract_admission;
 /// Checked actor-local interface receiver lowering; never external ActorRef dispatch.
 pub mod actor_implements_lower;
+/// Bounded actor protocol source analysis; no guest transition runtime yet.
+pub mod actor_protocol_typestate;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
@@ -119,6 +121,19 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // Validate type-level actor protocols and linear source traces before any
+    // generic actor/nominal lowering could reinterpret their state authority.
+    // No static model may silently turn into executable guest protocol code.
+    if let Some(_proof) = actor_protocol_typestate::inspect_tokens(&original_tokens)? {
+        return Err(Diagnostic::new(original_tokens[0].pos,
+            "E_PROTOCOL_RUNTIME_UNSUPPORTED",
+            "protocol source passed static preflight, but authenticated state transitions, correlated replies and affine guest lowering are not yet implemented"));
+    }
+    if let Some(token) = original_tokens.iter().find(|t|
+        matches!(&t.tok, lexer::Tok::Ident(name) if name == "ProtocolHandle")) {
+        return Err(Diagnostic::new(token.pos, "E_PROTOCOL_UNPROVEN_STATE",
+            "ProtocolHandle cannot be constructed or used without a compiler-verified protocol and runtime authority"));
+    }
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
