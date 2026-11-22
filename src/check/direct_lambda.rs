@@ -61,7 +61,11 @@ pub fn lower(input: &Program) -> R<Program> {
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
-                if let ExprKind::Lambda { params, .. } = &init.kind {
+                if let ExprKind::Lambda { params, suspends, .. } = &init.kind {
+                    if *suspends {
+                        return Err(error(*pos, "E_UNSUPPORTED",
+                            "suspending lambdas require verified continuation and effect-aware closure lowering"));
+                    }
                     if direct.is_some() {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "at most one direct lambda per function is supported"));

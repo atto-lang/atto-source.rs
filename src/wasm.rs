@@ -27,6 +27,10 @@ use crate::ast::{BinOp, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
+mod channel_guest;
+mod portable_task_v3;
+mod portable_task_v4;
+mod portable_task_v5;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
@@ -85,7 +89,12 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::FutureInt => Some(I32),
+        // Only the explicit actor-future profile may lower this handle;
+        // ordinary source cannot manufacture an ActorFuture by type ascription.
+        Type::ActorFutureInt |
+        Type::FutureInt | Type::ChannelInt | Type::IoError |
+        Type::FutureReadInt | Type::ResultOptionIntIoError |
+        Type::ResultChannelIntIoError | Type::ResultVoidIoError => Some(I32),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
@@ -392,18 +401,52 @@ impl Emit<'_> {
     }
 
     fn if_chain(&mut self, arms: &[(TE, Vec<TStmt>)], other: Option<&[TStmt]>) {
-        let (c, body) = &arms[0];
-        self.expr(c);
-        self.open(0x04, 0x40, Frame::Other);
-        self.stmts(body);
-        if arms.len() > 1 {
-            self.op(0x05);
-            self.if_chain(&arms[1..], other);
-        } else if let Some(o) = other {
-            self.op(0x05);
-            self.stmts(o);
+        // Emit nested Wasm if/else blocks iteratively. The prior recursive
+        // emitter consumed one Rust stack frame per elif arm, potentially
+        // aborting the compiler before the MAX_TREE_HEIGHT diagnostic.
+        // Keep all frames open until the final else, then close in reverse:
+        // this preserves source-ordered, first-matching branch behavior.
+        debug_assert!(!arms.is_empty());
+        for (index, (condition, body)) in arms.iter().enumerate() {
+            self.expr(condition);
+            self.open(0x04, 0x40, Frame::Other);
+            self.stmts(body);
+            if index + 1 < arms.len() || other.is_some() {
+                self.op(0x05);
+            }
         }
-        self.close();
+        if let Some(body) = other {
+            self.stmts(body);
+        }
+        for _ in arms {
+            self.close();
+        }
+    }
+
+    fn binary_opcode(&mut self, op: BinOp, left_ty: Type) {
+        let int = left_ty == Type::Int;
+        if left_ty == Type::Float {
+            self.op(match op {
+                BinOp::Add => 0xA0, BinOp::Sub => 0xA1,
+                BinOp::Mul => 0xA2, BinOp::Div => 0xA3,
+                BinOp::Eq => 0x61, BinOp::Ne => 0x62,
+                BinOp::Lt => 0x63, BinOp::Gt => 0x64,
+                BinOp::Le => 0x65, BinOp::Ge => 0x66,
+                BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
+            });
+            return;
+        }
+        match op {
+            BinOp::Add => self.call(self.l.helper(H_ADD)),
+            BinOp::Sub => self.call(self.l.helper(H_SUB)),
+            BinOp::Mul => self.call(self.l.helper(H_MUL)),
+            BinOp::And => self.op(0x71), BinOp::Or => self.op(0x72),
+            BinOp::Lt => self.op(0x53), BinOp::Le => self.op(0x57),
+            BinOp::Gt => self.op(0x55), BinOp::Ge => self.op(0x59),
+            BinOp::Eq => self.op(if int {0x51} else {0x46}),
+            BinOp::Ne => self.op(if int {0x52} else {0x47}),
+            BinOp::Div => unreachable!("int / int rejected by checker"),
+        }
     }
 
     fn expr(&mut self, v: &TE) {
@@ -460,41 +503,21 @@ impl Emit<'_> {
                 self.expr(a);
                 self.op(0x45);
             }
-            TExpr::Bin(op, a, b) => {
-                // Canonical AttoLang conditions are eager: both operands
-                // execute in source order even when the left decides truth.
-                self.expr(a);
-                self.expr(b);
-                let int = a.ty == Type::Int;
-                if a.ty == Type::Float {
-                    self.op(match op {
-                        BinOp::Add => 0xA0,
-                        BinOp::Sub => 0xA1,
-                        BinOp::Mul => 0xA2,
-                        BinOp::Div => 0xA3,
-                        BinOp::Eq => 0x61,
-                        BinOp::Ne => 0x62,
-                        BinOp::Lt => 0x63,
-                        BinOp::Gt => 0x64,
-                        BinOp::Le => 0x65,
-                        BinOp::Ge => 0x66,
-                        BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
-                    });
-                    return;
+            TExpr::Bin(..) => {
+                // The typed left spine is a source-ordered chain, not a
+                // recursive host call stack. The right subexpressions still
+                // evaluate exactly once, and their Wasm opcodes are emitted
+                // immediately after evaluation of each operand.
+                let mut spine = Vec::new();
+                let mut cursor = v;
+                while let TExpr::Bin(op, left, right) = &cursor.e {
+                    spine.push((*op, left.as_ref(), right.as_ref()));
+                    cursor = left;
                 }
-                match op {
-                    BinOp::Add => self.call(self.l.helper(H_ADD)),
-                    BinOp::Sub => self.call(self.l.helper(H_SUB)),
-                    BinOp::Mul => self.call(self.l.helper(H_MUL)),
-                    BinOp::And => self.op(0x71), // i32.and
-                    BinOp::Or => self.op(0x72),  // i32.or
-                    BinOp::Lt => self.op(0x53),
-                    BinOp::Le => self.op(0x57),
-                    BinOp::Gt => self.op(0x55),
-                    BinOp::Ge => self.op(0x59),
-                    BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
-                    BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                    BinOp::Div => unreachable!("division not admitted by checker"),
+                self.expr(cursor);
+                for (op, left, right) in spine.into_iter().rev() {
+                    self.expr(right);
+                    self.binary_opcode(op, left.ty);
                 }
             }
             TExpr::Ternary(c, a, b) => {
@@ -509,6 +532,16 @@ impl Emit<'_> {
             TExpr::Barrier(count) => {self.expr(count);self.call(self.l.import(Import::Barrier));}
             TExpr::TaskStart(idx) => {self.i32c(*idx as i32);self.call(self.l.import(Import::TaskStart));}
             TExpr::TaskAwait(handle) => {self.expr(handle);self.call(self.l.import(Import::TaskAwait));}
+            TExpr::ChannelOpen {capacity,scratch,status,result} =>
+                self.channel_open(*capacity,*scratch,*status,*result),
+            TExpr::ChannelRead {channel,scratch,status} =>
+                self.channel_read(channel,*scratch,*status),
+            TExpr::ChannelSend {channel,value,status,result} =>
+                self.channel_send(channel,value,*status,*result),
+            TExpr::ChannelFinish {channel,operation,status,result} =>
+                self.channel_finish(channel,*operation,*status,*result),
+            TExpr::ChannelAwait {ticket,scratch,status,result,option} =>
+                self.channel_await(ticket,*scratch,*status,*result,*option),
             // Value stays on the Wasm stack over the void JSPI host call.
             TExpr::AwaitYield(value) => {self.expr(value);self.call(self.l.import(Import::Cooperate));}
             TExpr::Call(f, args) => {
@@ -1020,6 +1053,30 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    emit_with_profile(p, 0)
+}
+
+/// The v4 target is explicit and fail-closed. Ordinary compile() is unchanged.
+pub fn emit_portable_v4(p: &TProgram) -> Option<Vec<u8>> {
+    portable_task_v4::PortableTaskV4::from_program(p)?;
+    Some(emit_with_profile(p, 4))
+}
+/// Truly externally-pending scalar-future ABI. Does not auto-resume on yield.
+pub fn emit_portable_v5(p: &TProgram) -> Option<Vec<u8>> {
+    portable_task_v5::PortableTaskV5::from_program(p)?;
+    Some(emit_with_profile(p, 5))
+}
+fn emit_with_profile(p: &TProgram, version: u8) -> Vec<u8> {
+    let portable_v3 = if version == 0 {
+        portable_task_v3::PortableTaskV3::from_program(p)
+    } else { None };
+    let portable_v4 = if version == 4 {
+        portable_task_v4::PortableTaskV4::from_program(p)
+    } else { None };
+    let portable_v5 = if version == 5 {
+        portable_task_v5::PortableTaskV5::from_program(p)
+    } else { None };
+    debug_assert!(version == 0 || portable_v4.is_some() || portable_v5.is_some());
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
@@ -1053,6 +1110,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::StateRegister => Sig(vec![I32], vec![]),
             Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
             Import::StateLeave => Sig(vec![I64], vec![]),
+            Import::ChannelOpen | Import::ChannelNbRead | Import::ChannelAwaitRead =>
+                Sig(vec![I32,I32], vec![I32]),
+            Import::ChannelSend => Sig(vec![I32,I64], vec![I32]),
+            Import::ChannelCancel | Import::ChannelAbandon | Import::ChannelClose | Import::ChannelRelease =>
+                Sig(vec![I32],vec![I32]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1190,6 +1252,21 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         bodies.push(e.code);
     }
 
+    // Five ordinary Wasm functions resume the bounded mutable-global frame.
+    // No WebAssembly.Suspending or dynamic interpreter is involved.
+    let portable_first_idx = portable_v3.as_ref().map(|_| layout.func(p.funcs.len() as u32));
+    if let Some(profile) = &portable_v3 {
+        profile.append_functions(&mut types, &mut func_types, &mut bodies);
+    }
+    let portable_v4_first_idx = portable_v4.as_ref().map(|_| layout.func(p.funcs.len() as u32));
+    if let Some(profile) = &portable_v4 {
+        profile.append_functions(&mut types, &mut func_types, &mut bodies);
+    }
+    let portable_v5_first_idx = portable_v5.as_ref().map(|_| layout.func(p.funcs.len() as u32));
+    if let Some(profile) = &portable_v5 {
+        profile.append_functions(&mut types, &mut func_types, &mut bodies);
+    }
+
     // The tag has no JS import/export. Each instance gets its own identity,
     // so no host exception or foreign guest tag can be forged as an ordinary
     // Atto throw. Unaffected modules retain their original section layout.
@@ -1217,7 +1294,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 3, fsec);
 
-    let has_memory = !p.data.is_empty() || p.heap || p.strings || has_actors;
+    let has_memory = !p.data.is_empty() || p.heap || p.strings || has_actors
+        || portable_v4.is_some() || portable_v5.is_some();
+    let export_memory = has_memory && portable_v4.is_none() && portable_v5.is_none();
     if has_memory {
         // Fixed and non-growable: strings, the object heap, or a private
         // 64 KiB actor memory even for scalar-only actors.
@@ -1239,7 +1318,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
     uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
-        + u64::from(!p.generators.is_empty()));
+        + u64::from(!p.generators.is_empty())
+        + portable_v3.as_ref().map_or(0, |profile| profile.extra_globals() as u64));
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
         let heap_start = ((p.data.len() as i64 + 7) & !7)
@@ -1255,17 +1335,23 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     if !p.generators.is_empty() {
         gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // frame freelist head
     }
+    if let Some(profile) = &portable_v3 { profile.global_defs(&mut gsec); }
     section(&mut out, 6, gsec);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 } + u64::from(has_tasks));
+    uleb(&mut exp, 2 + u64::from(export_memory)
+        + if has_actors { 2 } else { 0 }
+        + u64::from(has_tasks)
+        + if portable_v3.is_some() { 5 } else { 0 }
+        + if portable_v4.is_some() { 6 } else { 0 }
+        + if portable_v5.is_some() { 8 } else { 0 });
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
     name(&mut exp, "panic_code");
     exp.push(0x03);
     uleb(&mut exp, 0);
-    if has_memory {
+    if export_memory {
         name(&mut exp, "memory");
         exp.push(0x02);
         uleb(&mut exp, 0);
@@ -1282,6 +1368,15 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         name(&mut exp, "task_invoke");
         exp.push(0x00);
         uleb(&mut exp, task_invoke_idx as u64);
+    }
+    if let (Some(profile), Some(first)) = (&portable_v3, portable_first_idx) {
+        profile.append_exports(&mut exp, first);
+    }
+    if let (Some(profile), Some(first)) = (&portable_v4, portable_v4_first_idx) {
+        profile.append_exports(&mut exp, first);
+    }
+    if let (Some(profile), Some(first)) = (&portable_v5, portable_v5_first_idx) {
+        profile.append_exports(&mut exp, first);
     }
     section(&mut out, 7, exp);
 
@@ -1326,6 +1421,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         .chain(p.funcs.iter().map(|f| f.name.clone()))
         .collect();
     if has_tasks { all.push("atto.task_invoke".into()); }
+    if let Some(profile) = &portable_v3 { profile.append_names(&mut all); }
+    if let Some(profile) = &portable_v4 { profile.append_names(&mut all); }
+    if let Some(profile) = &portable_v5 { profile.append_names(&mut all); }
     if !p.generators.is_empty() {
         all.extend([
             "atto.generator_new", "atto.generator_check_ptr",
@@ -1360,11 +1458,40 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     // Deliberately versioned and opt-in: the public guest.v2 contract
     // remains unchanged for programs without actual async imports.
-    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {
+    let use_channel=p.imports.iter().any(|i| matches!(i,
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelNbRead |
+        Import::ChannelAwaitRead | Import::ChannelCancel | Import::ChannelAbandon |
+        Import::ChannelClose | Import::ChannelRelease));
+    if use_channel || p.imports.iter().any(|i| matches!(i,
+        Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.async");
         marker.push(2); // JSPI + mandatory cooperative yield; old v1 guests must fail closed
         section(&mut out, 0, marker);
+    }
+    if portable_v3.is_some() {
+        let mut marker = Vec::new();
+        name(&mut marker, "atto.browser.guest.v3");
+        marker.push(3); // fixed-slot portable AOT scalar-await profile
+        section(&mut out, 0, marker);
+    }
+    if portable_v4.is_some() {
+        let mut marker=Vec::new();
+        name(&mut marker,"atto.browser.guest.v4");
+        marker.push(4); // explicit AOT arena compilation target
+        section(&mut out,0,marker);
+    }
+    if portable_v5.is_some() {
+        let mut marker=Vec::new();
+        name(&mut marker,"atto.browser.guest.v5");
+        marker.push(5); // externally-pending i64 future arena
+        section(&mut out,0,marker);
+    }
+    if use_channel {
+        let mut marker=Vec::new();
+        name(&mut marker,"atto.channel_int");
+        marker.push(1);
+        section(&mut out,0,marker);
     }
     out
 }

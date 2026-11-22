@@ -14,6 +14,15 @@ pub enum Type {
     Str,
     /// Browser async MVP: an owned, single-use Future<int> task handle.
     FutureInt,
+    /// Explicit actor-scoped, single-reply Future<int>; actor stream is separate.
+    ActorFutureInt,
+    /// Staged, exact checked Channel<int> ABI types (no guest imports yet).
+    ChannelInt,
+    IoError,
+    FutureReadInt,
+    ResultOptionIntIoError,
+    ResultChannelIntIoError,
+    ResultVoidIoError,
     /// Unresolved user type name: index into [`Program::type_names`].
     /// The checker replaces it with `Class` or `Enum`.
     Named(u32),
@@ -52,6 +61,13 @@ impl Type {
             Type::Float => "float",
             Type::Str => "string",
             Type::FutureInt => "Future<int>",
+            Type::ActorFutureInt => "ActorFuture<int>",
+            Type::ChannelInt => "Channel<int>",
+            Type::IoError => "IoError",
+            Type::FutureReadInt => "Future<Result<Option<int>,IoError>>",
+            Type::ResultOptionIntIoError => "Result<Option<int>,IoError>",
+            Type::ResultChannelIntIoError => "Result<Channel<int>,IoError>",
+            Type::ResultVoidIoError => "Result<void,IoError>",
             Type::OptionInt => "Option<int>",
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
@@ -417,6 +433,8 @@ pub enum ExprKind {
         params: Vec<String>,
         return_type: Option<String>,
         body: LambdaBody,
+        /// Explicit `susp` / `suspends` effect; must not be erased by lowering.
+        suspends: bool,
     },
 }
 

@@ -1,0 +1,6 @@
+// expect-error: E_SYNTAX
+// task() is not a task block and must never synthesize a Future.
+pub susp fnc main(): int {
+    val pending = task();
+    ^ 42;
+}

@@ -1,3 +1,13 @@
+import {createChannelIntGuestV1,verifyChannelIntGuestV1,CHANNEL_INT_V1_IMPORTS} from '/runtime/browser/channel_int_guest_v1.mjs';
+import {createWorkerControlLoop} from '/runtime/browser/worker-control-loop-v1.mjs';
+import {createPortableTaskHostV3} from '/runtime/browser/portable-task-host-v3.mjs';
+import {createPortableTaskArenaHostV4,verifyPortableTaskGuestV4}
+  from '/runtime/browser/portable-task-host-v4.mjs';
+import {createPortableTaskHostV5,verifyPortableTaskGuestV5}
+  from '/runtime/browser/portable-task-host-v5.mjs';
+import {createActorFutureHostV1,verifyActorFutureGuestV1}
+  from '/runtime/browser/actor-future-host-v1.mjs';
+import {createJspiControlBridgeV1} from '/runtime/browser/wasm-jspi-control-bridge-v1.mjs';
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
@@ -11,6 +21,7 @@ function javaDouble(x){
   return (m.includes('.')?m:m+'.0')+'E'+e.replace('+','');
 }
 self.onmessage=async ({data})=>{
+  let channelRuntime,cooperateBridge,controlLoop;
   try{
     const bytes=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
     if(!WebAssembly.validate(bytes))throw new Error('invalid compiler wasm');
@@ -20,7 +31,10 @@ self.onmessage=async ({data})=>{
     const encoded=new TextEncoder().encode(data.source);
     if(encoded.length>api.input_capacity())throw new Error('source too big');
     new Uint8Array(api.memory.buffer,api.input_ptr(),encoded.length).set(encoded);
-    if(api.compile(encoded.length)!==0){
+    if((data.portableActorFutureInt===true?api.compile_actor_future_int(encoded.length):
+      data.portableFutureInt===true?api.compile_future_int(encoded.length):
+      data.portableV5===true?api.compile_v5(encoded.length):
+      data.portableV4===true?api.compile_v4(encoded.length):api.compile(encoded.length))!==0){
       if(api.result_length()!==0)throw new Error('compiler emitted on rejection');
       const mem=new Uint8Array(api.memory.buffer);const start=api.error_ptr();let end=start;
       while(end<mem.length&&mem[end]&&end-start<256)end++;
@@ -33,8 +47,159 @@ self.onmessage=async ({data})=>{
     const asyncSections=WebAssembly.Module.customSections(guest,'atto.async');
     const useAsync=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1&&new Uint8Array(asyncSections[0])[0]===2;
     if(asyncSections.length&&!useAsync)throw new Error('invalid async marker');
+    // Explicitly selected AOT state-machine path: ordinary Wasm functions,
+    // no WebAssembly.Suspending or JSPI stack retention. Keep legacy main
+    // inaccessible to this host profile.
+    if(data.portableV3===true){
+      const taskLoop=createWorkerControlLoop({
+        maxOwners:1,maxReady:8,maxControl:4,maxSuspended:1
+      });
+      const host=createPortableTaskHostV3({
+        module:guest,loop:taskLoop,owner:'portable-wasm',ownerId:1,epoch:1
+      });
+      const result=await host.run();
+      self.postMessage({ok:true,value:String(result),stdout:'',
+        portableV3:true,portableTurns:host.stats.turns,
+        portableResumes:host.stats.resumes,portableCleanups:host.stats.cleanups});
+      return;
+    }
+    if(data.portableActorFutureInt===true){
+      verifyActorFutureGuestV1(guest);
+      const loop=createWorkerControlLoop({
+        maxOwners:16,maxReady:64,maxControl:4,maxSuspended:16
+      });
+      const notice=[];
+      const host=createActorFutureHostV1({module:guest,loop,
+        onSupervisorNotice:m=>notice.push(m)});
+      const actor=new Worker('/actor-future-completer.mjs',{type:'module'});
+      const {port1,port2}=new MessageChannel();
+      try {
+        await new Promise((resolve,reject)=>{
+          actor.onmessage=e=>{
+            if(e.data?.kind==='ready')resolve();
+          };
+          actor.onerror=()=>reject(Error('E_ACTOR_WORKER_START'));
+          actor.postMessage({kind:'bind',port:port2},[port2]);
+        });
+        host.registerActor({actorId:7,incarnation:1,controlPort:port1});
+        const tasks=Array.from({length:16},(_,i)=>host.spawn({
+          owner:'actorfuture-'+i,ownerId:i+1,epoch:1
+        }));
+        for(let i=0;i<70&&host.stats.requests!==16;i++)
+          await new Promise(r=>setTimeout(r,5));
+        await new Promise(r=>setTimeout(r,25));
+        const still=host.stats;
+        if(still.requests!==16||still.liveFrames!==16||
+           still.starts!==16||still.resumes!==0||still.completions!==0||
+           loop.stats.suspended!==16)
+          throw Error('E_ACTOR_FUTURE_PREMATURE');
+        actor.postMessage({kind:'release'});
+        const values=await Promise.all(tasks.map(t=>t.result));
+        const stats=host.stats;
+        if(values.some(v=>v!==42n)||stats.requests!==32||
+           stats.peak!==16||stats.completions!==32||
+           stats.resumes!==32||stats.drops!==16||
+           stats.liveFrames!==0||loop.stats.owners!==0)
+          throw Error('E_ACTOR_FUTURE_EXECUTION');
+        const stopped=host.stopActor({actorId:7,incarnation:1,
+          kind:'terminated',reason:'test actor shutdown'});
+        if(!stopped||notice.length!==1||notice[0].actorId!==7)
+          throw Error('E_ACTOR_FUTURE_SUPERVISOR_NOTICE');
+        self.postMessage({ok:true,value:'42',stdout:'',
+          portableActorFutureInt:true,
+          actorFuturePeak:stats.peak,actorFutureRequests:stats.requests,
+          actorFutureCompletions:stats.completions,
+          actorFutureDrops:stats.drops,actorFutureNotices:notice.length});
+      }finally{
+        host.close();loop.close();
+        port1.close();actor.terminate();
+      }
+      return;
+    }
+    if(data.portableV5===true||data.portableFutureInt===true){
+      verifyPortableTaskGuestV5(guest);
+      const typed=WebAssembly.Module.customSections(
+        guest,'atto.browser.source.future.v1');
+      if(data.portableFutureInt===true) {
+        if(typed.length!==1||new Uint8Array(typed[0]).length!==1||
+           new Uint8Array(typed[0])[0]!==1)
+          throw Error('E_FUTURE_INT_TYPED_MARKER');
+      } else if(typed.length) {
+        throw Error('E_FUTURE_INT_UNEXPECTED_MARKER');
+      }
+      const loop=createWorkerControlLoop({
+        maxOwners:16,maxReady:64,maxControl:4,maxSuspended:16
+      });
+      const host=createPortableTaskHostV5({module:guest,loop});
+      const issuer=new Worker('/v5-completer.mjs',{type:'module'});
+      const ports=[];
+      let first=0,published=0,signalFirst;
+      const initialPending=new Promise(r=>signalFirst=r);
+      try{
+        const tasks=Array.from({length:16},(_,i)=>{
+          const owner='v5-'+i;
+          const {port1,port2}=new MessageChannel();
+          ports.push(port1);
+          issuer.postMessage({kind:'bind',owner,port:port2},[port2]);
+          return host.spawn({owner,ownerId:i+1,epoch:1,port:port1,
+            onPending:({key,grant})=>{
+              published++;
+              if(key===41n&&++first===16)signalFirst();
+              issuer.postMessage({kind:'grant',owner,key,grant});
+            }});
+        });
+        await initialPending;
+        await new Promise(r=>setTimeout(r,25));
+        const stationary=host.stats;
+        if(stationary.liveFrames!==16||stationary.starts!==16||
+           stationary.resumes!==0||stationary.completions!==0||
+           stationary.turns!==16||loop.stats.suspended!==16)
+          throw Error('E_V5_PREMATURE_RESUME');
+        issuer.postMessage({kind:'release'});
+        const values=await Promise.all(tasks.map(t=>t.result));
+        const stats=host.stats;
+        if(values.some(v=>v!==42n)||stats.peak!==16||
+           stats.completions!==32||stats.resumes!==32||
+           stats.drops!==16||stats.liveFrames!==0||
+           loop.stats.owners!==0||published!==32)
+          throw Error('E_V5_PENDING_EXECUTION');
+        self.postMessage({ok:true,value:'42',stdout:'',portableV5:true,
+          portableV5Peak:stats.peak,portableV5Starts:stats.starts,
+          portableV5Completions:stats.completions,portableV5Resumes:stats.resumes,
+          portableV5Drops:stats.drops});
+      }finally{
+        host.close();loop.close();
+        ports.forEach(port=>port.close());
+        issuer.terminate();
+      }
+      return;
+    }
+    if(data.portableV4===true){
+      verifyPortableTaskGuestV4(guest);
+      const loop=createWorkerControlLoop({
+        maxOwners:16,maxReady:64,maxControl:4,maxSuspended:16
+      });
+      const host=createPortableTaskArenaHostV4({module:guest,loop});
+      const tasks=Array.from({length:16},(_,i)=>host.spawn({
+        owner:'v4-'+i,ownerId:i+1,epoch:1
+      }));
+      try {
+        const values=await Promise.all(tasks.map(task=>task.result));
+        const stats=host.stats;
+        if(stats.peak!==16||stats.turns!==48||stats.resumes!==32||
+           stats.cleanups!==16||stats.liveFrames!==0||
+           loop.stats.owners!==0||values.some(x=>x!==42n))
+          throw Error('E_V4_EXECUTION_INVARIANT');
+        self.postMessage({ok:true,value:'42',stdout:'',portableV4:true,
+          portableV4Peak:stats.peak,portableV4Turns:stats.turns,
+          portableV4Resumes:stats.resumes,portableV4Cleanups:stats.cleanups});
+      } finally {host.close();loop.close();}
+      return;
+    }
     if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await','cooperate']:[])]);
+    const useChannel=WebAssembly.Module.customSections(guest,'atto.channel_int').length>0;
+    if(useChannel&&!verifyChannelIntGuestV1(out,guest))throw new Error('invalid channel ABI marker');
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await','cooperate']:[]),...(useChannel?CHANNEL_INT_V1_IMPORTS:[])]);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
@@ -48,12 +213,17 @@ self.onmessage=async ({data})=>{
     };
     const jobs=new Map();let nextJob=1,barrierWaiters=[],cooperativeYields=0;
     if(useAsync){
-      // Never shortcut an immediate await; release the guest Wasm stack and
-      // reschedule on a fresh Worker event-loop turn instead of a microtask.
-      atto.cooperate=new WebAssembly.Suspending(async ()=>{
-        await new Promise(resolve=>setTimeout(resolve,0));
-        cooperativeYields++;
-      });
+      // atto.async/2 cooperative await enters the bounded synchronous-turn
+      // scheduler, which *only* resolves the JSPI Promise at a later turn.
+      // The Wasm stack resumes in a JSPI microtask, never inside DATA/CONTROL
+      // dispatch. This is deliberately not a portable task_resume ABI.
+      if(WebAssembly.Module.imports(guest).some(imp=>imp.module==='atto'&&imp.name==='cooperate')){
+        controlLoop=createWorkerControlLoop({maxOwners:1,maxSuspended:64,maxReady:64,maxControl:4});
+        cooperateBridge=createJspiControlBridgeV1({
+          loop:controlLoop,owner:'browser-guest',epoch:1,maxPending:64
+        });
+        atto.cooperate=cooperateBridge.makeCooperateImport(guest);
+      }
       atto.sleep_ms=new WebAssembly.Suspending(async ms=>{
         if(ms<0n||ms>1000n)throw new Error('invalid sleep duration');
         await new Promise(resolve=>setTimeout(resolve,Number(ms)));
@@ -89,6 +259,11 @@ self.onmessage=async ({data})=>{
         return await job.p;
       });
     }
+    if(useChannel){
+      channelRuntime=createChannelIntGuestV1({getMemory:()=>instance?.exports?.memory});
+      Object.assign(atto,channelRuntime.imports);
+      atto.channel_int_await_read_v1=new WebAssembly.Suspending(channelRuntime.imports.channel_int_await_read_v1);
+    }
     instance=new WebAssembly.Instance(guest,{atto});
     let value;
     try{value=useAsync?await WebAssembly.promising(instance.exports.main)():instance.exports.main()}
@@ -97,6 +272,15 @@ self.onmessage=async ({data})=>{
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':'trap: '+e.message;
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
-    self.postMessage({ok:true,value:String(value),stdout,cooperativeYields});
+    cooperativeYields=cooperateBridge?.stats.resolved??0;
+    self.postMessage({ok:true,value:String(value),stdout,cooperativeYields,
+      schedulerDispatches:controlLoop?.stats.completed??0});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
+  finally {
+    // A guest can return/throw before awaiting a registered read. Dispose
+    // synchronously on every exit, including panic and host error, rather
+    // than leaving unclaimed tickets alive until garbage collection.
+    cooperateBridge?.retire();
+    channelRuntime?.host.dispose();
+  }
 };

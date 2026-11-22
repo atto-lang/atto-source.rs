@@ -8,6 +8,9 @@
 
 pub mod ast;
 pub mod check;
+mod future_typed_v1;
+mod actor_future_typed_v1;
+mod native_future_generic_v1;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
@@ -27,8 +30,31 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Compile one `.atto` source file to a guest WebAssembly module.
+/// Compile one `.atto` source file to the existing guest Wasm profile.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, 0)
+}
+/// Explicit portable-v4 target. Unsupported source is a diagnostic, never a
+/// silently downgraded v3 or JSPI module. Every emitted function is guest AOT.
+pub fn compile_portable_v4(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, 4)
+}
+/// Explicit externally-pending i64 future profile. All suspend/resume paths
+/// are compiled ahead of time. Unsupported syntax fails closed.
+pub fn compile_portable_v5(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, 5)
+}
+/// Explicit typed single-use Future<int> frontend. Compiles to the same
+/// guest-v5 AOT lifecycle, with an extra checked-source contract marker.
+pub fn compile_future_int_aot(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, 6)
+}
+/// Single-reply ActorFuture<int>, including compile-time actor/key routing
+/// manifest. The actor incarnation is bound by the trusted Worker host.
+pub fn compile_actor_future_int_aot(source:&str)->Result<Vec<u8>,Diagnostic>{
+    compile_inner(source,7)
+}
+fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -36,12 +62,19 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let toks = lexer::lex(source)?;
+    let toks = native_future_generic_v1::lower(lexer::lex(source)?,portable_version)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
         return Err(Diagnostic::new(detached.pos, "E_UNSUPPORTED",
             "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented"));
+    }
+    // 'pipe' is continuous transport. It never reuses one-shot '>>'
+    // or '<<' and must not manufacture a channel/actor graph without
+    // typed capabilities, bounded backpressure and supervisor ownership.
+    if let Some(pipe) = io_shorthand::inspect_pipe(&toks)?.first() {
+        return Err(Diagnostic::new(pipe.pos, "E_UNSUPPORTED",
+            "continuous pipe requires a typed channel/stream/actor transport runtime; syntax is recognized but the browser guest ABI is not implemented"));
     }
     // The browser guest already has a typed stdio.print output import.
     // Permit the exact stdio.out << value statement form to lower through
@@ -98,7 +131,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -120,8 +153,32 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     } else {
         parser::Parser::new(toks).parse_program()?
     };
+    if portable_version==6 {
+        future_typed_v1::lower(&mut program)?;
+    }
+    let actor_awaits=if portable_version==7 {
+        Some(actor_future_typed_v1::lower(&mut program)?)
+    } else {None};
     let typed = check::check(&program)?;
-    let bytes = wasm::emit(&typed);
+    let bytes = match portable_version {
+        4 => wasm::emit_portable_v4(&typed).ok_or_else(|| Diagnostic::new(
+            Pos {line:1,col:1},"E_UNSUPPORTED",
+            "portable-v4 requires a closed, 1–8 await straight-line scalar int task; arbitrary futures, effects, branches and reference spills are not implemented"
+        ))?,
+        5 => wasm::emit_portable_v5(&typed).ok_or_else(|| Diagnostic::new(
+            Pos {line:1,col:1},"E_UNSUPPORTED",
+            "portable-v5 requires a closed straight-line 1–8 await i64-keyed future task; general Future<T>, branches, reference spills and dynamic effects are not implemented"
+        ))?,
+        6 => future_typed_v1::mark(wasm::emit_portable_v5(&typed).ok_or_else(|| Diagnostic::new(
+            Pos {line:1,col:1},"E_UNSUPPORTED",
+            "typed Future<int> requires a closed, statically verified scalar pending-future frame without unsupported effects"
+        ))?),
+        7 => actor_future_typed_v1::mark(wasm::emit_portable_v5(&typed).ok_or_else(|| Diagnostic::new(
+            Pos {line:1,col:1},"E_UNSUPPORTED",
+            "typed ActorFuture<int> requires statically owned actor requests and a fully AOT pending-future frame"
+        ))?,actor_awaits.as_deref().expect("actor manifest must exist")),
+        _ => wasm::emit(&typed),
+    };
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -186,9 +243,32 @@ mod abi {
         STATE.with(|s| s.borrow().col)
     }
 
-    /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
+    /// Existing Wasm compiler entrypoint, unchanged for old playground hosts.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_inner_abi(length,0)
+    }
+    /// Explicit v4 browser compiler entrypoint. Never silently selects JSPI.
+    #[no_mangle]
+    pub extern "C" fn compile_v4(length: i32) -> i32 {
+        compile_inner_abi(length,4)
+    }
+    /// Explicit v5 i64 pending-future guest output; v4/v3 are unaffected.
+    #[no_mangle]
+    pub extern "C" fn compile_v5(length:i32)->i32 {
+        compile_inner_abi(length,5)
+    }
+    /// Explicit typed Future<int> source contract (same v5 guest runtime ABI).
+    #[no_mangle]
+    pub extern "C" fn compile_future_int(length:i32)->i32 {
+        compile_inner_abi(length,6)
+    }
+    /// Bounded actor-scoped request/reply source contract, host incarnation bound.
+    #[no_mangle]
+    pub extern "C" fn compile_actor_future_int(length:i32)->i32{
+        compile_inner_abi(length,7)
+    }
+    fn compile_inner_abi(length:i32,portable_version:u8)->i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -229,7 +309,14 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            let compilation=match portable_version {
+                4=>super::compile_portable_v4(source),
+                5=>super::compile_portable_v5(source),
+                6=>super::compile_future_int_aot(source),
+                7=>super::compile_actor_future_int_aot(source),
+                _=>super::compile(source),
+            };
+            match compilation {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0

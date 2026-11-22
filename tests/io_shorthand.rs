@@ -432,16 +432,19 @@ fn nb_try_explicit_channel_operations_and_select_guard_restrictions() {
 }
 
 #[test]
-fn nb_syntax_cannot_emit_a_fake_guest_wasm_artifact() {
-    for src in [
-        "pub fnc main(): void { nb stdio.out << \"hi\"; }",
-        "pub fnc main(): void { try stdio.out << \"hi\"; }",
-        "pub fnc main(): void { nb stdio.in >> val pending; }",
-        "pub fnc main(): void { nb writech foo, \"hi\"; }",
-        "pub fnc main(): void { val pending = nb readch foo; }",
+fn unsupported_io_and_effectless_nb_reads_cannot_emit_guest_wasm() {
+    for (src, code) in [
+        ("pub fnc main(): void { nb stdio.out << \"hi\"; }", "E_UNSUPPORTED"),
+        ("pub fnc main(): void { try stdio.out << \"hi\"; }", "E_UNSUPPORTED"),
+        ("pub fnc main(): void { nb stdio.in >> val pending; }", "E_UNSUPPORTED"),
+        ("pub fnc main(): void { nb writech foo, \"hi\"; }", "E_UNSUPPORTED"),
+        // Source-level channel reads have real lowering only inside an
+        // explicitly suspending function. A missing effect is E_EFFECT,
+        // never a silently synchronous read or an emitted Wasm artifact.
+        ("pub fnc main(): void { val pending = nb readch foo; }", "E_EFFECT"),
     ] {
         let err = atto_compiler::compile(src).expect_err(src);
-        assert_eq!(err.code, "E_UNSUPPORTED", "{src}: {err}");
+        assert_eq!(err.code, code, "{src}: {err}");
     }
 }
 

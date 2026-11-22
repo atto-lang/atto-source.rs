@@ -60,7 +60,7 @@ fn nested_scope_and_local_shadowing_stay_lexical() {
 fn direct_ast_cannot_rebind_self() {
     let p = Pos::default();
     let e = Expr {
-        kind: ExprKind::Lambda {
+        kind: ExprKind::Lambda { suspends: false,
             params: vec!["self".into()], return_type: None,
             body: LambdaBody::Expression(Box::new(Expr { kind: ExprKind::Int(Some(1)), pos: p })),
         },
@@ -78,7 +78,7 @@ fn direct_ast_nested_statement_budget_fails_closed() {
         stmt = Stmt::Block(vec![stmt]);
     }
     let e = Expr {
-        kind: ExprKind::Lambda {
+        kind: ExprKind::Lambda { suspends: false,
             params: vec![], return_type: Some("int".into()),
             body: LambdaBody::Block(vec![stmt]),
         },
@@ -96,7 +96,7 @@ fn direct_ast_deep_expressions_keep_limit() {
         value = Expr { kind: ExprKind::Unary(atto_compiler::ast::UnOp::Plus, Box::new(value)), pos: p };
     }
     let e = Expr {
-        kind: ExprKind::Lambda { params: vec![], return_type: None,
+        kind: ExprKind::Lambda { suspends: false, params: vec![], return_type: None,
             body: LambdaBody::Expression(Box::new(value)) }, pos: p,
     };
     let d = check_noncapturing(&e, None, None).unwrap_err();

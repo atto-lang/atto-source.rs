@@ -10,6 +10,21 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser-async/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser-async/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/channel-host-probe.mjs',[new URL('./browser-async/channel-host-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/channel-int-v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/channel-guest-abi-probe.mjs',[new URL('./browser-async/channel-guest-abi-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/worker-control-loop-v1.mjs',[new URL('../runtime/browser/worker-control-loop-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/worker-control-loop.mjs',[new URL('../runtime/browser/worker-control-loop.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/portable-task-host-v3.mjs',[new URL('../runtime/browser/portable-task-host-v3.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/portable-task-host-v4.mjs',[new URL('../runtime/browser/portable-task-host-v4.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/portable-task-host-v5.mjs',[new URL('../runtime/browser/portable-task-host-v5.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/actor-future-host-v1.mjs',[new URL('../runtime/browser/actor-future-host-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-future-completer.mjs',[new URL('./browser-async/actor-future-completer.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/worker-completion-capability-v1.mjs',[new URL('../runtime/browser/worker-completion-capability-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/v5-completer.mjs',[new URL('./browser-async/v5-completer.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/wasm-jspi-control-bridge-v1.mjs',[new URL('../runtime/browser/wasm-jspi-control-bridge-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -65,6 +80,32 @@ try{
   assert.ok(!navigation.errorText,navigation.errorText||'navigation');
   await until(async()=>evaluate("!!document.querySelector('#source')"),'editor load');
   await until(async()=>evaluate('window.__attoReady===true'),'module script ready');
+  // Test the actual Worker host channel runtime independently of guest
+  // compilation. This must NEVER count as the missing Channel<T> guest ABI.
+  const hostProbe=await evaluate(`new Promise((resolve,reject)=>{
+    const worker=new Worker('/channel-host-probe.mjs',{type:'module'});
+    const timeout=setTimeout(()=>{worker.terminate();reject(new Error('channel host timeout'))},5000);
+    worker.onmessage=e=>{clearTimeout(timeout);worker.terminate();resolve(e.data)};
+    worker.onerror=e=>{clearTimeout(timeout);worker.terminate();reject(new Error('channel host worker error'))};
+    worker.postMessage({});
+  })`);
+  assert.deepEqual(hostProbe,{
+    ok:true,answer:'42',singleConsumption:'AlreadyConsumed',
+    cancellation:'Cancelled',eof:true,sendAfterClose:'Closed'
+  });
+  console.log('PASS browser host: Channel<int> checked Future, cancellation and EOF in actual Worker (NOT guest ABI)');
+  // Real Wasm import/worker integration, distinct from compiler-emitted reads.
+  const abiProbe=await evaluate("new Promise((resolve,reject)=>{"+
+    "const w=new Worker('/channel-guest-abi-probe.mjs',{type:'module'});"+
+    "const t=setTimeout(()=>{w.terminate();reject(Error('channel ABI timeout'))},5000);"+
+    "w.onmessage=e=>{clearTimeout(t);w.terminate();resolve(e.data)};"+
+    "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('channel ABI Worker error'))};"+
+    "w.postMessage({});})");
+  assert.deepEqual(abiProbe,{ok:true,importExecuted:true,some:41,eof:true,
+    replay:'AlreadyConsumed',released:true});
+  console.log('PASS channel ABI: genuine Wasm import and tagged Future outcome in Chromium Worker (NOT AttoLang guest lowering)');
+
+
   const run=async(src,expected)=>{
     await evaluate("(()=>{let e=document.querySelector('#source');e.value="+JSON.stringify(src)+";document.querySelector('#run').click()})()");
     let lastOutput='not yet available';
@@ -75,6 +116,126 @@ try{
     },expected+' (last browser output: '+lastOutput+')');
     return state;
   };
+  const channelGuest="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  ^ match opened over\n    on Err(error) -> { return -3; }\n    on Ok(channel) -> {\n      val pending: Future<Result<Option<int>,IoError>> = nb readch channel;\n      val sent: Result<void,IoError> = channel.send(41);\n      ^ match sent over\n        on Err(error) -> { return -2; }\n        on Ok -> {\n          val read_result: Result<Option<int>,IoError> = await pending;\n          ^ match read_result over\n            on Err(error) -> { return -1; }\n            on Ok(item) -> {\n              ^ match item over\n                on None -> { return 0; }\n                on Some(value) -> { return value + 1; }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelGuest,'main() -> 42'),/main\(\) -> 42/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'channel read await must yield cooperatively once');
+  console.log('PASS compiled AttoLang Channel<int> read Future, Some(41) -> 42');
+
+  const channelAbandonSource=`pub susp fnc main(): int {
+    val opened = Channel<int>.bounded(0);
+    match opened over
+      on Err(error) -> { return -1; }
+      on Ok(channel) -> {
+        val pending = nb readch channel;
+        val sent = channel.send(41);
+        match sent over
+          on Err(error) -> { return -2; }
+          on Ok -> {
+            val abandoned: Result<void,IoError> = pending.abandon();
+            match abandoned over
+              on Err(error) -> { return -3; }
+              on Ok -> {
+                val read_again = nb readch channel;
+                val outcome: Result<Option<int>,IoError> = await read_again;
+                match outcome over
+                  on Err(error) -> { return -4; }
+                  on Ok(item) -> {
+                    match item over
+                      on None -> { return -5; }
+                      on Some(n) -> { return n + 1; }
+                    end
+                  }
+                end
+              }
+            end
+          }
+        end
+      }
+    end
+  }`;
+  assert.match(await run(channelAbandonSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'abandoned committed value must be read once, with one cooperative await');
+  console.log('PASS compiled guest: pending.abandon() consumes ticket and rehomes committed value');
+
+  // One compiled guest exercises both 64-bit extrema and two independent
+  // pending readers. The return value verifies FIFO *ordering*, not just
+  // a commutative checksum, and confirms no sentinel/precision truncation.
+  const channelFifoI64=`pub susp fnc main(): int {
+    val opened = Channel<int>.bounded(0);
+    match opened over
+      on Err(error) -> { return -1; }
+      on Ok(channel) -> {
+        val first = nb readch channel;
+        val second = nb readch channel;
+        val upper: int = 9223372036854775807;
+        val lower: int = -9223372036854775807 - 1;
+        val sent_upper = channel.send(upper);
+        val sent_lower = channel.send(lower);
+        val first_result = await first;
+        val second_result = await second;
+        match first_result over
+          on Err(error) -> { return -2; }
+          on Ok(first_option) -> {
+            match first_option over
+              on None -> { return -3; }
+              on Some(a) -> {
+                match second_result over
+                  on Err(error) -> { return -4; }
+                  on Ok(second_option) -> {
+                    match second_option over
+                      on None -> { return -5; }
+                      on Some(b) -> {
+                        if a == upper then
+                          if b == lower then
+                            return 42;
+                          fi
+                        fi
+                        return -6;
+                      }
+                    end
+                  }
+                end
+              }
+            end
+          }
+        end
+      }
+    end
+  }`;
+  assert.equal((await run(channelFifoI64,'main() -> 42')).trim(),'main() -> 42');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,
+    'each of two pending channel Futures must cooperate once');
+  console.log('PASS compiled guest: two-reader FIFO preserves both signed i64 extrema');
+
+
+
+
+  // Distinct compiled guest outcomes: EOF != Some(0); ordinary I/O errors
+  // are tagged Results, and explicit release succeeds after draining.
+  const channelEofSource="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val closed: Result<void,IoError> = channel.close();\n      val pending: Future<Result<Option<int>,IoError>> = nb readch channel;\n      val outcome: Result<Option<int>,IoError> = await pending;\n      val released: Result<void,IoError> = channel.release();\n      ^ match released over\n        on Err(error) -> { return -11; }\n        on Ok -> {\n          ^ match outcome over\n            on Err(error) -> { return -12; }\n            on Ok(item) -> {\n              ^ match item over\n                on None -> { return 42; }\n                on Some(value) -> { return -13; }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelEofSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
+  console.log('PASS compiled guest Channel<int>: EOF is None, release succeeds');
+  const channelClosedSource="pub fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val closed: Result<void,IoError> = channel.close();\n      val sent: Result<void,IoError> = channel.send(41);\n      val released: Result<void,IoError> = channel.release();\n      ^ match released over\n        on Err(error) -> { return -11; }\n        on Ok -> {\n          ^ match sent over\n            on Err(error) -> { return 42; }\n            on Ok -> { return -12; }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelClosedSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),0);
+  console.log('PASS compiled guest Channel<int>: send-after-close is Err, release succeeds');
+  const channelFullSource="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(1);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val first: Result<void,IoError> = channel.send(41);\n      val overflow: Result<void,IoError> = channel.send(99);\n      val pending: Future<Result<Option<int>,IoError>> = nb readch channel;\n      val outcome: Result<Option<int>,IoError> = await pending;\n      val closed: Result<void,IoError> = channel.close();\n      val released: Result<void,IoError> = channel.release();\n      ^ match released over\n        on Err(error) -> { return -11; }\n        on Ok -> {\n          ^ match overflow over\n            on Ok -> { return -12; }\n            on Err(error) -> {\n              ^ match outcome over\n                on Err(error) -> { return -13; }\n                on Ok(item) -> {\n                  ^ match item over\n                    on None -> { return -14; }\n                    on Some(value) -> { return value + 1; }\n                  end\n                }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelFullSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
+  console.log('PASS compiled guest Channel<int>: Full Err preserves queued i64 and release succeeds');
+  const channelCancelled="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val pending: Future<Result<Option<int>,IoError>> = nb readch channel;\n      val cancelled: Result<void,IoError> = pending.cancel();\n      val before_await: Result<void,IoError> = channel.close();\n      val still_busy: Result<void,IoError> = channel.release();\n      val resolved: Result<Option<int>,IoError> = await pending;\n      val released: Result<void,IoError> = channel.release();\n      ^ match still_busy over\n        on Ok -> { return -11; }\n        on Err(error) -> {\n          ^ match cancelled over\n            on Err(error) -> { return -12; }\n            on Ok -> {\n              ^ match released over\n                on Err(error) -> { return -13; }\n                on Ok -> {\n                  ^ match resolved over\n                    on Ok(item) -> { return -14; }\n                    on Err(error) -> { return 42; }\n                  end\n                }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelCancelled,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
+  console.log('PASS compiled guest Channel<int>: cancel wins, Busy until Future awaited, then release succeeds');
+  const channelCancelAfterSend="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val pending = nb readch channel;\n      val sent: Result<void,IoError> = channel.send(41);\n      val cancel_after_send: Result<void,IoError> = pending.cancel();\n      val received: Result<Option<int>,IoError> = await pending;\n      val closed = channel.close();\n      val released = channel.release();\n      ^ match cancel_after_send over\n        on Ok -> { return -11; }\n        on Err(error) -> {\n          ^ match released over\n            on Err(error) -> { return -12; }\n            on Ok -> {\n              ^ match received over\n                on Err(error) -> { return -13; }\n                on Ok(item) -> {\n                  ^ match item over\n                    on None -> { return -14; }\n                    on Some(value) -> { return value + 1; }\n                  end\n                }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelCancelAfterSend,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
+  console.log('PASS compiled guest Channel<int>: send-before-cancel preserves Some(41) and returns AlreadySettled');
+  assert.match(await run('pub fnc main(): int { val pending = nb readch 41; return 0; }','E_EFFECT'),/E_EFFECT/);
+  console.log('PASS compiled guest negative: nb readch without susp fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
@@ -91,10 +252,114 @@ try{
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
+  // This uses the real Rust-compiled wasm32 compiler, then executes the
+  // emitted guest through ordinary Wasm exports with no JSPI in the host path.
+  await evaluate('window.__attoPortableV3=true');
+  const portableSource='pub susp fnc main(): int { await 41; return await 42; }';
+  assert.match(await run(portableSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastPortableTurns'),3,
+    'START and each of two RESUMEs require a separate synchronous guest turn');
+  assert.equal(await evaluate('window.__attoLastPortableResumes'),2);
+  assert.equal(await evaluate('window.__attoLastPortableCleanups'),1,
+    'completed Wasm frame must be explicitly dropped');
+  assert.equal(await run(
+    'pub susp fnc main(): int { val answer: int = 42; await 41; return await answer; }',
+    'main() -> 42'),'main() -> 42',
+    'compiled local must survive real Chromium Worker suspension');
+  assert.equal(await evaluate('window.__attoLastPortableTurns'),3,
+    'local spilling still requires independent compiler-generated quanta');
+  assert.match(await run(
+    'pub susp fnc main(): int { val n=41; return await n + 1; }',
+    'E_V3_MARKER'),/E_V3_MARKER/,
+    'unsupported arithmetic around await must not advertise portable AOT continuation');
+  await evaluate('window.__attoPortableV3=false');
+  console.log('PASS portable v3: genuine compiled guest suspends twice and releases AOT frame without JSPI');
+  // Chromium's *wasm32-compiled Rust compiler* must emit the explicit v4
+  // guest, then execute 16 coexisting AOT frames in ONE Worker/Wasm instance.
+  await evaluate('window.__attoPortableV4=true');
+  const portableV4Source=
+    'pub susp fnc main(): int { val answer: int=42; await 41; return await answer; }';
+  assert.equal(await run(portableV4Source,'main() -> 42'),'main() -> 42');
+  assert.equal(await evaluate('window.__attoV4Peak'),16,
+    'all 16 task frames must coexist before the first completion');
+  assert.equal(await evaluate('window.__attoV4Turns'),48,
+    'start and two awaits per task take separate synchronous scheduler turns');
+  assert.equal(await evaluate('window.__attoV4Resumes'),32);
+  assert.equal(await evaluate('window.__attoV4Cleanups'),16);
+  assert.match(await run(
+    'pub susp fnc main(): int { val x: int=41+1; await 41; return await x; }',
+    'E_UNSUPPORTED'),/E_UNSUPPORTED/,
+    'v4 must not fall back to JSPI/partial guest emission');
+  await evaluate('window.__attoPortableV4=false');
+  console.log('PASS portable v4: wasm32 Rust compiler emits 16 live Wasm-owned frames in Chromium Worker without JSPI');
+  // The wasm32-compiled Rust compiler emits real guest-v5 code. A nested
+  // module Worker with dedicated MessagePorts holds back the first 16
+  // completion tickets; guests must remain genuinely suspended.
+  await evaluate('window.__attoPortableV5=true');
+  const portableV5Source=
+    'pub susp fnc main(): int { val key: int=41; await key; return await 42; }';
+  assert.equal(await run(portableV5Source,'main() -> 42'),'main() -> 42');
+  assert.equal(await evaluate('window.__attoV5Peak'),16);
+  assert.equal(await evaluate('window.__attoV5Starts'),16);
+  assert.equal(await evaluate('window.__attoV5Completions'),32);
+  assert.equal(await evaluate('window.__attoV5Resumes'),32);
+  assert.equal(await evaluate('window.__attoV5Drops'),16);
+  assert.match(await run(
+    'pub susp fnc main(): int { val x: int=41+1; return await x; }',
+    'E_UNSUPPORTED'),/E_UNSUPPORTED/,
+    'v5 must never downgrade unsupported Future expressions to JSPI');
+  await evaluate('window.__attoPortableV5=false');
+  console.log('PASS portable v5: Chromium wasm32 compiler -> AOT pending future guest -> nested Worker MessagePort bearer completions');
+
+  // Typed Future<int> declarations are statically checked and lowered to
+  // the SAME real compiled v5 guest ABI. The separate source marker proves
+  // that this is not silently reusing the untyped integer-key frontend.
+  await evaluate('window.__attoFutureIntAot=true');
+  const futureSource='pub susp fnc await_future<T>(take! Future<T> receipt) -> T { return await receipt; } '+
+    'pub susp fnc main(): int { '+
+    'val key:int=41; val first:Future<int>=pending_future_int(key); '+
+    'await await_future<int>(take! first); val second:Future<int>=pending_future_int(42); '+
+    'return await await_future<int>(take! second); }';
+  assert.equal(await run(futureSource,'main() -> 42'),'main() -> 42');
+  assert.equal(await evaluate('window.__attoV5Peak'),16);
+  assert.equal(await evaluate('window.__attoV5Starts'),16);
+  assert.equal(await evaluate('window.__attoV5Completions'),32);
+  assert.equal(await evaluate('window.__attoV5Resumes'),32);
+  assert.equal(await evaluate('window.__attoV5Drops'),16);
+  assert.match(await run(
+    'pub susp fnc main():int { val f:Future<int>=pending_future_int(41); '+
+      'await take! f; return await f; }','E_MOVED'),/E_MOVED/,
+    'a moved Future<int> must not admit an executable guest');
+  await evaluate('window.__attoFutureIntAot=false');
+  console.log('PASS typed Future<int>: Chromium wasm32 Rust compiler executes 16 linear owned futures in nested Worker');
+
+  // Chromium's actual wasm32 Rust compiler emits the ActorFuture source
+  // manifest; the nested actor Worker authenticates per-request replies.
+  await evaluate('window.__attoActorFutureIntAot=true');
+  const actorFutureSource='pub susp fnc await_actor<T>(take! ActorFuture<T> reply) -> T { return await reply; } '+
+    'pub susp fnc main():int { '+
+    'val a:ActorFuture<int>=actor_future_int(7,41); await await_actor<int>(take! a); '+
+    'val b:ActorFuture<int>=actor_future_int(7,42); return await await_actor<int>(take! b); }';
+  assert.equal(await run(actorFutureSource,'main() -> 42'),'main() -> 42');
+  assert.equal(await evaluate('window.__attoActorFuturePeak'),16);
+  assert.equal(await evaluate('window.__attoActorFutureRequests'),32);
+  assert.equal(await evaluate('window.__attoActorFutureCompletions'),32);
+  assert.equal(await evaluate('window.__attoActorFutureDrops'),16);
+  assert.equal(await evaluate('window.__attoActorFutureNotices'),1);
+  assert.match(await run(
+    'pub susp fnc main():int { val r:ActorFuture<int>=actor_future_int(7,41); '+
+      'await take! r; return await r; }','E_MOVED'),/E_MOVED/,
+    'ActorFuture<int> cannot be awaited twice');
+  await evaluate('window.__attoActorFutureIntAot=false');
+  console.log('PASS ActorFuture<int>: Chromium wasm32 compiler -> full-AOT actor futures -> nested Worker 32 authenticated replies');
+
   const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
   assert.match(await run(readyAwait,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,'two immediate awaits must both yield the browser worker');
   console.log('PASS await: await 42 yields a real JSPI Worker turn twice, while still returning 42');
+  assert.equal(await evaluate('window.__attoLastSchedulerDispatches'),2,
+    'both awaits must be admitted and dispatched by the Worker CONTROL/DATA loop');
+  console.log('PASS integration: compiled JSPI await wakes flow through the bounded Worker scheduler');
   const readyMethod='pub define class Worker as pub suspends mtd answer(): int { await 21; return await 42; } end pub suspends fnc main(): int { val worker=new Worker(); return await worker.answer(); }';
   assert.match(await run(readyMethod,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),3,'class mtd and caller awaits must cooperatively yield');
@@ -115,6 +380,79 @@ try{
   assert.match(await run(combined,'main() -> 42'),/^directmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'combined stdout/Future guest must yield exactly once');
   console.log('PASS integration: direct stdio.out << and awaited Future<int> execute together inside Chromium Worker');
+
+  // Compile the new pipeline in the actual wasm32 compiler, execute its
+  // guest Wasm in Chromium Worker, and prove the existing JSPI await
+  // and cooperative scheduler path is used (not a host JS mock).
+  const piped='fnc transform_result(int v): int { return v + 1; } pub suspends fnc main(): int { val future=task { return 41; }; return future |> suspends |v| -> await v |> transform_result; }';
+  assert.match(await run(piped,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'the explicit suspends lambda stage must cooperatively await exactly once');
+  console.log('PASS integration: explicit suspends identity-await stage executes real guest Future<int> and named transform');
+  const callbackAdd='pub susp fnc main(): int { val future=task { return 41; }; return future |> susp |f| -> await f + 1; }';
+  assert.equal((await run(callbackAdd,'main() -> 42')).trim(),'main() -> 42');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'checked callback arithmetic must suspend only at the awaited Future');
+  const callbackSub='pub suspends fnc main(): int { val future=task { return 43; }; return future |> suspends |f| -> await f - 1; }';
+  assert.equal((await run(callbackSub,'main() -> 42')).trim(),'main() -> 42');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'subtraction callback must preserve exactly one suspended await');
+  console.log('PASS integration: inline susp callback computes checked i64 values in actual guest Wasm');
+  const callbackOverflow='pub susp fnc main(): int { val future=task { return 9223372036854775807; }; return future |> susp |f| -> await f + 1; }';
+  assert.match(await run(callbackOverflow,'E_PANIC'),/E_PANIC: integer overflow/);
+  console.log('PASS integration: checked arithmetic inside suspended callback traps overflow');
+
+  const callbackCaptured='pub susp fnc main(): int { val future=task {return 41;}; future |> susp |f| -> await f + 1 >> val answer: int; stdio.println(answer); return answer; }';
+  assert.equal((await run(callbackCaptured,'main() -> 42')).trim(),'42\nmain() -> 42');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'callback arithmetic terminal capture must not double-await the Future');
+  const callbackCaret='pub susp fnc main(): int { val future=task {return 41;}; ^ future |> suspends |f| -> await f + 1 >> val answer: int; }';
+  assert.equal((await run(callbackCaret,'main() -> 42')).trim(),'main() -> 42');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'caret callback capture must await exactly once');
+  console.log('PASS integration: typed and caret captures of checked susp callback results in guest Wasm');
+
+  const captured='fnc transform_result(int x): int { return x + 1; } pub suspends fnc main(): int { val future=task { return 41; }; future |> susp |f| -> await f |> transform_result >> val result: int; stdio.println(result); return result; }';
+  assert.match(await run(captured,'main() -> 42'),/^42\nmain\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'capturing the transformed Future result must await once, not register another read');
+  console.log('PASS integration: terminal >> val result captures a real JSPI awaited Future<int>');
+
+  // Exact multiline caret-return terminal capture requested in Atto syntax:
+  // caret returns the checked value bound by >> val; there is no second await.
+  const caretCapture=`fnc transform_result(int v): int { return v + 1; }
+pub suspends fnc main(): int {
+    val pending = task { return 41; };
+
+    ^ pending
+        |> susp |f| -> await f
+        |> transform_result
+        >> val result: int;
+}`;
+  assert.match(await run(caretCapture,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'caret await-transform-capture must suspend exactly once');
+  console.log('PASS integration: exact multiline caret-return pipeline compiles and runs as a guest returning 42');
+
+  const captureDirect='pub suspends fnc main(): int { val pending=task { return 42; }; pending |> suspends |p| -> await p >> val answer: int; return answer; }';
+  assert.match(await run(captureDirect,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'direct terminal capture must yield once');
+  console.log('PASS integration: direct terminal await capture executes in browser guest');
+
+  assert.match(await run(
+    'pub suspends fnc main(): int { val pending=task {return 42;}; pending |> susp |p| -> await p >> val answer: string; return 42; }',
+    'E_TYPE'),/E_TYPE/);
+  console.log('PASS integration: mismatched terminal capture rejects without executable guest');
+
+  for (const source of [
+    'pub suspends fnc main(): int { nb stdio.in >> (val String line << await Future<string>); return 42; }',
+    'pub suspends fnc main(): int { nb stdio.in >> Future<string> x | await x >> val String line; return 42; }',
+  ]) {
+    assert.match(await run(source,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  }
+  console.log('PASS integration: both contextual nb stdin read-await spellings fail closed until guest I/O ABI');
+
   for(const [source,code] of [
     ['pub suspends fnc main(): int { nb stdio.out << "queued"; return await 42; }','E_UNSUPPORTED'],
     ['pub suspends fnc main(): int { do writech stdio.out, "queued"; return await 42; }','E_UNSUPPORTED'],

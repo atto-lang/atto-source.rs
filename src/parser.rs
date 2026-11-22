@@ -10,6 +10,9 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+/// Safety cap on recursively nested lambda bodies; protects small runner stacks
+/// independently of the generic-type and expression-depth budgets.
+pub const MAX_LAMBDA_DEPTH: u32 = 32;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -48,6 +51,7 @@ const RESERVED: &[&str] = &[
     "pure",
     "async",
     "suspends",
+    "susp",
     "generator",
     "yield",
     "nlex",
@@ -201,6 +205,7 @@ pub struct Parser {
     toks: Vec<Token>,
     i: usize,
     depth: u32,
+    lambda_depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
     height: u32,
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
@@ -249,6 +254,13 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        // A nested `^ match` or `return match` exits iff all arm bodies
+        // exit. Exhaustiveness (including guarded-arm coverage) remains a
+        // separate mandatory check in the typed matcher; this syntactic
+        // termination preflight must not pretend to prove coverage itself.
+        Some(Stmt::Match { arms, .. }) =>
+            !arms.is_empty()
+                && arms.iter().all(|arm| guard_failure_exits(&arm.body)),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
@@ -263,6 +275,7 @@ impl Parser {
             toks,
             i: 0,
             depth: 0,
+            lambda_depth: 0,
             height: 0,
             cond: 0,
             type_names: Vec::new(),
@@ -321,6 +334,22 @@ impl Parser {
         } else {
             Err(self.expected(what))
         }
+    }
+    /// In a type annotation, contiguous `Future<int>=value` lexes the
+    /// final two characters as `>=`. Split only at a proved generic closing
+    /// delimiter; ordinary expressions keep the comparison token intact.
+    fn expect_type_gt(&mut self,what:&str)->R<()> {
+        if *self.peek()==Tok::Ge {
+            if self.toks.len()>=crate::lexer::MAX_TOKENS {
+                return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT",
+                    "too many tokens after generic assignment normalization"));
+            }
+            let pos=self.pos();
+            self.toks[self.i].tok=Tok::Gt;
+            self.toks.insert(self.i+1,Token{tok:Tok::Assign,
+                pos:Pos{line:pos.line,col:pos.col+1}});
+        }
+        self.expect(Tok::Gt,what)
     }
     fn expect_word(&mut self, w: &str) -> R<()> {
         if self.eat_word(w) {
@@ -391,15 +420,22 @@ impl Parser {
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
         ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+            || (matches!(self.word_at(n), Some("susp" | "suspends"))
+                && self.word_at(n + 1) == Some("fnc"))
     }
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
+        let suspends = self.eat_word("susp") || self.eat_word("suspends");
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
             _ => return Err(self.expected("a type")),
         };
         self.advance();
+        if suspends && name != "fnc" {
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                "susp requires a callable type: susp fnc(...) -> T"));
+        }
         let ty = match name.as_str() {
             "int" => Type::Int,
             "fnc" => {
@@ -433,7 +469,8 @@ impl Parser {
                     return Err(Diagnostic::new(result_pos, "E_UNSUPPORTED_TYPE",
                         "callable return type must be scalar or void"));
                 }
-                let spelling = format!("fnc({})->{}",
+                let spelling = format!("{}fnc({})->{}",
+                    if suspends { "susp " } else { "" },
                     params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
                     result.name());
                 // Identical contracts have identical Type identity across
@@ -447,7 +484,7 @@ impl Parser {
             "Option" => {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Option payload")?;
+                self.expect_type_gt( "'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
                     Type::ResultIntStr => Type::OptionResultIntStr,
@@ -455,10 +492,41 @@ impl Parser {
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
                 }
             }
+            "Channel" => {
+                self.expect(Tok::Lt, "'<' after Channel")?;
+                let item=self.parse_type()?;
+                self.expect_type_gt( "'>' after Channel item")?;
+                if item!=Type::Int {
+                    return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser channel ABI v1 admits only Channel<int>"));
+                }
+                Type::ChannelInt
+            }
+            "ActorFuture" => {
+                self.expect(Tok::Lt, "'<' after ActorFuture")?;
+                let payload=self.parse_type()?;
+                self.expect_type_gt("'>' after ActorFuture payload")?;
+                if payload!=Type::Int {
+                    return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "ActorFuture currently admits only int; actor streams require ActorStream<T>"));
+                }
+                Type::ActorFutureInt
+            }
+            "Future" => {
+                self.expect(Tok::Lt, "'<' after Future")?;
+                let result=self.parse_type()?;
+                self.expect_type_gt( "'>' after Future payload")?;
+                match result {
+                    Type::Int => Type::FutureInt,
+                    Type::ResultOptionIntIoError => Type::FutureReadInt,
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser Future v1 admits only int or Result<Option<int>,IoError>")),
+                }
+            }
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
                 let inner = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Generator item type")?;
+                self.expect_type_gt( "'>' after Generator item type")?;
                 if inner != Type::Int {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "the browser generator frontend currently recognizes only Generator<int>"));
@@ -470,17 +538,21 @@ impl Parser {
                 let good = self.parse_type()?;
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Result types")?;
-                if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                self.expect_type_gt( "'>' after Result types")?;
+                match (good,bad) {
+                    (Type::Int,Type::Str) => Type::ResultIntStr,
+                    (Type::OptionInt,Type::IoError) => Type::ResultOptionIntIoError,
+                    (Type::ChannelInt,Type::IoError) => Type::ResultChannelIntIoError,
+                    (Type::Void,Type::IoError) => Type::ResultVoidIoError,
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser Result admits int/string or checked Channel<int>/Option<int>/IoError profiles")),
                 }
-                Type::ResultIntStr
             },
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
             "string" | "String" => Type::Str,
+            "IoError" => Type::IoError,
             n if UNSUPPORTED_TYPES.contains(&n) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -491,7 +563,7 @@ impl Parser {
             "ActorRef" => {
                 self.expect(Tok::Lt, "'<' after ActorRef")?;
                 let (actor, apos) = self.ident("an actor name")?;
-                self.expect(Tok::Gt, "'>'")?;
+                self.expect_type_gt( "'>'")?;
                 Type::NamedRef(self.type_name(actor, apos))
             }
             "ActorMail" => {
@@ -821,7 +893,7 @@ impl Parser {
                         return Err(unsupported(self.pos(), "static functions in actors"));
                     }
                     self.advance();
-                    let suspends = self.eat_word("suspends");
+                    let suspends = self.eat_word("susp") || self.eat_word("suspends");
                     if let Some(w @ ("async" | "structural")) = self.word_at(0) {
                         return Err(unsupported(self.pos(), &format!("'{w}' static functions")));
                     }
@@ -896,7 +968,7 @@ impl Parser {
                     let method = self.parse_method(public, false, false)?;
                     m.methods.push(method);
                 }
-                Some("suspends") => {
+                Some("susp" | "suspends") => {
                     self.advance();
                     if !(self.eat_word("fnc") || self.eat_word("mtd") || self.eat_word("method")) {
                         return Err(self.expected("'fnc' or 'mtd' after 'suspends'"));
@@ -1050,7 +1122,7 @@ impl Parser {
         }
         self.advance();
         let payload = self.parse_type()?;
-        self.expect(Tok::Gt, "'>'")?;
+        self.expect_type_gt( "'>'")?;
         let (mail, _) = self.ident("a mail parameter name")?;
         if *self.peek() == Tok::Comma {
             return Err(Diagnostic::new(
@@ -1117,7 +1189,7 @@ impl Parser {
         let start = self.pos();
         self.eat_word("pub");
         let is_pure = self.eat_word("pure");
-        let suspends = self.eat_word("suspends");
+        let suspends = self.eat_word("susp") || self.eat_word("suspends");
         if is_pure && suspends {
             return Err(Diagnostic::new(self.pos(), "E_PURE", "pure fnc cannot declare suspends"));
         }
@@ -1128,6 +1200,7 @@ impl Parser {
             "async",
             "suspend",
             "suspends",
+            "susp",
             "nlex",
             "abstract",
             "structural",
@@ -1139,7 +1212,9 @@ impl Parser {
             }
         }
         if suspends {
-            self.expect_word("fnc")?;
+            if !(self.eat_word("fnc") || self.eat_word("routine")) {
+                return Err(self.expected("'fnc' or 'routine' after susp"));
+            }
         } else if !(self.eat_word("fnc") || self.eat_word("routine")) {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
@@ -1463,6 +1538,12 @@ impl Parser {
         if *self.peek() == Tok::At {
             return Err(unsupported(pos, "annotations"));
         }
+        // '^' is a statement-position return marker, not a prefix
+        // expression, XOR or exponentiation. Reuse the checked return path.
+        if *self.peek() == Tok::Caret {
+            self.advance();
+            return self.parse_return_after_marker(pos);
+        }
         if *self.peek() == Tok::LBrace || *self.peek() == Tok::LBracket {
             return Err(unsupported(pos, "destructuring"));
         }
@@ -1521,24 +1602,7 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
-                if self.is_word("match") {
-                    // Return-position match is a value. Generators cannot
-                    // return values, including an exhaustive match.
-                    if self.in_generator {
-                        return Err(Diagnostic::new(pos, "E_RETURN",
-                            "generator cannot return a match value"));
-                    }
-                    return self.parse_return_match(pos);
-                }
-                let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
-                    || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
-                let value = if at_end { None } else { Some(self.parse_expr()?) };
-                if self.in_generator && value.is_some() {
-                    return Err(Diagnostic::new(pos, "E_RETURN",
-                        "generators may terminate with 'return;' but cannot return a value"));
-                }
-                self.terminator()?;
-                Ok(Stmt::Return(value, pos))
+                self.parse_return_after_marker(pos)
             }
             Some("throw") => {
                 self.advance();
@@ -1651,6 +1715,11 @@ impl Parser {
                     pos,
                 }))
             }
+            // Contextual nb-read then await forms. Both intentionally fail
+            // closed until the typed Readable/Future guest ABI exists; this
+            // parser nevertheless verifies their complete syntax and the
+            // binder/await type-slot relationships.
+            Some("nb") => self.parse_nb_await_read_continuation(),
             Some("trap") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;
@@ -1660,6 +1729,7 @@ impl Parser {
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
             _ => {
+                let expr_start = self.i;
                 let e = self.parse_expr()?;
                 // Compound addition uses the existing checked binary addition.
                 // Restrict it to locals: field/index targets need once-only lvalue lowering.
@@ -1715,6 +1785,13 @@ impl Parser {
                         )),
                     };
                 }
+                // Terminal directional value capture follows a real
+                // suspending identity-await pipeline stage. This binder
+                // creates a normal local, not a second I/O operation.
+                if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
+                    && matches!(self.word_at(2), Some("val" | "let" | "const")) {
+                    return self.parse_await_pipeline_capture(e, expr_start);
+                }
                 if matches!(self.peek(), Tok::PlusPlus | Tok::MinusMinus) {
                     return Err(Diagnostic::new(
                         self.pos(),
@@ -1728,6 +1805,291 @@ impl Parser {
         }
     }
 
+
+    /// Shared return and caret-return grammar. Caret is never an expression
+    /// operator. A terminal '>> val/let' after an explicit suspending stage
+    /// binds and returns the just-captured value in a single checked scope.
+    ///
+    /// This sugar deliberately uses the ordinary binding and return checker:
+    /// there is no implicit Future await, IO read, unchecked cast, or second
+    /// evaluation of the pipeline.
+    fn parse_return_after_marker(&mut self, pos: Pos) -> R<Stmt> {
+        if self.is_word("match") {
+            if self.in_generator {
+                return Err(Diagnostic::new(pos, "E_RETURN",
+                    "generator cannot return a match value"));
+            }
+            return self.parse_return_match(pos);
+        }
+        let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
+            || matches!(self.word_at(0),
+                Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
+        let expr_start = self.i;
+        let value = if at_end { None } else { Some(self.parse_expr()?) };
+        // 'return p |> susp |f| -> await f >> val x: T;' or
+        // '^ p |> susp |f| -> await f >> val x: T;'
+        // are equivalent to an explicit checked binding then return x.
+        // This is legal only for the existing identity-await pipeline
+        // subset; it cannot turn an arbitrary '>> val' into assignment.
+        if let Some(value) = value.as_ref() {
+            if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
+                && matches!(self.word_at(2), Some("val" | "let" | "const")) {
+                if self.in_generator {
+                    return Err(Diagnostic::new(pos, "E_RETURN",
+                        "generators cannot return a captured pipeline value"));
+                }
+                let captured = self.parse_await_pipeline_capture(value.clone(), expr_start)?;
+                let Stmt::Bind { name, .. } = &captured else {
+                    return Err(Diagnostic::new(pos, "E_IO_SYNTAX",
+                        "return-position pipeline requires a declaration binding"));
+                };
+                let return_value = Expr {
+                    kind: ExprKind::Var(name.clone()),
+                    pos,
+                };
+                return Ok(Stmt::Block(vec![
+                    captured,
+                    Stmt::Return(Some(return_value), pos),
+                ]));
+            }
+        }
+        if self.in_generator && value.is_some() {
+            return Err(Diagnostic::new(pos, "E_RETURN",
+                "generators may terminate with return; but cannot return a value"));
+        }
+        self.terminator()?;
+        Ok(Stmt::Return(value, pos))
+    }
+
+    /// True only for a verified inline await stage, optional checked scalar
+    /// literal transform, and subsequent named stages. This does not make
+    /// arbitrary directional bindings or a second I/O read legal.
+    fn checked_await_pipe_value(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Await(_) => true,
+            ExprKind::Binary(BinOp::Add | BinOp::Sub, left, right)
+                if matches!(right.kind, ExprKind::Int(Some(_))) =>
+                    Self::checked_await_pipe_value(left),
+            ExprKind::Call(_, args) => args.first()
+                .is_some_and(Self::checked_await_pipe_value),
+            _ => false,
+        }
+    }
+
+    /// A terminal directional binding after explicit suspension lowers to
+    /// a standard local binding. The checker enforces effects, types, moves,
+    /// and scope exactly as it does for regular initialized declarations.
+    fn parse_await_pipeline_capture(&mut self, value: Expr, start: usize) -> R<Stmt> {
+        let at = self.pos();
+        // Require an actual explicit suspension lambda in this statement.
+        // A bare 'await future >> val x' cannot silently become pipeline
+        // syntax just because both constructs may suspend.
+        let has_explicit_stage = self.toks[start..self.i].windows(2).any(|pair|
+            pair[0].tok == Tok::PipeGt
+                && matches!(&pair[1].tok, Tok::Ident(w)
+                    if w == "susp" || w == "suspends"));
+        if !has_explicit_stage || !Self::checked_await_pipe_value(&value) {
+            return Err(Diagnostic::new(at, "E_IO_SYNTAX",
+                "terminal '>> val/let' requires an explicit suspending await pipeline"));
+        }
+        self.expect_io_double(Tok::Gt, ">>")?;
+        let kind = if self.eat_word("val") { BindKind::Val }
+            else if self.eat_word("let") { BindKind::Let }
+            else if self.eat_word("const") {
+                return Err(Diagnostic::new(at, "E_CONST_EFFECT",
+                    "runtime pipeline values cannot initialize const"));
+            } else {
+                return Err(Diagnostic::new(at, "E_IO_SYNTAX",
+                    "expected val or let after a directional pipeline"));
+            };
+        let (name, ty) = if matches!(self.peek(), Tok::Ident(_))
+            && *self.peek_at(1) == Tok::Colon {
+            let (name, _) = self.ident("the pipeline capture name")?;
+            self.advance();
+            (name, Some(self.parse_type()?))
+        } else if matches!(self.word_at(0),
+            Some("int" | "bool" | "boolean" | "float" | "f64" | "string" | "String")) {
+            let ty = self.parse_type()?;
+            let (name, _) = self.ident("the pipeline capture name")?;
+            (name, Some(ty))
+        } else {
+            let (name, _) = self.ident("the pipeline capture name")?;
+            (name, None)
+        };
+        if self.state_method && name == "s" {
+            return Err(Diagnostic::new(at, "E_STATE_BORROW",
+                "pipeline capture cannot shadow the protected state binder"));
+        }
+        if ty == Some(Type::Void) {
+            return Err(Diagnostic::new(at, "E_TYPE",
+                "pipeline capture cannot bind void"));
+        }
+        self.terminator()?;
+        Ok(Stmt::Bind { kind, name, ty, init: value, pos: at })
+    }
+
+    /// Canonicalize only the builtin String/string spelling, including
+    /// nested generic arguments, without rewriting qualified user types
+    /// such as lib.String or identifiers containing the same substring.
+    fn canonical_io_type(spelling: &str) -> String {
+        let mut out = String::with_capacity(spelling.len());
+        let mut segment = String::new();
+        for ch in spelling.chars().chain(std::iter::once('\0')) {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+                segment.push(ch);
+            } else {
+                if segment == "String" { out.push_str("string"); }
+                else { out.push_str(&segment); }
+                segment.clear();
+                if ch != '\0' { out.push(ch); }
+            }
+        }
+        out
+    }
+
+    /// A contiguous directional operator in I/O syntax. Numeric shifts,
+    /// generic type closers, and separated '< <' / '> >' are NOT aliases.
+    fn expect_io_double(&mut self, op: Tok, spelling: &str) -> R<()> {
+        let first = self.pos();
+        if !self.eat(&op) {
+            return Err(Diagnostic::new(first, "E_IO_SYNTAX",
+                format!("expected '{spelling}' in a read–await continuation")));
+        }
+        let second = self.pos();
+        if *self.peek() != op || first.line != second.line
+            || first.col.checked_add(1) != Some(second.col)
+        {
+            return Err(Diagnostic::new(second, "E_IO_SYNTAX",
+                format!("'{spelling}' must be contiguous in an I/O continuation")));
+        }
+        self.advance();
+        Ok(())
+    }
+
+    /// Full type grammar is necessary to distinguish nested '>>' generic
+    /// delimiters from a subsequent I/O direction operator.
+    fn parse_io_future_slot(&mut self) -> R<String> {
+        let at = self.pos();
+        let type_name = self.parse_lambda_type()?;
+        match type_name.strip_prefix("Future<").and_then(|x| x.strip_suffix('>')) {
+            Some(inner) if !inner.is_empty() && inner != "void" => Ok(inner.to_owned()),
+            _ => Err(Diagnostic::new(at, "E_IO_SYNTAX",
+                "read–await continuation requires a complete Future<T> type slot")),
+        }
+    }
+
+    /// val T name / val name: T, and the corresponding let forms. A runtime
+    /// read may not initialize the compile-time-only const binder.
+    fn parse_io_resolved_binder_type(&mut self) -> R<String> {
+        if self.eat_word("const") {
+            return Err(Diagnostic::new(self.pos(), "E_CONST_EFFECT",
+                "runtime reads cannot initialize a const binding"));
+        }
+        if !(self.eat_word("val") || self.eat_word("let")) {
+            return Err(Diagnostic::new(self.pos(), "E_IO_SYNTAX",
+                "expected val/let resolved read binder"));
+        }
+        if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+            self.ident("read-result binder")?;
+            self.advance(); // colon
+            self.parse_lambda_type()
+        } else {
+            let name = self.parse_lambda_type()?;
+            self.ident("read-result binder")?;
+            Ok(name)
+        }
+    }
+
+    /// This is a *syntax* contract, not an executable read. The initial nb
+    /// registration cannot park; the explicit await can suspend the caller.
+    /// In the first form Future<T> is a contextual TYPE SLOT, never a runtime
+    /// value manufactured by the parser or an implicit unwrap.
+    fn parse_nb_await_read_continuation(&mut self) -> R<Stmt> {
+        let at = self.pos();
+        self.expect_word("nb")?;
+        // The restricted browser parser intentionally rejects stdio.in as
+        // an executable ordinary member expression. Admit this *syntactic*
+        // receiver only here, without bypassing eventual lexical shadowing
+        // or pretending stdin has a guest host adapter.
+        if self.word_at(0) == Some("stdio")
+            && *self.peek_at(1) == Tok::Dot
+            && self.word_at(2) == Some("in")
+        {
+            for _ in 0..3 { self.advance(); }
+        } else {
+            let _source = self.parse_postfix()?;
+        }
+        if *self.peek() != Tok::Gt {
+            return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
+        }
+        self.expect_io_double(Tok::Gt, ">>")?;
+        let (future_inner, bound_inner) = if self.eat(&Tok::LParen) {
+            let bound = self.parse_io_resolved_binder_type()?;
+            self.expect_io_double(Tok::Lt, "<<")?;
+            self.expect_word("await")?;
+            let future = self.parse_io_future_slot()?;
+            self.expect(Tok::RParen, "')' after read–await continuation")?;
+            (future, bound)
+        } else if self.is_word("Future") {
+            let future = self.parse_io_future_slot()?;
+            let (pending, _) = self.ident("intermediate Future binder")?;
+            self.expect(Tok::Pipe, "'|' before an awaited read continuation")?;
+            self.expect_word("await")?;
+            let (awaited, awaited_pos) = self.ident("awaited Future binder")?;
+            if awaited != pending {
+                return Err(Diagnostic::new(awaited_pos, "E_PIPE_BIND",
+                    "await must consume the Future bound by this read"));
+            }
+            self.expect_io_double(Tok::Gt, ">>")?;
+            let bound = self.parse_io_resolved_binder_type()?;
+            (future, bound)
+        } else if self.is_word("val") || self.is_word("let") || self.is_word("const") {
+            // Directional read-to-future-to-await flow (syntax only):
+            //
+            // nb stdio.in >> val pending: Future<Outcome>
+            //     |> susp |f| -> await f
+            //     >> val resolved: Outcome;
+            //
+            // The first '>>' is an nb read that binds its Future, '|>' is
+            // callable application, and the final '>>' binds the value. This
+            // must not be generalized into assignment or another stream read.
+            let typed_future = self.parse_io_resolved_binder_type()?;
+            let inner = typed_future.strip_prefix("Future<")
+                .and_then(|s| s.strip_suffix('>'))
+                .filter(|s| !s.is_empty() && *s != "void")
+                .ok_or_else(|| Diagnostic::new(at, "E_IO_SYNTAX",
+                    "a directional nonblocking read pipeline needs a Future<T> binder"))?
+                .to_owned();
+            self.expect(Tok::PipeGt, "'|>' after a Future<T> read binder")?;
+            if !(self.eat_word("susp") || self.eat_word("suspends")) {
+                return Err(unsupported(self.pos(),
+                    "directional read pipeline requires 'susp |v| -> await v'"));
+            }
+            self.expect(Tok::Pipe, "'|' before suspending lambda parameter")?;
+            let (parameter, _) = self.ident("suspending lambda parameter")?;
+            self.expect(Tok::Pipe, "'|' after suspending lambda parameter")?;
+            self.expect(Tok::Arrow, "'->' in suspending lambda")?;
+            self.expect_word("await")?;
+            let (awaited, awaited_pos) = self.ident("awaited Future parameter")?;
+            if parameter != awaited {
+                return Err(Diagnostic::new(awaited_pos, "E_PIPE_BIND",
+                    "suspending stage must await its own lambda parameter"));
+            }
+            self.expect_io_double(Tok::Gt, ">>")?;
+            let resolved = self.parse_io_resolved_binder_type()?;
+            (inner, resolved)
+        } else {
+            return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
+        };
+        // String and string are accepted surface aliases. Do not erase
+        // Result/Option/EOF/error information from future payload types.
+        if Self::canonical_io_type(&future_inner) != Self::canonical_io_type(&bound_inner) {
+            return Err(Diagnostic::new(at, "E_TYPE",
+                "resolved binder must match the entire Future payload type (including Result/Option/EOF/errors)"));
+        }
+        self.terminator()?;
+        Err(unsupported(at, "typed nonblocking read–await continuation guest ABI"))
+    }
 
     /// The Java/LLVM compound-keyword contract requires exactly adjacent
     /// ASCII critical-read / critical-write, not spaced subtraction tokens.
@@ -1878,7 +2240,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Channel" | "Future"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -2200,6 +2562,7 @@ impl Parser {
                 }
                 "Some" | "Ok" | "Err" => {
                     self.advance();
+                    if w=="Ok" && *self.peek()!=Tok::LParen {return Ok(Pattern::Adt(w,None));}
                     self.expect(Tok::LParen, "'(' after payload variant")?;
                     let (name, _) = self.ident("a payload binding name")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
@@ -2400,6 +2763,90 @@ impl Parser {
         while *self.peek() == Tok::PipeGt {
             let pos = self.pos();
             self.advance();
+            // A suspending closure is not a function named "await". Admit the
+            // exact identity-await lambda as a narrow executable pipeline
+            // stage until general first-class closures are lowered.
+            //
+            //   pending |> suspends |value| -> await value |> transform
+            //
+            // Desugars to transform(await pending); await still belongs to the
+            // current execution context and the checker enforces suspends.
+            if self.eat_word("suspends") || self.eat_word("susp") {
+                self.expect(Tok::Pipe, "'|' before the suspending pipeline binder")?;
+                let (binder, _) = self.ident("a suspending pipeline binder")?;
+                self.expect(Tok::Pipe, "'|' after the suspending pipeline binder")?;
+                self.expect(Tok::Arrow, "'->' after a suspending pipeline binder")?;
+                if !self.eat_word("await") {
+                    return Err(unsupported(self.pos(), "suspending pipeline lambdas other than '|v| -> await v'"));
+                }
+                let (awaited, at) = self.ident("the awaited pipeline binder")?;
+                if awaited != binder {
+                    return Err(Diagnostic::new(at, "E_PIPE_BIND",
+                        "a suspending identity-await stage must await its own parameter"));
+                }
+                // The first executable callback-body slice permits exactly
+                // one checked scalar addition/subtraction of an integer
+                // literal after the await. It is part of the lambda body,
+                // never a later pipeline stage. No free variables, closure
+                // captures or unrestricted expression bodies are admitted.
+                let mut awaited_value = Expr {
+                    kind: ExprKind::Await(Box::new(c)),
+                    pos,
+                };
+                if matches!(self.peek(), Tok::Plus | Tok::Minus) {
+                    let arithmetic_pos = self.pos();
+                    let op = if *self.peek() == Tok::Plus { BinOp::Add } else { BinOp::Sub };
+                    self.advance();
+                    let literal_pos = self.pos();
+                    let amount = match self.peek().clone() {
+                        Tok::Int(Some(value)) if value <= i64::MAX as u64 => value,
+                        Tok::Int(_) => return Err(Diagnostic::new(literal_pos, "E_INTEGER_RANGE",
+                            "callback integer literal exceeds signed 64-bit range")),
+                        _ => return Err(unsupported(literal_pos,
+                            "suspending callback arithmetic requires an integer literal")),
+                    };
+                    self.advance();
+                    self.grow(1)?;
+                    links += 1;
+                    awaited_value = Expr {
+                        kind: ExprKind::Binary(
+                            op,
+                            Box::new(awaited_value),
+                            Box::new(Expr {kind: ExprKind::Int(Some(amount)),pos: literal_pos}),
+                        ),
+                        pos: arithmetic_pos,
+                    };
+                }
+                let terminal_capture = *self.peek() == Tok::Gt
+                    && *self.peek_at(1) == Tok::Gt
+                    && matches!(self.word_at(2), Some("val" | "let" | "const"))
+                    && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                    && self.toks[self.i].pos.col.checked_add(1) ==
+                       Some(self.toks[self.i + 1].pos.col);
+                let stage_boundary = terminal_capture || matches!(self.peek(),
+                    Tok::PipeGt | Tok::Semi | Tok::RParen | Tok::RBracket |
+                    Tok::RBrace | Tok::Comma | Tok::Eof | Tok::Question);
+                let newline = self.i > 0
+                    && self.toks[self.i - 1].pos.line < self.pos().line;
+                // A newline may end a statement, but must NEVER turn the
+                // continuation of a callback body into a separate statement.
+                // For example, await f + 1 followed by a newline and "+ 2"
+                // must fail rather than silently returning the unextended
+                // value. The same rule holds for comparisons and postfixes.
+                let dangling_continuation = matches!(self.peek(),
+                    Tok::Plus | Tok::Minus | Tok::Star | Tok::Slash |
+                    Tok::Dot | Tok::LBracket | Tok::LParen |
+                    Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge |
+                    Tok::EqEq | Tok::NotEq | Tok::Assign |
+                    Tok::Amp | Tok::Pipe | Tok::Bang);
+                if !stage_boundary && (!newline || dangling_continuation) {
+                    return Err(unsupported(self.pos(), "complex suspending pipeline lambda bodies"));
+                }
+                self.grow(1)?;
+                links += 1;
+                c = awaited_value;
+                continue;
+            }
             let stage = self.parse_postfix()?;
             let (name, mut args) = match stage.kind {
                 ExprKind::Var(name) => (name, Vec::new()),
@@ -2476,6 +2923,20 @@ impl Parser {
         let mut left = self.parse_additive()?;
         loop {
             let pos = self.pos();
+            // '>> val' cannot be parsed as two numeric comparisons.
+            // A terminal value binder is only legal after the explicit
+            // suspending pipeline stage handled at statement level.
+            if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
+                && matches!(self.word_at(2), Some("val" | "let" | "const"))
+                && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                && self.toks[self.i].pos.col.checked_add(1) ==
+                   Some(self.toks[self.i + 1].pos.col) {
+                // Leave the declaration to the statement or return parser.
+                // Reject there unless it followed a verified suspending
+                // identity-await pipeline. Erroring here rejects *valid*
+                // 'pending |> susp |f| -> await f >> val x' too early.
+                break;
+            }
             let op = match self.peek() {
                 Tok::Lt => BinOp::Lt,
                 Tok::Le => BinOp::Le,
@@ -2577,6 +3038,16 @@ impl Parser {
                     "share" => OwnershipOp::Share,
                     _ => unreachable!(),
                 };
+                // take! is one lexical ownership operator.  Comments,
+                // spaces and newlines before ! must not silently confer an
+                // affine transfer right (borrow-default-v1 lexical contract).
+                if action == OwnershipOp::Take {
+                    let bang=self.toks[self.i+1].pos;
+                    if bang.line != pos.line || pos.col.checked_add(4) != Some(bang.col) {
+                        return Err(Diagnostic::new(pos,"E_SYNTAX",
+                            "take! requires an attached '!' marker"));
+                    }
+                }
                 self.advance(); // name
                 self.advance(); // !
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
@@ -2585,6 +3056,11 @@ impl Parser {
                 }
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
+            },
+            Tok::Ident(s) if s == "nb" && self.word_at(1)==Some("readch") => {
+                self.advance();self.advance();
+                let ch=self.parse_postfix()?;
+                return Ok(Expr {kind:ExprKind::Call("$atto_ch_read".into(),vec![ch]),pos});
             },
             Tok::Ident(s) if s == "await" => {
                 self.advance();
@@ -2759,43 +3235,75 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        // A generic annotation such as Box<Box<...<int>>> can be 100+
+        // levels deep. Recursive generic parsing consumes multiple native
+        // stack frames per level and can abort before E_NESTING is returned
+        // on smaller runner stacks. Parse the same grammar iteratively.
         self.enter()?;
-        let result = (|| {
-            let mut name = match self.peek().clone() {
-                Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
-                    self.advance();
-                    s
+        let parsed = (|| -> R<String> {
+            let mut spelling = String::new();
+            let mut generic_depth = 0u32;
+            let mut need_type = true;
+            loop {
+                if need_type {
+                    if self.depth.saturating_add(generic_depth) > MAX_DEPTH
+                        || self.height.saturating_add(generic_depth) > MAX_TREE_HEIGHT {
+                        return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                            "lambda type nesting exceeds the parser depth budget"));
+                    }
+                    let type_name = match self.peek().clone() {
+                        Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
+                            self.advance();
+                            s
+                        }
+                        _ => return Err(self.expected("a lambda return type")),
+                    };
+                    spelling.push_str(&type_name);
+                    while self.eat(&Tok::Dot) {
+                        let segment = match self.peek().clone() {
+                            Tok::Ident(s) => { self.advance(); s }
+                            _ => return Err(self.expected("a qualified type name")),
+                        };
+                        spelling.push('.');
+                        spelling.push_str(&segment);
+                    }
+                    if self.eat(&Tok::Lt) {
+                        spelling.push('<');
+                        generic_depth += 1;
+                        need_type = true;
+                        continue;
+                    }
+                    need_type = false;
                 }
-                _ => return Err(self.expected("a lambda return type")),
-            };
-            while self.eat(&Tok::Dot) {
-                // Namespace/module segments may be spelled like keywords
-                // (e.g. my.types.Response). After '.', the token is never
-                // parsed as a control-flow keyword.
-                let part = match self.peek().clone() {
-                    Tok::Ident(part) => { self.advance(); part }
-                    _ => return Err(self.expected("a qualified type name")),
-                };
-                name.push('.');
-                name.push_str(&part);
-            }
-            if self.eat(&Tok::Lt) {
-                name.push('<');
-                loop {
-                    name.push_str(&self.parse_lambda_type()?);
-                    if !self.eat(&Tok::Comma) { break; }
-                    name.push(',');
+                if generic_depth == 0 {
+                    return Ok(spelling);
                 }
-                self.expect(Tok::Gt, "'>' after lambda type arguments")?;
-                name.push('>');
+                if self.eat(&Tok::Comma) {
+                    spelling.push(',');
+                    need_type = true;
+                    continue;
+                }
+                self.expect_type_gt( "'>' after lambda type arguments")?;
+                spelling.push('>');
+                generic_depth -= 1;
             }
-            Ok(name)
         })();
         self.leave();
-        result
+        parsed
     }
 
-    fn parse_lambda(&mut self) -> R<ExprKind> {
+    fn parse_lambda(&mut self, suspends: bool) -> R<ExprKind> {
+        // Each nested expression-bodied lambda adds several recursive parser
+        // frames. Check a *lambda-specific* budget before descending; the
+        // general MAX_DEPTH check alone can overflow the native thread stack
+        // on adversarial chains such as "|x| -> " repeated many times.
+        self.lambda_depth += 1;
+        if self.lambda_depth > MAX_LAMBDA_DEPTH {
+            self.lambda_depth -= 1;
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda bodies exceed the safe recursion budget"));
+        }
+        let result = (|| -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
@@ -2871,7 +3379,11 @@ impl Parser {
         } else {
             LambdaBody::Expression(Box::new(self.parse_expr()?))
         };
-        Ok(ExprKind::Lambda { params, return_type, body })
+        Ok(ExprKind::Lambda { params, return_type, body, suspends })
+        })();
+        // Always restore the guard, including on early syntax/limit errors.
+        self.lambda_depth -= 1;
+        result
     }
 
     fn parse_array_literal(&mut self) -> R<ExprKind> {
@@ -2917,6 +3429,12 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "Channel" if *self.peek_at(1)==Tok::Lt => {
+                    self.advance();self.expect(Tok::Lt,"'<'")?;
+                    self.expect_word("int")?;self.expect_type_gt("'>'")?;
+                    self.expect(Tok::Dot,"'.'")?;self.expect_word("bounded")?;
+                    ExprKind::Call("$atto_ch_open".into(),self.parse_args()?)
+                },
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
@@ -2949,6 +3467,14 @@ impl Parser {
                     }
                     let args = self.parse_args()?;
                     ExprKind::New(class, args)
+                }
+                "susp" | "suspends" => {
+                    self.advance();
+                    if *self.peek() != Tok::Pipe {
+                        return Err(Diagnostic::new(pos, "E_SYNTAX",
+                            "susp must precede a lambda: susp |args| -> ..."));
+                    }
+                    self.parse_lambda(true)?
                 }
                 "task" => {
                     self.advance();
@@ -3002,7 +3528,7 @@ impl Parser {
                     ExprKind::Var(s)
                 }
             },
-            Tok::Pipe => self.parse_lambda()?,
+            Tok::Pipe => self.parse_lambda(false)?,
             Tok::LBracket => self.parse_array_literal()?,
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
             _ => return Err(self.expected("an expression")),
@@ -3077,6 +3603,7 @@ fn describe(t: &Tok) -> String {
                 Tok::PipeGt => "|>",
                 Tok::Amp => "&",
                 Tok::At => "@",
+                Tok::Caret => "^",
                 _ => "?",
             };
             format!("'{s}'")
