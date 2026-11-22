@@ -6,6 +6,7 @@
 //! Borrow conformance (single source only), extra flags:
 //!   --borrow-report OUT.jsonl --compiler-git-sha <40 hex> [--case ID]
 //!   writes atto-borrow-backend-report-v1 lines for atto-borrow-conform cross-check.
+use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -114,7 +115,18 @@ fn main() -> ExitCode {
                             return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
                                 "import resolves outside project root"));
                         }
-                        std::fs::read_to_string(resolved)
+                        // Read at most SOURCE_CAP+1 bytes: importing a huge
+                        // dependency must never allocate its entire contents
+                        // before the lexer can enforce the byte admission cap.
+                        let mut data = String::new();
+                        std::fs::File::open(resolved)?
+                            .take((atto_compiler::SOURCE_CAP + 1) as u64)
+                            .read_to_string(&mut data)?;
+                        if data.len() > atto_compiler::SOURCE_CAP {
+                            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                                "imported source exceeds compiler byte limit"));
+                        }
+                        Ok(data)
                     }),
                     Err(_) => atto_compiler::compile_with_path(&source, name.as_path()),
                 },

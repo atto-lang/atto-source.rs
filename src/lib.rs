@@ -40,6 +40,7 @@ pub mod scalar_generic;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
+pub mod const_import_link;
 pub mod import_link;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
@@ -100,10 +101,16 @@ pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
 
 /// Compile a project entry with trusted caller-supplied relative source loading.
 pub fn compile_with_imports<F>(
-    source: &str, logical_path: &std::path::Path, load: F,
+    source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
     let source = library::expand(source)?;
+    // Bounded relative-file scalar `import const` can substitute only
+    // verified literal values, before the existing checker and guest emitter.
+    // Full package and environment-backed initialization still fail closed.
+    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut load)? {
+        return compile_prelexed(tokens, Some(logical_path));
+    }
     let tokens = import_link::lower(&source, logical_path, load)?;
     compile_prelexed(tokens, Some(logical_path))
 }
