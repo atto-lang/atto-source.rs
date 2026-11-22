@@ -30,3 +30,7 @@ The operator authorized token-free private exact-tree mirroring into an alternat
 - Verify .NET native host test and native AOT on a real .NET toolchain, Java JDK 25 + Truffle, native LLVM AOT, and Wasm guest runtime separately.
 - Re-test the **whole exact PR head/tree**, not only verified individual Git blobs, on a carrier with real runner jobs and nonzero steps.
 - Keep PRs Draft and do not promote from a source-only, host-only or zero-step result.
+
+## Follow-up 2026-11-22 — browser compiler must fail closed for raw UDP
+
+Added `tests/udp_raw_socket_failclosed.rs`, invoking the **real** `attoc --check` and `attoc` binary on temporary native-socket call fixtures. Browser/Wasm has no raw UDP socket host import; check and compile must emit a nonempty diagnostic and **never emit a fabricated Wasm/PASS** for `network.bind_udp` or `std.net.udp.bind`. This is a negative capability gate, not implementation of raw UDP or proof that the pure `.atto` UDP policy files compile. **Not executed** locally: Rust toolchain unavailable. Independently owned `.atto` policy remains unchanged. Backend guest/Wasm policy execution and precise unsupported diagnostics are outstanding.
