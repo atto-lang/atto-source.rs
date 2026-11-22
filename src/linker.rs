@@ -27,6 +27,8 @@ struct Import {
     name: String,
     path: String,
     pos: Pos,
+    /// Explicit namespace import is never an ambient package or host lookup.
+    namespace: bool,
 }
 
 struct Header {
@@ -184,8 +186,10 @@ fn header(source: &str, file: &str) -> R<Header> {
     }
     while word(&t, i, "import") {
         let pos = t[i].pos;
-        if !word(&t, i + 1, "module") || !word(&t, i + 3, "from") {
-            return Err(err(pos, "E_SYNTAX", "expected 'import module Name from \"./file.atto\";'"));
+        let namespace_import = word(&t, i + 1, "namespace");
+        if !(namespace_import || word(&t, i + 1, "module")) || !word(&t, i + 3, "from") {
+            return Err(err(pos, "E_SYNTAX",
+                "expected 'import module|namespace Name from \"./file.atto\";'"));
         }
         let name = ident(&t, i + 2)?;
         let path = match t.get(i + 4).map(|x| &x.tok) {
@@ -201,7 +205,7 @@ fn header(source: &str, file: &str) -> R<Header> {
         if imports.iter().any(|x: &Import| x.name == name || x.path == path) {
             return Err(err(pos, "E_DUPLICATE", "duplicate imported module alias or path"));
         }
-        imports.push(Import { name, path, pos });
+        imports.push(Import { name, path, pos, namespace: namespace_import });
         spans.push(span(source, &t, i, i + 5)?);
         i += 6;
     }
@@ -227,6 +231,65 @@ fn header(source: &str, file: &str) -> R<Header> {
 
 fn imported_module(imp: &Import, dependency: &LinkUnit<'_>, entry_package: &str) -> R<String> {
     let hdr = header(dependency.source, dependency.path)?;
+    if imp.namespace {
+        // A namespace is a file-scoped source declaration, not an implicit
+        // importable module and not ambient authority over sibling files.
+        // Only this explicit, canonical import edge may link its functions.
+        let qualified = hdr.namespace.as_deref().ok_or_else(|| err(
+            imp.pos, "E_UNBOUND", "imported namespace source has no namespace header"))?;
+        if qualified.rsplit('.').next() != Some(imp.name.as_str()) {
+            return Err(err(imp.pos, "E_UNBOUND",
+                "imported namespace alias must match the declared namespace leaf"));
+        }
+        // Compiler-library namespace spelling must match an explicit
+        // package-relative tier and source path. A declaration saying
+        // 'atto.core.slice' inside 'other/slice.atto' has no core authority.
+        // The package identity still comes exclusively from the trusted
+        // source-graph caller, never this lexical namespace string.
+        let path_stem = dependency.path.strip_suffix(".atto")
+            .ok_or_else(|| err(imp.pos, "E_IMPORT_PATH",
+                "namespace provider must be a canonical .atto source file"))?;
+        let tier = path_stem.split('/').next().unwrap_or("");
+        if matches!(tier, "core" | "alloc" | "std") {
+            let expected = format!("atto.{}", path_stem.replace('/', "."));
+            if qualified != expected {
+                return Err(err(imp.pos, "E_NAMESPACE_PATH",
+                    "library namespace must match its canonical package-relative tier path"));
+            }
+        } else if qualified.starts_with("atto.core.")
+            || qualified.starts_with("atto.alloc.")
+            || qualified.starts_with("atto.std.") {
+            return Err(err(imp.pos, "E_NAMESPACE_PATH",
+                "compiler-library namespace cannot be declared outside its tier path"));
+        }
+        // Refuse namespace source with no public callable, or any non-function
+        // declaration. The established module lowering validates functions,
+        // visibility, private helpers and safe, braced source bodies.
+        let source_tokens = lexer::lex(&hdr.body)?;
+        let any_public = source_tokens.windows(2).any(|w|
+            matches!((&w[0].tok, &w[1].tok),
+                (Tok::Ident(p), Tok::Ident(f)) if p == "pub" && f == "fnc"));
+        if !any_public {
+            return Err(err(imp.pos, "E_VISIBILITY",
+                "imported namespace must explicitly publish a function"));
+        }
+        // Internal executable bridge only. No new user-facing module
+        // declaration or runtime namespace value is manufactured.
+        let bridged = format!("define pub module {} as\n{}\nend\n", imp.name, hdr.body);
+        let synthetic_unit = LinkUnit {
+            path: dependency.path,
+            package: dependency.package,
+            source: &bridged,
+        };
+        let synthetic_import = Import {
+            name: imp.name.clone(),
+            path: imp.path.clone(),
+            pos: imp.pos,
+            namespace: false,
+        };
+        return imported_module(&synthetic_import, &synthetic_unit, entry_package);
+    }
+
     // Each import edge was validated against the whole graph before this
     // function is called. Module imports in the header are not declarations
     // and are erased before local parsing; no transitive runtime authority.
@@ -341,15 +404,17 @@ fn visit<'a>(
         let source = lexer::lex(&hdr.body)?;
         let vis = visibility_lower::lower(source)?;
         let module = module_lower::lower_with_manifest(vis.tokens)?;
-        if module.modules.len() != 1 {
-            return Err(err(
-                Pos::default(),
-                "E_UNSUPPORTED",
-                "imported files must own exactly one named module",
-            ));
+        // One declared module OR one file-scoped namespace whose leaf
+        // becomes the strictly internal module-lowering bridge.
+        if module.modules.len() > 1 ||
+            (module.modules.is_empty() && hdr.namespace.is_none()) {
+            return Err(err(Pos::default(), "E_UNSUPPORTED",
+                "imported files must own exactly one module or namespace"));
         }
-        let name = &module.modules[0].name;
-        if let Some(previous) = names.insert(name.clone(), path) {
+        let name = module.modules.first().map(|m| m.name.as_str())
+            .or_else(|| hdr.namespace.as_deref().and_then(|s| s.rsplit('.').next()))
+            .ok_or_else(|| err(Pos::default(), "E_UNBOUND", "imported namespace missing owner"))?;
+        if let Some(previous) = names.insert(name.to_string(), path) {
             if previous != path {
                 return Err(err(
                     Pos::default(),
@@ -382,14 +447,18 @@ fn visit<'a>(
         let tokens = lexer::lex(&hdr.body)?;
         let lowered = visibility_lower::lower(tokens)?;
         let manifest = module_lower::lower_with_manifest(lowered.tokens)?;
-        let m = manifest
-            .modules
-            .first()
-            .ok_or_else(|| err(Pos::default(), "E_UNBOUND", "module missing after graph traversal"))?;
+        let declared = manifest.modules.first();
+        let namespace = declared.is_none();
+        let name = declared.map(|m| m.name.clone())
+            .or_else(|| hdr.namespace.as_deref().and_then(|ns| ns.rsplit('.').next())
+                .map(str::to_string))
+            .ok_or_else(|| err(Pos::default(), "E_UNBOUND",
+                "module/namespace missing after graph traversal"))?;
         let synthetic = Import {
-            name: m.name.clone(),
+            name,
             path: path.to_string(),
-            pos: m.pos,
+            pos: declared.map(|m| m.pos).unwrap_or_default(),
+            namespace,
         };
         ordered.push((path.to_string(), imported_module(&synthetic, unit, unit.package)?));
     }
@@ -412,7 +481,13 @@ fn preflight_file_authority(
     let lexical = visibility_lower::lower(tokens.clone())?;
     let modules = module_lower::lower_with_manifest(lexical.tokens)?;
     let imported: std::collections::BTreeSet<&str> = hdr.imports.iter().map(|i| i.name.as_str()).collect();
-    let owned: std::collections::BTreeSet<&str> = modules.modules.iter().map(|m| m.name.as_str()).collect();
+    let mut owned: std::collections::BTreeSet<&str> =
+        modules.modules.iter().map(|m| m.name.as_str()).collect();
+    if !is_entry && modules.modules.is_empty() {
+        if let Some(name) = hdr.namespace.as_deref().and_then(|ns| ns.rsplit('.').next()) {
+            owned.insert(name);
+        }
+    }
     for (i, token) in tokens.iter().enumerate() {
         let Tok::Ident(ref name) = token.tok else { continue };
         if name.starts_with("__atto_q_") {
