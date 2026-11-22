@@ -56,7 +56,10 @@ fn err(t: &[Token], i: usize, code: &'static str, message: impl Into<String>) ->
 }
 fn name(t: &[Token], i: &mut usize) -> R<String> {
     match at(t, *i) {
-        Some(Tok::Ident(v)) if v.len() <= 96 => {
+        Some(Tok::Ident(v)) if v.len() <= 96 &&
+            !crate::parser::is_reserved(v) &&
+            v.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') &&
+            v.chars().all(|c| c.is_alphanumeric() || c == '_') => {
             *i += 1;
             Ok(v.clone())
         }
@@ -294,6 +297,15 @@ fn bindings(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
         }
         i = j;
     }
+    // A declaration does not establish any actor implementation. Without
+    // a definition, spawn must never mint even a source-level state proof.
+    for actor in index.actors.keys() {
+        if !defined_actors.contains(actor) {
+            return Err(Diagnostic::new(t.first().map_or(Pos::default(), |x| x.pos),
+                "E_PROTOCOL_UNPROVEN_STATE",
+                format!("protocol actor '{actor}' has only a forward declaration")));
+        }
+    }
     Ok(())
 }
 #[derive(Clone, Debug)]
@@ -319,8 +331,32 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
     let mut ever_named = BTreeSet::<String>::new();
     let mut completed = 0;
     let mut steps = 0;
+    // This pass is not a CFG: do not linearize branches, exception edges,
+    // loops, lambda callbacks or early returns and claim success.
+    let mut returned = false;
     let mut i = 0;
     while i < t.len() {
+        if [
+            "if", "else", "elif", "elseif", "fi", "match", "switch",
+            "select", "maybe", "guard", "while", "for", "loop",
+            "break", "continue", "try", "catch", "finally",
+            "throw", "raise", "panic", "recover", "defer", "yield",
+        ].iter().any(|keyword| word(t, i, keyword)) {
+            return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
+                "protocol source proof is linear only; CFG/exception proof is not implemented"));
+        }
+        if word(t, i, "return") {
+            if !handles.is_empty() || !pending.is_empty() {
+                return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
+                    "return before protocol reply settlement and terminal completion"));
+            }
+            returned = true;
+        }
+        if returned && word(t, i, "spawn") &&
+            matches!(at(t, i+1), Some(Tok::Ident(actor)) if index.actors.contains_key(actor)) {
+            return Err(err(t, i, "E_PROTOCOL_CFG_UNSUPPORTED",
+                "protocol actor created after return in unreachable source"));
+        }
         // val (reply[: ReplyType], next_handle) = await pending?;
         // Optional nominal ascription is checked against the transition
         // response type; unannotated reply type is inferred from the table.
@@ -393,11 +429,16 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
                         "protocol handle must use a unique immutable val binding"));
                 }
+                if at(t, i+6) != Some(&Tok::LParen) {
+                    return Err(err(t, i+6, "E_PROTOCOL_SYNTAX",
+                        "protocol actor spawn requires a parenthesized constructor"));
+                }
+                let constructor_end = group_end(t, i+6)?;
                 let initial = index.protocols[contract].initial.clone();
                 ever_named.insert(handle.clone());
                 handles.insert(handle, Handle {protocol:contract.clone(), states:vec![initial]});
                 steps += 1;
-                i += 6; continue;
+                i = constructor_end + 1; continue;
             }
         }
         // val pending = handle.call(Message(args));
