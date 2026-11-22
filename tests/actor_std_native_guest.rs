@@ -1,24 +1,31 @@
-//! Native Atto std.actor namespace/linking smoke, not host-policy reimplementation.
-//! Compiles the actual .atto files through the production Rust compiler.
+//! Real Rust Atto compiler/linker compilation of native .atto policy guests.
+//! Compiling alone does not prove guest execution; Node runs compiled Wasm.
 use std::io;
 use std::path::Path;
 use atto_compiler::compile_with_imports;
 
-const MAIN: &str = include_str!("../stdlib/actor/guest_smoke.atto");
+const SMOKE: &str = include_str!("../stdlib/actor/guest_smoke.atto");
+const EDGES: &str = include_str!("../stdlib/actor/guest_edges.atto");
 const POLICY: &str = include_str!("../stdlib/actor/policy.atto");
 
+fn compile_guest(entry: &str, filename: &str) -> Vec<u8> {
+    compile_with_imports(entry, Path::new(filename), |path| {
+        if path == Path::new("stdlib/actor/policy.atto") {
+            Ok(POLICY.to_string())
+        } else {
+            Err(io::Error::new(io::ErrorKind::NotFound, "unauthorized actor import"))
+        }
+    }).expect("production Atto compiler must link the actual std.actor policy")
+}
+
 #[test]
-fn std_actor_namespace_and_safe_relative_import_compile_to_guest_wasm() {
-    let compiled = compile_with_imports(
-        MAIN,
-        Path::new("stdlib/actor/guest_smoke.atto"),
-        |path| {
-            if path == Path::new("stdlib/actor/policy.atto") {
-                Ok(POLICY.to_string())
-            } else {
-                Err(io::Error::new(io::ErrorKind::NotFound, "untrusted actor import"))
-            }
-        },
-    ).expect("real Atto policy with namespace must compile and link");
-    assert!(compiled.starts_with(b"\0asm\x01\0\0\0"), "real Wasm artifact required");
+fn namespace_actor_smoke_and_boundary_corpus_compile_to_real_wasm() {
+    for (entry, name) in [
+        (SMOKE, "stdlib/actor/guest_smoke.atto"),
+        (EDGES, "stdlib/actor/guest_edges.atto"),
+    ] {
+        let wasm = compile_guest(entry, name);
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "real Wasm artifact required");
+        assert_eq!(wasm, compile_guest(entry, name), "same source must compile deterministically");
+    }
 }
