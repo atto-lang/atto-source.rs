@@ -149,3 +149,14 @@ fn void_guard_branches_require_termination() {
         rejected(&source, "E_GUARD");
     }
 }
+
+
+#[test]
+fn braced_guard_does_not_steal_outer_if_else() {
+    accepted("pub fnc main(): int { if true then guard true { return 7; } else return 9; fi return 42; }");
+    accepted("pub fnc main(): int { if true then guard true else return 7; end else return 9; fi return 42; }");
+    rejected(
+        "pub fnc main(): int { guard true { return 7; } else return 9; end return 42; }",
+        "E_GUARD_ELSE_NOT_REQUIRED",
+    );
+}
