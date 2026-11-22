@@ -10,6 +10,7 @@ use crate::newtype_const_generic_admission::{self, Interval};
 type R<T> = Result<T, Diagnostic>;
 const MAX_FUNCS: usize = 32;
 const MAX_STMTS: usize = 128;
+const MAX_EXPRESSION_DEPTH: usize = 24;
 
 #[derive(Clone)]
 struct Signature { param: Option<String>, ret: String }
@@ -65,8 +66,9 @@ fn compatible(c: &Cur<'_>,expected:&str,actual:&str)->R<()>{
     Err(c.err(code,"opaque nominal identity cannot be implicitly converted"))
 }
 fn expression(c:&mut Cur<'_>,names:&BTreeMap<String,Interval>,
-    locals:&BTreeMap<String,String>,funcs:&BTreeMap<String,Signature>)->R<Value>
+    locals:&BTreeMap<String,String>,funcs:&BTreeMap<String,Signature>, depth:usize)->R<Value>
 {
+    if depth>MAX_EXPRESSION_DEPTH {return Err(c.err("E_SOURCE_LIMIT","nested nominal call budget exceeded"));}
     if matches!(c.at(0),Some(Tok::Int(_))|Some(Tok::Minus)){
         return Ok(Value{ty:"int".into(),lower:integer(c)?.to_string()});
     }
@@ -92,7 +94,7 @@ fn expression(c:&mut Cur<'_>,names:&BTreeMap<String,Interval>,
         let sig=funcs.get(&name).ok_or_else(||c.err("E_UNSUPPORTED",
             "recursive, forward or unknown nominal helper call"))?;
         let param=sig.param.as_ref().ok_or_else(||c.err("E_UNSUPPORTED","helper requires one parameter"))?;
-        let arg=expression(c,names,locals,funcs)?;
+        let arg=expression(c,names,locals,funcs,depth+1)?;
         c.expect(Tok::RParen)?;
         compatible(c,param,&arg.ty)?;
         return Ok(Value{ty:sig.ret.clone(),lower:format!("{name}({})",arg.lower)});
@@ -183,14 +185,14 @@ pub fn try_lower(tokens:&[Token])->R<Option<Vec<Token>>>{
                 let n=c.name()?;
                 if locals.contains_key(&n){return Ok(None);}
                 c.expect(Tok::Assign)?;
-                let e=expression(&mut c,&admission.nominal,&locals,&funcs)?;
+                let e=expression(&mut c,&admission.nominal,&locals,&funcs,0)?;
                 compatible(&c,&t,&e.ty)?;
                 c.expect(Tok::Semi)?;
                 body.push_str(&format!("val int {n} = {};\n",e.lower));
                 locals.insert(n,t);
             }else if c.word_eat("return"){
                 if returned{return Ok(None);}
-                let e=expression(&mut c,&admission.nominal,&locals,&funcs)?;
+                let e=expression(&mut c,&admission.nominal,&locals,&funcs,0)?;
                 compatible(&c,&ret,&e.ty)?;
                 c.expect(Tok::Semi)?;
                 if c.at(0)!=Some(&Tok::RBrace){return Ok(None);}
@@ -206,5 +208,6 @@ pub fn try_lower(tokens:&[Token])->R<Option<Vec<Token>>>{
         if name=="main"{saw_main=true;}
     }
     if !saw_main || count==0{return Ok(None);}
+    if emitted.len()>crate::SOURCE_CAP {return Err(c.err("E_SOURCE_LIMIT","expanded nominal guest exceeds source size budget"));}
     Ok(Some(lexer::lex(&emitted)?))
 }
