@@ -382,6 +382,8 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             "nested or escaping lambda needs closure lowering")),
         ExprKind::StateRead(_) => Err(error(e.pos, "E_UNSUPPORTED",
             "protected state projections require a lexical state lease, not direct closure lowering")),
+        ExprKind::PrefixRead(_) => Err(error(e.pos, "E_UNSUPPORTED",
+            "effectful channel reads cannot be closure-converted before the suspending guest ABI exists")),
         // Exhaustive AST traversal: introducing a new expression kind must
         // require a compiler review of its lexical binding behaviour.
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
@@ -434,6 +436,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
             "explicit ownership inside a direct lambda requires verified capture lifetimes")),
         ExprKind::StateRead(_) => return Err(error(e.pos, "E_UNSUPPORTED",
             "protected state projection inside a direct lambda is not lifetime-verified")),
+        ExprKind::PrefixRead(_) => return Err(error(e.pos, "E_UNSUPPORTED",
+            "effectful channel read inside a direct lambda has no suspension-safe capture model")),
         ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Task(_) | ExprKind::Lambda { .. } => {},
     }
     Ok(())

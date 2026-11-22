@@ -76,6 +76,17 @@ fn compile_inner(source: &str, portable_version: u8) -> Result<Vec<u8>, Diagnost
         return Err(Diagnostic::new(pipe.pos, "E_UNSUPPORTED",
             "continuous pipe requires a typed channel/stream/actor transport runtime; syntax is recognized but the browser guest ABI is not implemented"));
     }
+    // Unary \`<< source\` is a value-producing read (one read, no anonymous
+    // user binding), not an endpoint write or a continuous pipe. The typed
+    // Channel<int> read import is not yet executable in guest Wasm.
+    let unary_reads = io_shorthand::inspect_unary_reads(&toks)?;
+    if let Some(read) = unary_reads.first() {
+        // Enforce the readily knowable susp/suspends requirement before the
+        // unsupported guest ABI gate; full typed effects are still pending.
+        io_shorthand::validate_unary_read_suspension(&toks, &unary_reads)?;
+        return Err(Diagnostic::new(read.pos, "E_UNSUPPORTED",
+            "unary << readable expression recognized, but the typed guest channel/stream read ABI is not implemented"));
+    }
     // The browser guest already has a typed stdio.print output import.
     // Permit the exact stdio.out << value statement form to lower through
     // that existing checked path. All other channels, streams, read
