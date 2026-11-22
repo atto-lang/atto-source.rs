@@ -46,6 +46,9 @@ function rejected(main, provider, expectedCode) {
 try {
   const main = 'import const status_valid from "./config.atto"; pub fnc main(): int {return status_valid;}';
   const provider = 'define pub const int status_valid = 200;';
+  // The compiler, not the literal linker, owns the namespace identity.
+  guest('use namespace project.main; ' + main, provider, 200);
+  guest('use default namespace; ' + main, provider, 200);
   const first = guest(main, provider, 200);
   const second = guest(main, provider, 200);
   assert.deepEqual(first, second, 'identical source must emit byte-identical Wasm');
@@ -59,6 +62,8 @@ try {
   guest('import const state from "./config.atto"; pub fnc main(): int {if state eq "ready" then return 42; else return 0; fi}',
     'define pub const string state = "ready";', 42);
 
+  rejected('use garbage; ' + main, provider, 'E_SYNTAX');
+  rejected('use namespace project.main ' + main, provider, 'E_SYNTAX');
   rejected(main.replace('status_valid;', 'unknown;'), provider, 'E_UNBOUND');
   rejected('import const status_valid from "./config.atto"; pub fnc main(): int {status_valid = 5; return 0;}',
     provider, 'E_ASSIGN_CONST');
