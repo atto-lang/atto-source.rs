@@ -7,7 +7,10 @@ import namespace iter from "+core/iter.atto";
 import namespace cmp from "+core/cmp.atto";
 pub fnc main(): int {
   if !slice.valid_range(1, 2, 3) then return 1; fi
-  if iter.next_index(0, 3, 1, 3).unwrap_or(-1) != 1 then return 2; fi
+  match iter.next_index(0, 3, 1, 3) over
+    on Some(n) -> { if n != 1 then return 2; fi }
+    on None -> { return 2; }
+  end
   if cmp.compare_int(40, 39) != 1 then return 3; fi
   return 42;
 }"#;
