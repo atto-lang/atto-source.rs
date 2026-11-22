@@ -1502,6 +1502,23 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    // Contract failures currently lower to fatal guest traps, which do not
+    // execute cleanup in upstream caller frames. A contract-bearing function
+    // cannot coexist with any function containing cleanup/iterator lifetimes
+    // until the full cleanup-aware panic protocol is implemented. Apply this
+    // module-wide, NOT just to the function declaring the contract.
+    let has_dynamic_contract = funcs.iter().any(|f| stmt_exists(&f.body,
+        &|stmt| matches!(stmt, TStmt::ContractCheck { .. })));
+    let has_cleanup = funcs.iter().any(|f| stmt_exists(&f.body,
+        &|stmt| matches!(stmt,
+            TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
+            TStmt::Defer { .. } | TStmt::Recover { .. } |
+            TStmt::ForIn { .. })));
+    if has_dynamic_contract && has_cleanup {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_CONTRACT_UNSUPPORTED",
+            "fatal contract checks cannot coexist with caller cleanup or iterator ownership until panic unwinding is verified"));
+    }
     // A pure declaration is a checked transitive effect contract, not a hint.
     // Inspect fully resolved typed calls, including branches that are never
     // executed at runtime. Other functions are impure unless declared pure.
