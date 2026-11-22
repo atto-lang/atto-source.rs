@@ -1,0 +1,6 @@
+// expect-error: E_BORROW
+// A mutable list cannot be copied into a channel without an affine move.
+pub suspends fnc main(): int {
+  val ch = Channel<List<int>>.bounded(1);
+  return 0;
+}
