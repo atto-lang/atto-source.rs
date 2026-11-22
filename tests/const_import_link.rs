@@ -157,3 +157,28 @@ fn malformed_unused_function_cannot_be_skipped_while_importing_a_constant() {
         provider,
     ).is_err(), "invalid sibling function must prevent emitting guest Wasm");
 }
+
+#[test]
+fn namespace_header_precedes_bounded_const_import_without_being_discarded() {
+    valid(
+        "use namespace project.main; import const status_valid from \"./config.atto\"; pub fnc main(): int { return status_valid; }",
+        "define pub const int status_valid = 200;",
+    );
+    valid(
+        "use default namespace; import const status_valid from \"./config.atto\"; pub fnc main(): int { return status_valid; }",
+        "define pub const int status_valid = 200;",
+    );
+}
+
+#[test]
+fn malformed_or_misplaced_namespace_headers_cannot_emit_guest() {
+    let file = "define pub const int status_valid = 200;";
+    for root in [
+        "use namespace project.main import const status_valid from \"./config.atto\"; pub fnc main(): int { return status_valid; }",
+        "use garbage; import const status_valid from \"./config.atto\"; pub fnc main(): int { return status_valid; }",
+        "import const status_valid from \"./config.atto\"; use namespace project.main; pub fnc main(): int { return status_valid; }",
+        "use namespace project.main; use namespace project.other; import const status_valid from \"./config.atto\"; pub fnc main(): int { return status_valid; }",
+    ] {
+        assert!(compile(root, file).is_err(), "namespace parser must fail closed: {root}");
+    }
+}
