@@ -11,19 +11,19 @@ pub fnc quic_wire_integer_valid(int value): bool {
 }
 
 pub fnc quic_stream_id_valid(int stream_id): bool {
-  return quic_wire_integer_valid(stream_id);
+  return quic.quic_wire_integer_valid(stream_id);
 }
 
 pub fnc quic_stream_client_initiated(int stream_id): bool {
-  return quic_stream_id_valid(stream_id) && stream_id % 2 == 0;
+  return quic.quic_stream_id_valid(stream_id) && (stream_id - (stream_id / 2) * 2) == 0;
 }
 
 pub fnc quic_stream_bidirectional(int stream_id): bool {
-  return quic_stream_id_valid(stream_id) && stream_id % 4 < 2;
+  return quic.quic_stream_id_valid(stream_id) && (stream_id - (stream_id / 4) * 4) < 2;
 }
 
 pub fnc quic_encoding_min_width(int value): int {
-  if !quic_wire_integer_valid(value) then return 0; fi
+  if !quic.quic_wire_integer_valid(value) then return 0; fi
   if value < 64 then return 1; fi
   if value < 16384 then return 2; fi
   if value < 1073741824 then return 4; fi
@@ -31,7 +31,7 @@ pub fnc quic_encoding_min_width(int value): int {
 }
 
 pub fnc quic_varint_fits_width(int value, int width): bool {
-  if !quic_wire_integer_valid(value) then return false; fi
+  if !quic.quic_wire_integer_valid(value) then return false; fi
   if width == 1 then return value < 64; fi
   if width == 2 then return value < 16384; fi
   if width == 4 then return value < 1073741824; fi
@@ -42,13 +42,13 @@ pub fnc quic_varint_fits_width(int value, int width): bool {
 // Width may be non-minimal as RFC 9000 permits. Returns -1 for invalid args.
 // At most seven bounded multiply-by-256 steps, always within signed i64.
 pub fnc quic_varint_octet(int value, int width, int index): int {
-  if !quic_varint_fits_width(value, width) then return -1; fi
+  if !quic.quic_varint_fits_width(value, width) then return -1; fi
   if index < 0 || index >= width then return -1; fi
   let divisor: int = 1;
   for (let int i = index + 1; i < width; i = i + 1) {
     divisor = divisor * 256;
   }
-  let octet: int = (value / divisor) % 256;
+  let octet: int = ((value / divisor) - ((value / divisor) / 256) * 256);
   if index == 0 then
     if width == 2 then return octet + 64; fi
     if width == 4 then return octet + 128; fi
@@ -59,26 +59,26 @@ pub fnc quic_varint_octet(int value, int width, int index): int {
 
 // No offset + length or used + requested unchecked arithmetic.
 pub fnc quic_stream_range_fits(int offset, int length, int max_stream_data): bool {
-  if !quic_wire_integer_valid(offset) then return false; fi
-  if !quic_wire_integer_valid(length) then return false; fi
-  if !quic_wire_integer_valid(max_stream_data) then return false; fi
+  if !quic.quic_wire_integer_valid(offset) then return false; fi
+  if !quic.quic_wire_integer_valid(length) then return false; fi
+  if !quic.quic_wire_integer_valid(max_stream_data) then return false; fi
   if offset > max_stream_data then return false; fi
   return length <= max_stream_data - offset;
 }
 
 pub fnc quic_connection_credit_admit(int already_sent, int requested, int max_data): bool {
-  return quic_stream_range_fits(already_sent, requested, max_data);
+  return quic.quic_stream_range_fits(already_sent, requested, max_data);
 }
 
 pub fnc quic_flow_limit_update_valid(int previous_limit, int next_limit): bool {
-  return quic_wire_integer_valid(previous_limit) &&
-         quic_wire_integer_valid(next_limit) && next_limit >= previous_limit;
+  return quic.quic_wire_integer_valid(previous_limit) &&
+         quic.quic_wire_integer_valid(next_limit) && next_limit >= previous_limit;
 }
 
 // ACK ranges are encoded as largest_ack - first_ack_range.
 pub fnc quic_ack_range_valid(int largest_ack, int first_ack_range): bool {
-  return quic_wire_integer_valid(largest_ack) &&
-         quic_wire_integer_valid(first_ack_range) &&
+  return quic.quic_wire_integer_valid(largest_ack) &&
+         quic.quic_wire_integer_valid(first_ack_range) &&
          first_ack_range <= largest_ack;
 }
 
@@ -111,12 +111,12 @@ pub fnc quic_decode_octet_valid(int byte_value): bool {
 }
 
 pub fnc quic_decode_varint_1(int b0): int {
-  if !quic_decode_octet_valid(b0) || b0 >= 64 then return -1; fi
+  if !quic.quic_decode_octet_valid(b0) || b0 >= 64 then return -1; fi
   return b0;
 }
 
 pub fnc quic_decode_varint_2(int b0, int b1): int {
-  if !quic_decode_octet_valid(b0) || !quic_decode_octet_valid(b1) then
+  if !quic.quic_decode_octet_valid(b0) || !quic.quic_decode_octet_valid(b1) then
     return -1;
   fi
   if b0 < 64 || b0 >= 128 then return -1; fi
@@ -124,8 +124,8 @@ pub fnc quic_decode_varint_2(int b0, int b1): int {
 }
 
 pub fnc quic_decode_varint_4(int b0, int b1, int b2, int b3): int {
-  if !quic_decode_octet_valid(b0) || !quic_decode_octet_valid(b1) ||
-     !quic_decode_octet_valid(b2) || !quic_decode_octet_valid(b3) then
+  if !quic.quic_decode_octet_valid(b0) || !quic.quic_decode_octet_valid(b1) ||
+     !quic.quic_decode_octet_valid(b2) || !quic.quic_decode_octet_valid(b3) then
     return -1;
   fi
   if b0 < 128 || b0 >= 192 then return -1; fi
@@ -139,10 +139,10 @@ pub fnc quic_decode_varint_4(int b0, int b1, int b2, int b3): int {
 pub fnc quic_decode_varint_8(
   int b0, int b1, int b2, int b3, int b4, int b5, int b6, int b7
 ): int {
-  if !quic_decode_octet_valid(b0) || !quic_decode_octet_valid(b1) ||
-     !quic_decode_octet_valid(b2) || !quic_decode_octet_valid(b3) ||
-     !quic_decode_octet_valid(b4) || !quic_decode_octet_valid(b5) ||
-     !quic_decode_octet_valid(b6) || !quic_decode_octet_valid(b7) then
+  if !quic.quic_decode_octet_valid(b0) || !quic.quic_decode_octet_valid(b1) ||
+     !quic.quic_decode_octet_valid(b2) || !quic.quic_decode_octet_valid(b3) ||
+     !quic.quic_decode_octet_valid(b4) || !quic.quic_decode_octet_valid(b5) ||
+     !quic.quic_decode_octet_valid(b6) || !quic.quic_decode_octet_valid(b7) then
     return -1;
   fi
   if b0 < 192 then return -1; fi
