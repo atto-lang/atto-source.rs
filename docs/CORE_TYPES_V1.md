@@ -11,3 +11,9 @@ Conformance target: compile and execute `tests/fixtures/core-types-v1/edge-posit
 ## Namespace-only core source
 
 Canonical `use namespace types;` file header plus public top-level functions; no `define module` wrapper. Consumers still explicitly import the symbols. Compiler parse, namespace source identity, static imports, and executed linked guests require separate proofs. Until the current PR compiles and runs, namespace guest parity remains NOT_EXECUTED.
+
+## Import linker hardening (namespace migration)
+
+The one-hop source-file importer validates the **original** token sequence with `namespace::normalize()` before extracting imports. This rejects `import ...; use namespace late;` and duplicate headers rather than accidentally promoting a late header to the first declaration. A valid root `use namespace application;` is retained ahead of compiler-generated private modules; imported file headers are separately validated then removed from the nested module body. Public `fnc` exports remain explicit; private/missing exports, alias collisions, path traversal, nested imports, forged generated symbol prefixes and unresolvable derived namespaces fail closed.
+
+`cargo test --locked --test core_types_namespace_import` now stages nine compiler-backed integration tests. They have **not run** until stepful CI admits the exact head. They do not prove a fully general package/namespace linker or AOT parity.
