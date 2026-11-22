@@ -1,5 +1,5 @@
 //! Closed-world source-local scalar typeclasses for the browser compiler.
-//! The compiler erases declarations and replaces explicit Class::member<T>
+//! The compiler erases declarations and replaces explicit Class.member<T>
 //! with a concrete, source-defined function or scalar type BEFORE parsing.
 //! No runtime witnesses, vtables, reflection, operator overloads or imports.
 
@@ -303,7 +303,11 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     while i < output.len() {
         let Some(owner) = word(&output, i) else { lowered.push(output[i].clone()); i += 1; continue; };
         let Some(class) = classes.get(owner) else { lowered.push(output[i].clone()); i += 1; continue; };
-        if !tok(&output, i+1, Tok::ColonColon) {
+        if !tok(&output, i+1, Tok::Dot) {
+            if tok(&output, i+1, Tok::ColonColon) {
+                return Err(error(output[i].pos, "E_WITNESS_STATIC_ACCESS",
+                    "typeclass static members use a dot, not ::"));
+            }
             return Err(error(output[i].pos, "E_WITNESS_VALUE", "typeclasses have no runtime values"));
         }
         let member = word(&output, i+2).ok_or_else(|| error(output[i].pos, "E_WITNESS_SYNTAX", "member required"))?;
@@ -351,7 +355,7 @@ mod tests {
     "#;
     #[test]
     fn direct_symbol_and_associated_type_are_erased_before_codegen() {
-        let src = format!("{DECL} pub fnc main(): int {{ val x: Additive::Output<int> = Additive::add<int>(20,22); return x; }}");
+        let src = format!("{DECL} pub fnc main(): int {{ val x: Additive.Output<int> = Additive.add<int>(20,22); return x; }}");
         let toks = lower(lex(&src).unwrap()).unwrap();
         let words: Vec<_> = toks.iter().filter_map(|t| match &t.tok { Tok::Ident(s)=>Some(s.as_str()),_=>None }).collect();
         assert!(words.contains(&"add_int"));
@@ -365,9 +369,11 @@ mod tests {
             (format!("{DECL} define impl Additive for int type Output=int; bind add=add_int; end"), "E_WITNESS_AMBIGUOUS"),
             (DECL.replace("bind add = add_int;", ""), "E_WITNESS_INCOMPLETE"),
             (DECL.replace("fnc add_int(int a, int b): int", "fnc add_int(bool a, int b): int"), "E_WITNESS_SIGNATURE"),
-            (format!("{DECL} pub fnc main(): int {{ return Additive::add<bool>(1,2); }}"), "E_WITNESS_MISSING"),
+            (format!("{DECL} pub fnc main(): int {{ return Additive.add<bool>(1,2); }}"), "E_WITNESS_MISSING"),
             (format!("{DECL} pub fnc main(): int {{ val x = Additive; return 0; }}"), "E_WITNESS_VALUE"),
             (DECL.replace("bind add = add_int;", "bind add = unknown;"), "E_WITNESS_BINDING"),
+            (format!("{DECL} pub fnc main(): int {{ return Additive::add<int>(1,2); }}"), "E_WITNESS_STATIC_ACCESS"),
+            (format!("{DECL} pub fnc main(): int {{ val x: Additive::Output<int> = 3; return x; }}"), "E_WITNESS_STATIC_ACCESS"),
             (DECL.replace("fnc add(Self, Self): Output;", "fnc Output(Self, Self): Output;"), "E_WITNESS_AMBIGUOUS"),
             (format!("{DECL} let add_int = 7;"), "E_WITNESS_AMBIGUOUS"),
         ] {
@@ -377,7 +383,7 @@ mod tests {
     }
     #[test]
     fn guest_wasm_is_produced_from_a_static_direct_call() {
-        let src = format!("{DECL} pub fnc main(): int {{ val x: Additive::Output<int> = Additive::add<int>(20,22); return x; }}");
+        let src = format!("{DECL} pub fnc main(): int {{ val x: Additive.Output<int> = Additive.add<int>(20,22); return x; }}");
         let bytes = crate::compile(&src).unwrap();
         assert!(bytes.starts_with(b"\0asm"));
     }
