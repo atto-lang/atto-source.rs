@@ -122,3 +122,29 @@ fn forged_compiler_import_identifiers_fail_closed() {
         "E_RESERVED"
     );
 }
+
+#[test]
+fn namespaced_relative_const_provider_with_unused_functions_is_linkable() {
+    valid(
+        "import const status_valid from \"./config.atto\"; pub fnc main(): int { return status_valid; }",
+        "use namespace std.http; pub fnc unrelated(): int { return 3; } define pub const int status_valid = 200;",
+    );
+}
+
+#[test]
+fn exporting_a_function_is_not_a_constant_even_if_public() {
+    assert_eq!(
+        error(
+            "import const status_valid from \"./config.atto\"; pub fnc main(): int { return 0; }",
+            "pub fnc status_valid(): int { return 200; }",
+        ),
+        "E_IMPORT_KIND"
+    );
+    assert_eq!(
+        error(
+            "import const hidden from \"./config.atto\"; pub fnc main(): int { return 0; }",
+            "fnc hidden(): int { return 200; }",
+        ),
+        "E_PRIVATE"
+    );
+}
