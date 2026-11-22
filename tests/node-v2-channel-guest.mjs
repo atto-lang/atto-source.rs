@@ -22,6 +22,15 @@ const cases = [
   ['pass/251-v2-cancel-read-head-preserves-fifo.atto', 42, '42\n', 0],
   ['pass/252-v2-cancel-read-middle-preserves-fifo.atto', 42, '42\n', 0],
   ['pass/253-v2-cancel-read-releases-graph-admission.atto', 42, '40\n2\n', 0],
+  ['pass/254-v2-pending-write-cancel-rendezvous.atto', 42, '42\n', 0],
+  ['pass/255-v2-pending-write-cancel-full-buffer.atto', 42, '42\n', 0],
+  ['pass/256-v2-pending-write-admission-after-read.atto', 42, '42\n', 0],
+  ['pass/257-v2-pending-write-rendezvous-nb-read.atto', 42, '42\n', 0],
+  ['pass/258-v2-pending-write-try-rendezvous.atto', 42, '42\n', 0],
+  ['pass/259-v2-pending-write-close-recovery.atto', 42, '42\n', 0],
+  ['pass/260-v2-pending-write-already-closed-recovery.atto', 42, '42\n', 0],
+  ['pass/261-v2-pending-write-wrong-channel.atto', 42, '42\n', 0],
+  ['pass/262-v2-pending-write-fifo-rendezvous.atto', 42, '42\n', 0],
   ['panic/235-v2-negative-bounded-channel.atto', null, '', 14],
   ['panic/236-v2-negative-other-capacity.atto', null, '', 14],
   ['panic/237-v2-negative-legacy-channel-constructor.atto', null, '', 14],
@@ -32,6 +41,8 @@ const cases = [
   ['panic/245-v2-try-read-closed-empty-denial.atto', null, '', 9],
   ['panic/246-v2-try-read-after-drain-denial.atto', null, '42\n', 9],
   ['panic/247-v2-cancel-read-await-traps.atto', null, '', 15],
+  ['panic/263-v2-pending-write-cancelled-await.atto', null, '', 15],
+  ['panic/264-v2-pending-write-closed-await.atto', null, '', 8],
 ];
 
 function runSingleGuest(path) {
