@@ -14,7 +14,7 @@ expect_allow() {
   rm -f -- "$file"
   printf '%b' "$payload" > "$file"
   if ! bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
-    echo "FAIL: $name should be admitted as comment-only" >&2
+    echo "FAIL: $name should be admitted by exact private CI policy" >&2
     cat "$workspace/err" >&2
     exit 1
   fi
@@ -38,6 +38,17 @@ expect_deny() {
 expect_allow 'empty' ''
 expect_allow 'comments and whitespace' '# none\n   \n\t# still denied\n'
 expect_allow 'CRLF comments' '# Windows comment\r\n'
+expect_allow 'exact reviewed private carrier' 'channelsiege/atto-ci 1458328077\n'
+expect_allow 'comments with exact carrier' '# approved only after independent main review\nchannelsiege/atto-ci 1458328077\n'
+expect_deny 'wrong carrier immutable id' 'channelsiege/atto-ci 1458328078\n'
+expect_deny 'wrong carrier owner' 'other-org/atto-ci 1458328077\n'
+expect_deny 'old failed carrier' 'gha-indie-worker/atto-ci 1458328770\n'
+expect_deny 'duplicate approved carrier' 'channelsiege/atto-ci 1458328077\nchannelsiege/atto-ci 1458328077\n'
+expect_deny 'approved plus unapproved carrier' 'channelsiege/atto-ci 1458328077\nother/repo 1\n'
+expect_deny 'leading blank on approved line' ' channelsiege/atto-ci 1458328077\n'
+expect_deny 'trailing blank on approved line' 'channelsiege/atto-ci 1458328077 \n'
+expect_deny 'active CRLF known carrier' 'channelsiege/atto-ci 1458328077\r\n'
+expect_deny 'active missing final digit' 'channelsiege/atto-ci 145832807\n'
 expect_deny 'active destination' 'foreign/repo 123\n'
 expect_deny 'active after comment' '# comment\nforeign/repo 123\n'
 expect_deny 'NUL-prefix binary grep bypass' '\000# comment\n'
