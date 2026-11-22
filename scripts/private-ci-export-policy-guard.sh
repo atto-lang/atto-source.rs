@@ -75,7 +75,18 @@ done < "$snapshot"
 # independent security decision for the particular source SHA/tree.
 approved_entry='channelsiege/atto-ci 1458328077'
 set +e
-active=$(LC_ALL=C grep -aEv '^[[:space:]]*(#.*)? -- "$snapshot")
+active=$(LC_ALL=C grep -aEv '^[[:space:]]*(#.*)?
+classification=$?
+set -e
+case "$classification" in
+  0)
+    [[ "$active" == "$approved_entry" ]] || reject 'unknown or ambiguous private CI destination'
+    printf '%s\n' 'private CI allowlist: one exact private destination; per-source export is still separately gated'
+    ;;
+  1) printf '%s\n' 'private CI source export: disabled by default' ;;
+  *) reject 'policy classifier failed' ;;
+esac
+ -- "$snapshot")
 classification=$?
 set -e
 case "$classification" in
