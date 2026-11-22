@@ -51,6 +51,40 @@ const CANCEL_FORGED: &str =
     include_str!("fixtures/fail/248-v2-cancel-read-nonfuture-denial.atto");
 const CANCEL_GRAPH_ADMISSION: &str =
     include_str!("fixtures/pass/253-v2-cancel-read-releases-graph-admission.atto");
+const WRITE_CANCEL_RENDEZVOUS: &str =
+    include_str!("fixtures/pass/254-v2-pending-write-cancel-rendezvous.atto");
+const WRITE_CANCEL_FULL: &str =
+    include_str!("fixtures/pass/255-v2-pending-write-cancel-full-buffer.atto");
+const WRITE_ADMIT_AFTER_READ: &str =
+    include_str!("fixtures/pass/256-v2-pending-write-admission-after-read.atto");
+const WRITE_NB_READ: &str =
+    include_str!("fixtures/pass/257-v2-pending-write-rendezvous-nb-read.atto");
+const WRITE_TRY_READ: &str =
+    include_str!("fixtures/pass/258-v2-pending-write-try-rendezvous.atto");
+const WRITE_CLOSE_RECOVERY: &str =
+    include_str!("fixtures/pass/259-v2-pending-write-close-recovery.atto");
+const WRITE_ALREADY_CLOSED: &str =
+    include_str!("fixtures/pass/260-v2-pending-write-already-closed-recovery.atto");
+const WRITE_WRONG_CHANNEL: &str =
+    include_str!("fixtures/pass/261-v2-pending-write-wrong-channel.atto");
+const WRITE_FIFO: &str =
+    include_str!("fixtures/pass/262-v2-pending-write-fifo-rendezvous.atto");
+const WRITE_CANCEL_AWAIT: &str =
+    include_str!("fixtures/panic/263-v2-pending-write-cancelled-await.atto");
+const WRITE_CLOSED_AWAIT: &str =
+    include_str!("fixtures/panic/264-v2-pending-write-closed-await.atto");
+const BORROW_NESTED_CHANNEL: &str =
+    include_str!("fixtures/fail/263-v2-borrow-channel-nested-capability.atto");
+const BORROW_ANY: &str =
+    include_str!("fixtures/fail/264-v2-borrow-channel-any-erasure.atto");
+const BORROW_MUTABLE_LIST: &str =
+    include_str!("fixtures/fail/265-v2-borrow-channel-mutable-list.atto");
+const BORROW_STRING_PENDING: &str =
+    include_str!("fixtures/fail/266-v2-borrow-pending-write-string.atto");
+const BORROW_WRONG_WRITE_TICKET: &str =
+    include_str!("fixtures/fail/267-v2-borrow-pending-write-wrong-ticket.atto");
+const BORROW_FORGED_WRITE_TICKET: &str =
+    include_str!("fixtures/fail/268-v2-borrow-pending-write-forged-ticket.atto");
 
 
 #[test]
@@ -60,7 +94,8 @@ fn channel_module_is_extracted_once_and_not_duplicated_in_prelude() {
     assert!(!PRELUDE.contains("fnc __chan_send("));
     let declarations = [
         "__chan_new", "__chan_new_bounded", "__chan_offer", "__chan_send", "__chan_send_pipe",
-        "__chan_take", "__chan_recv", "__chan_recv_user_opt",
+        "__chan_offer_ready", "__chan_drain_writers", "__chan_send_pending",
+        "__chan_cancel_write", "__chan_take", "__chan_recv", "__chan_recv_user_opt",
         "__chan_recv_opt", "__chan_try", "__chan_nb", "__chan_cancel_read",
         "__chan_close_internal", "__chan_close",
     ];
@@ -278,4 +313,81 @@ fn cancellation_guest_fixtures_compile_and_bad_future_type_fails_closed() {
         .expect("forged-Future negative source lexes")).expect_err("integer is not a Future");
     assert_eq!(forged.code, "E_TYPE",
         "user numbers may not forge a cancellation registration capability");
+}
+
+
+#[test]
+fn pending_write_ownership_and_borrow_gate_are_declared_in_guest_source() {
+    assert!(LIB.contains("val c = __alloc(88);"),
+        "write queue requires two additional words, not an overrun of old channel layout");
+    assert!(LIB.contains("__q_push(c + 72, f);"),
+        "an unadmitted pending writer must retain a registration");
+    assert!(LIB.contains("if __load(c, 72) != 0 then return 0; fi"),
+        "new direct send must not leapfrog an already-registered writer");
+    assert!(LIB.contains("__chan_drain_writers(c);"),
+        "freeing a bounded slot or registering a read must wake old writers");
+    assert!(LIB.contains("__store(f, 0, 3);"),
+        "closed writes must retain payload instead of reporting success");
+    assert!(LIB.contains("if __load(c, 80) == node then"),
+        "cancel_write must repair the pending queue's tail");
+    assert!(LIB.contains("__store(f, 8, 0);"),
+        "the future must not retain a second recoverable payload reference");
+    assert!(LIB.contains("return __some(payload);"),
+        "the old value must be returned on cancellation or closed rejection");
+    assert!(PRELUDE.contains("if __load(f, 0) == 3 then __panic(8); fi"),
+        "closed pending write must not resolve to successful None");
+    assert!(PRELUDE.contains("if __load(f, 0) == 4 then __panic(15); fi"),
+        "reclaimed closed ticket must remain revoked");
+    for fn_name in ["__actor_pipe_channel", "__channel_pipe_actor", "__actor_channel_actor_try"] {
+        let start = PRELUDE.find(&format!("fnc {fn_name}(")).unwrap();
+        let end = PRELUDE[start..].find("\n}\n").unwrap() + start;
+        assert!(PRELUDE[start..end].contains("if __load(ch, 72) != 0 then"),
+            "{fn_name}: actor DATA may not claim queued public writes");
+    }
+    assert!(CHECKER.contains("fn channel_transport_safe(t: &Ty) -> bool"),
+        "borrow boundary requires a data-only channel payload gate");
+    assert!(CHECKER.contains("if !Self::channel_transport_safe(&payload)"),
+        "core Channel<T> construction must enforce the borrow/transport gate");
+    assert!(CHECKER.contains("send_pending requires copy-safe int/bool"),
+        "pending writes must stay scalar-only without an affine move checker");
+    assert!(CHECKER.contains("self.rt(\"__chan_send_pending\", vec![recv, payload])"));
+    assert!(CHECKER.contains("self.rt(\"__chan_cancel_write\", vec![recv, ticket])"));
+}
+
+#[test]
+fn pending_write_guests_compile_to_real_wasm_and_borrow_violations_fail() {
+    // Only compilation evidence: runtime PASS additionally requires the
+    // independent timeout-bounded node-v2-channel-guest.mjs execution gate.
+    for (label, source) in [
+        ("cancel uncommitted rendezvous write", WRITE_CANCEL_RENDEZVOUS),
+        ("cancel full bounded write", WRITE_CANCEL_FULL),
+        ("admit pending writer after drain", WRITE_ADMIT_AFTER_READ),
+        ("nb readch rendezvous with pending writer", WRITE_NB_READ),
+        ("try readch rendezvous with pending writer", WRITE_TRY_READ),
+        ("recover pending payload after close", WRITE_CLOSE_RECOVERY),
+        ("recover send attempted on closed channel", WRITE_ALREADY_CLOSED),
+        ("wrong channel cannot cancel write", WRITE_WRONG_CHANNEL),
+        ("FIFO pending writes under rendezvous", WRITE_FIFO),
+        ("await cancelled writer traps", WRITE_CANCEL_AWAIT),
+        ("await closed writer traps", WRITE_CLOSED_AWAIT),
+    ] {
+        let wasm = atto_compiler::v2::compile(
+            atto_compiler::lexer::lex(source).unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
+            .unwrap_or_else(|e| panic!("{label}: compiler: {e}"));
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"),
+            "{label}: compiler failed to produce actual Wasm");
+    }
+    for (label, source, want) in [
+        ("nested channel capability transport", BORROW_NESTED_CHANNEL, "E_BORROW"),
+        ("Any dynamic payload transport", BORROW_ANY, "E_BORROW"),
+        ("mutable list transport", BORROW_MUTABLE_LIST, "E_BORROW"),
+        ("pending string write without move checking", BORROW_STRING_PENDING, "E_BORROW"),
+        ("wrong element type write ticket", BORROW_WRONG_WRITE_TICKET, "E_TYPE"),
+        ("forged integer write ticket", BORROW_FORGED_WRITE_TICKET, "E_TYPE"),
+    ] {
+        let failure = atto_compiler::v2::compile(
+            atto_compiler::lexer::lex(source).unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
+            .expect_err(&format!("{label}: compiler accepted an unsafe channel program"));
+        assert_eq!(failure.code, want, "{label}: wrong deterministic compiler diagnostic");
+    }
 }
