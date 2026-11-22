@@ -124,34 +124,119 @@ pub fn core_constructor(name: &str) -> bool {
     resolve(name, Profile::Core).is_some_and(|b| b.kind == Kind::Constructor)
 }
 
-/// Safety category of a *resolved* canonical prelude name. This metadata
-/// never independently grants a loan, allocation, move or Sendable proof.
+/// Ownership category is descriptive metadata only; actual move/loan authority
+/// comes from the production checker and source call-site analysis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ownership {
-    /// ADT/aggregate copyability and sendability depend on payload members.
+    Copy,
     PayloadDependent,
-    /// A view; it cannot outlive the source owner.
     BorrowedView,
-    /// Storage demands an admitted allocator/owned heap contract.
     Owned,
-    /// Static contract rather than an owned runtime value.
     Trait,
 }
 
-pub fn ownership(name: &str) -> Option<Ownership> {
-    let entry = BINDINGS.iter().find(|b| b.name == name)?;
-    Some(match entry.name {
-        "Slice" => Ownership::BorrowedView,
-        "String" | "List" | "Vec" | "Map" | "Set" | "Box"
-        | "HashMap" | "HashSet" | "Error" => Ownership::Owned,
-        _ if entry.kind == Kind::Trait => Ownership::Trait,
-        _ => Ownership::PayloadDependent,
-    })
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Allocation { None, BorrowedView, AllocatorRequired }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropPolicy {
+    None,
+    ActivePayloadOnce,
+    AllInitializedMembers,
+    OwnedStorage,
+    NotAValue,
 }
 
-/// Only the supported Option<T>/Result<T,E> carrier arities may participate in
-/// core ADT payload-dependent ownership rules. Never treat any user type that
-/// merely resembles a sum as a license to extract an owned borrowed payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendPolicy { Always, PayloadDependent, NeverBorrowed, ProofRequired, NotApplicable }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoweringStatus { WasmScalarAdt, LegacyStringView, ContractOnly }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypeInfo {
+    pub name: &'static str,
+    pub canonical: &'static str,
+    pub scope: Scope,
+    pub kind: Kind,
+    pub min_generic_arity: u8,
+    pub max_generic_arity: u8,
+    pub ownership: Ownership,
+    pub allocation: Allocation,
+    pub drop_policy: DropPolicy,
+    pub send_policy: SendPolicy,
+    pub lowering: LoweringStatus,
+}
+
+impl TypeInfo {
+    pub fn accepts_arity(&self, arity: usize) -> bool {
+        arity >= self.min_generic_arity as usize
+            && arity <= self.max_generic_arity as usize
+    }
+}
+
+const fn type_info(
+    name: &'static str, canonical: &'static str, scope: Scope, kind: Kind,
+    min: u8, max: u8, ownership: Ownership, allocation: Allocation,
+    drop_policy: DropPolicy, send_policy: SendPolicy, lowering: LoweringStatus,
+) -> TypeInfo {
+    TypeInfo { name, canonical, scope, kind, min_generic_arity: min, max_generic_arity: max,
+        ownership, allocation, drop_policy, send_policy, lowering }
+}
+
+/// Single immutable semantic metadata table for the automatic prelude.
+/// CONTRACT_ONLY entries are discoverable for specification/conformance but
+/// MUST still fail closed in this backend until real lowering exists.
+pub const TYPE_INFO: &[TypeInfo] = &[
+    type_info("Option","core/option/Option",Scope::Core,Kind::Type,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    type_info("Some","core/option/Some",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    type_info("None","core/option/None",Scope::Core,Kind::Constructor,0,0,Ownership::PayloadDependent,Allocation::None,DropPolicy::None,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    type_info("Result","core/result/Result",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    type_info("Ok","core/result/Ok",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    type_info("Err","core/result/Err",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    type_info("Error","core/error/Error",Scope::Core,Kind::Type,0,0,Ownership::Owned,Allocation::None,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Array","core/array/Array",Scope::Core,Kind::Type,1,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("FixedArray","core/array/FixedArray",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Slice","core/slice/Slice",Scope::Core,Kind::Type,1,1,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::ContractOnly),
+    type_info("Tuple","core/tuple/Tuple",Scope::Core,Kind::Type,0,32,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Pair","core/tuple/Pair",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Iterator","core/iter/Iterator",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("Range","core/range/Range",Scope::Core,Kind::Type,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::None,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Eq","core/cmp/Eq",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("Ord","core/cmp/Ord",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("Ordering","core/cmp/Ordering",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    type_info("From","core/convert/From",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("Into","core/convert/Into",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("TryFrom","core/convert/TryFrom",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("TryInto","core/convert/TryInto",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("Display","core/fmt/Display",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("Debug","core/fmt/Debug",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("Sendable","core/marker/Sendable",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    type_info("String","alloc/string/String",Scope::Alloc,Kind::Type,0,0,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::LegacyStringView),
+    type_info("List","alloc/list/List",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Vec","alloc/vec/Vec",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Map","alloc/map/Map",Scope::Alloc,Kind::Type,2,2,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Set","alloc/set/Set",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Box","alloc/box/Box",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("HashMap","alloc/hash_map/HashMap",Scope::Explicit,Kind::Type,2,2,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("HashSet","alloc/hash_set/HashSet",Scope::Explicit,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    type_info("Entry","alloc/map/Entry",Scope::Explicit,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+];
+
+pub fn type_info(name: &str) -> Option<&'static TypeInfo> {
+    TYPE_INFO.iter().find(|entry| entry.name == name)
+}
+
+pub fn ownership(name: &str) -> Option<Ownership> {
+    type_info(name).map(|entry| entry.ownership)
+}
+
 pub fn core_sum_carrier(name: &str, arity: usize) -> bool {
-    (name == "Option" && arity == 1) || (name == "Result" && arity == 2)
+    type_info(name).is_some_and(|entry| {
+        entry.scope == Scope::Core
+            && entry.kind == Kind::Type
+            && entry.ownership == Ownership::PayloadDependent
+            && entry.accepts_arity(arity)
+            && (name == "Option" || name == "Result")
+    })
 }
