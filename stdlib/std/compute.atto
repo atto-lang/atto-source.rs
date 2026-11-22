@@ -11,7 +11,7 @@ pub fnc compute_alignment_valid(int alignment): bool {
   let n: int = alignment;
   for (let int i = 0; i < 21; i = i + 1) {
     if n == 1 then return true; fi
-    if n % 2 != 0 then return false; fi
+    if (n - (n / 2) * 2) != 0 then return false; fi
     n = n / 2;
   }
   return false;
@@ -25,7 +25,7 @@ pub fnc compute_exact_buffer_layout(
   if element_bytes <= 0 || element_count < 0 || byte_length < 0 then
     return false;
   fi
-  if !compute_alignment_valid(alignment) then return false; fi
+  if !compute.compute_alignment_valid(alignment) then return false; fi
   if element_count == 0 then return byte_length == 0; fi
   if element_bytes > 9223372036854775807 / element_count then
     return false;
@@ -57,7 +57,7 @@ pub fnc compute_workgroup_valid(
 pub fnc compute_groups_for_axis(int global_size, int local_size): int {
   if global_size <= 0 || local_size <= 0 then return -1; fi
   let groups: int = global_size / local_size;
-  if global_size % local_size != 0 then groups = groups + 1; fi
+  if (global_size - (global_size / local_size) * local_size) != 0 then groups = groups + 1; fi
   return groups;
 }
 
@@ -69,7 +69,7 @@ pub fnc compute_dispatch_valid(
   if local_x > global_x || local_y > global_y || local_z > global_z then
     return false;
   fi
-  return compute_workgroup_valid(local_x, local_y, local_z, max_invocations);
+  return compute.compute_workgroup_valid(local_x, local_y, local_z, max_invocations);
 }
 
 pub fnc compute_simd_lanes_supported(int lanes, int maximum): bool {
@@ -97,7 +97,7 @@ pub fnc compute_upload_admit(
   bool host_to_device_allowed, bool buffer_is_live
 ): bool {
   return buffer_is_live && host_to_device_allowed &&
-         compute_buffer_range_fits(offset, length, buffer_length);
+         compute.compute_buffer_range_fits(offset, length, buffer_length);
 }
 
 end
