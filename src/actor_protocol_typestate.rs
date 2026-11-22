@@ -593,6 +593,19 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
         // copy!, copy!!, share! or an unchecked take!/cast.
         if (word(t, i, "val") || word(t, i, "let")) &&
             at(t, i+2) == Some(&Tok::Assign) {
+            // Check ownership operators in initializer position before the
+            // generic linear-flow rejection, so a prohibited explicit
+            // copy/share/take/borrow/ref receives its stable affine error.
+            if ["copy", "share", "take", "borrow", "ref"]
+                .iter().any(|op| word(t, i+3, op)) &&
+                at(t, i+4) == Some(&Tok::Bang) {
+                if let Some(Tok::Ident(v)) = at(t, i+5) {
+                    if ever_named.contains(v) {
+                        return Err(err(t, i+5, "E_PROTOCOL_AFFINE_HANDLE",
+                            "protocol authority cannot be copied, shared, taken or borrowed"));
+                    }
+                }
+            }
             if let Some(Tok::Ident(v)) = at(t, i+3) {
                 if handles.contains_key(v) || consumed.contains(v) {
                     return Err(err(t, i+3, "E_PROTOCOL_AFFINE_HANDLE",
