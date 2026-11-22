@@ -1,0 +1,7 @@
+// expect-panic: 14
+// Legacy channel<T>(capacity:) is bounded and cannot alias unbounded(-1).
+pub suspends fnc main(): int {
+  val invalid = channel<int>(capacity: -1);
+  invalid.send(42);
+  return 42;
+}
