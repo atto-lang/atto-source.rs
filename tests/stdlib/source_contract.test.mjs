@@ -33,7 +33,7 @@ function verify(source, fixture) {
       assert.ok(fixture.includes('import module ' + name +
         ' from "+stdlib/std/' + name + '.atto";'), "module import missing: " + name);
     }
-    for (const match of fixture.matchAll(/(?<![\\w.])(?:websocket|quic|compute)_[a-z0-9_]+\\s*\\(/g)) {
+    for (const match of fixture.matchAll(/(?<![\w.])(?:websocket|quic|compute)_[a-z0-9_]+\s*\(/g)) {
       assert.fail("unqualified guest call bypasses required module import: " + match[0]);
     }
   } else {
