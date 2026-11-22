@@ -76,3 +76,21 @@ fn prelude_catalog_does_not_turn_unsupported_alloc_types_into_guest_storage() {
         assert!(compile(&source).is_err(), "{name} must fail closed until verified lowering");
     }
 }
+
+#[test]
+fn core_ownership_categories_do_not_grant_unimplemented_borrow_lowering() {
+    use prelude::Ownership;
+    assert_eq!(prelude::ownership("Option"), Some(Ownership::PayloadDependent));
+    assert_eq!(prelude::ownership("Result"), Some(Ownership::PayloadDependent));
+    assert_eq!(prelude::ownership("Some"), Some(Ownership::PayloadDependent));
+    assert_eq!(prelude::ownership("Slice"), Some(Ownership::BorrowedView));
+    assert_eq!(prelude::ownership("Map"), Some(Ownership::Owned));
+    assert_eq!(prelude::ownership("Box"), Some(Ownership::Owned));
+    assert_eq!(prelude::ownership("Eq"), Some(Ownership::Trait));
+    assert_eq!(prelude::ownership("Object"), None);
+    assert!(prelude::core_sum_carrier("Option", 1));
+    assert!(prelude::core_sum_carrier("Result", 2));
+    assert!(!prelude::core_sum_carrier("Option", 2));
+    assert!(!prelude::core_sum_carrier("Result", 1));
+    assert!(!prelude::core_sum_carrier("Object", 1));
+}
