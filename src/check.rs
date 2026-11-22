@@ -3700,20 +3700,10 @@ impl<'a> FnCx<'a> {
                     }
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
                 }
-                // The *concrete* Option<int> and Result<int,string> profiles
-                // contain only immutable scalar payloads. A scoped readonly
-                // call argument may therefore read the same tagged value
-                // without creating a second affine owner. This is NOT general
-                // Option<T>/Result<T,E> borrowing: class/actor/heap payloads
-                // remain rejected until typed loan provenance and drop exist.
-                // Also forbid temporary ADT operands: a borrowed carrier must
-                // name a still-live owner at this call boundary.
+                // Borrowed concrete ADTs are only legal in checked call
+                // argument position (see args()). A standalone borrow! must
+                // never become an owned return or a stored carrier handle.
                 let value = self.value(inner)?;
-                if matches!(&inner.kind, ExprKind::Var(_))
-                    && matches!(value.ty, Type::OptionInt | Type::ResultIntStr)
-                {
-                    return Ok(value);
-                }
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
                         tr.borrow_escaping(*slot, false, pos);
