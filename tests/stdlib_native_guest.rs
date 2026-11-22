@@ -173,3 +173,12 @@ fn core_checker_does_not_borrow_an_unowned_temporary_descriptor() {
         "val reader = borrow! new BoundedBuffer();",
         "E_BORROW");
 }
+
+
+#[test]
+fn core_checker_rejects_exclusive_loan_while_two_shared_loans_are_live() {
+    borrow_core_mutation(
+        "val second_reader = borrow! buffer;",
+        "val second_reader = borrow! buffer;\n    val writer = borrow! mut buffer;",
+        "E_BORROW");
+}
