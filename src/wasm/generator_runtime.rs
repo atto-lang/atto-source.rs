@@ -29,6 +29,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         state_write_depth: 0,
         uw: None,
         in_recover: false,
+        active_traps: 0,
         calls: Vec::new(),
         landings: Vec::new(),
     };
