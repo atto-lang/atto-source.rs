@@ -1,0 +1,40 @@
+name: Native Atto std WebSocket QUIC compute guest
+on:
+  pull_request:
+    paths:
+      - 'stdlib/std/websocket.atto'
+      - 'stdlib/std/quic.atto'
+      - 'stdlib/std/compute.atto'
+      - 'tests/stdlib/**'
+      - 'tests/stdlib_native_guest.rs'
+      - 'tests/stdlib_native_guest_wasm.test.mjs'
+      - 'examples/stdlib_native_guest.rs'
+      - '.github/workflows/std-native-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compiled-atto-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Prove exact source head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          echo "ATTO_STD_GUEST_HEAD=$EXPECTED"
+          git rev-parse 'HEAD^{tree}'
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal
+      - name: Compile linked Atto units and test negative imports
+        run: cargo +1.85.1 test --locked --test stdlib_native_guest -- --nocapture
+      - name: Compile genuine .atto source to guest Wasm
+        run: cargo +1.85.1 run --locked --quiet --example stdlib_native_guest -- "$RUNNER_TEMP/atto-stdlib.wasm"
+      - name: Execute all 37 checks inside WebAssembly
+        run: node tests/stdlib_native_guest_wasm.test.mjs "$RUNNER_TEMP/atto-stdlib.wasm"
