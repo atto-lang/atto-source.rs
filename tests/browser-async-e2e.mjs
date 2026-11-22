@@ -257,9 +257,15 @@ try{
   assert.equal(await evaluate('window.__attoLastPortableCleanups'),1,
     'completed Wasm frame must be explicitly dropped');
   assert.match(await run(
-    'pub susp fnc main(): int { val n=41; return await n; }',
+    'pub susp fnc main(): int { val answer: int = 42; await 41; return await answer; }',
+    'main() -> 42'),/^main\\(\\) -> 42$/,
+    'compiled local must survive real Chromium Worker suspension');
+  assert.equal(await evaluate('window.__attoLastPortableTurns'),3,
+    'local spilling still requires independent compiler-generated quanta');
+  assert.match(await run(
+    'pub susp fnc main(): int { val n=41; return await n + 1; }',
     'E_V3_MARKER'),/E_V3_MARKER/,
-    'unsupported compiler shape must not advertise portable AOT continuation');
+    'unsupported arithmetic around await must not advertise portable AOT continuation');
   await evaluate('window.__attoPortableV3=false');
   console.log('PASS portable v3: genuine compiled guest suspends twice and releases AOT frame without JSPI');
   const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
