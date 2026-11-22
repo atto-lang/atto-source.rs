@@ -42,7 +42,7 @@ fn browser_compiler_rejects_unimplemented_raw_udp_host_calls() {
     let compiled = Command::new(env!("CARGO_BIN_EXE_attoc"))
         .arg(&positive.0).output().expect("compile real positive Wasm");
     assert_eq!(compiled.status.code(), Some(0), "valid scalar compilation failed");
-    assert!(compiled.stdout.starts_with(b"\\0asm\\x01\\0\\0\\0"),
+    assert!(compiled.stdout.starts_with(b"\0asm\x01\0\0\0"),
         "valid scalar control did not produce Wasm binary");
     assert!(compiled.stderr.is_empty());
     let source = Input::new(
