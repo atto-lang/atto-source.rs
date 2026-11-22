@@ -137,6 +137,17 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
                 "public export metadata with contracts requires verified visibility lowering"));
         }
         let parsed = parser::Parser::new(original_tokens).parse_program()?;
+        // The early checked path does not execute nominal/actor/collection
+        // linker preflights. Fail closed rather than letting source contracts
+        // create a shortcut around those ownership/ABI policies.
+        if !parsed.classes.is_empty() || !parsed.actors.is_empty()
+            || !parsed.enums.is_empty() || parsed.actor_interface.is_some()
+            || !parsed.array_types.is_empty()
+        {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_CONTRACT_UNSUPPORTED",
+                "contract-bearing class/actor/enum/collection code requires checked nominal and lifecycle lowering"));
+        }
         let checked = check::check(&parsed)?;
         let bytes = wasm::emit(&checked);
         if bytes.len() > wasm::MAX_OUTPUT {
