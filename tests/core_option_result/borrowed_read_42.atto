@@ -1,0 +1,42 @@
+// expect-exit: 42
+// Exact Rust-browser Wasm guest: concrete Option<int> / Result<int,string>
+// are Copy carriers. borrow! here reads a Copy value; it does NOT prove a
+// lifetime-bearing generic loan or affine Option<Payload> ABI.
+fnc option_value(int input): Option<int> {
+  return Some(input);
+}
+fnc result_value(int input): Result<int,string> {
+  return Ok(input);
+}
+fnc read_option_tag(Option<int> value): bool {
+  match value over
+    on Some(item) -> { return true; }
+    on None -> { return false; }
+  end
+}
+fnc read_result_tag(Result<int,string> value): bool {
+  match value over
+    on Ok(item) -> { return true; }
+    on Err(error) -> { return false; }
+  end
+}
+pub fnc main(): int {
+  val left = option_value(40);
+  val right = result_value(2);
+  // borrow! is accepted here because both concrete carriers are Copy. The
+  // original named values remain usable after the value-copy call.
+  if read_option_tag(borrow! left) then
+    if read_result_tag(borrow! right) then
+      match left over
+        on Some(item) -> {
+          match right over
+            on Ok(extra) -> { return item + extra; }
+            on Err(error) -> { return 1; }
+          end
+        }
+        on None -> { return 2; }
+      end
+    fi
+  fi
+  return 3;
+}

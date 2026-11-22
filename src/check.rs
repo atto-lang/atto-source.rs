@@ -3706,14 +3706,17 @@ impl<'a> FnCx<'a> {
                     }
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
                 }
+                // Borrowed concrete ADTs are only legal in checked call
+                // argument position (see args()). A standalone borrow! must
+                // never become an owned return or a stored carrier handle.
                 let value = self.value(inner)?;
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
                         tr.borrow_escaping(*slot, false, pos);
                     }
                 }
-                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding"));
+                if !is_copy_scalar(value.ty) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding; unproved ADT payload loans are forbidden"));
                 }
                 Ok(value)
             }
@@ -4419,6 +4422,10 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
+            // Option<int> and Result<int,string> are concrete Copy carriers
+            // (their active payload types are themselves Copy). Their normal
+            // consume path therefore preserves a reusable local. This is
+            // deliberately not generic borrowing or affine ownership.
             let v = self.consume_expected(a, *want)?;
             if v.ty != *want {
                 return Err(type_err(
@@ -5166,5 +5173,6 @@ fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
 
 /// Identity-free admitted scalars: value copies, never ownership roots.
 fn is_copy_scalar(t: Type) -> bool {
-    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))
+    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)
+        | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr)
 }
