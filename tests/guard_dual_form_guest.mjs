@@ -33,7 +33,11 @@ try{
     ['keyword-caret',7,'pub fnc main(): int { guard false else ^ 7; end return 42; }'],
     ['keyword-nested',42,'pub fnc main(): int { if true then guard true else return 7; end else return 9; fi return 42; }'],
     ['brace-lazy',7,'fnc overflow_if_called(int v): bool { return v + 1 > 0; } pub fnc main(): int { guard false, overflow_if_called(9223372036854775807) { return 7; } return 42; }'],
-    ['keyword-lazy',7,'fnc overflow_if_called(int v): bool { return v + 1 > 0; } pub fnc main(): int { guard false, overflow_if_called(9223372036854775807) else return 7; end return 42; }']
+    ['keyword-lazy',7,'fnc overflow_if_called(int v): bool { return v + 1 > 0; } pub fnc main(): int { guard false, overflow_if_called(9223372036854775807) else return 7; end return 42; }'],
+    ['void-else-false',42,'fnc process_explicit() -> void\n    guard false else ^ void end\nend\npub fnc main(): int { process_explicit(); return 42; }'],
+    ['void-brace-false',42,'fnc process_explicit() -> void\n    guard false { ^ void }\nend\npub fnc main(): int { process_explicit(); return 42; }'],
+    ['void-else-true',42,'fnc process_explicit() -> void\n    guard true else ^ void end\nend\npub fnc main(): int { process_explicit(); return 42; }'],
+    ['void-brace-true',42,'fnc process_explicit() -> void\n    guard true { ^ void }\nend\npub fnc main(): int { process_explicit(); return 42; }']
   ];
   for(const [name,expected,src] of good){
     const {proc,output,sha}=await compile(name,src);
@@ -58,7 +62,11 @@ try{
     ['brace-continue','E_GUARD','pub fnc main(): int { loop { guard false { continue; } return 42; } return 0; }'],
     ['keyword-throw','E_GUARD','pub fnc main(): int { guard false else throw Error("bad"); end return 42; }'],
     ['keyword-hidden-exit','E_GUARD','pub fnc main(): int { loop { guard false else break; return 0; end return 42; } }'],
-    ['keyword-missing-end',null,'pub fnc main(): int { guard true else return 0; fi return 42; }']
+    ['keyword-missing-end',null,'pub fnc main(): int { guard true else return 0; fi return 42; }'],
+    ['void-nonvoid-else','E_RETURN','fnc process_explicit() -> int\n    guard false else ^ void end\nend\npub fnc main(): int { return process_explicit(); }'],
+    ['void-nonvoid-brace','E_RETURN','fnc process_explicit() -> int\n    guard false { ^ void }\nend\npub fnc main(): int { return process_explicit(); }'],
+    ['void-fallthrough-else','E_GUARD','fnc process_explicit() -> void\n    guard false else val x = 1; end\nend\npub fnc main(): int { process_explicit(); return 42; }'],
+    ['void-fallthrough-brace','E_GUARD','fnc process_explicit() -> void\n    guard false { val x = 1; }\nend\npub fnc main(): int { process_explicit(); return 42; }']
   ];
   for(const [name,code,src] of bad){
     const {proc,output,sha}=await compile(name,src);
@@ -67,6 +75,6 @@ try{
     await assert.rejects(stat(output),{code:'ENOENT'},name+': generated artifact');
     console.log('PASS guard reject without Wasm',name,'blob='+sha);
   }
-  assert.equal(good.length,8);assert.equal(bad.length,8);
-  console.log('GUARD_DUAL_FORM_WASM_GUEST: compiled_executed=8 compile_rejected=8');
+  assert.equal(good.length,12);assert.equal(bad.length,12);
+  console.log('GUARD_DUAL_FORM_WASM_GUEST: compiled_executed=12 compile_rejected=12');
 }finally{await rm(temp,{recursive:true,force:true});}
