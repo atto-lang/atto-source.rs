@@ -72,7 +72,7 @@ try{
    '  if fs.fs_copy_fits_budget(4, 2, 6, 9, 10) then return 3; fi',
    '  return 42;',
    '}'
- ].join('\\n'));
+ ].join('\n'));
  assert.equal(fullFsPolicy.status,0,fullFsPolicy.stderr?.toString());
  assert.ok(WebAssembly.validate(fullFsPolicy.stdout),'Atto fs policies must emit valid Wasm');
  const fsModule=new WebAssembly.Module(fullFsPolicy.stdout);
