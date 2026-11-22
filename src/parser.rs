@@ -1882,9 +1882,13 @@ impl Parser {
                     self.terminator()?;
                     return Ok(Stmt::Return(Some(value), pos));
                 }
+                // 'void' in return position is an explicit no-value marker,
+                // not a value expression. It still enters the normal return
+                // checker so non-void callables reject it.
+                let explicit_void = self.eat_word("void");
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
-                let value = if at_end {
+                let value = if explicit_void || at_end {
                     None
                 } else {
                     let first = self.parse_expr()?;
@@ -1957,6 +1961,12 @@ impl Parser {
                 Ok(Stmt::Continue(pos))
             }
             Some("match") => self.parse_match(false),
+            // The optional procedural 'do' does not change if's statement
+            // semantics or the target of a nested return.
+            Some("do") if self.word_at(1) == Some("if") => {
+                self.advance();
+                self.parse_if()
+            }
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
@@ -2322,7 +2332,8 @@ impl Parser {
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        let braced = *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
                 if self.eat_word("elif")
@@ -2374,7 +2385,10 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        // Braced if arms are closed by '}'. The then/fi family needs an
+        // explicit 'fi'; do not consume an enclosing fi after a nested
+        // braced if.
+        if !braced && !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
