@@ -38,6 +38,12 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/io_shorthand_guest.mjs
+      - name: Execute native .atto generic Future and ActorFuture AOT guests in Node Workers
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node tests/portable-future-int-e2e.mjs
+          node tests/portable-actor-future-e2e.mjs
       - name: Build actual Wasm compiler
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
