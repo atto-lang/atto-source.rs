@@ -66,3 +66,41 @@ fn unqualified_internal_module_call_does_not_gain_ambient_authority() {
     assert!(matches!(err.code, "E_UNBOUND" | "E_UNKNOWN_NAME" | "E_TYPE" | "E_CALL"),
         "unexpected unqualified call rejection: {err}");
 }
+
+const BOUNDARIES: &str = include_str!("stdlib/protocol_boundaries.atto");
+
+#[test]
+fn independently_linked_109_case_boundary_guest_emits_wasm_deterministically() {
+    let bytes = link(BOUNDARIES, WS, QUIC, COMPUTE)
+        .expect("compile independent real .atto boundary guest");
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(bytes, link(BOUNDARIES, WS, QUIC, COMPUTE).unwrap(),
+        "source-linked Wasm output must be deterministic");
+}
+
+#[test]
+fn boundary_guest_cannot_import_an_undeclared_private_module() {
+    let unlisted = BOUNDARIES.replace(
+        "import module compute from \"+stdlib/std/compute.atto\";",
+        "",
+    );
+    let err = link(&unlisted, WS, QUIC, COMPUTE)
+        .expect_err("unreachable imports or ambient module calls cannot create guest Wasm");
+    assert!(matches!(err.code, "E_UNBOUND" | "E_VISIBILITY" | "E_UNSUPPORTED"),
+        "unexpected undeclared-import diagnostic: {err}");
+}
+
+#[test]
+fn boundary_guest_exposes_every_public_std_helper() {
+    let modules: [(&str, &str); 3] = [
+        ("websocket", WS), ("quic", QUIC), ("compute", COMPUTE),
+    ];
+    for (name, module) in modules {
+        for part in module.split("pub fnc ").skip(1) {
+            let function = part.split('(').next().expect("function name").trim();
+            assert!(!function.is_empty(), "empty exported function");
+            assert!(BOUNDARIES.contains(&format!("{name}.{function}(")),
+                "independent Atto boundary guest does not exercise {name}.{function}");
+        }
+    }
+}
