@@ -5,6 +5,9 @@ import {execFileSync} from 'node:child_process';
 import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {createWorkerControlLoop} from '../runtime/browser/worker-control-loop-v1.mjs';
+import {createPortableTaskArenaHostV4,verifyPortableTaskGuestV4}
+  from '../runtime/browser/portable-task-host-v4.mjs';
 
 const temp=await mkdtemp(join(tmpdir(),'atto-portable-v4-'));
 try {
@@ -101,6 +104,54 @@ try {
     ['--portable-v4',negative,'-o',out],{timeout:30000,stdio:'pipe'}),
     /Command failed/);
   console.log('PASS portable v4: unsupported guest shapes fail closed');
+
+  // The real JS runtime (byte-identical to atto-source.js PR #121) hosts
+  // multiple compiler-generated frames in a SINGLE Wasm instance.
+  assert.equal(verifyPortableTaskGuestV4(module),true);
+  const scheduled=[],runtimeLoop=createWorkerControlLoop({
+    maxOwners:16,maxReady:64,maxControl:4,postTurn:fn=>scheduled.push(fn)});
+  const runtime=createPortableTaskArenaHostV4({module,loop:runtimeLoop});
+  const tasks=Array.from({length:16},(_,i)=>runtime.spawn({
+    owner:'guest-'+i,ownerId:i+1,epoch:1
+  }));
+  assert.equal(runtime.stats.turns,0,'no guest execution during admission');
+  let quanta=0;
+  while(scheduled.length&&quanta<96) {
+    scheduled.shift()();quanta++;
+  }
+  assert.deepEqual(await Promise.all(tasks.map(x=>x.result)),
+    Array(16).fill(42n));
+  assert.equal(runtime.stats.peak,16,'16 physical frames coexisted');
+  assert.equal(runtime.stats.turns,48);
+  assert.equal(runtime.stats.resumes,32);
+  assert.equal(runtime.stats.cleanups,16);
+  assert.equal(runtime.stats.liveFrames,0);
+  assert.equal(runtimeLoop.stats.owners,0);
+  assert.equal(runtime.close(),true);
+  console.log('PASS portable v4: real JS host runs 16 compiled frames without JSPI');
+
+  // CONTROL-priority revocation and closure after scheduler shutdown.
+  const controlTurns=[],controlLoop=createWorkerControlLoop({
+    postTurn:fn=>controlTurns.push(fn)});
+  const controller=createPortableTaskArenaHostV4({module,loop:controlLoop});
+  const cancelled=controller.spawn({owner:'cancelled',ownerId:7,epoch:1});
+  cancelled.result.catch(()=>{});
+  controlTurns.shift()(); // start allocates a Wasm frame
+  assert.equal(cancelled.cancel(),true);
+  controlTurns.shift()(); // CONTROL preempts queued DATA
+  await assert.rejects(cancelled.result,/E_V4_CANCELLED/);
+  assert.equal(controller.stats.cleanups,1);
+  assert.equal(controller.stats.resumes,0);
+  while(controlTurns.length)controlTurns.shift()();
+  const shutdown=controller.spawn({owner:'shutdown',ownerId:8,epoch:1});
+  shutdown.result.catch(()=>{});
+  controlTurns.shift()(); // start another frame
+  controlLoop.close(); // simulates lost scheduled turn on shutdown
+  assert.equal(controller.close(),true,'owner can reclaim after loop close');
+  await assert.rejects(shutdown.result,/E_V4_HOST_CLOSED/);
+  assert.equal(controller.stats.cleanups,2);
+  assert.equal(controller.stats.liveFrames,0);
+  console.log('PASS portable v4: compiled frame cancellation and post-shutdown destruction');
 } finally {
   await rm(temp,{recursive:true,force:true});
 }
