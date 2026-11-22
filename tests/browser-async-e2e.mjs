@@ -16,6 +16,8 @@ const files=new Map([
   ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/worker-control-loop-v1.mjs',[new URL('../runtime/browser/worker-control-loop-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/worker-control-loop.mjs',[new URL('../runtime/browser/worker-control-loop.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/portable-task-host-v3.mjs',[new URL('../runtime/browser/portable-task-host-v3.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/wasm-jspi-control-bridge-v1.mjs',[new URL('../runtime/browser/wasm-jspi-control-bridge-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
@@ -244,6 +246,22 @@ try{
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
+  // This uses the real Rust-compiled wasm32 compiler, then executes the
+  // emitted guest through ordinary Wasm exports with no JSPI in the host path.
+  await evaluate('window.__attoPortableV3=true');
+  const portableSource='pub susp fnc main(): int { await 41; return await 42; }';
+  assert.match(await run(portableSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastPortableTurns'),3,
+    'START and each of two RESUMEs require a separate synchronous guest turn');
+  assert.equal(await evaluate('window.__attoLastPortableResumes'),2);
+  assert.equal(await evaluate('window.__attoLastPortableCleanups'),1,
+    'completed Wasm frame must be explicitly dropped');
+  assert.match(await run(
+    'pub susp fnc main(): int { val n=41; return await n; }',
+    'E_V3_MARKER'),/E_V3_MARKER/,
+    'unsupported compiler shape must not advertise portable AOT continuation');
+  await evaluate('window.__attoPortableV3=false');
+  console.log('PASS portable v3: genuine compiled guest suspends twice and releases AOT frame without JSPI');
   const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
   assert.match(await run(readyAwait,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,'two immediate awaits must both yield the browser worker');
