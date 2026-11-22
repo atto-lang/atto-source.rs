@@ -23,7 +23,7 @@ fn proven_true_requires_and_ensures_keep_full_guest_aot() {
 
 #[test]
 fn proven_true_method_and_class_invariant_parse_without_runtime_magic() {
-    let src = "define class Box as invariant true; get() -> int requires true; ensures |r| -> true; { return 42; } end fnc main() -> int { return 42; }";
+    let src = "define class Crate as invariant true; get() -> int requires true; ensures |r| -> true; { return 42; } end fnc main() -> int { return 42; }";
     let tree = Parser::new(lexer::lex(src).unwrap()).parse_program().unwrap();
     assert_eq!(tree.classes.len(), 1);
     assert_eq!(tree.classes[0].methods.len(), 1);
