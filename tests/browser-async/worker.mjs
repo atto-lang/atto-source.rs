@@ -29,7 +29,8 @@ self.onmessage=async ({data})=>{
     const encoded=new TextEncoder().encode(data.source);
     if(encoded.length>api.input_capacity())throw new Error('source too big');
     new Uint8Array(api.memory.buffer,api.input_ptr(),encoded.length).set(encoded);
-    if((data.portableV5===true?api.compile_v5(encoded.length):
+    if((data.portableFutureInt===true?api.compile_future_int(encoded.length):
+      data.portableV5===true?api.compile_v5(encoded.length):
       data.portableV4===true?api.compile_v4(encoded.length):api.compile(encoded.length))!==0){
       if(api.result_length()!==0)throw new Error('compiler emitted on rejection');
       const mem=new Uint8Array(api.memory.buffer);const start=api.error_ptr();let end=start;
@@ -59,8 +60,17 @@ self.onmessage=async ({data})=>{
         portableResumes:host.stats.resumes,portableCleanups:host.stats.cleanups});
       return;
     }
-    if(data.portableV5===true){
+    if(data.portableV5===true||data.portableFutureInt===true){
       verifyPortableTaskGuestV5(guest);
+      const typed=WebAssembly.Module.customSections(
+        guest,'atto.browser.source.future.v1');
+      if(data.portableFutureInt===true) {
+        if(typed.length!==1||new Uint8Array(typed[0]).length!==1||
+           new Uint8Array(typed[0])[0]!==1)
+          throw Error('E_FUTURE_INT_TYPED_MARKER');
+      } else if(typed.length) {
+        throw Error('E_FUTURE_INT_UNEXPECTED_MARKER');
+      }
       const loop=createWorkerControlLoop({
         maxOwners:16,maxReady:64,maxControl:4,maxSuspended:16
       });
