@@ -11,10 +11,22 @@ pub suspends fnc main(): int {
   val ack2 = await second;
   val va = await a;
   val vb = await b;
-  val int one = match va over on Some(v) -> v, on None -> 0, end;
-  val int two = match vb over on Some(v) -> v, on None -> 0, end;
-  val int ok1 = match ack1 over on None -> 1, on Some(_) -> 0, end;
-  val int ok2 = match ack2 over on None -> 1, on Some(_) -> 0, end;
+  val int one = match va over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  val int two = match vb over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  val int ok1 = match ack1 over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  val int ok2 = match ack2 over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
   if ok1 != 1 then return 91; fi
   if ok2 != 1 then return 92; fi
   ch.close();
