@@ -241,6 +241,27 @@ fn imported_module(imp: &Import, dependency: &LinkUnit<'_>, entry_package: &str)
             return Err(err(imp.pos, "E_UNBOUND",
                 "imported namespace alias must match the declared namespace leaf"));
         }
+        // Compiler-library namespace spelling must match an explicit
+        // package-relative tier and source path. A declaration saying
+        // 'atto.core.slice' inside 'other/slice.atto' has no core authority.
+        // The package identity still comes exclusively from the trusted
+        // source-graph caller, never this lexical namespace string.
+        let path_stem = dependency.path.strip_suffix(".atto")
+            .ok_or_else(|| err(imp.pos, "E_IMPORT_PATH",
+                "namespace provider must be a canonical .atto source file"))?;
+        let tier = path_stem.split('/').next().unwrap_or("");
+        if matches!(tier, "core" | "alloc" | "std") {
+            let expected = format!("atto.{}", path_stem.replace('/', "."));
+            if qualified != expected {
+                return Err(err(imp.pos, "E_NAMESPACE_PATH",
+                    "library namespace must match its canonical package-relative tier path"));
+            }
+        } else if qualified.starts_with("atto.core.")
+            || qualified.starts_with("atto.alloc.")
+            || qualified.starts_with("atto.std.") {
+            return Err(err(imp.pos, "E_NAMESPACE_PATH",
+                "compiler-library namespace cannot be declared outside its tier path"));
+        }
         // Refuse namespace source with no public callable, or any non-function
         // declaration. The established module lowering validates functions,
         // visibility, private helpers and safe, braced source bodies.

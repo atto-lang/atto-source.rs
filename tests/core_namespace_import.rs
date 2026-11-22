@@ -37,9 +37,9 @@ fn namespace_scoped_library_import_compiles_guest_deterministically() {
 #[test]
 fn namespace_identity_is_source_owned_and_must_match_alias() {
     let spoofed=SLICE.replace("use namespace atto.core.slice;", "use namespace atto.std.slice;");
-    // Namespace identity is not automatically trusted as the compiler-owned core tier.
-    // The source bytes are explicit; it remains an ordinary package-owned import.
-    assert!(compile_linked("src/main.atto",&graph(MAIN,&spoofed,ITER,CMP)).is_ok());
+    // No lexical namespace is trusted as an implicit virtual core source:
+    // path and source declaration must agree under the explicit graph.
+    reject(MAIN,&spoofed,ITER,CMP,"E_NAMESPACE_PATH");
     let mismatch=SLICE.replace("use namespace atto.core.slice;", "use namespace atto.core.not_slice;");
     reject(MAIN,&mismatch,ITER,CMP,"E_UNBOUND");
     reject(MAIN,&SLICE.replacen("use namespace atto.core.slice;","",1),ITER,CMP,"E_UNBOUND");
@@ -63,4 +63,22 @@ fn namespace_reference_requires_local_explicit_import() {
         LinkUnit{path:"core/slice.atto",package:"app",source:SLICE}
     ]);
     assert!(a.is_err(), "missing namespace dependencies cannot be linked");
+}
+
+#[test]
+fn reserved_namespace_names_are_not_forgeable_from_unrelated_sources() {
+    let main = MAIN.replace("+core/slice.atto", "+vendor/slice.atto");
+    let mut units = graph(&main, SLICE, ITER, CMP);
+    units[1].path = "vendor/slice.atto";
+    let failure = compile_linked("src/main.atto", &units)
+        .expect_err("vendor source must not masquerade as core namespace");
+    assert_eq!(failure.code, "E_NAMESPACE_PATH");
+}
+
+#[test]
+fn no_namespace_import_is_inferred_from_an_entry_namespace_header() {
+    let consumer = MAIN.replace("import namespace slice from \"+core/slice.atto\";", "");
+    let failure = compile_linked("src/main.atto", &graph(&consumer, SLICE, ITER, CMP))
+        .expect_err("reachable graph must contain explicit imports");
+    assert_eq!(failure.code, "E_UNBOUND");
 }
