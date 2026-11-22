@@ -31,7 +31,8 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let success_path = args.next().expect("expected success.wasm path");
     let mutation_path = args.next().expect("expected mutation.wasm path");
-    assert!(args.next().is_none(), "expected exactly two output paths");
+    let boundary_path = args.next().expect("expected boundaries.wasm path");
+    assert!(args.next().is_none(), "expected exactly three output paths");
 
     const ORIGINAL: &str = "quic.quic_varint_octet(15293, 2, 0) != 123";
     const MUTATED: &str = "quic.quic_varint_octet(15293, 2, 0) != 124";
@@ -41,9 +42,12 @@ fn main() {
 
     let success = build(source);
     let failure = build(&failure_source);
+    let boundaries = build(include_str!("../tests/stdlib/protocol_boundaries.atto"));
     assert!(success.starts_with(b"\0asm\x01\0\0\0"));
     assert!(failure.starts_with(b"\0asm\x01\0\0\0"));
+    assert!(boundaries.starts_with(b"\0asm\x01\0\0\0"));
     assert_ne!(success, failure, "mutated Atto source must change compiled guest bytes");
     std::fs::write(success_path, success).expect("write normal compiled guest");
     std::fs::write(mutation_path, failure).expect("write intentionally failing compiled guest");
+    std::fs::write(boundary_path, boundaries).expect("write independent compiled boundary guest");
 }
