@@ -42,7 +42,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       assert.ok(result.line >= 1 && result.col >= 1, name + ': source position');
       outcome.unsupported.push({ name, code: result.code });
       if (nativeBytes) {
-        assert.equal(nativeBytes(fileURLToPath(url)), null,
+        assert.equal(nativeBytes(fileURLToPath(url), result), null,
           name + ': native host must reject same source');
         outcome.nativeCompared++;
       }
