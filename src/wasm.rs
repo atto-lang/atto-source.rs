@@ -23,8 +23,8 @@
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
-use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
+use crate::ast::{BinOp, ParamOwnership, Type};
+use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TFunc, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
 
@@ -140,6 +140,9 @@ struct Layout {
     catch_depth: Option<u32>,
     /// Module-private escalated-failure tag (index 1) exists.
     raise_tag: bool,
+    /// A verified, trivial readonly class accessor may load directly from
+    /// the caller's existing guest handle. Never manufacture a borrow slot.
+    borrow_getters: Vec<Option<(Type, u32)>>,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -765,10 +768,23 @@ impl Emit<'_> {
                 self.close();
             }
             TExpr::Call(f, args) => {
-                for a in args {
-                    self.expr(a);
+                // Narrow interprocedural Borrow Argument Elision (BAE-v1).
+                // A statically proved readonly one-field accessor needs no
+                // callee call/parameter handoff. Evaluate the argument once
+                // on the stack, then load its scalar field in place.
+                // A missing proof always uses the original call ABI.
+                if let ([arg], Some(Some((ty, offset)))) =
+                    (args.as_slice(), self.l.borrow_getters.get(*f as usize))
+                {
+                    debug_assert_eq!(*ty, v.ty);
+                    self.expr(arg);
+                    field_op(&mut self.code, *ty, *offset, false);
+                } else {
+                    for a in args {
+                        self.expr(a);
+                    }
+                    self.call(self.l.func(*f));
                 }
-                self.call(self.l.func(*f));
             }
             TExpr::Builtin(b, x, y) => {
                 self.expr(x);
@@ -1277,6 +1293,32 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
     out
 }
 
+/// Only inline a fully typed, monomorphic top-level function whose entire
+/// body is one scalar field read from its readonly borrowed class formal.
+/// A mutable loan, a local, a control-flow path, a hook, a checked-state
+/// access, or any effectful call falls back to the original function ABI.
+fn verified_borrow_getter(f: &TFunc) -> Option<(Type, u32)> {
+    if f.params.len() != 1
+        || !matches!(f.params[0], Type::Class(_))
+        || !matches!(f.param_ownership.as_slice(), [ParamOwnership::BorrowRead])
+        || !f.locals.is_empty()
+    {
+        return None;
+    }
+    let [TStmt::Return(Some(TE {
+        e: TExpr::FieldGet { obj, offset }, ty,
+    }))] = f.body.as_slice() else {
+        return None;
+    };
+    if !matches!(obj.e, TExpr::Local(0))
+        || !matches!(*ty, Type::Int | Type::Bool | Type::Float)
+        || f.ret != *ty
+    {
+        return None;
+    }
+    Some((*ty, *offset))
+}
+
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
@@ -1293,6 +1335,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())
         ),
         raise_tag: p.raise_tag,
+        borrow_getters: p.funcs.iter().map(verified_borrow_getter).collect(),
     };
     let mut types = Types(Vec::new());
 
