@@ -30,6 +30,7 @@ export class MonotonicSleepProvider {
     const started=this.now();
     if(!Number.isFinite(started)||started<0)
       throw new Error('invalid monotonic clock reading');
+    let lastObserved=started;
     const deadline=started+ms;
     if(!Number.isFinite(deadline))
       throw new Error('monotonic deadline overflow');
@@ -60,10 +61,11 @@ export class MonotonicSleepProvider {
         // Do not silently lengthen a timeout when the supposed monotonic
         // provider resets, regresses or produces a nonfinite/negative tick.
         // The real Worker uses performance.now(), which must be monotonic.
-        if(!Number.isFinite(observed)||observed<started){
+        if(!Number.isFinite(observed)||observed<lastObserved){
           settle(new Error('invalid or regressed monotonic clock reading'));
           return;
         }
+        lastObserved=observed;
         const remaining=deadline-observed;
         if(!Number.isFinite(remaining)){
           settle(new Error('invalid monotonic deadline computation'));
