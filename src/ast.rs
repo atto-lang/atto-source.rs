@@ -14,6 +14,8 @@ pub enum Type {
     Str,
     /// Browser async MVP: an owned, single-use Future<int> task handle.
     FutureInt,
+    /// Explicit actor-scoped, single-reply Future<int>; actor stream is separate.
+    ActorFutureInt,
     /// Staged, exact checked Channel<int> ABI types (no guest imports yet).
     ChannelInt,
     IoError,
