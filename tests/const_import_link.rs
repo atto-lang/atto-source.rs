@@ -148,3 +148,12 @@ fn exporting_a_function_is_not_a_constant_even_if_public() {
         "E_PRIVATE"
     );
 }
+
+#[test]
+fn malformed_unused_function_cannot_be_skipped_while_importing_a_constant() {
+    let provider = "pub fnc malformed(: int { return 7; } define pub const int status_valid = 200;";
+    assert!(compile(
+        "import const status_valid from \"./config.atto\"; pub fnc main(): int { return status_valid; }",
+        provider,
+    ).is_err(), "invalid sibling function must prevent emitting guest Wasm");
+}
