@@ -32,6 +32,16 @@ refuses a missing compiler or missing guest artifact. These checks are
 **not executed** merely by adding the file and no exact-head CI pass
 is claimed.
 
+The independent browser-compiler parity driver
+`tests/testing-scalar-browser-compiler.mjs` uses the **same compiler-local
+21 positive + 8 negative test oracle** as the native driver. It invokes
+both the exact-head Rust native `attoc` and the wasm32 compiler binary,
+checks byte-identical emitted guest WebAssembly for each positive source,
+executes both guests and compares their results, and rejects all negatives
+without accepting partial guest artifacts. The main CI workflow invokes
+it after building the wasm32 compiler. These tests are authored, not
+an executed CI result.
+
 This is a narrow compiler-owned import, **not** general package importing,
 a full TestCase/TestSuite runner, or a source graph resolver.
 There is no guest ORES_TEST protocol, property checker, actor test runner,
