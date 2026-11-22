@@ -1282,7 +1282,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
     uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
-        + u64::from(!p.generators.is_empty()) + if portable_v3.is_some() { 5 } else { 0 });
+        + u64::from(!p.generators.is_empty())
+        + portable_v3.as_ref().map_or(0, |profile| profile.extra_globals() as u64));
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
         let heap_start = ((p.data.len() as i64 + 7) & !7)
