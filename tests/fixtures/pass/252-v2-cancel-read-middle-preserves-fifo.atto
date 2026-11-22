@@ -1,0 +1,29 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Cancelling the middle node must link the first directly to the tail.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val first = nb readch ch;
+  val removed = nb readch ch;
+  val last = nb readch ch;
+  if !ch.cancel_read(removed) then return 91; fi
+  val writer = task {
+    ch.send(20);
+    ch.send(22);
+    return 0;
+  };
+  val one = await first;
+  val two = await last;
+  val a: int = match one over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  val b: int = match two over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  await writer;
+  val value = a + b;
+  stdio.println(value);
+  return value;
+}
