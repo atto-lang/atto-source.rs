@@ -1,0 +1,23 @@
+// expect-exit: 42
+// expect-stdout: 42
+// A different channel cannot reclaim or cancel a pending writer's DATA.
+pub suspends fnc main(): int {
+  val a = Channel<int>.bounded(0);
+  val b = Channel<int>.bounded(0);
+  val ticket = a.send_pending(42);
+  val stolen = b.cancel_write(ticket);
+  val recovered = a.cancel_write(ticket);
+  val int false_cancel = match stolen over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if false_cancel != 1 then return 91; fi
+  val int value = match recovered over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  a.close();
+  b.close();
+  stdio.println(value);
+  return value;
+}
