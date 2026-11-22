@@ -1,6 +1,8 @@
 import {createChannelIntGuestV1,verifyChannelIntGuestV1,CHANNEL_INT_V1_IMPORTS} from '/runtime/browser/channel_int_guest_v1.mjs';
 import {createWorkerControlLoop} from '/runtime/browser/worker-control-loop-v1.mjs';
 import {createPortableTaskHostV3} from '/runtime/browser/portable-task-host-v3.mjs';
+import {createPortableTaskArenaHostV4,verifyPortableTaskGuestV4}
+  from '/runtime/browser/portable-task-host-v4.mjs';
 import {createJspiControlBridgeV1} from '/runtime/browser/wasm-jspi-control-bridge-v1.mjs';
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
@@ -55,75 +57,25 @@ self.onmessage=async ({data})=>{
       return;
     }
     if(data.portableV4===true){
-      const marker=WebAssembly.Module.customSections(guest,'atto.browser.guest.v4');
-      if(marker.length!==1||new Uint8Array(marker[0]).length!==1||
-         new Uint8Array(marker[0])[0]!==4||
-         WebAssembly.Module.customSections(guest,'atto.browser.guest.v3').length)
-        throw new Error('E_V4_MARKER');
-      const imports=WebAssembly.Module.imports(guest);
-      if(imports.length!==1||imports[0].module!=='atto'||
-         imports[0].name!=='cooperate'||imports[0].kind!=='function')
-        throw new Error('E_V4_IMPORT');
-      if(WebAssembly.Module.exports(guest).some(x=>x.kind==='memory'||x.kind==='table'))
-        throw new Error('E_V4_EXPORTED_ARENA');
-      const e=new WebAssembly.Instance(guest,{atto:{
-        cooperate(){throw Error('E_V4_JSPI_FORBIDDEN');}
-      }}).exports;
-      if(e.task_capacity_v4()!==16)throw new Error('E_V4_CAPACITY');
+      verifyPortableTaskGuestV4(guest);
       const loop=createWorkerControlLoop({
         maxOwners:16,maxReady:64,maxControl:4,maxSuspended:16
       });
-      let live=0,peak=0,turns=0,resumes=0,cleanups=0;
-      const runs=Array.from({length:16},(_,i)=>new Promise((resolve,reject)=>{
-        const owner='v4-'+i,ownerId=i+1,epoch=1;
-        let handle=0,finished=false;
-        if(!loop.attachOwner(owner,epoch)){reject(Error('E_V4_OWNER'));return;}
-        function step(){
-          if(finished)return;
-          turns++;
-          try {
-            if(!handle) {
-              handle=e.task_start_v4(ownerId,epoch);
-              if(handle<=0)throw Error('E_V4_START');
-              live++;peak=Math.max(peak,live);
-            } else {
-              const status=e.task_resume_v4(handle,ownerId,epoch);
-              resumes++;
-              if(status===2){
-                const value=e.task_result_v4(handle,ownerId,epoch);
-                if(e.task_drop_v4(handle,ownerId,epoch)!==0)throw Error('E_V4_DROP');
-                cleanups++;live--;finished=true;
-                loop.retireOwner(owner,epoch);
-                resolve(value);return;
-              }
-              if(status!==1)throw Error('E_V4_RESUME');
-            }
-            if(!loop.admitData(owner,epoch,step))throw Error('E_V4_QUOTA');
-          } catch(error) {
-            if(!finished){
-              finished=true;
-              if(handle) {
-                try{e.task_cancel_v4(handle,ownerId,epoch);}catch{}
-                try{if(e.task_drop_v4(handle,ownerId,epoch)===0){cleanups++;live--;}}catch{}
-              }
-              loop.retireOwner(owner,epoch);
-            }
-            reject(error);
-          }
-        }
-        if(!loop.admitData(owner,epoch,step)) {
-          finished=true;loop.retireOwner(owner,epoch);reject(Error('E_V4_ADMISSION'));
-        }
+      const host=createPortableTaskArenaHostV4({module:guest,loop});
+      const tasks=Array.from({length:16},(_,i)=>host.spawn({
+        owner:'v4-'+i,ownerId:i+1,epoch:1
       }));
       try {
-        const values=await Promise.all(runs);
-        if(peak!==16||turns!==48||resumes!==32||cleanups!==16||
-           live!==0||loop.stats.owners!==0||values.some(x=>x!==42n))
+        const values=await Promise.all(tasks.map(task=>task.result));
+        const stats=host.stats;
+        if(stats.peak!==16||stats.turns!==48||stats.resumes!==32||
+           stats.cleanups!==16||stats.liveFrames!==0||
+           loop.stats.owners!==0||values.some(x=>x!==42n))
           throw Error('E_V4_EXECUTION_INVARIANT');
         self.postMessage({ok:true,value:'42',stdout:'',portableV4:true,
-          portableV4Peak:peak,portableV4Turns:turns,portableV4Resumes:resumes,
-          portableV4Cleanups:cleanups});
-      } finally {loop.close();}
+          portableV4Peak:stats.peak,portableV4Turns:stats.turns,
+          portableV4Resumes:stats.resumes,portableV4Cleanups:stats.cleanups});
+      } finally {host.close();loop.close();}
       return;
     }
     if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
