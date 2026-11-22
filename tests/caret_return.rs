@@ -111,3 +111,30 @@ fn void_early_return_is_not_a_value_or_a_nested_expression() {
         assert!(compile(src).is_err(), "invalid void return/value compiled: {src}");
     }
 }
+
+
+#[test]
+fn dual_guard_void_return_in_end_style_fncs() {
+    for function in [
+        "fnc process_explicit() -> void\n    guard false else ^ void end\nend",
+        "fnc process_explicit() -> void\n    guard false { ^ void }\nend",
+        "fnc process_explicit() -> void\n    guard true else ^ void end\nend",
+        "fnc process_explicit() -> void\n    guard true { ^ void }\nend",
+    ] {
+        accepts(&format!(
+            "{function}\npub fnc main(): int {{ process_explicit(); ^ 42; }}"
+        ));
+    }
+    accepts("pub fnc main(): int { if true then guard true { ^ 7; } else ^ 9; fi ^ 42; }");
+    for failure in [
+        "guard false else ^ void end",
+        "guard false { ^ void }",
+    ] {
+        let source = format!(
+            "fnc process_explicit() -> int\n    {failure}\nend\npub fnc main(): int {{ ^ process_explicit(); }}"
+        );
+        let err=atto_compiler::compile(&source)
+            .expect_err("void guard return in a nonvoid function must fail");
+        assert_eq!(err.code, "E_RETURN", "{source}: {err}");
+    }
+}
