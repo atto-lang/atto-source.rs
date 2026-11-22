@@ -49,3 +49,30 @@ fn forged_and_unknown_builtins_are_never_authority() {
     ]).expect_err("user source must not replace compiler library");
     assert_eq!(shadowed.code, "E_IMPORT_PATH");
 }
+
+#[test]
+fn filesystem_package_resolver_injects_builtin_without_disk_shadow() {
+    use atto_compiler::package_resolver::{compile_package, compile_discovered};
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "atto-alloc-package-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join("atto.alloc")).unwrap();
+    fs::write(root.join(".atto.pkg.toml"),
+        "[package]\\nname=\\\"consumer\\\"\\nversion=\\\"1.0.0\\\"\\n").unwrap();
+    fs::write(root.join("src/main.atto"), ENTRY).unwrap();
+    // A filesystem lookalike may exist but must never become compiler source.
+    fs::write(root.join("atto.alloc/aligned.atto"),
+        "define pub module aligned as pub fnc align_up(int a,int b):int {return 999;} end"
+    ).unwrap();
+    let pkg = compile_package(&root, "src/main.atto")
+        .expect("real package resolver must link embedded allocator library");
+    let discovered = compile_discovered(&root.join("src/main.atto"))
+        .expect("discovery must preserve compiler-owned import");
+    assert_eq!(pkg, discovered);
+    assert_eq!(pkg, compile(ENTRY).expect("same canonical source graph"));
+    fs::remove_dir_all(&root).unwrap();
+}
