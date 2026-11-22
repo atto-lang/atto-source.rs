@@ -127,3 +127,27 @@ fn braced_guard_preserves_outer_keyword_if_else() {
     ).expect_err("standalone mixed guard delimiters must reject");
     assert_eq!(invalid.code, "E_GUARD_ELSE_NOT_REQUIRED", "{invalid}");
 }
+
+
+#[test]
+fn guard_must_return_not_throw_or_escape_loop() {
+    for failure in [
+        "throw Error(\"bad\");",
+        "break;",
+        "continue;",
+        "throw Error(\"bad\"); ^ void;",
+    ] {
+        for keyword in [false, true] {
+            let guard = if keyword {
+                format!("guard false else {failure} end")
+            } else {
+                format!("guard false {{ {failure} }}")
+            };
+            let source = format!(
+                "fnc process_explicit() -> void {{ {guard} }} pub fnc main(): int {{ process_explicit(); ^ 42; }}"
+            );
+            let err=compile(&source).expect_err("guard failure must explicitly return");
+            assert_eq!(err.code,"E_GUARD","{source}: {err}");
+        }
+    }
+}
