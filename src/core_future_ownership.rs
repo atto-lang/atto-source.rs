@@ -51,18 +51,59 @@ fn receipt(t:&[Token],start:usize,end:usize)->R<Option<Receipt>> {
 }
 fn check_body(t:&[Token],start:usize,end:usize,receipts:&[Receipt])->R<()> {
     for r in receipts {
-        let mut awaits=0usize;
-        for i in start..end {
-            if !word(t,i,"await")||!word(t,i+1,&r.name){continue;}
-            awaits+=1;
-            if !r.owned {
-                return Err(err(t[i].pos,"E_OWNERSHIP",
-                    "await on a sealed Future requires a take! formal parameter"));
+        let mut moved=false;
+        // Conservative region-wide loan: lexical lifetime/alias proofs require
+        // typed MIR. Over-rejecting is allowed only while this path always
+        // returns E_UNSUPPORTED_TYPE for otherwise valid Future programs.
+        let mut loan_live=false;
+        let mut i=start;
+        while i<end {
+            let is_receipt=|j|word(t,j,&r.name);
+            if word(t,i,"borrow") && t.get(i+1).is_some_and(|x|x.tok==Tok::Bang)
+                && is_receipt(i+2) {
+                if moved {
+                    return Err(err(t[i].pos,"E_MOVED","cannot borrow a consumed Future receipt"));
+                }
+                loan_live=true;
+                i+=3;
+                continue;
             }
-            if awaits>1 {
-                return Err(err(t[i].pos,"E_MOVED",
-                    "sealed Future receipt is affine and cannot be awaited twice"));
+            if word(t,i,"take") && t.get(i+1).is_some_and(|x|x.tok==Tok::Bang)
+                && is_receipt(i+2) {
+                if !r.owned {
+                    return Err(err(t[i].pos,"E_OWNERSHIP","cannot transfer a borrowed Future formal"));
+                }
+                if moved {
+                    return Err(err(t[i].pos,"E_MOVED","Future receipt has already been moved"));
+                }
+                if loan_live {
+                    return Err(err(t[i].pos,"E_BORROW","cannot transfer Future while a loan is live"));
+                }
+                moved=true;
+                i+=3;
+                continue;
             }
+            if word(t,i,"await") && is_receipt(i+1) {
+                if !r.owned {
+                    return Err(err(t[i].pos,"E_OWNERSHIP",
+                        "await on a sealed Future requires a take! formal parameter"));
+                }
+                if moved {
+                    return Err(err(t[i].pos,"E_MOVED",
+                        "sealed Future receipt is affine and cannot be awaited twice or after take!"));
+                }
+                if loan_live {
+                    return Err(err(t[i].pos,"E_BORROW",
+                        "Future receipt cannot be awaited while a loan is live"));
+                }
+                moved=true;
+                i+=2;
+                continue;
+            }
+            if moved && is_receipt(i) {
+                return Err(err(t[i].pos,"E_MOVED","Future receipt used after await/take!"));
+            }
+            i+=1;
         }
     }
     Ok(())
