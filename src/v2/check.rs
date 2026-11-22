@@ -1426,7 +1426,10 @@ impl<'a> Checker<'a> {
                 match (name.as_str(), args.len()) {
                     ("bounded", 1) if args[0].name.is_none() => {
                         let n = self.typed(&args[0].value, &Ty::Int)?;
-                        Ok((self.rt("__chan_new", vec![n]), t))
+                        // Checked source constructor: -1 is reserved for the
+                        // separate unbounded() API. Never turn bounded(-1)
+                        // into a silently unbounded queue.
+                        Ok((self.rt("__chan_new_bounded", vec![n]), t))
                     }
                     ("unbounded", 0) => Ok((self.rt("__chan_new", vec![Ir::Const(-1)]), t)),
                     _ => Err(type_err(pos, "a channel is created with Channel<T>.bounded(n) or Channel<T>.unbounded()")),
