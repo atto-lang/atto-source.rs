@@ -20,6 +20,8 @@ const files=new Map([
   ['/runtime/browser/portable-task-host-v3.mjs',[new URL('../runtime/browser/portable-task-host-v3.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/portable-task-host-v4.mjs',[new URL('../runtime/browser/portable-task-host-v4.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/portable-task-host-v5.mjs',[new URL('../runtime/browser/portable-task-host-v5.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/actor-future-host-v1.mjs',[new URL('../runtime/browser/actor-future-host-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-future-completer.mjs',[new URL('./browser-async/actor-future-completer.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/worker-completion-capability-v1.mjs',[new URL('../runtime/browser/worker-completion-capability-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/v5-completer.mjs',[new URL('./browser-async/v5-completer.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/wasm-jspi-control-bridge-v1.mjs',[new URL('../runtime/browser/wasm-jspi-control-bridge-v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
@@ -329,6 +331,25 @@ try{
     'a moved Future<int> must not admit an executable guest');
   await evaluate('window.__attoFutureIntAot=false');
   console.log('PASS typed Future<int>: Chromium wasm32 Rust compiler executes 16 linear owned futures in nested Worker');
+
+  // Chromium's actual wasm32 Rust compiler emits the ActorFuture source
+  // manifest; the nested actor Worker authenticates per-request replies.
+  await evaluate('window.__attoActorFutureIntAot=true');
+  const actorFutureSource='pub susp fnc main():int { '+
+    'val a:ActorFuture<int>=actor_future_int(7,41); await a; '+
+    'val b:ActorFuture<int>=actor_future_int(7,42); return await b; }';
+  assert.equal(await run(actorFutureSource,'main() -> 42'),'main() -> 42');
+  assert.equal(await evaluate('window.__attoActorFuturePeak'),16);
+  assert.equal(await evaluate('window.__attoActorFutureRequests'),32);
+  assert.equal(await evaluate('window.__attoActorFutureCompletions'),32);
+  assert.equal(await evaluate('window.__attoActorFutureDrops'),16);
+  assert.equal(await evaluate('window.__attoActorFutureNotices'),1);
+  assert.match(await run(
+    'pub susp fnc main():int { val r:ActorFuture<int>=actor_future_int(7,41); '+
+      'await r; return await r; }','E_MOVED'),/E_MOVED/,
+    'ActorFuture<int> cannot be awaited twice');
+  await evaluate('window.__attoActorFutureIntAot=false');
+  console.log('PASS ActorFuture<int>: Chromium wasm32 compiler -> full-AOT actor futures -> nested Worker 32 authenticated replies');
 
   const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
   assert.match(await run(readyAwait,'main() -> 42'),/^main\(\) -> 42$/);
