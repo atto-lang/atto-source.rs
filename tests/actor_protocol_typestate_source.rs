@@ -1,0 +1,140 @@
+//! Actual .atto source preflight tests: NOT guest actor execution.
+//! Every accepted protocol still fails closed at the Wasm emission boundary.
+use atto_compiler::{actor_protocol_typestate::{inspect_source, Response}, compile};
+
+const GOOD: &str = r#"
+define protocol ConnectionProtocol as
+  initial Disconnected
+  state Disconnected as
+    on Connect(Config) -> Connected replies ConnectedAck
+    on Close -> Closed replies ClosedAck
+  end
+  state Connected as
+    on Query(Sql) -> Connected replies QueryReply
+    on Close -> Closed replies ClosedAck
+  end
+  terminal state Closed
+end
+define actor Connection implements ConnectionProtocol as end
+pub fnc main(): int {
+  val disconnected = await spawn Connection();
+  val connecting = disconnected.call(Connect());
+  val (ack, connected) = await connecting?;
+  val querying = connected.call(Query());
+  val (rows, still_connected) = await querying?;
+  val closing = still_connected.call(Close());
+  val (_, closed) = await closing?;
+  closed.complete_protocol();
+  return 0;
+}
+"#;
+
+fn rejects(src: &str, expected: &'static str) {
+    let err = compile(src).expect_err("protocol source cannot emit unverified guest code");
+    assert_eq!(err.code, expected, "{err}");
+    assert!(err.pos.line > 0 && err.pos.col > 0, "{err}");
+}
+
+#[test]
+fn connection_protocol_is_checked_from_actual_atto_tokens() {
+    let proof = inspect_source(GOOD).expect("static protocol").expect("protocol declaration");
+    assert_eq!(proof.completed_handles, 1);
+    assert_eq!(proof.actors.get("Connection").map(String::as_str), Some("ConnectionProtocol"));
+    let p = &proof.protocols["ConnectionProtocol"];
+    assert_eq!(p.initial, "Disconnected");
+    assert!(p.terminal.contains("Closed"));
+    assert_eq!(p.transitions.len(), 4);
+    assert_eq!(p.check_send(&["Disconnected".into()], "Connect").unwrap().next_states, ["Connected"]);
+    assert_eq!(p.check_send(&["Connected".into()], "Query").unwrap().response,
+        Response::Unary("QueryReply".into()));
+    assert_eq!(p.check_send(&["Connected".into(), "Disconnected".into()], "Close")
+        .unwrap().next_states, ["Closed"]);
+    assert_eq!(p.check_send(&["Disconnected".into()], "Query").unwrap_err().code,
+        "E_PROTOCOL_ILLEGAL_MESSAGE_STATE");
+    assert_eq!(p.check_send(&["Connected".into(), "Disconnected".into()], "Query")
+        .unwrap_err().code, "E_PROTOCOL_ILLEGAL_MESSAGE_STATE");
+    assert_eq!(p.check_send(&[], "Query").unwrap_err().code, "E_PROTOCOL_UNPROVEN_STATE");
+}
+
+#[test]
+fn validated_source_cannot_emit_a_fake_actor_guest() {
+    rejects(GOOD, "E_PROTOCOL_RUNTIME_UNSUPPORTED");
+}
+
+#[test]
+fn disconnected_query_is_a_compile_error_not_runtime_fallback() {
+    let bad = GOOD.replace("disconnected.call(Connect())", "disconnected.call(Query())");
+    rejects(&bad, "E_PROTOCOL_ILLEGAL_MESSAGE_STATE");
+}
+
+#[test]
+fn duplicate_or_consumed_handle_is_rejected() {
+    let bad = GOOD.replace("val querying = connected.call(Query());",
+        "val querying = disconnected.call(Query());");
+    rejects(&bad, "E_PROTOCOL_AFFINE_HANDLE");
+    let bad = GOOD.replace("val querying = connected.call(Query());",
+        "val duplicate = connected;\n  val querying = connected.call(Query());");
+    rejects(&bad, "E_PROTOCOL_AFFINE_HANDLE");
+}
+
+#[test]
+fn missing_reply_and_early_completion_are_not_proven_success() {
+    let bad = GOOD.replace("val (ack, connected) = await connecting?;",
+        "val (ack, connected) = await not_connecting?;");
+    rejects(&bad, "E_PROTOCOL_REPLY_REQUIRED");
+    let bad = GOOD.replace("val connecting = disconnected.call(Connect());",
+        "disconnected.complete_protocol();\n  val connecting = disconnected.call(Connect());");
+    rejects(&bad, "E_PROTOCOL_TERMINAL_INCOMPLETE");
+    let bad = GOOD.replace("val (ack, connected) = await connecting?;",
+        "val (ack, connected) = await connecting;");
+    rejects(&bad, "E_PROTOCOL_REPLY_REQUIRED");
+}
+
+#[test]
+fn unknown_modes_or_nominal_response_disagreement_fail_closed() {
+    let bad = GOOD.replace("replies QueryReply", "streams QueryReply");
+    rejects(&bad, "E_PROTOCOL_REPLY_MISMATCH");
+    let bad = GOOD.replace("on Query(Sql) -> Connected replies QueryReply",
+        "on Query(Sql) -> Connected");
+    rejects(&bad, "E_PROTOCOL_REPLY_REQUIRED");
+    let bad = GOOD.replace("on Query(Sql) -> Connected replies QueryReply",
+        "on Query(Sql) -> Connected replies QueryReply\n    on Query(Sql) -> Closed replies QueryReply");
+    rejects(&bad, "E_PROTOCOL_DUPLICATE");
+}
+
+#[test]
+fn wrong_nominal_implementer_is_rejected() {
+    let bad = GOOD.replace("define actor Connection implements", "define class Connection implements");
+    rejects(&bad, "E_PROTOCOL_IMPLEMENTATION_MISMATCH");
+}
+
+#[test]
+fn declarative_state_graph_is_validated_and_bounded() {
+    rejects(&GOOD.replace("terminal state Closed", "terminal state Never"), "E_PROTOCOL_STATE");
+    rejects(&GOOD.replace("initial Disconnected", "initial Unknown"), "E_PROTOCOL_STATE");
+    rejects(&GOOD.replace("state Connected as", "state Never as"), "E_PROTOCOL_STATE");
+    rejects(&GOOD.replace("on Close -> Closed replies ClosedAck", "on Close -> Disconnected replies ClosedAck"),
+        "E_PROTOCOL_STATE");
+    rejects(&GOOD.replace("terminal state Closed", "terminal state Closed\n  terminal state Closed"),
+        "E_PROTOCOL_DUPLICATE");
+}
+
+#[test]
+fn lexical_comments_and_strings_do_not_declare_protocols() {
+    let innocent = r#"
+      // define protocol Hidden as
+      /* define protocol Other as */
+      pub fnc main(): int { val marker = "define protocol Ghost as"; return 0; }
+    "#;
+    assert!(inspect_source(innocent).unwrap().is_none());
+}
+#[test]
+fn forged_protocol_handle_without_a_definition_fails_closed() {
+    rejects("pub fnc main(): int { val h: ProtocolHandle<Connection,Connected> = none; return 0; }",
+        "E_PROTOCOL_UNPROVEN_STATE");
+}
+#[test]
+fn unrelated_scalar_compilation_remains_executable() {
+    let bytes = compile("pub fnc main(): int { return 42; }").expect("independent scalar guest");
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
+}
