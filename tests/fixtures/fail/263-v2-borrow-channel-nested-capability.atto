@@ -1,0 +1,6 @@
+// expect-error: E_BORROW
+// A channel capability is not recursively sendable channel DATA.
+pub suspends fnc main(): int {
+  val ch = Channel<Channel<int>>.bounded(1);
+  return 0;
+}
