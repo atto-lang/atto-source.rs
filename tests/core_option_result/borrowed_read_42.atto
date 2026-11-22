@@ -1,18 +1,42 @@
-// TARGET: compile with the real backend, run the guest, expect exit 42.
-// This file alone is NOT evidence of borrow support or a passed test.
-fnc option_read(borrow Option<int> value): bool {
-  return value.is_some();
+// expect-exit: 42
+// Exact Rust-browser Wasm guest: *concrete* immutable ADT loans only.
+// Option<int> / Result<int,string> are tagged scalar profiles. This test
+// does not claim a generic borrow formal or affine Option<Payload> ABI.
+fnc option_value(int input): Option<int> {
+  return Some(input);
 }
-fnc result_read(borrow Result<int, int> value): bool {
-  return value.is_ok();
+fnc result_value(int input): Result<int,string> {
+  return Ok(input);
+}
+fnc read_option_tag(Option<int> value): bool {
+  match value over
+    on Some(item) -> { return true; }
+    on None -> { return false; }
+  end
+}
+fnc read_result_tag(Result<int,string> value): bool {
+  match value over
+    on Ok(item) -> { return true; }
+    on Err(error) -> { return false; }
+  end
 }
 pub fnc main(): int {
-  val Option<int> left = Some(40);
-  val Result<int, int> right = Ok(2);
-  if option_read(borrow! left) then
-    if result_read(borrow! right) then
-      return left.unwrap() + right.unwrap();
+  val left = option_value(40);
+  val right = result_value(2);
+  // borrow! is an explicit read-only, nonescaping call operand. The
+  // original named owners must both remain usable after either call.
+  if read_option_tag(borrow! left) then
+    if read_result_tag(borrow! right) then
+      match left over
+        on Some(item) -> {
+          match right over
+            on Ok(extra) -> { return item + extra; }
+            on Err(error) -> { return 1; }
+          end
+        }
+        on None -> { return 2; }
+      end
     fi
   fi
-  return 1;
+  return 3;
 }
