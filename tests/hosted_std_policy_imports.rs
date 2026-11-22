@@ -65,6 +65,12 @@ pub fnc main(): int { return 0; }"#, "E_UNSUPPORTED"),
 pub fnc main(): int { return http.get(1); }"#, "E_UNBOUND"),
         (r#"import * as fs from pkg "std.fs";
 pub fnc main(): int { return fs.read_text(1); }"#, "E_UNBOUND"),
+        (r#"import * as fs from "std.fs";
+pub fnc main(): int { return fs.read_file(1); }"#, "E_UNBOUND"),
+        (r#"import * as fs from "std.fs";
+pub fnc main(): int { return fs.open(1); }"#, "E_UNBOUND"),
+        (r#"import * as fs from "std.fs";
+pub fnc main(): int { return fs.read_stream(1); }"#, "E_UNBOUND"),
         (r#"import * as x from pkg "std.http";
 import * as x from pkg "std.fs";
 pub fnc main(): int { return 0; }"#, "E_DUPLICATE"),
