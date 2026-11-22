@@ -7,6 +7,8 @@ const INVALID_SENTINEL: &str =
     include_str!("fixtures/panic/235-v2-negative-bounded-channel.atto");
 const INVALID_OTHER: &str =
     include_str!("fixtures/panic/236-v2-negative-other-capacity.atto");
+const INVALID_LEGACY: &str =
+    include_str!("fixtures/panic/237-v2-negative-legacy-channel-constructor.atto");
 const VALID_UNBOUNDED: &str =
     include_str!("fixtures/pass/236-v2-unbounded-constructor-atto.atto");
 
@@ -50,6 +52,8 @@ fn checked_bounded_constructor_cannot_alias_unbounded_sentinel() {
         "bounded() must call the checked guest .atto constructor");
     assert!(CHECKER.contains("self.rt(\"__chan_new\", vec![Ir::Const(-1)])"),
         "unbounded() must remain an explicit independent spelling");
+    assert_eq!(CHECKER.matches("self.rt(\\\"__chan_new_bounded\\\", vec![n])").count(), 2,
+        "both Channel<T>.bounded and channel<T>(capacity:) must be checked");
     assert!(LIB.contains("fnc __chan_new_bounded(int cap): int {"));
     assert!(LIB.contains("if cap < 0 then"));
     assert!(LIB.contains("if cap < -1 then"));
@@ -63,6 +67,7 @@ fn negative_bounded_capacity_compiles_into_guest_denial_not_an_unbounded_queue()
     for (label, src) in [
         ("bounded-minus-one", INVALID_SENTINEL),
         ("bounded-minus-two", INVALID_OTHER),
+        ("legacy-bounded-minus-one", INVALID_LEGACY),
         ("explicit-unbounded", VALID_UNBOUNDED),
     ] {
         let wasm = atto_compiler::v2::compile(atto_compiler::lexer::lex(src)
