@@ -223,6 +223,10 @@ fn canonical_atto_libraries_must_not_load_from_guest_filesystem() {
     use std::path::Path;
 
     for spec in [
+        "core.result",
+        "alloc.arena",
+        "std.fs",
+        "std.missing",
         "atto.core/numeric",
         "atto.core/numeric.atto",
         "atto.alloc/byte_region",
@@ -254,4 +258,45 @@ fn canonical_atto_libraries_must_not_load_from_guest_filesystem() {
         Ok("pub fnc answer(): int { return 42; }".to_string())
     });
     assert!(called, "ordinary relative source import should still reach the loader");
+}
+
+
+#[test]
+fn canonical_compiler_builtin_imports_are_pkg_free_and_parse_only() {
+    let headers = parse(r#"
+        import * as result from "core.result";
+        import * as arena from "alloc.arena";
+        import * as fs from "std.fs";
+        import read_text as reader from "std.fs";
+        import * as local from "./helpers.atto";
+        import * as vendor from pkg "vendor.files";
+        pub fnc main(): int { return 0; }
+    "#);
+    assert_eq!(headers.imports,
+        ["result", "arena", "fs", "reader", "local", "vendor"]);
+
+    // Parse-only acceptance cannot grant host I/O or a fabricated builtin.
+    // Executable linking is independently denied by the file-only compiler.
+    for builtin in ["std.fs", "std.not_available", "core.result", "alloc.arena"] {
+        use atto_compiler::compile_with_imports;
+        use std::path::Path;
+        let src = format!(
+            "import * as built_in from \"{builtin}\"; pub fnc main(): int {{ return 42; }}"
+        );
+        let mut touched_loader = false;
+        let err = compile_with_imports(&src, Path::new("project/main.atto"), |_| {
+            touched_loader = true;
+            panic!("reserved module must not be loaded as project source");
+        }).expect_err("missing compiler builtin resolver must fail closed");
+        assert_eq!(err.code, "E_STDLIB_UNLINKED");
+        assert!(!touched_loader, "{builtin}: attempted host loader");
+    }
+
+    for invalid in [
+        "import * as fs from \"std..fs\";",
+        "import * as fs from \"std./fs\";",
+        "import * as fs from \"core.\";",
+    ] {
+        reject(invalid, "E_SYNTAX");
+    }
 }
