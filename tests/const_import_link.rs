@@ -17,7 +17,7 @@ fn error(root: &str, file: &str) -> &'static str {
 }
 fn valid(root: &str, file: &str) {
     let bytes = compile(root, file).expect("linked compiler must emit guest Wasm");
-    assert!(bytes.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(bytes, compile(root, file).unwrap(), "deterministic guest");
 }
 
@@ -66,39 +66,39 @@ fn multiple_imports_from_same_file_resolve_once() {
 #[test]
 fn public_private_and_unknown_exports_are_distinguished() {
     let file = "define const int internal_key = 11; define pub const int exported = 22;";
-    assert_eq!(error("import const internal_key from \\"./config.atto\\"; pub fnc main(): int {return 0;}",file),"E_PRIVATE");
-    assert_eq!(error("import const missing from \\"./config.atto\\"; pub fnc main(): int {return 0;}",file),"E_UNBOUND");
-    assert_eq!(error("import const exported as x, exported as x from \\"./config.atto\\"; pub fnc main(): int {return x;}",file),"E_DUPLICATE");
+    assert_eq!(error("import const internal_key from \"./config.atto\"; pub fnc main(): int {return 0;}",file),"E_PRIVATE");
+    assert_eq!(error("import const missing from \"./config.atto\"; pub fnc main(): int {return 0;}",file),"E_UNBOUND");
+    assert_eq!(error("import const exported as x, exported as x from \"./config.atto\"; pub fnc main(): int {return x;}",file),"E_DUPLICATE");
 }
 
 #[test]
 fn imported_constant_cannot_be_written_or_used_as_callable() {
     let file = "define pub const int status_valid = 200;";
-    assert_eq!(error("import const status_valid from \\"./config.atto\\"; pub fnc main(): int {status_valid = 4; return 0;}",file),"E_CONST_ASSIGN");
-    assert_eq!(error("import const status_valid from \\"./config.atto\\"; pub fnc main(): int {return status_valid();}",file),"E_IMPORT_KIND");
-    assert_eq!(error("import const status_valid from \\"./config.atto\\"; pub fnc status_valid(): int {return 0;} pub fnc main(): int {return 0;}",file),"E_DUPLICATE");
+    assert_eq!(error("import const status_valid from \"./config.atto\"; pub fnc main(): int {status_valid = 4; return 0;}",file),"E_CONST_ASSIGN");
+    assert_eq!(error("import const status_valid from \"./config.atto\"; pub fnc main(): int {return status_valid();}",file),"E_IMPORT_KIND");
+    assert_eq!(error("import const status_valid from \"./config.atto\"; pub fnc status_valid(): int {return 0;} pub fnc main(): int {return 0;}",file),"E_DUPLICATE");
 }
 
 #[test]
 fn source_size_path_type_and_runtime_effects_fail_closed() {
-    assert_eq!(error("import const x from \\"../escape.atto\\"; pub fnc main(): int {return x;}",
+    assert_eq!(error("import const x from \"../escape.atto\"; pub fnc main(): int {return x;}",
         "define pub const int x = 1;"), "E_IMPORT_PATH");
-    assert_eq!(error("import const x from \\"./config.atto\\"; pub fnc main(): int {return x;}",
-        "define pub const int x = \\"wrong\\";"), "E_CONST_TYPE");
-    assert_eq!(error("import const x from \\"./config.atto\\"; pub fnc main(): int {return 0;}",
-        "define pub const string x = std.env.read_env(\\"X\\");"), "E_UNSUPPORTED");
-    assert_eq!(error("import const x from \\"./config.atto\\"; pub fnc main(): int {return 0;}",
+    assert_eq!(error("import const x from \"./config.atto\"; pub fnc main(): int {return x;}",
+        "define pub const int x = \"wrong\";"), "E_CONST_TYPE");
+    assert_eq!(error("import const x from \"./config.atto\"; pub fnc main(): int {return 0;}",
+        "define pub const string x = std.env.read_env(\"X\");"), "E_UNSUPPORTED");
+    assert_eq!(error("import const x from \"./config.atto\"; pub fnc main(): int {return 0;}",
         "define pub const int x = get_value();"), "E_UNSUPPORTED");
-    assert_eq!(error("import const x from pkg \\"std.http\\"; pub fnc main(): int {return 0;}",
+    assert_eq!(error("import const x from pkg \"std.http\"; pub fnc main(): int {return 0;}",
         "define pub const int x = 1;"), "E_UNSUPPORTED");
 }
 
 #[test]
 fn malformed_source_never_publishes_fallback_artifact() {
     for source in [
-        "import const * as c from \\"./config.atto\\"; pub fnc main(): int {return 0;}",
-        "import const x, from \\"./config.atto\\"; pub fnc main(): int {return 0;}",
-        "import const x from \\"./config.atto\\" pub fnc main(): int {return 0;}",
+        "import const * as c from \"./config.atto\"; pub fnc main(): int {return 0;}",
+        "import const x, from \"./config.atto\"; pub fnc main(): int {return 0;}",
+        "import const x from \"./config.atto\" pub fnc main(): int {return 0;}",
     ] {
         assert!(compile(source, "define pub const int x = 1;").is_err());
     }
