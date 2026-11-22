@@ -1,7 +1,7 @@
 // Atto-owned alignment policy, not a raw allocator or a pointer cast.
 // All offsets are checked against a conservative portable signed-int budget.
 // No result here proves that any backing pointer is physically aligned.
-define module aligned as
+define pub module aligned as
   pub fnc valid_alignment(int alignment): bool {
     return alignment == 1 || alignment == 2 || alignment == 4 ||
            alignment == 8 || alignment == 16 || alignment == 32 ||
