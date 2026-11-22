@@ -385,7 +385,8 @@ mod canonical_exception_bang_tests {
             ("\"trap! throw! raise! panic!\"", ""),
             ("// trap! throw! raise! panic!\n42", ""),
             ("/* trap! throw! raise! panic! */ 42", ""),
-        ];        assert_eq!(cases.len(), 18);
+        ];
+        assert_eq!(cases.len(), 18);
         for (source, expected) in cases {
             let tokens = lex(source).expect("lex");
             let spellings: Vec<&str> = tokens.iter().filter_map(|t| match &t.tok {
