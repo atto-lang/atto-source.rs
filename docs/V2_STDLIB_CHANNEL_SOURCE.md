@@ -49,6 +49,35 @@ New guests:
 Compiler-to-Wasm assertions are not browser guest execution. All new current
 head native/Rust/Wasm conformance remains NOT_EXECUTED until verified.
 
+## Cooperative zero-capacity rendezvous
+
+Audit uncovered a deadlock in the original v2 runtime: `__chan_send` can
+handoff on capacity zero only to a registered `nb readch` waiter, while
+ordinary `readch` and `for await` originally suspended in a polling loop
+without registering a receiver. A producer and reader could both suspend
+forever. The backend-owned `stdlib/channel.atto` now registers one
+`__chan_nb(c)` future for an empty capacity-zero channel, awaits its
+completion through guest `__await`, and checks both DATA graph ownership
+ports again before using the result. Ordinary `readch` reports closure
+as panic 9; `for await` receives None to terminate iteration cleanly.
+
+The three regression guests are:
+- `tests/fixtures/pass/238-v2-rendezvous-direct-readch.atto`
+- `tests/fixtures/pass/239-v2-rendezvous-for-await.atto`
+- `tests/fixtures/pass/240-v2-rendezvous-close-wakes-reader.atto`
+
+`tests/node-v2-channel-guest.mjs` compiles and executes eight positive and
+negative channel fixtures as actual independent Wasm guests. Each guest runs
+in a bounded child process; a hang, nonzero child exit, incorrect stdout,
+wrong return value, or wrong panic code **fails** the gate. The harness is
+wired into the Rust `.github/workflows/ci.yml` after the native `attoc`
+build. A source-free/zero-step Actions result is **NOT_EXECUTED**, not a
+pass; these new tests still await stepful admission on the exact PR HEAD.
+
+Pending cancellation and removal of abandoned `nb readch` futures remain
+unverified. This milestone fixes cooperative rendezvous progress, not
+fully lifecycle-safe cancellation or Java/Rust public API parity.
+
 ## ABI and unsupported APIs
 
 `__chan_new(-1)` is an in-guest growable queue sentinel. Capacity zero
