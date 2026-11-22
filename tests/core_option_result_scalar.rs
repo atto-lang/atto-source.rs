@@ -8,7 +8,7 @@ fn scalar_option_result_guest_emits_deterministic_wasm() {
     let source = include_str!("core_option_result/positive_42.atto");
     let first = compile(source)
         .unwrap_or_else(|error| panic!("expected executable wasm, got {error}"));
-    assert!(first.starts_with(b"\\0asm\\x01\\0\\0\\0"), "must emit real Wasm");
+    assert!(first.starts_with(b"\0asm\x01\0\0\0"), "must emit real Wasm");
     assert_eq!(first, compile(source).unwrap(), "emission must be deterministic");
 }
 
