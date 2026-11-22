@@ -166,6 +166,21 @@ pub struct Field {
     pub init: Option<Expr>,
 }
 
+/// Source-ordered callable contract. Evaluation is checked/lowered by the
+/// typed compiler; the parser must never discard a dynamic predicate.
+#[derive(Clone, Debug)]
+pub enum ContractKind {
+    Requires,
+    Ensures { binder: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct ContractClause {
+    pub kind: ContractKind,
+    pub predicate: Expr,
+    pub pos: Pos,
+}
+
 #[derive(Clone, Debug)]
 pub struct Method {
     pub name: String,
@@ -174,6 +189,7 @@ pub struct Method {
     pub is_static: bool,
     pub params: Vec<Param>,
     pub ret: Type,
+    pub contracts: Vec<ContractClause>,
     pub body: Vec<Stmt>,
 }
 
@@ -273,6 +289,7 @@ pub struct Func {
     pub declared_effects: Option<DeclaredEffects>,
     pub params: Vec<Param>,
     pub ret: Type,
+    pub contracts: Vec<ContractClause>,
     pub body: Vec<Stmt>,
 }
 

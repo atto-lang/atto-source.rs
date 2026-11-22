@@ -141,6 +141,7 @@ mod tests {
             declared_effects: None,
             params: vec![],
             ret: Type::GeneratorInt,
+            contracts: vec![],
             body: vec![],
         }
     }

@@ -213,9 +213,18 @@ pub struct TE {
     pub ty: Type,
 }
 
+/// Fatal non-catchable contract check channel (not ordinary throw).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContractFault {
+    Requires,
+    Ensures,
+}
+
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Condition must be typed bool, readonly and effect-free.
+    ContractCheck { predicate: TE, kind: ContractFault },
     /// Compiler-planned scalar i64 cell store inside an owned Array allocation.
     /// Its offset is checked against the resolved nominal layout/length.
     CollectionStore { array: TE, offset: u32, value: TE },
@@ -831,6 +840,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     }
     for f in &p.funcs {
         if f.is_generator {
+            if !f.contracts.is_empty() {
+                return Err(Diagnostic::new(f.pos, "E_CONTRACT_UNSUPPORTED",
+                    "generator contract checks require verified yield/continuation lowering"));
+            }
             precheck_generator_body(&f.body, &p.funcs)?;
             // Build the exact bounded resume graph before the ABI-v2 gate.
             // It is a compiler IR only; no generator guest artifact is emitted.
@@ -1250,7 +1263,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             &g,
             BodyCheckInput {
                 owner: Owner::TopLevel, named: &named, mail: None,
-                ret, body: &f.body, label: &f.name, pos: f.pos,
+                ret, body: &f.body, contracts: &f.contracts, label: &f.name, pos: f.pos,
             },
             &mut imports, &mut data,
         )?;
@@ -1295,7 +1308,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &g,
                 BodyCheckInput {
                     owner, named: &named, mail: None, ret: Type::Void,
-                    body: &k.body, label: "constructor", pos: k.pos,
+                    body: &k.body, contracts: &[], label: "constructor", pos: k.pos,
                 },
                 &mut imports, &mut data,
             )?;
@@ -1397,7 +1410,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &g,
                 BodyCheckInput {
                     owner, named: &named, mail: None, ret: mi.ret,
-                    body: &m.body, label: &label, pos: m.pos,
+                    body: &m.body, contracts: &m.contracts, label: &label, pos: m.pos,
                 },
                 &mut imports, &mut data,
             )?;
@@ -1428,7 +1441,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &g,
                 BodyCheckInput {
                     owner, named: &named, mail: Some((r.mail.as_str(), info.payload)),
-                    ret: Type::Void, body: &r.body, label: &label, pos: r.pos,
+                    ret: Type::Void, body: &r.body, contracts: &[], label: &label, pos: r.pos,
                 },
                 &mut imports, &mut data,
             )?;
@@ -1463,7 +1476,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &g,
                 BodyCheckInput {
                     owner, named: &named, mail: None, ret: mi.ret,
-                    body: &m.body, label: &label, pos: m.pos,
+                    body: &m.body, contracts: &m.contracts, label: &label, pos: m.pos,
                 },
                 &mut imports, &mut data,
             )?;
@@ -1489,6 +1502,23 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    // Contract failures currently lower to fatal guest traps, which do not
+    // execute cleanup in upstream caller frames. A contract-bearing function
+    // cannot coexist with any function containing cleanup/iterator lifetimes
+    // until the full cleanup-aware panic protocol is implemented. Apply this
+    // module-wide, NOT just to the function declaring the contract.
+    let has_dynamic_contract = funcs.iter().any(|f| stmt_exists(&f.body,
+        &|stmt| matches!(stmt, TStmt::ContractCheck { .. })));
+    let has_cleanup = funcs.iter().any(|f| stmt_exists(&f.body,
+        &|stmt| matches!(stmt,
+            TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
+            TStmt::Defer { .. } | TStmt::Recover { .. } |
+            TStmt::ForIn { .. })));
+    if has_dynamic_contract && has_cleanup {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_CONTRACT_UNSUPPORTED",
+            "fatal contract checks cannot coexist with caller cleanup or iterator ownership until panic unwinding is verified"));
+    }
     // A pure declaration is a checked transitive effect contract, not a hint.
     // Inspect fully resolved typed calls, including branches that are never
     // executed at runtime. Other functions are impure unless declared pure.
@@ -1602,6 +1632,7 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
         let next = match stmt {
             TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
             | TStmt::Expr(value) | TStmt::StateRegister(value)
+            | TStmt::ContractCheck { predicate: value, .. }
             | TStmt::Return(Some(value)) =>
                 expr_escape_effects(value, effects),
             TStmt::Return(None) | TStmt::UnwindFrame { .. }
@@ -2167,6 +2198,68 @@ fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
     Ok(())
 }
 
+/// Strict, closed-world dynamic-contract expression subset. Deliberately
+/// excludes calls, allocation, string/field/state access, ownership effects,
+/// checked arithmetic (which can panic on overflow), and suspension.
+/// This is narrower than general pure fnc, pending effect-row verification.
+fn contract_scalar_expr(value: &TE) -> bool {
+    match &value.e {
+        TExpr::I64(_) | TExpr::Bool(_) => true,
+        TExpr::Local(_) => matches!(value.ty, Type::Int | Type::Bool),
+        TExpr::Not(inner) => contract_scalar_expr(inner),
+        TExpr::Bin(op, a, b) => matches!(
+            op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or
+        ) && contract_scalar_expr(a) && contract_scalar_expr(b),
+        TExpr::Ternary(c, a, b) =>
+            contract_scalar_expr(c) && contract_scalar_expr(a) && contract_scalar_expr(b),
+        _ => false,
+    }
+}
+
+/// Postconditions must see the exact normal return value, evaluated once.
+/// Never rewrite an early ADT `?` without first proving its return edge.
+fn contract_rewrite_returns(
+    body: &mut [TStmt], checks: &[TStmt], ret: Type, result_slot: Option<u32>,
+) {
+    for stmt in body {
+        match stmt {
+            TStmt::Return(v) => {
+                let old = v.take();
+                let mut sequence = Vec::new();
+                let returned = match (old, result_slot) {
+                    (Some(value), Some(slot)) => {
+                        sequence.push(TStmt::Set(slot, value));
+                        Some(TE { e: TExpr::Local(slot), ty: ret })
+                    }
+                    (value, None) => value,
+                    (None, Some(_)) => None, // rejected by the typed return checker
+                };
+                sequence.extend_from_slice(checks);
+                sequence.push(TStmt::Return(returned));
+                *stmt = TStmt::Block(sequence);
+            }
+            TStmt::If(arms, other) => {
+                for (_, then_body) in arms {
+                    contract_rewrite_returns(then_body, checks, ret, result_slot);
+                }
+                if let Some(other) = other {
+                    contract_rewrite_returns(other, checks, ret, result_slot);
+                }
+            }
+            TStmt::Loop { body, update, .. } => {
+                contract_rewrite_returns(body, checks, ret, result_slot);
+                contract_rewrite_returns(update, checks, ret, result_slot);
+            }
+            TStmt::Block(inner) | TStmt::StateCriticalWrite(inner) =>
+                contract_rewrite_returns(inner, checks, ret, result_slot),
+            // A dynamic postcondition is rejected up front if any of these
+            // resources/control paths are present (see body_check below).
+            _ => {}
+        }
+    }
+}
+
 /// Verified callable signature and its source body. Grouping this
 /// context avoids long positional argument lists where receiver/return
 /// authority could accidentally be swapped between checker call sites.
@@ -2176,6 +2269,7 @@ struct BodyCheckInput<'a> {
     mail: Option<(&'a str, Type)>,
     ret: Type,
     body: &'a [Stmt],
+    contracts: &'a [ContractClause],
     label: &'a str,
     pos: Pos,
 }
@@ -2186,7 +2280,7 @@ fn body_check(
     imports: &mut Vec<Import>,
     data: &mut Vec<u8>,
 ) -> R<(Vec<TStmt>, Vec<Type>)> {
-    let BodyCheckInput { owner, named, mail, ret, body, label, pos } = input;
+    let BodyCheckInput { owner, named, mail, ret, body, contracts, label, pos } = input;
     // This is shared by inline class constructors and out-of-line headers
     // after they are lowered to the same production ClassDecl AST.
     if matches!(owner, Owner::Class { ctor: true, .. }) {
@@ -2223,12 +2317,82 @@ fn body_check(
         cx.trace = Some(trace);
     }
     cx.scopes.push(Vec::new());
+
+    // Check clauses against the *same* resolved symbols as the callable body.
+    // No implicit copy, ownership transfer, hidden guest call or capability
+    // widening is permitted in a contract predicate.
+    let mut preconditions = Vec::new();
+    let mut postconditions = Vec::new();
+    let mut result_slot = None;
+    for clause in contracts {
+        if matches!(owner, Owner::Actor { .. }) {
+            return Err(Diagnostic::new(clause.pos, "E_CONTRACT_UNSUPPORTED",
+                "actor contracts require authenticated supervisor CONTROL panic delivery"));
+        }
+        let is_post = matches!(&clause.kind, ContractKind::Ensures { .. });
+        let binder = match &clause.kind {
+            ContractKind::Requires => None,
+            ContractKind::Ensures { binder } => {
+                if !matches!(ret, Type::Int | Type::Bool) {
+                    return Err(Diagnostic::new(clause.pos, "E_CONTRACT_UNSUPPORTED",
+                        "dynamic ensures currently requires a copyable int/bool return value"));
+                }
+                let slot = match result_slot {
+                    Some(slot) => slot,
+                    None => {
+                        let slot = cx.temp(ret, clause.pos)?;
+                        result_slot = Some(slot);
+                        slot
+                    }
+                };
+                Some((binder.as_str(), slot))
+            }
+        };
+        if let Some((name, slot)) = binder {
+            cx.scopes.push(vec![Local {
+                name: name.to_string(), slot, ty: ret,
+                mutable: false, mail: None,
+            }]);
+        }
+        let predicate = cx.value(&clause.predicate);
+        if binder.is_some() { cx.pop_scope(); }
+        let predicate = predicate?;
+        if predicate.ty != Type::Bool {
+            return Err(Diagnostic::new(clause.predicate.pos, "E_CONTRACT_NOT_BOOL",
+                "dynamic contract predicate must have type bool"));
+        }
+        if !contract_scalar_expr(&predicate) {
+            return Err(Diagnostic::new(clause.predicate.pos, "E_CONTRACT_EFFECT",
+                "contract predicate requires readonly scalar expressions; no calls, overflow, allocation, I/O or ownership effects"));
+        }
+        let kind = if is_post { ContractFault::Ensures } else { ContractFault::Requires };
+        let guard = TStmt::ContractCheck { predicate, kind };
+        if is_post { postconditions.push(guard); }
+        else { preconditions.push(guard); }
+    }
+
     let checked = cx.stmts(body);
     let unwind = cx.unwind;
     let checked = checked.and_then(|mut tbody| {
-        if let Some((ret, saved, msg, kind, pending)) = unwind {
-            tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
+        if !postconditions.is_empty() {
+            if unwind.is_some()
+                || stmt_exists(&tbody, &|stmt| matches!(stmt,
+                    TStmt::Try { .. } | TStmt::ForIn { .. } |
+                    TStmt::Defer { .. } | TStmt::Recover { .. } |
+                    TStmt::UnwindFrame { .. }))
+                || any_in_stmts(&tbody, &|expr| matches!(expr.e, TExpr::AdtPropagate { .. }))
+            {
+                return Err(Diagnostic::new(pos, "E_CONTRACT_UNSUPPORTED",
+                    "ensures requires a verified normal return path; ? propagation, iterators and cleanup scopes are not yet supported"));
+            }
+            contract_rewrite_returns(&mut tbody, &postconditions, ret, result_slot);
+            if ret == Type::Void { tbody.extend_from_slice(&postconditions); }
         }
+        let insert_at = if let Some((ret, saved, msg, kind, pending)) = unwind {
+            tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
+            1
+        } else { 0 };
+        tbody.splice(insert_at..insert_at, preconditions);
         if ret != Type::Void && !returns(&tbody) {
             let what = if matches!(owner, Owner::TopLevel) { "fnc" } else { "method" };
             return Err(Diagnostic::new(
@@ -2333,7 +2497,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
 
 fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
     body.iter().all(|stmt| match stmt {
-        TStmt::Set(_, value) | TStmt::Expr(value) =>
+        TStmt::Set(_, value) | TStmt::Expr(value) |
+        TStmt::ContractCheck { predicate: value, .. } =>
             pure_expr(value, pure_indices),
         TStmt::Return(value) =>
             value.as_ref().is_none_or(|value| pure_expr(value, pure_indices)),
@@ -2359,7 +2524,8 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
-        TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) |
+        TStmt::ContractCheck { predicate: e, .. } => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
         TStmt::CollectionStore { array, value, .. } =>

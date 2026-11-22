@@ -119,6 +119,43 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // Contract-bearing source must NEVER enter a pre-checker fast path.
+    // Some alternate lowerers can emit guest Wasm directly, so a parse-only
+    // preflight is insufficient: a dynamic clause could be silently dropped.
+    // Route the whole program through the canonical typed checker instead.
+    // Unsupported imports, specializations and visibility rewrite syntax fail
+    // closed until those passes preserve source contract ASTs end-to-end.
+    if original_tokens.iter().any(|token| matches!(
+        &token.tok, lexer::Tok::Ident(word)
+            if matches!(word.as_str(), "requires" | "ensures" | "invariant")
+    )) {
+        if original_tokens.iter().any(|token| matches!(
+            &token.tok, lexer::Tok::Ident(word) if word == "pub"
+        )) {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_CONTRACT_UNSUPPORTED",
+                "public export metadata with contracts requires verified visibility lowering"));
+        }
+        let parsed = parser::Parser::new(original_tokens).parse_program()?;
+        // The early checked path does not execute nominal/actor/collection
+        // linker preflights. Fail closed rather than letting source contracts
+        // create a shortcut around those ownership/ABI policies.
+        if !parsed.classes.is_empty() || !parsed.actors.is_empty()
+            || !parsed.enums.is_empty() || parsed.actor_interface.is_some()
+            || !parsed.array_types.is_empty()
+        {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_CONTRACT_UNSUPPORTED",
+                "contract-bearing class/actor/enum/collection code requires checked nominal and lifecycle lowering"));
+        }
+        let checked = check::check(&parsed)?;
+        let bytes = wasm::emit(&checked);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
+    }
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
