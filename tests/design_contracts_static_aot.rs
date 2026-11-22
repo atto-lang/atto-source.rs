@@ -1,6 +1,5 @@
-//! Real source compiler tests for the deliberately bounded compile-time-proved
-//! contract subset. A passing test does not certify dynamic contracts, actor
-//! invariant runtime checks, or the typed ContractViolationError ABI.
+//! Real source compiler tests for AOT scalar requires/ensures lowering.
+//! Actor supervisor, cleanup/? and typed Error-object semantics remain gated.
 use atto_compiler::{compile, lexer, parser::Parser};
 
 fn emitted(source: &str) {
@@ -51,11 +50,29 @@ fn non_boolean_contracts_reject_without_artifacts() {
 }
 
 #[test]
-fn dynamic_predicates_never_silently_disappear_from_release_wasm() {
-    rejected("fnc main(int value) -> int requires value > 0; :: return value; end", "E_CONTRACT_UNSUPPORTED");
-    rejected("fnc main() -> int ensures |r| -> r > 0; :: return 42; end", "E_CONTRACT_UNSUPPORTED");
+fn runtime_scalar_predicates_are_emitted_for_both_contract_kinds() {
+    emitted("fnc checked(int x) -> int requires x > 0; ensures |r| -> r > 0; :: return x; end fnc main() -> int { return checked(42); }");
+    emitted("fnc keep(bool valid) -> bool requires valid; ensures |out| -> out; :: return valid; end fnc main() -> int { if keep(true) then return 42; fi return 0; }");
+    emitted("fnc choose(int x) -> int ensures |r| -> r > 0; { if x eq 0 then return 7; fi return 0; } fnc main() -> int { return choose(0); }");
+    emitted("fnc good() -> void ensures |ignored| -> true; { return; } fnc main() -> int { good(); return 42; }");
     rejected("define class C as let int count = 0; invariant self.count >= 0; end fnc main() -> int { return 42; }", "E_CONTRACT_UNSUPPORTED");
     rejected("define actor A as invariant |s| -> s.count >= 0; end fnc main() -> int { return 42; }", "E_CONTRACT_UNSUPPORTED");
+}
+
+#[test]
+fn typed_purity_and_return_capability_fail_closed() {
+    rejected("fnc check(int x) -> bool { return x > 0; } fnc guarded(int x) -> int requires check(x); { return x; } fnc main() -> int { return guarded(1); }", "E_CONTRACT_EFFECT");
+    rejected("fnc guarded(int x) -> int requires x + 1 > 0; { return x; } fnc main() -> int { return guarded(1); }", "E_CONTRACT_EFFECT");
+    rejected("fnc main() -> void ensures |r| -> main() eq true; { return; }", "E_CONTRACT_UNSUPPORTED");
+    rejected("fnc checked() -> int ensures |r| -> r; { return 1; } fnc main() -> int { return checked(); }", "E_CONTRACT_NOT_BOOL");
+}
+
+#[test]
+fn dynamic_contracts_survive_the_parser_as_source_spanned_clauses() {
+    let src = "fnc checked(int x) -> int requires x > 0; ensures |result| -> result > 0; { return x; } fnc main() -> int { return checked(1); }";
+    let tree = Parser::new(lexer::lex(src).unwrap()).parse_program().unwrap();
+    assert_eq!(tree.funcs[0].contracts.len(), 2);
+    assert_eq!(tree.funcs[0].contracts[0].pos.line, 1);
 }
 
 #[test]
