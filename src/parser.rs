@@ -33,6 +33,9 @@ const RESERVED: &[&str] = &[
     "module",
     "namespace",
     "contract",
+    "requires",
+    "ensures",
+    "invariant",
     "conforms",
     "class",
     "struct",
@@ -294,6 +297,18 @@ type R<T> = Result<T, Diagnostic>;
 
 fn unsupported(pos: Pos, what: &str) -> Diagnostic {
     Diagnostic::new(pos, "E_UNSUPPORTED", format!("{what} is not supported by the browser compiler yet"))
+}
+
+/// Deliberately narrow v1 full-AOT contract admission: only obviously
+/// effect-free, compile-time-proven Boolean constants can be erased.
+/// Unknown predicates are NEVER compiled as assumptions, debug-only checks,
+/// Wasm unreachable, or unchecked guest values.
+fn static_contract_bool(expr: &Expr) -> Option<bool> {
+    match &expr.kind {
+        ExprKind::Bool(value) => Some(*value),
+        ExprKind::Unary(UnOp::Not, value) => static_contract_bool(value).map(|v| !v),
+        _ => None,
+    }
 }
 
 /// Conservative control-flow proof for guard's failure path. In particular,
@@ -1131,6 +1146,29 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
+                Some("invariant") => {
+                    // Class and actor invariants are part of the type body.
+                    // A constant true predicate needs no runtime guard;
+                    // all state-dependent predicates fail closed until the
+                    // constructor/turn/critical-write CFG is implemented.
+                    self.advance();
+                    let binder = if self.eat(&Tok::Pipe) {
+                        if !actor {
+                            return Err(Diagnostic::new(mpos, "E_CONTRACT_PLACEMENT",
+                                "state-view invariant binders are only valid on actors"));
+                        }
+                        let (name, _) = self.ident("a readonly actor state binder")?;
+                        self.expect(Tok::Pipe, "'|' ending an invariant binder")?;
+                        self.expect(Tok::Arrow, "'->' after the invariant binder")?;
+                        Some(name)
+                    } else {
+                        None
+                    };
+                    let predicate = self.parse_expr()?;
+                    self.terminator()?;
+                    self.validate_static_contract("invariant", &predicate, &[],
+                        binder.as_deref().map(|name| (name, Type::Bool)), mpos)?;
+                }
                 Some("fnc" | "method") => {
                     self.advance();
                     let method = self.parse_method(public, false)?;
@@ -1345,6 +1383,71 @@ impl Parser {
         })
     }
 
+    /// Parse proposed callable contracts at the real signature/body boundary.
+    /// Only provable Boolean literals are executable in this initial AOT
+    /// subset; all dynamic checks must fail closed before any guest artifact.
+    /// Returning Result<()> avoids leaking unlowered contract clauses into AST.
+    fn parse_static_contract_clauses(&mut self, params: &[Param], ret: Type) -> R<()> {
+        let mut count = 0usize;
+        loop {
+            let kind = match self.word_at(0) {
+                Some("requires") => "requires",
+                Some("ensures") => "ensures",
+                _ => break,
+            };
+            let pos = self.pos();
+            count += 1;
+            if count > 64 {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                    "more than 64 contract clauses on a single callable"));
+            }
+            self.advance();
+            let binder = if kind == "ensures" {
+                self.expect(Tok::Pipe, "'|' opening an ensures result binder")?;
+                let (name, name_pos) = self.ident("an ensures result binder")?;
+                if params.iter().any(|p| p.name == name) {
+                    return Err(Diagnostic::new(name_pos, "E_CONTRACT_BINDER",
+                        "ensures result binder must not shadow a callable parameter"));
+                }
+                self.expect(Tok::Pipe, "'|' closing the ensures result binder")?;
+                self.expect(Tok::Arrow, "'->' after ensures result binder")?;
+                Some(name)
+            } else {
+                None
+            };
+            let predicate = self.parse_expr()?;
+            self.expect(Tok::Semi, "';' after contract predicate")?;
+            self.validate_static_contract(kind, &predicate, params,
+                binder.as_deref().map(|name| (name, ret)), pos)?;
+        }
+        if self.is_word("invariant") {
+            return Err(Diagnostic::new(self.pos(), "E_CONTRACT_PLACEMENT",
+                "invariant belongs in a class/actor body, not in a callable signature"));
+        }
+        Ok(())
+    }
+
+    fn validate_static_contract(&self, kind: &str, predicate: &Expr,
+        params: &[Param], result: Option<(&str, Type)>, pos: Pos) -> R<()> {
+        let non_bool = match &predicate.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
+            ExprKind::Var(name) => params.iter().any(|p| p.name == *name && p.ty != Type::Bool)
+                || result.is_some_and(|(binder, ty)| binder == name && ty != Type::Bool),
+            _ => false,
+        };
+        if non_bool {
+            return Err(Diagnostic::new(predicate.pos, "E_CONTRACT_NOT_BOOL",
+                format!("{kind} predicate must be bool, not a non-boolean scalar")));
+        }
+        match static_contract_bool(predicate) {
+            Some(true) => Ok(()), // Sound proof: no runtime check is needed.
+            Some(false) => Err(Diagnostic::new(pos, "E_CONTRACT_ALWAYS_FALSE",
+                format!("{kind} is provably false"))),
+            None => Err(Diagnostic::new(pos, "E_CONTRACT_UNSUPPORTED",
+                format!("dynamic {kind} requires typed, effect-safe panic and return-path lowering; no guest code emitted"))),
+        }
+    }
+
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let CallableHeader {
@@ -1352,6 +1455,7 @@ impl Parser {
         } = self.parse_named_callable_header("a method name")?;
         // For an explicit inferred result, the comma/end body still has a
         // checked tail return, never a silently discarded terminal expression.
+        self.parse_static_contract_clauses(&params, ret)?;
         let body = self.parse_callable_body(arrow_type, colon_type, return_first,
             if infer { Type::Int } else { ret })?;
         let ret = if infer { self.infer_callable_return(&body, &params)? } else { ret };
@@ -1626,6 +1730,7 @@ impl Parser {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
         } = self.parse_named_callable_header("a function name")?;
         let declared_effects = self.parse_effect_clauses()?;
+        self.parse_static_contract_clauses(&params, ret)?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
