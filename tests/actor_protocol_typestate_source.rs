@@ -302,3 +302,19 @@ fn textual_protocol_handle_is_not_minted_by_an_adjacent_protocol_declaration() {
         "  val disconnected = await spawn Connection();");
     rejects(&forged, "E_PROTOCOL_UNPROVEN_STATE");
 }
+
+#[test]
+fn union_state_send_rejects_mismatched_nominal_replies_and_cardinality() {
+    let mut proof = inspect_source(GOOD).unwrap().unwrap();
+    let protocol = proof.protocols.get_mut("ConnectionProtocol").unwrap();
+    let connected_close = protocol.transitions.iter_mut()
+        .find(|t| t.from == "Connected" && t.message == "Close")
+        .unwrap();
+    connected_close.response = Response::Unary("OtherAck".into());
+    let both = ["Disconnected".to_string(), "Connected".to_string()];
+    assert_eq!(protocol.check_send(&both, "Close").unwrap_err().code,
+        "E_PROTOCOL_REPLY_MISMATCH");
+    connected_close.response = Response::Stream("DataEvent".into());
+    assert_eq!(protocol.check_send(&both, "Close").unwrap_err().code,
+        "E_PROTOCOL_REPLY_MISMATCH");
+}
