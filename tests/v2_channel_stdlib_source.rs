@@ -25,6 +25,12 @@ const LEGACY_PRELOADED_PRODUCER: &str =
     include_str!("fixtures/panic/243-v2-legacy-pipe-producer-preloaded-denial.atto");
 const LEGACY_PRELOADED_CONSUMER: &str =
     include_str!("fixtures/panic/244-v2-legacy-pipe-consumer-preloaded-denial.atto");
+const TRY_OPEN_DRAIN: &str =
+    include_str!("fixtures/pass/245-v2-try-read-open-empty-and-closed-drain.atto");
+const TRY_CLOSED_EMPTY: &str =
+    include_str!("fixtures/panic/245-v2-try-read-closed-empty-denial.atto");
+const TRY_CLOSED_DRAINED: &str =
+    include_str!("fixtures/panic/246-v2-try-read-after-drain-denial.atto");
 
 
 #[test]
@@ -159,6 +165,38 @@ fn legacy_pipe_ownership_denials_compile_to_real_guest_wasm() {
         ("consumer pending public reader", LEGACY_PENDING_CONSUMER),
         ("producer with buffered data", LEGACY_PRELOADED_PRODUCER),
         ("consumer with buffered data", LEGACY_PRELOADED_CONSUMER),
+    ] {
+        let wasm = atto_compiler::v2::compile(atto_compiler::lexer::lex(src)
+            .unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
+            .unwrap_or_else(|e| panic!("{label}: compiler: {e}"));
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"),
+            "{label}: compiler did not emit Wasm");
+    }
+}
+
+#[test]
+fn immediate_read_distinguishes_open_empty_from_closed_drained() {
+    let start = LIB.find("fnc __chan_try(int c): int {").expect("missing try reader");
+    let next = &LIB[start..];
+    let end = next.find("\n}\n").expect("unterminated try reader");
+    let source = &next[..end];
+    let buffered = source.find("if __load(c, 8) > 0 then")
+        .expect("must drain buffered FIFO before reporting closed");
+    let closed = source.find("if __load(c, 32) != 0 then __panic(9); fi")
+        .expect("closed and drained is not temporarily unready None");
+    let empty = source.find("return 0;").expect("open+empty remains None");
+    assert!(buffered < closed && closed < empty,
+        "closed try-read must drain committed data before terminal denial");
+}
+
+#[test]
+fn terminal_try_read_guest_cases_compile_to_real_wasm() {
+    // Compile only; actual Wasm stdout/exit/panic assertions are in the
+    // timeout-bounded Node guest harness and need stepful CI execution.
+    for (label, src) in [
+        ("open empty, buffered drain", TRY_OPEN_DRAIN),
+        ("closed empty", TRY_CLOSED_EMPTY),
+        ("closed after final drain", TRY_CLOSED_DRAINED),
     ] {
         let wasm = atto_compiler::v2::compile(atto_compiler::lexer::lex(src)
             .unwrap_or_else(|e| panic!("{label}: lexer: {e}")))
