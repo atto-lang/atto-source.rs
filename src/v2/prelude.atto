@@ -104,6 +104,11 @@ suspends fnc __await(int f): int {
   while __load(f, 0) == 0 do
     __suspend();
   done
+  // A cancelled pending channel read is not the same as a normal
+  // completed Future<Option<T>> whose value is None on channel EOF.
+  // State 2 is exclusively the cancelled terminal state. Never expose
+  // cancelled registrations as false EOF or a stale delivered payload.
+  if __load(f, 0) == 2 then __panic(15); fi
   __set_rt(4, 1);
   return __load(f, 8);
 }
