@@ -31,6 +31,35 @@ fn compiles_public_top_level_function_from_namespaced_source_file() {
 }
 
 #[test]
+fn accepts_dotted_and_path_derived_file_namespaces_with_valid_logical_paths() {
+    for source in [
+        "use namespace core.types; pub fnc int_value_bits() -> int { return 64; }",
+        "use default namespace; pub fnc int_value_bits() -> int { return 64; }",
+        "use default namespace(1); pub fnc int_value_bits() -> int { return 64; }",
+    ] {
+        let wasm = compile_with_imported(source)
+            .expect("header identity is validated against src/types.atto before linking");
+        assert!(wasm.starts_with(&[0, 97, 115, 109]));
+    }
+}
+
+#[test]
+fn rejects_unresolvable_derived_namespace_and_imported_file_dependencies() {
+    let bad_depth = "use default namespace(2); pub fnc int_value_bits() -> int { return 64; }";
+    let err = compile_with_imported(bad_depth).expect_err("cannot infer two folders from src/types.atto");
+    assert_eq!(err.code, "E_NAMESPACE_DEPTH");
+
+    let unsupported_dependency = r#"
+use namespace types;
+import * as foreign from "./foreign.atto";
+pub fnc int_value_bits() -> int { return 64; }
+"#;
+    let err = compile_with_imported(unsupported_dependency)
+        .expect_err("one-hop function imports must reject nested dependency graphs");
+    assert_eq!(err.code, "E_UNSUPPORTED");
+}
+
+#[test]
 fn imported_file_namespace_is_not_optional_synthetic_module_shape() {
     let bare = "pub fnc int_value_bits() -> int { return 64; }";
     let wasm = compile_with_imported(bare).expect("legacy bare-file import remains valid");
