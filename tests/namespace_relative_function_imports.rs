@@ -1,7 +1,7 @@
 //! Production namespace-aware relative .atto import regression.
 //! The real compiler emits Wasm or fails with an exact diagnostic; these
 //! source tests do not claim guest execution or actor-runtime authority.
-use atto_compiler::compile_with_imports;
+use atto_compiler::{compile_with_imports, compile_with_path};
 use std::io;
 use std::path::Path;
 
@@ -80,4 +80,30 @@ fn malformed_or_misplaced_namespace_headers_fail_closed() {
         ), HELPER),
         "E_SYNTAX"
     );
+}
+
+#[test]
+fn standalone_namespaced_pure_function_is_real_guest_not_syntax_only() {
+    let src = "use namespace std.actor.helpers; pub fnc main(): int { return 42; }";
+    let wasm = compile_with_path(src, Path::new("project/src/standalone.atto"))
+        .expect("valid namespace should not force syntax-only actor receiver mode");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(wasm, compile_with_path(src, Path::new("project/src/standalone.atto")).unwrap());
+}
+
+#[test]
+fn standalone_namespace_cannot_forge_an_unimported_policy_function() {
+    let no_import = r#"use namespace std.actor.consumer;
+pub fnc main(): int {
+  if actor_mailbox_admissible(true, true, true, true, 0, 1) then
+    return 1;
+  fi
+  return 42;
+}"#;
+    let err = compile_with_path(no_import, Path::new("project/src/standalone.atto"))
+        .expect_err("namespace alone must not bind an actor policy function");
+    assert_eq!(err.code, "E_UNBOUND", "must reject unbound import, not a syntax-only fallback");
+    let nominal = "use namespace std.actor; declare actor Supervisor; pub fnc main(): int { return 42; }";
+    assert!(compile_with_path(nominal, Path::new("project/src/standalone.atto")).is_err(),
+        "actor declaration is not a permitted pure-function lowering");
 }
