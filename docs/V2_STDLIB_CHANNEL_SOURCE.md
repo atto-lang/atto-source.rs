@@ -66,8 +66,8 @@ The three regression guests are:
 - `tests/fixtures/pass/239-v2-rendezvous-for-await.atto`
 - `tests/fixtures/pass/240-v2-rendezvous-close-wakes-reader.atto`
 
-`tests/node-v2-channel-guest.mjs` compiles and executes **23** positive and
-negative channel fixtures (thirteen successful, ten expected guest denials)
+`tests/node-v2-channel-guest.mjs` compiles and executes **34** positive and
+negative channel fixtures (twenty-two successful, twelve expected guest denials)
 as actual independent Wasm guests. These now cover direct rendezvous,
 for-await rendezvous, close/wakeup, invalid capacities, legacy two-port
 actor pipe ownership admission, and closed-versus-empty immediate read.
@@ -140,7 +140,7 @@ repair, wrong-channel rejection, already-delivered and closed Futures,
 idempotence, await-after-cancellation, and successful checked DATA graph
 admission only after the pending public reader has been removed. Two source fixtures must fail
 compilation for a mismatched `Future<Option<bool>>` or a forged integer
-passed to a `Channel<int>`. The Node real-guest gate now contains **23** runnable
+passed to a `Channel<int>`. The Node real-guest gate now contains **34** runnable
 cases. These are staged tests: no exact-head compiler/guest evidence exists
 until a runner executes the actual `.atto` guests.
 
@@ -150,3 +150,45 @@ for pending sends, automatic cancellation on task exit, dynamic select
 registrations, lifecycle-safe actor-pipeline bridge cancellation and
 domain-crossing Futures. Do not report full cancellation parity or a
 runtime PASS on the basis of source-only checks.
+
+## Staged copy-safe pending writes and core transport borrow gate
+
+Rust/Wasm's v2 channel storage has an independent pending writer queue
+(offsets 72/80 in the now-88-byte channel). `send_pending(value)` registers
+a `Future<Option<T>>` for `int` and `bool` payloads only. A successful
+admission completes the Future with `None`; `cancel_write(ticket)`
+returns `Some(original_value)` exactly once if no receiver or buffer has
+accepted the write. A completed or wrong-channel ticket returns `None`.
+
+A close marks uncommitted writers as rejected (Future state 3);
+`await ticket` reports closed, not success, and `cancel_write(ticket)`
+still recovers the original value once. A cancelled/reclaimed ticket never
+resolves success. Readers free bounded slots and rendezvous with the oldest
+queued writer before allowing new sends to overtake. Both checked three-port
+and legacy two-port DATA attachments reject outstanding pending public
+writes, pending reads, or buffered data.
+
+The v2 compiler now checks `Channel<T>` transport types at the **type
+construction boundary**: only primitive immutable scalar values and
+recursively data-only immutable Option/Result/Tuple shapes are admitted.
+Dynamic `Any`, nested Channel capabilities, mutable `List<T>`, actor,
+callable, Future and object payloads fail with `E_BORROW`. This is a
+**conservative transport gate**, not a complete loan/lifetime analysis.
+The new pending-write API is even narrower: only `int` and `bool`
+because there is not yet a verified affine/linear payload ticket or a
+borrow checker for noncopy ownership through suspend boundaries.
+
+The guest harness now targets **34** runnable cases (22 expected
+successes and 12 expected guest traps), plus six additional negative
+`.atto` compile checks for transport/borrow/ticket types. These checks
+must actually compile and execute on a stepful exact-head runner before
+they can be certified; they are currently `NOT_EXECUTED`.
+
+### Not yet supported
+
+Automatic task cancellation of registered writers, linear noncopy
+ownership recovery, cross-TenantVM channel transport, Native AOT,
+sanitizer evidence and public Java-compatible `std/channel` imports
+remain open. Java has a different independently owned API and uses
+`rt take` for transfer; do not describe these provisional Rust v2
+methods as cross-compiler parity yet.
