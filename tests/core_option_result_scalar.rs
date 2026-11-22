@@ -5,7 +5,7 @@ use atto_compiler::compile;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-const WASM_HEADER: &[u8] = b"\\0asm\\x01\\0\\0\\0";
+const WASM_HEADER: &[u8] = b"\0asm\x01\0\0\0";
 
 fn execute_guest(bytes: &[u8], expected: i64) {
     assert!(bytes.starts_with(WASM_HEADER), "compiler did not emit Wasm");
