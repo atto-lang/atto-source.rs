@@ -30,6 +30,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED"
           echo "ATTO_STD_GUEST_HEAD=$EXPECTED"
           git rev-parse 'HEAD^{tree}'
+      - name: Check 42 source exports and mutate guest references
+        run: node --test tests/stdlib/source_contract.test.mjs
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.85.1 --profile minimal
       - name: Compile linked Atto units and test negative imports
