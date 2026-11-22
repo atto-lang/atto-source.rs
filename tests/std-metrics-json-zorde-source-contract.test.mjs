@@ -197,3 +197,18 @@ test("three identical Atto guest fixtures have pinned nonempty 127-line goldens"
   }
   assert.equal(outputs,127);
 });
+
+
+test("Rust compiler-owned real guest workflow must not silently become a source-only oracle", () => {
+  const harness = read("tests/core-borrow-real-guest.mjs");
+  const workflow = read(".github/workflows/atto-core-borrow-real-guest.yml");
+  for (const expression of ["spawnSync(compiler,", "WebAssembly.Instance(mod, imports)",
+    "WebAssembly.validate(wasm)", "assert.equal(existsSync(output), false",
+    "fixture.expected_error", "guest_exit: 42", "CANDIDATE_EXTERNAL_PROVENANCE_REQUIRED"]) {
+    assert.ok(harness.includes(expression), "real guest evidence guard removed: " + expression);
+  }
+  assert.ok(workflow.includes("cargo build --locked --bin attoc"), "actual compiler build missing");
+  assert.ok(workflow.includes("node tests/core-borrow-real-guest.mjs"), "Wasm execution missing");
+  assert.ok(workflow.includes("ATTO_CORE_BORROW_INDEPENDENTLY_CERTIFIED=NO"),
+            "candidate receipts must never self-certify");
+});
