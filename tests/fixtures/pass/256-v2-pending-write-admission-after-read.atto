@@ -13,7 +13,12 @@ pub suspends fnc main(): int {
   end;
   if committed != 1 then return 91; fi
   val second = await ch.receive();
-  if ch.cancel_write(ticket) != None then return 92; fi
+  val after_admission = ch.cancel_write(ticket);
+  val int remains = match after_admission over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if remains != 1 then return 92; fi
   ch.close();
   val total = first + second;
   stdio.println(total);
