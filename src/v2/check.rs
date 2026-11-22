@@ -534,7 +534,18 @@ impl<'a> Checker<'a> {
             ("Option", 1) => Ty::Option(arg(0)?),
             ("Result", 2) => Ty::Result(arg(0)?, arg(1)?),
             ("Future" | "Task", 1) => Ty::Future(arg(0)?),
-            ("Channel", 1) => Ty::Channel(arg(0)?),
+            ("Channel", 1) => {
+                let payload = arg(0)?;
+                // A Channel<T> carries owned, shareable DATA. Refuse dynamic,
+                // callable, actor, mutable-container and capability payloads
+                // until the backend's borrow/move checker can prove a move.
+                if !Self::channel_transport_safe(&payload) {
+                    return Err(err(pos, "E_BORROW", format!(
+                        "Channel<T> transport requires immutable data; {} needs ownership/borrow validation",
+                        self.tn(&payload))));
+                }
+                Ty::Channel(payload)
+            },
             ("PipeHandle", 0) => Ty::PipeHandle,
             ("PipeSetupError", 0) => Ty::PipeSetupError,
             ("AsyncGenerator", 1) => Ty::AsyncGen(arg(0)?),
@@ -570,6 +581,21 @@ impl<'a> Checker<'a> {
             return Err(type_err(pos, format!("expected {}, found {}", self.tn(want), self.tn(actual))));
         }
         Ok(ir)
+    }
+
+    // V2 single-tenant channel transport is only admitted for data-only
+    // immutable payloads. A future, actor, nested channel, mutable list,
+    // callable, object, or Any value must not bypass the borrow boundary.
+    // This is a conservative transport gate, NOT a full affine checker.
+    fn channel_transport_safe(t: &Ty) -> bool {
+        match t {
+            Ty::Int | Ty::Bool | Ty::Str => true,
+            Ty::Option(v) => Self::channel_transport_safe(v),
+            Ty::Result(v, e) =>
+                Self::channel_transport_safe(v) && Self::channel_transport_safe(e),
+            Ty::Tuple(items) => items.iter().all(Self::channel_transport_safe),
+            _ => false,
+        }
     }
 
     fn tag_of(&self, t: &Ty, pos: Pos) -> R<i64> {
@@ -2378,6 +2404,31 @@ impl<'a> Checker<'a> {
             Ty::PipeHandle => Err(err(pos, "E_UNSUPPORTED",
                 "PipeHandle methods are gated until cancellation, borrow release and TenantVM lifecycle admission are verified")),
             Ty::Channel(item) => match name {
+                "send_pending" => {
+                    // This staged explicit write registration uses an
+                    // independently cancellable copy-safe scalar value.
+                    // Non-copy resources need a linear write ticket and
+                    // borrow-checked rt take before enabling this API.
+                    if !matches!(item.as_ref(), Ty::Int | Ty::Bool) {
+                        return Err(err(pos, "E_BORROW",
+                            "send_pending requires copy-safe int/bool until affine ownership tracking is available"));
+                    }
+                    let e = self.plain_args(name, args, 1, pos)?[0];
+                    let payload = self.typed(e, item)?;
+                    Ok((self.rt("__chan_send_pending", vec![recv, payload]),
+                        Ty::Future(Box::new(Ty::Option(item.clone()))), false))
+                }
+                "cancel_write" => {
+                    if !matches!(item.as_ref(), Ty::Int | Ty::Bool) {
+                        return Err(err(pos, "E_BORROW",
+                            "cancel_write requires copy-safe int/bool until affine ownership tracking is available"));
+                    }
+                    let e = self.plain_args(name, args, 1, pos)?[0];
+                    let ticket_type = Ty::Future(Box::new(Ty::Option(item.clone())));
+                    let ticket = self.typed(e, &ticket_type)?;
+                    Ok((self.rt("__chan_cancel_write", vec![recv, ticket]),
+                        Ty::Option(item.clone()), false))
+                }
                 "cancel_read" => {
                     // Cancellation is explicit and only accepts the Future
                     // returned by nb readch on this element type. Runtime
@@ -2408,7 +2459,7 @@ impl<'a> Checker<'a> {
                     self.plain_args(name, args, 0, pos)?;
                     Ok((self.rt_scall("__chan_recv", vec![recv]), (**item).clone(), true))
                 }
-                _ => Err(type_err(pos, format!("a channel supports close(), send(v), receive() and cancel_read(future), not '{name}'"))),
+                _ => Err(type_err(pos, format!("a channel supports close(), send(v), receive(), send_pending(v), cancel_write(future) and cancel_read(future), not '{name}'"))),
             },
             Ty::Actor(i) => {
                 // Experimental single-tenant guest lifetime controls. A real
