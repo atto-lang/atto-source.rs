@@ -581,7 +581,7 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                         // Built-in libraries are reserved compiler module identities:
                         // "core.*", "alloc.*" and "std.*" never name host files.
                         // Parsing does not certify the target's built-in linker.
-                        let built_in = ["core", "alloc", "std"].iter().any(|root| {
+                        let built_in = ["core", "alloc", "std"].into_iter().any(|root| {
                             path == *root || path.strip_prefix(root)
                                 .is_some_and(|tail| tail.starts_with('.'))
                         });
