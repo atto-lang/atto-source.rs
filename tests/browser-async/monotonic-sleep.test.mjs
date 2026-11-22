@@ -20,6 +20,7 @@ function clockHarness(maxPending=2){
   return {
     sleep,
     count:()=>queue.size,
+    setAt(t){tick=t},
     delays:()=>[...queue.values()].map(x=>x.delay),
     fireAt(t){
       assert.ok(queue.size>0,'fake timer must be pending');
@@ -118,10 +119,22 @@ test('regressing monotonic readings fail closed and release admission',async()=>
   await assert.rejects(pending,/invalid or regressed monotonic clock/);
   assert.equal(h.sleep.pending,0);
   assert.equal(h.count(),0);
+  h.setAt(0);
   const next=h.sleep.sleep(1);
   h.fireAt(1);
   await next;
   assert.equal(h.sleep.pending,0);
+});
+
+test('clock regression between early wakeups rejects rather than extending wait',async()=>{
+  const h=clockHarness(1);
+  const pending=h.sleep.sleep(100);
+  h.fireAt(40);
+  assert.deepEqual(h.delays(),[60]);
+  h.fireAt(20);
+  await assert.rejects(pending,/invalid or regressed monotonic clock/);
+  assert.equal(h.sleep.pending,0);
+  assert.equal(h.count(),0);
 });
 
 test('nonfinite monotonic readings after registration fail closed',async()=>{
