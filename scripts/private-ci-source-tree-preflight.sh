@@ -27,7 +27,8 @@ trap 'rm -rf -- "$scratch"' EXIT
 manifest="$scratch/manifest"
 other="$scratch/untracked-or-ignored"
 ignored="$scratch/ignored"
-blob_tmp="$scratch/blob"
+lfs_magic="$scratch/lfs-magic"
+printf '%s' 'version https://git-lfs.github.com/spec/v1' > "$lfs_magic"
 git ls-files --others --exclude-standard -z > "$other" || reject 'untracked-file scan failed'
 [[ ! -s "$other" ]] || reject 'untracked files in source checkout'
 git ls-files --others --ignored --exclude-standard -z > "$ignored" || reject 'ignored-file scan failed'
@@ -49,12 +50,21 @@ while IFS= read -r -d '' record; do
 
   actual_oid=$(git cat-file blob "$oid" | git hash-object --stdin) || reject 'blob unavailable or unreadable'
   [[ "$actual_oid" == "$oid" ]] || reject 'Git blob content hash mismatch'
-  size=$(git cat-file -s "$oid") || reject 'blob size unavailable'
-  if (( size <= 1024 )); then
-    git cat-file blob "$oid" > "$blob_tmp" || reject 'blob content unavailable'
-    if head -n 1 "$blob_tmp" | LC_ALL=C grep -Fqx 'version https://git-lfs.github.com/spec/v1'; then
-      reject 'Git LFS pointer requires separate source classification'
-    fi
+  # Independently hash checkout bytes: assume-unchanged and skip-worktree
+  # index flags can conceal modified source files from git diff.
+  [[ -f "$path" && ! -L "$path" ]] || reject 'missing or symlinked checked-out source file'
+  working_oid=$(git hash-object --no-filters -- "$path") || reject 'checked-out source file unreadable'
+  [[ "$working_oid" == "$oid" ]] || reject 'checked-out source bytes differ from committed blob'
+  case "$mode" in
+    100644) [[ ! -x "$path" ]] || reject 'unexpected checked-out executable permission' ;;
+    100755) [[ -x "$path" ]] || reject 'missing checked-out executable permission' ;;
+  esac
+
+  # Verify LFS-looking prefix at all sizes: an oversized pointer must fail.
+  # Complete Git object content was hashed above; ignore only early SIGPIPE
+  # from the prefix check, not the independent full-content verification.
+  if (set +o pipefail; git cat-file blob "$oid" | head -c 42 | cmp -s -- "$lfs_magic" -); then
+    reject 'Git LFS pointer requires separate source classification'
   fi
   count=$((count + 1))
 done < "$manifest"

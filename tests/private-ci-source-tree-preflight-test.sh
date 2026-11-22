@@ -78,17 +78,54 @@ git -C "$repo" commit -qm 'synthetic LFS pointer'
 head=$(git -C "$repo" rev-parse HEAD)
 tree=$(git -C "$repo" rev-parse 'HEAD^{tree}')
 expect_deny 'LFS pointer'
+{
+  printf 'version https://git-lfs.github.com/spec/v1\n'
+  printf 'ext-foo '
+  head -c 1200 /dev/zero | tr '\000' a
+  printf '\noid sha256:%064d\nsize 42\n' 0
+} > "$repo/pointer.dat"
+git -C "$repo" add pointer.dat
+git -C "$repo" commit -qm 'synthetic oversized LFS header'
+head=$(git -C "$repo" rev-parse HEAD)
+tree=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+expect_deny 'oversized LFS-looking blob'
 rm -f "$repo/pointer.dat"
 git -C "$repo" add -u
 git -C "$repo" commit -qm 'remove pointer'
 head=$(git -C "$repo" rev-parse HEAD)
 tree=$(git -C "$repo" rev-parse 'HEAD^{tree}')
 expect_allow 'restored after pointer'
+head -c 2048 /dev/zero | tr '\000' b > "$repo/large-normal.bin"
+git -C "$repo" add large-normal.bin
+git -C "$repo" commit -qm 'synthetic large regular blob'
+head=$(git -C "$repo" rev-parse HEAD)
+tree=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+expect_allow 'normal large blob without LFS header'
+git -C "$repo" rm -q large-normal.bin
+git -C "$repo" commit -qm 'remove synthetic large blob'
+head=$(git -C "$repo" rev-parse HEAD)
+tree=$(git -C "$repo" rev-parse 'HEAD^{tree}')
 printf 'changed\n' > "$repo/example.txt"
 git -C "$repo" add example.txt
 expect_deny 'staged modification'
 git -C "$repo" restore --staged --worktree example.txt
 expect_allow 'restored after staged modification'
+git -C "$repo" update-index --assume-unchanged example.txt
+printf 'tampered by assume-unchanged\n' > "$repo/example.txt"
+expect_deny 'dirty source hidden by assume-unchanged'
+git -C "$repo" update-index --no-assume-unchanged example.txt
+git -C "$repo" restore example.txt
+git -C "$repo" update-index --skip-worktree example.txt
+printf 'tampered by skip-worktree\n' > "$repo/example.txt"
+expect_deny 'dirty source hidden by skip-worktree'
+git -C "$repo" update-index --no-skip-worktree example.txt
+git -C "$repo" restore example.txt
+git -C "$repo" config core.filemode false
+chmod +x "$repo/example.txt"
+expect_deny 'executable permission hidden by core.filemode false'
+chmod -x "$repo/example.txt"
+git -C "$repo" config core.filemode true
+expect_allow 'clean after adversarial Git index flags'
 original_head=$head
 head=not-a-git-sha
 expect_deny 'malformed source head'

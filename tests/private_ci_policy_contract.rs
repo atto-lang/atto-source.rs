@@ -4,6 +4,8 @@
 //! decision remain prerequisites for transferring private Git objects.
 const WORKFLOW: &str = include_str!("../.github/workflows/private-ci-policy.yml");
 const GUARD: &str = include_str!("../scripts/private-ci-export-policy-guard.sh");
+const PREFLIGHT: &str = include_str!("../scripts/private-ci-source-tree-preflight.sh");
+const PREFLIGHT_TESTS: &str = include_str!("../tests/private-ci-source-tree-preflight-test.sh");
 const ALLOWLIST: &str = include_str!("../.github/private-ci-approved-repositories.txt");
 const APPROVED_ENTRY: &str = "channelsiege/atto-ci 1458328077";
 
@@ -123,4 +125,22 @@ fn workflow_is_source_bound_and_invokes_the_external_guard() {
     assert!(!WORKFLOW.contains("pull_request_target:"));
     assert!(!WORKFLOW.contains("curl "));
     assert!(!WORKFLOW.contains("git push"));
+}
+
+#[test]
+fn source_preflight_rehashes_worktree_and_checks_lfs_at_any_size() {
+    assert!(PREFLIGHT.contains("git hash-object --no-filters --"));
+    assert!(PREFLIGHT.contains("git cat-file blob"));
+    assert!(PREFLIGHT.contains("head -c 42"));
+    assert!(!PREFLIGHT.contains("size <= 1024"));
+    for case in [
+        "oversized LFS-looking blob",
+        "normal large blob without LFS header",
+        "dirty source hidden by assume-unchanged",
+        "dirty source hidden by skip-worktree",
+        "executable permission hidden by core.filemode false",
+    ] {
+        assert!(PREFLIGHT_TESTS.contains(case), "missing preflight oracle: {case}");
+    }
+    assert!(WORKFLOW.contains("bash tests/private-ci-source-tree-preflight-test.sh"));
 }
