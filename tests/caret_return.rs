@@ -75,3 +75,37 @@ fn tuple_return_type_is_explicitly_unsupported_not_misparsed() {
     let err = compile(src).unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED_TYPE", "{err}");
 }
+
+
+#[test]
+fn void_early_returns_compile_in_both_if_families() {
+    // Both caret spellings lower to Return(None), including the explicit
+    // no-value marker. Braced if closes with '}' rather than 'fi'.
+    for src in [
+        "fnc stop() -> void { if true { ^; } } pub fnc main(): int { stop(); ^ 42; }",
+        "fnc stop() -> void { if true { ^ void; } } pub fnc main(): int { stop(); ^ 42; }",
+        "fnc stop() -> void { if true { ^ void } } pub fnc main(): int { stop(); ^ 42; }",
+        "fnc stop() -> void { do if true then ^ fi } pub fnc main(): int { stop(); ^ 42; }",
+        "fnc stop() -> void { do if true then ^ void fi } pub fnc main(): int { stop(); ^ 42; }",
+        "fnc stop() -> void { if true then ^ void fi } pub fnc main(): int { stop(); ^ 42; }",
+        "fnc stop() -> void { if false { ^ void; } } pub fnc main(): int { stop(); ^ 42; }",
+        "fnc stop() -> void { return void; } pub fnc main(): int { stop(); ^ 42; }",
+        "fnc stop() -> void { if true then if true { ^ void; } fi } pub fnc main(): int { stop(); ^ 42; }",
+    ] {
+        accepts(src);
+    }
+}
+
+#[test]
+fn void_early_return_is_not_a_value_or_a_nested_expression() {
+    for src in [
+        "pub fnc main(): int { ^ void; }",
+        "pub fnc main(): int { if true { ^ void; } ^ 42; }",
+        "pub fnc main(): int { do if true then ^ void fi ^ 42; }",
+        "pub fnc main(): int { return void; }",
+        "pub fnc main(): int { val v = void; ^ 42; }",
+        "fnc stop() -> void { ^ void + 1; } pub fnc main(): int { stop(); ^ 42; }",
+    ] {
+        assert!(compile(src).is_err(), "invalid void return/value compiled: {src}");
+    }
+}
