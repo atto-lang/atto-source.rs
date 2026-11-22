@@ -38,7 +38,11 @@ const work = mkdtempSync(join(tmpdir(), 'atto-rs-testing-'));
 const receipts = [];
 try {
   for (const [id, expression, expected] of cases) {
-    const source = library + '\npub fnc main(): int { return ' + expression + '; }\n';
+    // Import is resolved inside native attoc through its compiler-owned
+    // embed, not through concatenation or host filesystem fallback.
+    const source = 'import fnc equal_int, not_equal_int, greater_than_int, less_than_int, ' +
+      'in_range_int, combine_status from "std/testing_scalar";\n' +
+      'pub fnc main(): int { return ' + expression + '; }\n';
     const input = join(work, id + '.atto');
     const output = join(work, id + '.wasm');
     writeFileSync(input, source);
@@ -56,6 +60,27 @@ try {
       assert.equal(instance.exports.panic_code.value, 0, id + ': guest panicked');
     }
     receipts.push({id, source_sha256: sha256(source), wasm_sha256: sha256(binary), expected: String(expected), actual: String(actual), guest_executed: true});
+  }
+  const invalid = [
+    ['legacy-suffix','import fnc equal_int from "std/testing_scalar.ores"; pub fnc main():int{return equal_int(42,42);}'],
+    ['path-traversal','import fnc equal_int from "std/../testing_scalar"; pub fnc main():int{return equal_int(42,42);}'],
+    ['unknown-library','import fnc equal_int from "std/unknown"; pub fnc main():int{return equal_int(42,42);}'],
+    ['unknown-export','import fnc missing from "std/testing_scalar"; pub fnc main():int{return missing(42,42);}'],
+    ['duplicate-binding','import fnc equal_int as foo, not_equal_int as foo from "std/testing_scalar"; pub fnc main():int{return foo(42,42);}'],
+    ['collision','import fnc equal_int from "std/testing_scalar"; pub fnc equal_int(int x,int y):int{return 1;} pub fnc main():int{return 0;}'],
+    ['relative-file-without-loader','import fnc equal_int from "./stdlib/testing_scalar.atto"; pub fnc main():int{return equal_int(42,42);}'],
+    ['forged-internal-namespace','import fnc equal_int from "std/testing_scalar"; pub fnc main():int{return __atto_file_import_0.equal_int(42,42);}'],
+  ];
+  for(const [id,source] of invalid){
+    const input=join(work,'reject-'+id+'.atto');
+    const output=join(work,'reject-'+id+'.wasm');
+    writeFileSync(input,source);
+    const result=spawnSync(compiler,[input,'-o',output],{encoding:'utf8',timeout:30000,maxBuffer:1<<20});
+    assert.equal(result.error,undefined,id+': source compiler process did not execute');
+    assert.ok(result.status!==0&&result.status!==null,id+': unsupported import compiled');
+    assert.equal(existsSync(output),false,id+': rejected import published a guest artifact');
+    assert.ok(result.stderr.includes('E_'),id+': missing classified compiler diagnostic: '+result.stderr);
+    receipts.push({id,source_sha256:sha256(source),rejected:true,no_guest_artifact:true});
   }
   console.log(JSON.stringify({schema:'atto.testing-scalar.rs-guest.v1', library_sha256:sha256(library), compiler_sha256:sha256(readFileSync(compiler)), results:receipts}));
 } finally {
