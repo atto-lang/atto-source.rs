@@ -77,3 +77,56 @@ fn canonical_mut_formal_is_not_a_mutable_owned_argument_in_legacy_modules() {
     let err = crate::compile(source).expect_err("mut borrowed formal requires opt-in");
     assert_eq!(err.code, "E_PROFILE");
 }
+
+#[test]
+fn readonly_borrowed_getter_elides_call_without_copying_guest_handle() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub let int value = 42; end
+        fnc inspect(Parcel p): int { return p.value; }
+        pub fnc main(): int {
+            let parcel = new Parcel();
+            return ACCESS;
+        }
+    "#;
+    let implicit = source.replace("ACCESS", "inspect(parcel)");
+    let explicit = source.replace("ACCESS", "inspect(borrow! parcel)");
+    let direct = source.replace("ACCESS", "parcel.value");
+
+    let implicit_bytes = crate::compile(&implicit).expect("borrowed accessor compiles");
+    assert_eq!(implicit_bytes, crate::compile(&explicit).expect("explicit borrow"));
+    assert_eq!(implicit_bytes, crate::compile(&direct).expect("direct field read"),
+        "verified readonly getter must emit exactly the same Wasm as direct access");
+
+    let typed = typed(&implicit);
+    let main = typed.funcs.iter().find(|f| f.name == "main").expect("main");
+    assert!(main.locals.iter().all(|ty| *ty != Type::Class(0)),
+        "a borrowed call must not allocate a second class-handle local");
+}
+
+#[test]
+fn borrow_getter_elision_rejects_effects_and_mutable_formals() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub mut int value = 42; end
+        fnc inspect_effect(Parcel p): int {
+            stdio.print(1);
+            return p.value;
+        }
+        fnc update(mut Parcel p): int {
+            p.value = 41;
+            return p.value;
+        }
+        pub fnc main(): int {
+            let parcel = new Parcel();
+            return ACCESS;
+        }
+    "#;
+    let effect_call = source.replace("ACCESS", "inspect_effect(parcel)");
+    let effect_direct = source.replace("ACCESS", "parcel.value");
+    assert_ne!(crate::compile(&effect_call).expect("effectful call"),
+        crate::compile(&effect_direct).expect("direct field"),
+        "observable callee effects cannot be optimized away");
+    let update_call = source.replace("ACCESS", "update(mut parcel)");
+    assert_ne!(crate::compile(&update_call).expect("mutable call"),
+        crate::compile(&effect_direct).expect("direct read"),
+        "exclusive mutable callee may write; it must not be treated as readonly");
+}
