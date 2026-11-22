@@ -41,6 +41,10 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Compile and execute Rust-owned .atto scalar assertions in real Wasm guests
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/testing-scalar-atto-guest.mjs
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc
