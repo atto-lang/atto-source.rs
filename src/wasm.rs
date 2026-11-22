@@ -1301,9 +1301,10 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 /// A mutable loan, a local, a control-flow path, a hook, a checked-state
 /// access, or any effectful call falls back to the original function ABI.
 fn verified_borrow_getter(f: &TFunc) -> Option<(Type, Type, u32)> {
-    let [owner_ty @ Type::Class(_)] = f.params.as_slice() else {
+    let [Type::Class(class_index)] = f.params.as_slice() else {
         return None;
     };
+    let owner_ty = Type::Class(*class_index);
     if !matches!(f.param_ownership.as_slice(), [ParamOwnership::BorrowRead])
         || !f.locals.is_empty()
     {
@@ -1315,13 +1316,13 @@ fn verified_borrow_getter(f: &TFunc) -> Option<(Type, Type, u32)> {
         return None;
     };
     if !matches!(&obj.e, TExpr::Local(0))
-        || obj.ty != *owner_ty
+        || obj.ty != owner_ty
         || !matches!(*ty, Type::Int | Type::Bool | Type::Float)
         || f.ret != *ty
     {
         return None;
     }
-    Some((*owner_ty, *ty, *offset))
+    Some((owner_ty, *ty, *offset))
 }
 
 /// Do not trust an accessor proof without checking its *current* call-site
@@ -1736,9 +1737,10 @@ mod borrow_getter_elision_proof_tests {
         let mut protected_field = good.clone();
         if let TStmt::Return(Some(TE { e, .. })) = &mut protected_field.body[0] {
             if let TExpr::FieldGet { obj, offset } = e {
-                *e = TExpr::StateFieldRead {
+                let replacement = TExpr::StateFieldRead {
                     obj: obj.clone(), offset: *offset,
                 };
+                *e = replacement;
             }
         }
         assert_eq!(verified_borrow_getter(&protected_field), None);
