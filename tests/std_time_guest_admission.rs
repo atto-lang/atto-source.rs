@@ -30,5 +30,6 @@ fn scalar_guest_compilation_remains_available_as_positive_control() {
         "pub fnc main(): int { return 42; }",
         Path::new("time_positive_control.atto"))
         .expect("scalar compiler must still emit a real Wasm artifact");
-    assert!(wasm.len() >= 8 && &wasm[..4] == b"\\0asm");
+    assert!(wasm.len() >= 8);
+    assert_eq!(&wasm[..4], &[0x00, 0x61, 0x73, 0x6d]);
 }
