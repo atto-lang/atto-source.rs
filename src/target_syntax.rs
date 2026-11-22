@@ -55,6 +55,9 @@ pub struct TargetHeaders {
     pub const_imports: Vec<String>,
     /// File-scoped static `define const` declaration names (parse-only).
     pub constants: Vec<String>,
+    /// Recognized direct std.env/os startup-read initializer shapes. This is
+    /// *syntax-only* provenance; linker must validate trusted symbol identity.
+    pub env_const_reads: Vec<String>,
     pub actors: Vec<String>,
     /// Non-instantiating class forward declarations.
     pub class_forwards: Vec<String>,
@@ -614,6 +617,30 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 }
                 if c.i == start { return Err(c.err("E_SYNTAX", "empty const initializer")); }
                 c.expect(&Tok::Semi, "expected ';' after const declaration")?;
+                let init = &toks[start..c.i - 1];
+                // Observe exact direct environment-read spelling without granting
+                // arbitrary user-defined read_env calls a privileged effect.
+                // Semantic lookup must still authenticate the std.env symbol.
+                let word_at = |i: usize, expected: &str| {
+                    matches!(init.get(i).map(|t| &t.tok), Some(Tok::Ident(s)) if s == expected)
+                };
+                let dot_at = |i: usize| {
+                    init.get(i).is_some_and(|t| t.tok == Tok::Dot)
+                };
+                let canonical = word_at(0, "std") && dot_at(1) && word_at(2, "env")
+                    && dot_at(3) && word_at(4, "read_env");
+                let legacy = word_at(0, "os") && dot_at(1) && word_at(2, "read_env");
+                if canonical || legacy {
+                    let (open, key, close) = if canonical { (5, 6, 7) } else { (3, 4, 5) };
+                    if init.len() != close + 1
+                        || !init.get(open).is_some_and(|t| t.tok == Tok::LParen)
+                        || !init.get(key).is_some_and(|t| matches!(&t.tok, Tok::Str(_) | Tok::Ident(_)))
+                        || !init.get(close).is_some_and(|t| t.tok == Tok::RParen) {
+                        return Err(Diagnostic::new(pos, "E_CONST",
+                            "static read_env requires exactly one literal or constexpr-name key"));
+                    }
+                    out.env_const_reads.push(name.clone());
+                }
                 if out.constants.contains(&name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
                         format!("duplicate file constant '{name}'")));
