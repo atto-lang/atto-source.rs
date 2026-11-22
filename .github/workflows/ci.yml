@@ -46,6 +46,13 @@ jobs:
           # Native attoc compiles checked .atto; Node only instantiates its guest.
           cargo build --locked --bin attoc
           node tests/node-v2-pipe-guest.mjs
+      - name: Execute native-compiled std/channel guests with deterministic rendezvous timeouts
+        run: |
+          # Compile Atto .atto -> WebAssembly; run each guest in a timed
+          # child process, asserting exact stdout, exit and guest panic code.
+          # A deadlocked cap=0 producer/reader must FAIL rather than hang CI.
+          node --check tests/node-v2-channel-guest.mjs
+          node tests/node-v2-channel-guest.mjs
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc
