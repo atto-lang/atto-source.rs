@@ -151,7 +151,7 @@ fn is_disallowed_reference_context(tokens: &[Token], i: usize) -> Option<&'stati
     if after.is_some_and(|t| matches!(t.tok, Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus))
         || before.is_some_and(|t| matches!(&t.tok, Tok::Ident(s)
             if matches!(s.as_str(), "mut" | "borrow" | "take" | "drop"))) {
-        return Some("E_CONST_ASSIGN");
+        return Some("E_ASSIGN_CONST");
     }
     if after.is_some_and(|t| t.tok == Tok::LParen) {
         return Some("E_IMPORT_KIND");
