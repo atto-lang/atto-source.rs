@@ -103,13 +103,9 @@ pub fn resolve(name: &str, profile: Profile) -> Option<&'static Binding> {
 /// declarations, regardless of a file's lexical import order. Additional
 /// convenience prelude names are intentionally not all globally reserved.
 pub fn protected_identity(name: &str) -> bool {
-    matches!(
-        name,
-        "Option" | "Result" | "Array" | "FixedArray" | "List"
-            | "FixedList" | "Vector" | "Slice" | "Tuple"
-            | "Map" | "Set" | "ReadLoan" | "WriteLoan"
-            | "Some" | "None" | "Ok" | "Err"
-    )
+    TYPE_INFO.iter().any(|info| {
+        info.name == name && (info.kind == Kind::Constructor || info.scope != Scope::Explicit)
+    }) || matches!(name, "FixedList" | "Vector" | "ReadLoan" | "WriteLoan")
 }
 
 /// A scoped prelude name recognized by source semantics but not necessarily
