@@ -1,4 +1,6 @@
 import {createChannelIntGuestV1,verifyChannelIntGuestV1,CHANNEL_INT_V1_IMPORTS} from '/runtime/browser/channel_int_guest_v1.mjs';
+import {createWorkerControlLoop} from '/runtime/browser/worker-control-loop-v1.mjs';
+import {createJspiControlBridgeV1} from '/runtime/browser/wasm-jspi-control-bridge-v1.mjs';
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
@@ -12,7 +14,7 @@ function javaDouble(x){
   return (m.includes('.')?m:m+'.0')+'E'+e.replace('+','');
 }
 self.onmessage=async ({data})=>{
-  let channelRuntime;
+  let channelRuntime,cooperateBridge,controlLoop;
   try{
     const bytes=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
     if(!WebAssembly.validate(bytes))throw new Error('invalid compiler wasm');
@@ -52,12 +54,17 @@ self.onmessage=async ({data})=>{
     };
     const jobs=new Map();let nextJob=1,barrierWaiters=[],cooperativeYields=0;
     if(useAsync){
-      // Never shortcut an immediate await; release the guest Wasm stack and
-      // reschedule on a fresh Worker event-loop turn instead of a microtask.
-      atto.cooperate=new WebAssembly.Suspending(async ()=>{
-        await new Promise(resolve=>setTimeout(resolve,0));
-        cooperativeYields++;
-      });
+      // atto.async/2 cooperative await enters the bounded synchronous-turn
+      // scheduler, which *only* resolves the JSPI Promise at a later turn.
+      // The Wasm stack resumes in a JSPI microtask, never inside DATA/CONTROL
+      // dispatch. This is deliberately not a portable task_resume ABI.
+      if(WebAssembly.Module.imports(guest).some(imp=>imp.module==='atto'&&imp.name==='cooperate')){
+        controlLoop=createWorkerControlLoop({maxOwners:1,maxSuspended:64,maxReady:64,maxControl:4});
+        cooperateBridge=createJspiControlBridgeV1({
+          loop:controlLoop,owner:'browser-guest',epoch:1,maxPending:64
+        });
+        atto.cooperate=cooperateBridge.makeCooperateImport(guest);
+      }
       atto.sleep_ms=new WebAssembly.Suspending(async ms=>{
         if(ms<0n||ms>1000n)throw new Error('invalid sleep duration');
         await new Promise(resolve=>setTimeout(resolve,Number(ms)));
@@ -106,12 +113,15 @@ self.onmessage=async ({data})=>{
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':'trap: '+e.message;
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
-    self.postMessage({ok:true,value:String(value),stdout,cooperativeYields});
+    cooperativeYields=cooperateBridge?.stats.resolved??0;
+    self.postMessage({ok:true,value:String(value),stdout,cooperativeYields,
+      schedulerDispatches:controlLoop?.stats.completed??0});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
   finally {
     // A guest can return/throw before awaiting a registered read. Dispose
     // synchronously on every exit, including panic and host error, rather
     // than leaving unclaimed tickets alive until garbage collection.
+    cooperateBridge?.retire();
     channelRuntime?.host.dispose();
   }
 };
