@@ -62,6 +62,8 @@ const invalidSigned = expr =>
 
 const pass = [
   ['signed-negative-int', signedInt('-42')],
+  ['signed-spaced-unary-minus', signedInt('- 42')],
+  ['signed-comment-separated-minus', signedInt('-/* comment */42')],
   ['signed-not-equal-positive-42', signedMismatch],
   ['signed-negative-zero', signedInt('-0')],
   ['signed-i64-min', signedInt('-9223372036854775808')],
@@ -85,6 +87,8 @@ const fail = [
   ['signed-double-minus-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('--42')],
   ['signed-bool-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('-true')],
   ['signed-i64-underflow', 'E_INTEGER_RANGE', invalidSigned('-9223372036854775809')],
+  ['signed-mutable-any-rejected', 'E_UNSUPPORTED_TYPE',
+    'fnc classify(Any value): int { return 42; } pub fnc main(): int { let value: Any = -42; return classify(value); }'],
   ['missing-capture-qualifier', 'E_SYNTAX', program('match v over on is int as n -> { return n; } on _ -> { return 0; } end')],
   ['mutable-capture-not-proven', 'E_SYNTAX', program('match v over on is int as let n -> { return n; } on _ -> { return 0; } end')],
   ['unknown-runtime-type', 'E_UNSUPPORTED_TYPE', program('match v over on is Widget -> { return 0; } on _ -> { return 1; } end')],
