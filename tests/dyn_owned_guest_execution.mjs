@@ -44,6 +44,8 @@ const negatives = [
   ['untyped checked as', source.replace('val Dyn<Printable> erased = Dyn<Printable>(take! concrete)', 'val erased = (take! concrete) as Dyn<Printable>'), 'E_DYN_OWNERSHIP'],
   ['mismatched checked as', source.replace('Dyn<Printable>(take! concrete)', '(take! concrete) as Dyn<Missing>'), 'E_DYN_INTERFACE'],
   ['cast use after move', source.replace('Dyn<Printable>(take! concrete)', '(take! concrete) as Dyn<Printable>').replace('stdio.println(display(erased));', 'stdio.println(concrete.describe());'), 'E_MOVED'],
+  ['contextual suffix cast', source.replace('Dyn<Printable>(take! concrete)', 'take! concrete as Greeting'), 'E_DYN_OWNERSHIP'],
+  ['constructor suffix cast', source.replace('Dyn<Printable>(take! concrete)', 'Dyn<Printable>(take! concrete) as Greeting'), 'E_DYN_OWNERSHIP'],
   ['missing vtable', source.replace('fnc display(', [
     'define class Farewell implements Printable as',
     '  pub describe(): string { return "goodbye"; }',
