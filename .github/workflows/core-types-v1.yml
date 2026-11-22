@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'core/types.atto'
+      - 'src/import_link.rs'
+      - 'tests/core_types_namespace_import.rs'
       - 'tests/core-types-source.test.mjs'
       - 'tests/core-types-matrix-source.test.mjs'
       - 'tests/core-types-wasm-guest.mjs'
@@ -48,6 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          cargo test --locked --test core_types_namespace_import
           cargo build --locked --bin attoc
           test -x target/debug/attoc
       - name: Execute two compiled Wasm guests and reject six negative compilations

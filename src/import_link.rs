@@ -130,6 +130,24 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
     Ok((result, toks[i..].to_vec()))
 }
 
+/// Preserve file namespace identity validation, then expose only direct functions
+/// to the one-hop imported-function linker. A source namespace is not a module,
+/// and may never be smuggled into the generated nested module body.
+/// Validate the WHOLE token stream before removing the header: duplicate/late
+/// namespace declarations must still fail with their original diagnostic.
+fn imported_function_tokens(tokens: &[Token], logical: &Path) -> R<Vec<Token>> {
+    let normalized = crate::namespace::normalize(tokens, Some(logical))?;
+    if !word(normalized.first(), "use") || !word(normalized.get(1), "namespace") {
+        return Ok(normalized);
+    }
+    let end = normalized.iter().position(|t| t.tok == Tok::Semi).ok_or_else(|| {
+        diagnostic(normalized[0].pos, "E_SYNTAX", "unterminated namespace header")
+    })?;
+    // Leave EOF intact, but never emit a file-level declaration inside
+    // the generated private module.
+    Ok(normalized[end + 1..].to_vec())
+}
+
 fn functions(tokens: &[Token]) -> R<(BTreeMap<String, bool>, BTreeSet<usize>)> {
     let mut funcs = BTreeMap::new();
     let mut heads = BTreeSet::new();
@@ -224,8 +242,9 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             if text.len() > crate::SOURCE_CAP {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "imported file exceeds 64 KiB"));
             }
-            let toks = lexer::lex(&text)?;
-            reject_forged_names(&toks)?;
+            let lexed = lexer::lex(&text)?;
+            reject_forged_names(&lexed)?;
+            let toks = imported_function_tokens(&lexed, &imp.path)?;
             let (funcs, heads) = functions(&toks)?;
             let module = format!("{RESERVED}{}", units.len());
             let mut rewritten = Vec::new();
