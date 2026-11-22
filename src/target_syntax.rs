@@ -722,6 +722,17 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
         }
         decls += 1;
     }
+    // Constant headers occupy the same file namespace as callables and nominals.
+    // Import aliases are checked separately below against all declaration kinds.
+    for name in &out.constants {
+        if function_names.contains(name) || out.actors.contains(name)
+            || out.classes.contains(name) || out.class_forwards.contains(name)
+            || out.struct_forwards.contains(name)
+            || out.definitions.iter().any(|decl| &decl.name == name) {
+            return Err(Diagnostic::new(Pos::default(), "E_DUPLICATE",
+                format!("file constant '{name}' conflicts with another declaration")));
+        }
+    }
     // Imports are local static bindings, never permissive aliases that can
     // shadow a declared nominal owner or a file-level callable. Detect
     // collisions independent of declaration order, before any lowering.
