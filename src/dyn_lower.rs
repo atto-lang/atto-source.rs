@@ -157,6 +157,38 @@ fn dyn_type<'a>(t: &'a [Token], i: usize) -> Option<&'a str> {
     else { None }
 }
 
+/// Recognize only an explicitly typed local erasure:
+///   val Dyn<I> erased = (take! source) as Dyn<I>;
+///   val Dyn<I> erased = take! source as Dyn<I>;
+/// No arbitrary casts, untyped destinations, borrowed sources, nested
+/// erasures, or implicit conversion at a call site are admitted in v1.
+/// Return the matching declaration's Dyn type token index on success.
+fn owned_as_binder(t: &[Token], cast_at: usize, interface: &str) -> Option<usize> {
+    if cast_at == 0 || !word(t, cast_at - 1, "as")
+        || !is(t, cast_at + 4, Tok::Semi) { return None; }
+    let binder = if cast_at >= 13
+        && is(t, cast_at - 2, Tok::RParen)
+        && ident(t, cast_at - 3).is_some()
+        && is(t, cast_at - 4, Tok::Bang)
+        && word(t, cast_at - 5, "take")
+        && is(t, cast_at - 6, Tok::LParen)
+        && is(t, cast_at - 7, Tok::Assign)
+        && (word(t, cast_at - 13, "val") || word(t, cast_at - 13, "let")) {
+        Some(cast_at - 12)
+    } else if cast_at >= 11
+        && ident(t, cast_at - 2).is_some()
+        && is(t, cast_at - 3, Tok::Bang)
+        && word(t, cast_at - 4, "take")
+        && is(t, cast_at - 5, Tok::Assign)
+        && (word(t, cast_at - 11, "val") || word(t, cast_at - 11, "let")) {
+        Some(cast_at - 10)
+    } else { None }?;
+    if dyn_type(t, binder) != Some(interface)
+        || ident(t, binder + 4).is_none()
+        || !is(t, binder + 5, Tok::Assign) { return None; }
+    Some(binder)
+}
+
 pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     if !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s) if s == "Dyn")) {
         return Ok(t);
@@ -183,8 +215,22 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     let mut binders = BTreeMap::<String, (String, usize)>::new();
     let mut funcs = BTreeMap::<String, String>::new();
     let mut constructor_sites = BTreeSet::new();
+    let mut cast_sites = BTreeSet::new();
+    // Validate each 'as Dyn<I>' before erasing the interface tokens. The
+    // source spelling is checked, not reconstructed from a concrete class.
+    for i in 0..t.len() {
+        if !word(&t, i, "as") || dyn_type(&t, i + 1).is_none() { continue; }
+        let cast = i + 1;
+        let interface = dyn_type(&t, cast).unwrap_or("");
+        if owned_as_binder(&t, cast, interface).is_none() {
+            return Err(err(t[i].pos, "E_DYN_OWNERSHIP",
+                "as Dyn<I> requires a matching typed Dyn<I> local and (take! named_owner)"));
+        }
+        cast_sites.insert(cast);
+    }
     for i in 0..t.len() {
         let Some(interface) = dyn_type(&t, i) else { continue };
+        if cast_sites.contains(&i) { continue; }
         if is(&t, i + 4, Tok::LParen) {
             // Constructor syntax may be reduced ONLY to an explicit checked
             // take! of a named owner. The regular checker validates its class
@@ -229,9 +275,11 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 && is(&t, i + 10, Tok::LParen) && word(&t, i + 11, "take")
                 && is(&t, i + 12, Tok::Bang) && ident(&t, i + 13).is_some()
                 && is(&t, i + 14, Tok::RParen));
-            if !direct_take && !constructed {
+            let checked_as = cast_sites.contains(&(i + 12))
+                || cast_sites.contains(&(i + 10));
+            if !direct_take && !constructed && !checked_as {
                 return Err(err(t[i].pos, "E_DYN_OWNERSHIP",
-                    "Dyn local must be initialized by take! owner or Dyn<I>(take! owner)"));
+                    "Dyn local requires take! owner, Dyn<I>(take! owner), or (take! owner) as Dyn<I>"));
             }
         }
         if binders.insert(var.to_owned(), (interface.to_owned(), i + 4)).is_some() {
@@ -284,7 +332,11 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     let mut out = Vec::with_capacity(t.len());
     let mut i = 0;
     while i < t.len() {
-        if let Some(interface) = dyn_type(&t, i) {
+        if word(&t, i, "as") && cast_sites.contains(&(i + 1)) {
+            // Keep the original checked take! expression (and optional
+            // parentheses), but remove only the proven redundant as Dyn<I>.
+            i += 5;
+        } else if let Some(interface) = dyn_type(&t, i) {
             if !constructor_sites.contains(&i) {
                 out.push(Token { pos: t[i].pos,
                     tok: Tok::Ident(lowered_types[interface].clone()) });
