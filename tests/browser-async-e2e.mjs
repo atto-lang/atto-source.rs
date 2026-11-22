@@ -336,8 +336,8 @@ try{
   // manifest; the nested actor Worker authenticates per-request replies.
   await evaluate('window.__attoActorFutureIntAot=true');
   const actorFutureSource='pub susp fnc main():int { '+
-    'val a:ActorFuture<int>=actor_future_int(7,41); await a; '+
-    'val b:ActorFuture<int>=actor_future_int(7,42); return await b; }';
+    'val a:ActorFuture<int>=actor_future_int(7,41); await take! a; '+
+    'val b:ActorFuture<int>=actor_future_int(7,42); return await take! b; }';
   assert.equal(await run(actorFutureSource,'main() -> 42'),'main() -> 42');
   assert.equal(await evaluate('window.__attoActorFuturePeak'),16);
   assert.equal(await evaluate('window.__attoActorFutureRequests'),32);
@@ -346,7 +346,7 @@ try{
   assert.equal(await evaluate('window.__attoActorFutureNotices'),1);
   assert.match(await run(
     'pub susp fnc main():int { val r:ActorFuture<int>=actor_future_int(7,41); '+
-      'await r; return await r; }','E_MOVED'),/E_MOVED/,
+      'await take! r; return await r; }','E_MOVED'),/E_MOVED/,
     'ActorFuture<int> cannot be awaited twice');
   await evaluate('window.__attoActorFutureIntAot=false');
   console.log('PASS ActorFuture<int>: Chromium wasm32 compiler -> full-AOT actor futures -> nested Worker 32 authenticated replies');

@@ -2,7 +2,7 @@
 // fenced JS runtime -> genuine Node actor Worker and per-task MessagePorts.
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,access,rm} from 'node:fs/promises';
 import {Worker,MessageChannel} from 'node:worker_threads';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -12,9 +12,9 @@ import {createActorFutureHostV1,verifyActorFutureGuestV1}
 
 const source=`pub susp fnc main():int {
   val first:ActorFuture<int>=actor_future_int(7,41);
-  await first;
+  await take! first;
   val second:ActorFuture<int>=actor_future_int(7,42);
-  return await second;
+  return await take! second;
 }`;
 const temp=await mkdtemp(join(tmpdir(),'atto-actor-future-'));
 try {
@@ -109,10 +109,13 @@ try {
   const moved=join(temp,'moved.atto');
   await writeFile(moved,`pub susp fnc main():int {
     val r:ActorFuture<int>=actor_future_int(7,41);
-    await r;
+    await take! r;
     return await r;
   }`);
+  const negativeOut=join(temp,'invalid-moved.wasm');
   assert.throws(()=>execFileSync(process.env.ATTOC||'target/release/attoc',
-    ['--actor-future-int-aot',moved,'-o',out],{stdio:'pipe',timeout:30000}));
+    ['--actor-future-int-aot',moved,'-o',negativeOut],{stdio:'pipe',timeout:30000}));
+  await assert.rejects(access(negativeOut),{code:'ENOENT'},
+    'a rejected affine actor reply may never emit a guest artifact');
   console.log('PASS ActorFuture<int>: non-opt-in targets and double-await fail closed');
 }finally {await rm(temp,{recursive:true,force:true});}
