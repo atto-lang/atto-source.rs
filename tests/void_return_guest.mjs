@@ -50,7 +50,24 @@ const goodBodies = [
   'if true { if true then ^ void fi }',
   'if false { ^ void; }',
 ];
+const endStyleFunctions = [
+  'fnc process_explicit() -> void\n    guard false else ^ void end\nend',
+  'fnc process_explicit() -> void\n    guard false { ^ void }\nend',
+  'fnc process_explicit() -> void\n    guard true else ^ void end\nend',
+  'fnc process_explicit() -> void\n    guard true { ^ void }\nend',
+];
+const goodSources = [
+  ...goodBodies.map(body =>
+    'fnc early_exit() -> void { ' + body +
+    ' } pub fnc main(): int { early_exit(); ^ 42; }\n'),
+  ...endStyleFunctions.map(fn =>
+    fn + '\npub fnc main(): int { process_explicit(); ^ 42; }\n'),
+];
 const badSources = [
+  'fnc process_explicit() -> int\n    guard false else ^ void end\nend\npub fnc main(): int { ^ process_explicit(); }',
+  'fnc process_explicit() -> int\n    guard false { ^ void }\nend\npub fnc main(): int { ^ process_explicit(); }',
+  'fnc process_explicit() -> void\n    guard false else val x = 1; end\nend\npub fnc main(): int { process_explicit(); ^ 42; }',
+  'fnc process_explicit() -> void\n    guard false { val x = 1; }\nend\npub fnc main(): int { process_explicit(); ^ 42; }',
   'pub fnc main(): int { ^ void; }',
   'pub fnc main(): int { return void; }',
   'pub fnc main(): int { do if true then ^ void fi ^ 42; }',
@@ -60,24 +77,22 @@ const badSources = [
 ];
 const dir = await mkdtemp(join(tmpdir(), 'atto-void-caret-'));
 try {
-  for (const [i, body] of goodBodies.entries()) {
-    const source = 'fnc early_exit() -> void { ' + body +
-      ' } pub fnc main(): int { early_exit(); ^ 42; }\n';
+  for (const [i, source] of goodSources.entries()) {
     const fromBrowser = browserCompile(source);
-    assert.equal(fromBrowser.ok, true, fromBrowser.error || body);
+    assert.equal(fromBrowser.ok, true, fromBrowser.error || source);
     const src = join(dir, 'pass-' + i + '.atto');
     const out = join(dir, 'pass-' + i + '.wasm');
     await writeFile(src, source);
     const native = spawnSync(attoc, [src, '-o', out], { encoding: 'utf8', timeout: 30000 });
-    assert.equal(native.status, 0, body + ': ' + native.stderr);
+    assert.equal(native.status, 0, source + ': ' + native.stderr);
     const nativeBytes = await readFile(out);
     assert.deepEqual(Buffer.from(fromBrowser.guest), nativeBytes,
-      body + ': native/wasm32 compiler output divergence');
+      source + ': native/wasm32 compiler output divergence');
     const wasm = new WebAssembly.Module(nativeBytes);
-    assert.deepEqual(WebAssembly.Module.imports(wasm), [], body + ': unexpected guest import');
+    assert.deepEqual(WebAssembly.Module.imports(wasm), [], source + ': unexpected guest import');
     const guest = new WebAssembly.Instance(wasm, { atto: {} });
-    assert.equal(guest.exports.main(), 42n, body + ': wrong guest return');
-    assert.equal(guest.exports.panic_code.value, 0, body + ': guest panic');
+    assert.equal(guest.exports.main(), 42n, source + ': wrong guest return');
+    assert.equal(guest.exports.panic_code.value, 0, source + ': guest panic');
   }
   for (const [i, source] of badSources.entries()) {
     const fromBrowser = browserCompile(source + '\n');
@@ -90,7 +105,7 @@ try {
     await assert.rejects(readFile(out), { code: 'ENOENT' },
       source + ': rejected compiler input left an executable artifact');
   }
-  console.log('PASS void returns:', goodBodies.length, 'native/browser Wasm guest byte parity + execution,',
+  console.log('PASS void returns:', goodSources.length, 'native/browser Wasm guest byte parity + execution,',
     badSources.length, 'double-backend no-artifact rejections');
 } finally {
   await rm(dir, { recursive: true, force: true });
