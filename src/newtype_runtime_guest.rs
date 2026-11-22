@@ -305,7 +305,7 @@ fn helper(
     ));
     Ok(())
 }
-fn arm(c: &mut Cur<'_>, variant: &str, nominal: &str) -> R<String> {
+fn arm(c: &mut Cur<'_>, variant: &str, nominal: &str, expression: bool, last: bool) -> R<String> {
     c.require_word("on")?;
     c.require_word(variant)?;
     c.require(Tok::LParen)?;
@@ -321,8 +321,10 @@ fn arm(c: &mut Cur<'_>, variant: &str, nominal: &str) -> R<String> {
     };
     c.require(Tok::RParen)?;
     c.require(Tok::Arrow)?;
-    c.require(Tok::LBrace)?;
-    c.require_word("return")?;
+    if !expression {
+        c.require(Tok::LBrace)?;
+        c.require_word("return")?;
+    }
     let result = if matches!(c.tok(0), Some(Tok::Int(_)) | Some(Tok::Minus)) {
         integer(c)?.to_string()
     } else {
@@ -339,8 +341,16 @@ fn arm(c: &mut Cur<'_>, variant: &str, nominal: &str) -> R<String> {
         c.require(Tok::RParen)?;
         bind.clone()
     };
-    c.require(Tok::Semi)?;
-    c.require(Tok::RBrace)?;
+    if expression {
+        if last {
+            c.eat(Tok::Comma);
+        } else {
+            c.require(Tok::Comma)?;
+        }
+    } else {
+        c.require(Tok::Semi)?;
+        c.require(Tok::RBrace)?;
+    }
     Ok(format!("on {variant}({bind}) -> {{ return {result}; }}\n"))
 }
 fn main_body(
@@ -375,8 +385,8 @@ fn main_body(
                 lower: int_arg(c, &vars)?,
             },
             Ty::Result { .. } => checked_expr(c, types, &vars, helpers)?,
-            Ty::Nominal(_) => {
-                return Err(c.err("E_UNSUPPORTED", "unwrapped nominal local is not a result"))
+            Ty::Nominal(_) | Ty::Error(_) => {
+                return Err(c.err("E_UNSUPPORTED", "unwrapped nominal/error local requires owned runtime layout"))
             }
         };
         same(c, &ty, &init.ty)?;
@@ -387,6 +397,7 @@ fn main_body(
         lowered.push_str(&format!("val {name}: {repr} = {};\n", init.lower));
         vars.insert(name, ty);
     }
+    let expression_match = c.eat_word("return");
     c.require_word("match")?;
     let subject = c.name()?;
     let type_of_subject = vars.get(&subject).ok_or_else(|| {
@@ -404,8 +415,8 @@ fn main_body(
         Some("Err") => ("Err", "Ok"),
         _ => return Err(c.err("E_MATCH", "match must cover Ok and Err")),
     };
-    let a = arm(c, first, nominal)?;
-    let b = arm(c, second, nominal)?;
+    let a = arm(c, first, nominal, expression_match, false)?;
+    let b = arm(c, second, nominal, expression_match, true)?;
     c.require_word("end")?;
     c.eat(Tok::Semi);
     c.require(Tok::RBrace)?;
