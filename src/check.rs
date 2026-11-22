@@ -3551,7 +3551,7 @@ impl<'a> FnCx<'a> {
     /// Neither Null nor a bare payload implicitly converts to an ADT.
     fn consume_expected(&mut self, e: &Expr, want: Type) -> R<TE> {
         let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
-            ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
+            ExprKind::Call(name, args) if crate::prelude::core_constructor(name) && name != "None" => {
                 if args.len() != 1 {
                     return Err(Diagnostic::new(e.pos, "E_ARITY",
                         format!("{name} requires one payload argument, got {}", args.len())));
@@ -4277,7 +4277,7 @@ impl<'a> FnCx<'a> {
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) | ExprKind::Ascribe(..) => unreachable!("handled by expr"),
-            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
+            ExprKind::Call(name, _) if crate::prelude::core_constructor(name) =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::StateRead(field) => {
