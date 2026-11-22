@@ -106,3 +106,46 @@ fn earlier_nonreturn_exit_cannot_be_hidden_by_trailing_return() {
         }
     }
 }
+
+
+#[test]
+fn exact_void_guard_examples_compile_in_keyword_ended_callable() {
+    for function in [
+        "fnc process_explicit() -> void\n    guard false else ^ void end\nend",
+        "fnc process_explicit() -> void\n    guard false { ^ void }\nend",
+        "fnc process_explicit() -> void\n    guard false else return void end\nend",
+        "fnc process_explicit() -> void\n    guard false { ^ }\nend",
+        "fnc process_explicit() -> void\n    guard true else ^ void end\nend",
+        "fnc process_explicit() -> void\n    guard true { ^ void }\nend",
+    ] {
+        accepted(&format!(
+            "{function}\npub fnc main(): int {{ process_explicit(); return 42; }}"
+        ));
+    }
+}
+
+#[test]
+fn void_guard_marker_cannot_return_from_nonvoid_callable() {
+    for failure in [
+        "guard false else ^ void end",
+        "guard false { ^ void }",
+    ] {
+        let source = format!(
+            "fnc process_explicit() -> int\n    {failure}\nend\npub fnc main(): int {{ return process_explicit(); }}"
+        );
+        rejected(&source, "E_RETURN");
+    }
+}
+
+#[test]
+fn void_guard_branches_require_termination() {
+    for failure in [
+        "guard false else val x = 1; end",
+        "guard false { val x = 1; }",
+    ] {
+        let source = format!(
+            "fnc process_explicit() -> void\n    {failure}\nend\npub fnc main(): int {{ process_explicit(); return 42; }}"
+        );
+        rejected(&source, "E_GUARD");
+    }
+}
