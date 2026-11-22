@@ -4,11 +4,14 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (input, output) = match args.as_slice() {
+    let (portable_v4, rest) = if args.first().is_some_and(|x| x=="--portable-v4") {
+        (true,&args[1..])
+    } else { (false,&args[..]) };
+    let (input, output) = match rest {
         [i] => (i.clone(), None),
         [i, o, out] if o == "-o" => (i.clone(), Some(out.clone())),
         _ => {
-            eprintln!("usage: attoc <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--portable-v4] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -19,7 +22,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match atto_compiler::compile(&source) {
+    let result=if portable_v4 {
+        atto_compiler::compile_portable_v4(&source)
+    } else { atto_compiler::compile(&source) };
+    match result {
         Ok(bytes) => {
             if let Some(o) = output {
                 if std::fs::write(&o, &bytes).is_err() {
