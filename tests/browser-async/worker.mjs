@@ -3,6 +3,8 @@ import {createWorkerControlLoop} from '/runtime/browser/worker-control-loop-v1.m
 import {createPortableTaskHostV3} from '/runtime/browser/portable-task-host-v3.mjs';
 import {createPortableTaskArenaHostV4,verifyPortableTaskGuestV4}
   from '/runtime/browser/portable-task-host-v4.mjs';
+import {createPortableTaskHostV5,verifyPortableTaskGuestV5}
+  from '/runtime/browser/portable-task-host-v5.mjs';
 import {createJspiControlBridgeV1} from '/runtime/browser/wasm-jspi-control-bridge-v1.mjs';
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
@@ -27,7 +29,8 @@ self.onmessage=async ({data})=>{
     const encoded=new TextEncoder().encode(data.source);
     if(encoded.length>api.input_capacity())throw new Error('source too big');
     new Uint8Array(api.memory.buffer,api.input_ptr(),encoded.length).set(encoded);
-    if((data.portableV4===true?api.compile_v4(encoded.length):api.compile(encoded.length))!==0){
+    if((data.portableV5===true?api.compile_v5(encoded.length):
+      data.portableV4===true?api.compile_v4(encoded.length):api.compile(encoded.length))!==0){
       if(api.result_length()!==0)throw new Error('compiler emitted on rejection');
       const mem=new Uint8Array(api.memory.buffer);const start=api.error_ptr();let end=start;
       while(end<mem.length&&mem[end]&&end-start<256)end++;
@@ -54,6 +57,55 @@ self.onmessage=async ({data})=>{
       self.postMessage({ok:true,value:String(result),stdout:'',
         portableV3:true,portableTurns:host.stats.turns,
         portableResumes:host.stats.resumes,portableCleanups:host.stats.cleanups});
+      return;
+    }
+    if(data.portableV5===true){
+      verifyPortableTaskGuestV5(guest);
+      const loop=createWorkerControlLoop({
+        maxOwners:16,maxReady:64,maxControl:4,maxSuspended:16
+      });
+      const host=createPortableTaskHostV5({module:guest,loop});
+      const issuer=new Worker('/v5-completer.mjs',{type:'module'});
+      const ports=[];
+      let first=0,published=0,signalFirst;
+      const initialPending=new Promise(r=>signalFirst=r);
+      try{
+        const tasks=Array.from({length:16},(_,i)=>{
+          const owner='v5-'+i;
+          const {port1,port2}=new MessageChannel();
+          ports.push(port1);
+          issuer.postMessage({kind:'bind',owner,port:port2},[port2]);
+          return host.spawn({owner,ownerId:i+1,epoch:1,port:port1,
+            onPending:({key,grant})=>{
+              published++;
+              if(key===41n&&++first===16)signalFirst();
+              issuer.postMessage({kind:'grant',owner,key,grant});
+            }});
+        });
+        await initialPending;
+        await new Promise(r=>setTimeout(r,25));
+        const stationary=host.stats;
+        if(stationary.liveFrames!==16||stationary.starts!==16||
+           stationary.resumes!==0||stationary.completions!==0||
+           stationary.turns!==16||loop.stats.suspended!==16)
+          throw Error('E_V5_PREMATURE_RESUME');
+        issuer.postMessage({kind:'release'});
+        const values=await Promise.all(tasks.map(t=>t.result));
+        const stats=host.stats;
+        if(values.some(v=>v!==42n)||stats.peak!==16||
+           stats.completions!==32||stats.resumes!==32||
+           stats.drops!==16||stats.liveFrames!==0||
+           loop.stats.owners!==0||published!==32)
+          throw Error('E_V5_PENDING_EXECUTION');
+        self.postMessage({ok:true,value:'42',stdout:'',portableV5:true,
+          portableV5Peak:stats.peak,portableV5Starts:stats.starts,
+          portableV5Completions:stats.completions,portableV5Resumes:stats.resumes,
+          portableV5Drops:stats.drops});
+      }finally{
+        host.close();loop.close();
+        ports.forEach(port=>port.close());
+        issuer.terminate();
+      }
       return;
     }
     if(data.portableV4===true){
