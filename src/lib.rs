@@ -119,17 +119,31 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
-    // Every alternative compiler fast path MUST honor contracts. In particular
-    // collection, module, shape and actor lowerers must not emit a guest after
-    // silently discarding a dynamic requires/ensures/invariant clause.
-    // The production parser proves only literal true (and !false); anything
-    // else returns a stable error before any fast path can emit WebAssembly.
+    // Contract-bearing source must NEVER enter a pre-checker fast path.
+    // Some alternate lowerers can emit guest Wasm directly, so a parse-only
+    // preflight is insufficient: a dynamic clause could be silently dropped.
+    // Route the whole program through the canonical typed checker instead.
+    // Unsupported imports, specializations and visibility rewrite syntax fail
+    // closed until those passes preserve source contract ASTs end-to-end.
     if original_tokens.iter().any(|token| matches!(
         &token.tok, lexer::Tok::Ident(word)
             if matches!(word.as_str(), "requires" | "ensures" | "invariant")
     )) {
-        let mut contracts_parser = parser::Parser::new(original_tokens.clone());
-        let _ = contracts_parser.parse_program()?;
+        if original_tokens.iter().any(|token| matches!(
+            &token.tok, lexer::Tok::Ident(word) if word == "pub"
+        )) {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_CONTRACT_UNSUPPORTED",
+                "public export metadata with contracts requires verified visibility lowering"));
+        }
+        let parsed = parser::Parser::new(original_tokens).parse_program()?;
+        let checked = check::check(&parsed)?;
+        let bytes = wasm::emit(&checked);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
     }
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
