@@ -220,6 +220,9 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    /// Nesting depth of keyword-delimited statement-if bodies. The token
+    /// 'else' directly after a completed braced guard can belong to that if.
+    keyword_if_depth: u32,
     state_method: bool,
     state_binder: Option<String>,
 }
@@ -250,6 +253,69 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 /// evidence cannot stand in for a guaranteed enclosing-function exit.
 /// Later checker stages may admit richer terminal constructs only after
 /// proving they cannot fall through.
+/// Guard commas are lazy AND and guard pipes are lazy OR. Native scalar
+/// binary And/Or lowering may be eager, so explicitly turn this guard's
+/// boolean chain into conditional expressions before typechecking/emission.
+/// This preserves exact-once, left-to-right evaluation and prevents effects
+/// in a later guard test when an earlier test already failed.
+fn lazy_guard_predicate(expr: Expr) -> Expr {
+    let pos = expr.pos;
+    match expr.kind {
+        ExprKind::Binary(BinOp::And, left, right) => Expr {
+            kind: ExprKind::Ternary(
+                Box::new(lazy_guard_predicate(*left)),
+                Box::new(lazy_guard_predicate(*right)),
+                Box::new(Expr { kind: ExprKind::Bool(false), pos })),
+            pos,
+        },
+        ExprKind::Binary(BinOp::Or, left, right) => Expr {
+            kind: ExprKind::Ternary(
+                Box::new(lazy_guard_predicate(*left)),
+                Box::new(Expr { kind: ExprKind::Bool(true), pos }),
+                Box::new(lazy_guard_predicate(*right))),
+            pos,
+        },
+        kind => Expr { kind, pos },
+    }
+}
+
+/// Guard-specific return proof. This is stricter than the existing
+/// general termination proof used by return-match arms: a throw may
+/// terminate, but it cannot discharge guard's explicit-return obligation.
+/// Conservative guard preflight: no path may escape through an explicit
+/// throw, break, or continue before the required function return. The typed
+/// checker still validates return types and exceptional effects separately.
+fn guard_has_nonreturn_control_exit(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Throw(..) | Stmt::Break(..) | Stmt::Continue(..) => true,
+        Stmt::Block(body) => guard_has_nonreturn_control_exit(body),
+        Stmt::If { arms, otherwise, .. } =>
+            arms.iter().any(|(_, body)| guard_has_nonreturn_control_exit(body))
+                || otherwise.as_ref().is_some_and(|body| guard_has_nonreturn_control_exit(body)),
+        Stmt::Match { arms, .. } =>
+            arms.iter().any(|arm| guard_has_nonreturn_control_exit(&arm.body)),
+        Stmt::While { body, .. } | Stmt::Loop { body, .. }
+        | Stmt::For { body, .. } | Stmt::ForIn { body, .. } =>
+            guard_has_nonreturn_control_exit(body),
+        Stmt::StateWrite { body, .. } => guard_has_nonreturn_control_exit(body),
+        _ => false,
+    })
+}
+
+fn guard_failure_returns(stmts: &[Stmt]) -> bool {
+    match stmts.last() {
+        Some(Stmt::Return(..)) => true,
+        Some(Stmt::Block(inner)) => guard_failure_returns(inner),
+        Some(Stmt::Match { arms, .. }) =>
+            !arms.is_empty() && arms.iter().all(|arm| guard_failure_returns(&arm.body)),
+        Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
+            !arms.is_empty()
+                && arms.iter().all(|(_, branch)| guard_failure_returns(branch))
+                && guard_failure_returns(other),
+        _ => false,
+    }
+}
+
 fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
@@ -282,6 +348,7 @@ impl Parser {
             task_funcs: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            keyword_if_depth: 0,
             state_method: false,
             state_binder: None,
         }
@@ -1292,6 +1359,11 @@ impl Parser {
             // separator before explicit semicolon/return statements. Until
             // the versioned header migration (#185), preserve both spellings
             // without relaxing the checked return contract.
+            // In an arrow-typed void callable, any syntactically explicit
+            // statement/end body may fall through. This covers sequences of
+            // guards and side effects; comma/end bodies still fall back to
+            // their legacy parser, and non-void implicit-tail results are
+            // preserved by requiring a top-level return/throw.
             let mut trial = self.clone();
             if let Ok(body) = trial.parse_explicit_end_body() {
                 // A lone final expression still means a comma/end *implicit*
@@ -1300,7 +1372,13 @@ impl Parser {
                 // The current compatibility profile admits explicit-return
                 // bodies only when a top-level terminal is present. Fully
                 // branch-terminal explicit bodies await the versioned grammar.
-                if body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..))) {
+                // A void-typed callable is permitted to fall through. Multiple
+                // guard/if statements and ordinary effects are explicit
+                // statement/end syntax even without a top-level return.
+                // Non-void callables still require an explicit top-level exit
+                // here, preserving legacy comma/end implicit-tail behavior.
+                if ret == Type::Void
+                    || body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..))) {
                     *self = trial;
                     return Ok(body);
                 }
@@ -1795,11 +1873,15 @@ impl Parser {
             }
             return self.parse_return_match(pos);
         }
+        // Explicit `void` in return position is a no-value marker,
+        // never a value expression. The ordinary checker still rejects
+        // `^ void` / `return void` in a non-void callable.
+        let explicit_void = self.eat_word("void");
         let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
             || matches!(self.word_at(0),
                 Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
         let expr_start = self.i;
-        let value = if at_end { None } else { Some(self.parse_expr()?) };
+        let value = if explicit_void || at_end { None } else { Some(self.parse_expr()?) };
         // 'return p |> susp |f| -> await f >> val x: T;' or
         // '^ p |> susp |f| -> await f >> val x: T;'
         // are equivalent to an explicit checked binding then return x.
@@ -2242,28 +2324,37 @@ impl Parser {
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
-    /// A guard is an else-free early-exit check. Its failure branch runs only
-    /// when the predicate is false, and every path through that branch must
-    /// leave the enclosing function. Lower to an ordinary typed 'if !cond'
-    /// so the existing Rust/Wasm checker and emitter enforce bool typing,
-    /// checked effects, lexical scoping, and exactly-once predicate evaluation.
+    /// Both guard spellings execute the same terminal failure branch only
+    /// when the predicate is false: `guard cond { ... }` and
+    /// `guard cond else ... end`. Lower both to the existing typed 'if !cond'
+    /// path to preserve bool typing, effect/ownership checks, lexical scope,
+    /// cleanup and exactly-once predicate evaluation.
     fn parse_guard(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("guard")?;
-        let predicate = self.parse_cond_head()?;
-        if *self.peek() != Tok::LBrace {
+        let predicate = lazy_guard_predicate(self.parse_cond_head()?);
+        let failure = if *self.peek() == Tok::LBrace {
+            let failure = self.parse_block()?;
+            // Mixing the brace and keyword delimiters creates an ambiguous
+            // second branch. Keep the original explicit diagnostic.
+            if self.is_word("else") && self.keyword_if_depth == 0 {
+                return Err(Diagnostic::new(self.pos(), "E_GUARD_ELSE_NOT_REQUIRED",
+                    "braced guard already contains its failure block; do not append 'else'"));
+            }
+            failure
+        } else if self.eat_word("else") {
+            // parse_stmts_until handles nested if/guard/loop boundaries rather
+            // than stealing their 'end' or the surrounding if's 'else'/'fi'.
+            let failure = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            failure
+        } else {
             return Err(Diagnostic::new(self.pos(), "E_GUARD",
-                "guard requires a braced failure branch"));
-        }
-        let failure = self.parse_block()?;
-        // The guard contract has no Swift-style else arm; diagnose it here.
-        if self.is_word("else") {
-            return Err(Diagnostic::new(self.pos(), "E_GUARD_ELSE_NOT_REQUIRED",
-                "guard already uses its braced body as the failure branch; remove 'else'"));
-        }
-        if !guard_failure_exits(&failure) {
+                "guard requires '{ ... }' or 'else ... end' failure branch"));
+        };
+        if guard_has_nonreturn_control_exit(&failure) || !guard_failure_returns(&failure) {
             return Err(Diagnostic::new(pos, "E_GUARD",
-                "guard failure branch must exit the enclosing function on every path"));
+                "guard failure branch must explicitly return from the enclosing function on every path"));
         }
         Ok(Stmt::If {
             arms: vec![(
@@ -2306,6 +2397,7 @@ impl Parser {
                 }
             }
         } else {
+            self.keyword_if_depth += 1;
             self.eat(&Tok::Semi);
             if !(self.eat_word("then") || self.eat_word("do")) {
                 return Err(self.expected("'then'"));
@@ -2335,6 +2427,7 @@ impl Parser {
                     break;
                 }
             }
+            self.keyword_if_depth -= 1;
         }
         if !self.eat_word("fi") {
             return Err(Diagnostic::new(
