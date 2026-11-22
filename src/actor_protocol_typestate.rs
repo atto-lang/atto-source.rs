@@ -362,6 +362,7 @@ struct Pending {
 fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
     let mut handles = BTreeMap::<String, Handle>::new();
     let mut consumed = BTreeSet::<String>::new();
+    let mut settled_tickets = BTreeSet::<String>::new();
     let mut pending = BTreeMap::<String, Pending>::new();
     // A settled ticket or consumed handle name cannot be recycled as a
     // syntactic workaround for affine/replay checks.
@@ -453,6 +454,7 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     // checks static syntax only; the runtime must authenticate
                     // correlation and commit before minting a successor.
                     ever_named.insert(next_name.clone());
+                    settled_tickets.insert(ticket_name);
                     handles.insert(next_name, Handle {
                         protocol:ticket.protocol, states:ticket.successor
                     });
@@ -546,6 +548,17 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
         }
         // terminal_handle.complete_protocol();
         if let Some(Tok::Ident(h)) = at(t, i) {
+            // A completed authority and a retired reply ticket can never be
+            // mentioned again, including through return values, ordinary call
+            // arguments, aliases, or lexical scopes after terminal completion.
+            if settled_tickets.contains(h) {
+                return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
+                    "settled protocol reply ticket reused"));
+            }
+            if consumed.contains(h) && at(t, i+1) != Some(&Tok::Dot) {
+                return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
+                    "consumed protocol authority reused"));
+            }
             if at(t, i+1) == Some(&Tok::Dot) && word(t, i+2, "complete_protocol") {
                 if consumed.contains(h) {
                     return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE", "consumed handle reused"));
