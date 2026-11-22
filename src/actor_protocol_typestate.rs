@@ -301,6 +301,9 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
     let mut handles = BTreeMap::<String, Handle>::new();
     let mut consumed = BTreeSet::<String>::new();
     let mut pending = BTreeMap::<String, Pending>::new();
+    // A settled ticket or consumed handle name cannot be recycled as a
+    // syntactic workaround for affine/replay checks.
+    let mut ever_named = BTreeSet::<String>::new();
     let mut completed = 0;
     let mut steps = 0;
     let mut i = 0;
@@ -325,12 +328,12 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     return Err(err(t, i, "E_PROTOCOL_REPLY_REQUIRED",
                         "checked successful reply must precede next-state authority"));
                 }
-                if handles.contains_key(&next_name) || consumed.contains(&next_name) ||
-                    pending.contains_key(&next_name) {
+                if ever_named.contains(&next_name) || pending.contains_key(&next_name) {
                     return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE", "successor handle name reused"));
                 }
                 // Awaiting success is not proof of execution here: this is a
                 // *static* shape check; runtime must authenticate correlation.
+                ever_named.insert(next_name.clone());
                 handles.insert(next_name, Handle {
                     protocol:ticket.protocol, states:ticket.successor
                 });
@@ -347,12 +350,13 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
             let handle = match at(t, i+1) {Some(Tok::Ident(v)) => v.clone(), _ => unreachable!()};
             let actor = match at(t, i+5) {Some(Tok::Ident(v)) => v.clone(), _ => String::new()};
             if let Some(contract) = index.actors.get(&actor) {
-                if word(t, i, "let") || handles.contains_key(&handle) ||
-                    consumed.contains(&handle) || pending.contains_key(&handle) {
+                if word(t, i, "let") || ever_named.contains(&handle) ||
+                    pending.contains_key(&handle) {
                     return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
                         "protocol handle must use a unique immutable val binding"));
                 }
                 let initial = index.protocols[contract].initial.clone();
+                ever_named.insert(handle.clone());
                 handles.insert(handle, Handle {protocol:contract.clone(), states:vec![initial]});
                 steps += 1;
                 i += 6; continue;
@@ -371,8 +375,8 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                 return Err(err(t, i+3, "E_PROTOCOL_AFFINE_HANDLE", "consumed protocol handle reused"));
             }
             if let Some(handle) = handles.remove(&handle_name) {
-                if word(t, i, "let") || handles.contains_key(&ticket) ||
-                    consumed.contains(&ticket) || pending.contains_key(&ticket) {
+                if word(t, i, "let") || ever_named.contains(&ticket) ||
+                    pending.contains_key(&ticket) {
                     return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE",
                         "pending call must have a fresh immutable val binding"));
                 }
@@ -394,6 +398,7 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                         "expected end of state-changing call"));
                 }
                 consumed.insert(handle_name);
+                ever_named.insert(ticket.clone());
                 pending.insert(ticket, Pending {
                     protocol:handle.protocol, successor:next.next_states, response:next.response
                 });
@@ -424,9 +429,13 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
             if consumed.contains(h) && at(t, i+1) == Some(&Tok::Dot) {
                 return Err(err(t, i, "E_PROTOCOL_AFFINE_HANDLE", "consumed protocol handle reused"));
             }
-            if handles.contains_key(h) && at(t, i+1) == Some(&Tok::Dot) {
+            if handles.contains_key(h) {
                 return Err(err(t, i, "E_PROTOCOL_UNPROVEN_STATE",
-                    "protocol handles allow only checked state transitions or completion"));
+                    "protocol handle used outside a checked affine call or completion"));
+            }
+            if pending.contains_key(h) {
+                return Err(err(t, i, "E_PROTOCOL_REPLY_REQUIRED",
+                    "pending protocol call used without authenticated await/result binding"));
             }
         }
         // An affine authority cannot be duplicated via a plain binding,
