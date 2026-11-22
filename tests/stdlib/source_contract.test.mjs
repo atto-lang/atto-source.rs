@@ -12,6 +12,7 @@ const sources = Object.fromEntries(names.map(name => [
   name, readFileSync(resolve(root, "stdlib/std", name + ".atto"), "utf8")
 ]));
 const guest = readFileSync(resolve(root, "tests/stdlib/websocket_quic_compute_smoke.atto"), "utf8");
+const boundary = readFileSync(resolve(root, "tests/stdlib/protocol_boundaries.atto"), "utf8");
 
 function verify(source, fixture) {
   const declared = Object.fromEntries(names.map(name => [
@@ -93,4 +94,42 @@ test("duplicate numbered cases and missing imports cannot pass (mutation)", () =
   assert.throws(() => verify(sources, guest.replace("then return 37; fi", "then return 36; fi")));
   assert.throws(() => verify(sources, guest.replace(/^import module compute.*\n/m, "")
     .replace(/import fnc compute_exact_buffer_layout,[\s\S]*? from '\.\.\/\.\.\/stdlib\/std\/compute';\n/, "")));
+});
+
+
+test("109 independent Atto boundary cases call every one of the 42 public helpers", () => {
+  const names = ["websocket", "quic", "compute"];
+  const expected = names.flatMap(name => [...sources[name].matchAll(
+    /\bpub\s+fnc\s+([a-z][a-z0-9_]*)\s*\(/g
+  )].map(match => name + "." + match[1]));
+  assert.equal(expected.length, 42, "boundary coverage contract must match public API count");
+  for (const name of names) {
+    assert.ok(boundary.includes('import module ' + name + ' from "+stdlib/std/' + name + '.atto";'),
+      "missing native source module in boundary guest: " + name);
+  }
+  for (const qualified of expected) {
+    assert.ok(boundary.includes(qualified + "("), "missing Atto boundary call for: " + qualified);
+  }
+  for (const match of boundary.matchAll(/\b(websocket|quic|compute)\.([a-z_][a-z0-9_]*)\s*\(/g)) {
+    assert.ok(expected.includes(match[1] + "." + match[2]),
+      "boundary guest calls missing Atto exported member: " + match[0]);
+  }
+  const numbered = [...boundary.matchAll(/\bthen return (\d+); fi/g)].map(x => Number(x[1]));
+  assert.deepEqual(numbered, Array.from({length: 109}, (_,i) => i + 1),
+    "independent guest must contain every numbered boundary case in sequence");
+  assert.match(boundary, /\breturn 0;\s*\}\s*$/,
+    "boundary suite has no independent success return");
+});
+test("a missing boundary call, duplicated case or stray symbol is rejected", () => {
+  const declared = ["websocket", "quic", "compute"].flatMap(name =>
+    [...sources[name].matchAll(/\bpub\s+fnc\s+([a-z][a-z0-9_]*)\s*\(/g)].map(x => name + "." + x[1]));
+  const brokenSymbol = boundary.replace("quic.quic_stream_bidirectional(", "quic.quic_bad_symbol(");
+  assert.ok([...brokenSymbol.matchAll(/\bquic\.(quic_[a-z0-9_]+)\s*\(/g)].some(
+    x => !declared.includes("quic." + x[1])), "bad-symbol injection was not effective");
+  const duplicateNumber = boundary.replace("then return 109; fi", "then return 108; fi");
+  assert.notDeepEqual([...duplicateNumber.matchAll(/\bthen return (\d+); fi/g)].map(x => +x[1]),
+    Array.from({length:109}, (_,i) => i + 1), "duplicate numbered case passed");
+  const missingCall = boundary.replace("quic.quic_ack_delay_exponent_valid(", "quic.quic_not_present(");
+  assert.ok(!declared.includes("quic.quic_not_present"), "negative fixture unexpectedly exported");
+  assert.notEqual(missingCall, boundary);
 });
