@@ -1,17 +1,3 @@
-// AttoLang Rust/Wasm v2 guest std/channel runtime (independently owned .atto source).
-// Compiled into the in-guest prelude at the @atto-stdlib-channel-source slot.
-// These __chan_* routines are *runtime-private*, not a public std/channel import.
-// Never use a host JavaScript queue or worker for this ABI: every operation
-// executes within the guest module's own linear memory and cooperative task
-// scheduler. Generic public module imports and typed Result errors remain a
-// separate compiler/API milestone.
-//
-// Context: capacity -1 is the v2 in-guest unbounded sentinel; capacity 0
-// is rendezvous; closure drains committed data and resolves pending reads;
-// producer/consumer DATA pipe claims forbid unowned direct operations.
-// Keep this source separate from Java's std/channel facade: observable
-// semantics must converge, but backend implementations may differ.
-
 // ---------------------------------------------------------------- channels
 // Channel (72 bytes): 0 capacity (-1 unbounded), 8 count, 16 head, 24 tail,
 // 32 closed, 40/48 queue of pending `nb readch` futures.
@@ -162,4 +148,3 @@ fnc __chan_close(int c): void {
   if __load(c, 64) != 0 then __panic(10); fi
   __chan_close_internal(c);
 }
-
