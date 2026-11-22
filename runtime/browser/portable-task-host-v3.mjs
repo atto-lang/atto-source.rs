@@ -121,6 +121,14 @@ export function createPortableTaskHostV3({
   function cancel() {
     if(!started||finished||cancelRequested)return false;
     cancelRequested=true; // fence any DATA turns already admitted
+    // Exceptional shutdown only: the closed scheduler has discarded every
+    // runnable queue item, so no CONTROL turn can ever perform cleanup.
+    // Run only the compiler-generated bounded cancel/drop destructors here,
+    // never the guest's source-level start/resume body.
+    if(loop.stats?.closed===true) {
+      finish(new Error('E_V3_SCHEDULER_CLOSED'));
+      return true;
+    }
     // CONTROL preempts DATA, and performs physical Wasm frame cleanup.
     try{loop.admitControl(owner,epoch,()=>{
       if(!finished)finish(new Error('E_V3_CANCELLED'));
