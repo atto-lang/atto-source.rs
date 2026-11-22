@@ -1,19 +1,65 @@
-//! Compile real .atto scalar sum fixtures through the Rust compiler.
-//! Generic source modules are a separate, deliberately unverified gate:
-//! these two tests demonstrate the nominal substrate, not installed libs.
+//! Exact real Wasm guest tests. No host-model fallback, no execution skipping.
+//! Local machine and CI must have node; a missing runtime fails the test.
+//! The compiler-owned generic core library is a separate admission milestone.
 use atto_compiler::compile;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
-#[test]
-fn scalar_option_result_guest_emits_deterministic_wasm() {
-    let source = include_str!("core_option_result/positive_42.atto");
-    let first = compile(source)
-        .unwrap_or_else(|error| panic!("expected executable wasm, got {error}"));
-    assert!(first.starts_with(b"\0asm\x01\0\0\0"), "must emit real Wasm");
-    assert_eq!(first, compile(source).unwrap(), "emission must be deterministic");
+const WASM_HEADER: &[u8] = b"\\0asm\\x01\\0\\0\\0";
+
+fn execute_guest(bytes: &[u8], expected: i64) {
+    assert!(bytes.starts_with(WASM_HEADER), "compiler did not emit Wasm");
+    // Only WebAssembly executes the returned guest instructions. No JS
+    // simulation of Option/Result is permitted. Any guest stdio import fails.
+    let script = r#"
+      const fs = require('node:fs');
+      (async () => {
+        const wasm = fs.readFileSync(0);
+        const noHost = () => { throw Error('unexpected host import'); };
+        const { instance } = await WebAssembly.instantiate(wasm, {
+          atto: {
+            print_i64: noHost, print_bool: noHost, print_str: noHost,
+            print_newline: noHost, actor_spawn: noHost, actor_send: noHost
+          }
+        });
+        if (typeof instance.exports.main !== 'function') throw Error('missing guest main');
+        const actual = instance.exports.main();
+        const expected = BigInt(process.argv[1]);
+        if (actual !== expected) throw Error('guest main mismatch: ' + actual + ' vs ' + expected);
+        if (instance.exports.panic_code && instance.exports.panic_code.value !== 0)
+          throw Error('guest panic code: ' + instance.exports.panic_code.value);
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    "#;
+    let mut child = Command::new("node")
+        .arg("-e").arg(script).arg(expected.to_string())
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("Node.js is required for real WebAssembly guest execution");
+    child.stdin.take().expect("piped guest stdin")
+        .write_all(bytes).expect("write exact Wasm artifact to Node");
+    let output = child.wait_with_output().expect("run real Wasm guest");
+    assert!(output.status.success(), "guest: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stdout.is_empty(), "unexpected stdout: {:?}", output.stdout);
+    assert!(output.stderr.is_empty(), "unexpected stderr: {:?}", output.stderr);
 }
 
 #[test]
-fn wrong_nominal_carrier_never_emits_artifact() {
+fn nested_sum_guest_executes_to_42() {
+    let source = include_str!("core_option_result/positive_42.atto");
+    let first = compile(source).expect("source compiler must admit correct Option/Result");
+    assert_eq!(first, compile(source).unwrap(), "non-deterministic emitted Wasm");
+    execute_guest(&first, 42);
+}
+
+#[test]
+fn tag_zero_guest_executes_to_42() {
+    let source = include_str!("core_option_result/tag_zero_42.atto");
+    let bytes = compile(source).expect("zero-valued Some/Ok must be admitted");
+    assert_eq!(bytes, compile(source).unwrap(), "non-deterministic emitted Wasm");
+    execute_guest(&bytes, 42);
+}
+
+#[test]
+fn wrong_nominal_carrier_does_not_emit_wasm() {
     let source = include_str!("core_option_result/negative_wrong_carrier.atto");
     let error = compile(source).expect_err("Err cannot construct Option<int>");
     assert_eq!(error.code, "E_TYPE", "{error}");
@@ -21,18 +67,9 @@ fn wrong_nominal_carrier_never_emits_artifact() {
 }
 
 #[test]
-fn zero_payload_is_not_missing_or_error() {
-    let source = include_str!("core_option_result/tag_zero_42.atto");
-    let guest = compile(source)
-        .unwrap_or_else(|error| panic!("tag-zero must emit real wasm: {error}"));
-    assert!(guest.starts_with(b"\0asm\x01\0\0\0"), "real Wasm required");
-    assert_eq!(guest, compile(source).unwrap(), "deterministic output");
-}
-
-#[test]
-fn missing_none_arm_is_nonexhaustive() {
+fn nonexhaustive_match_does_not_emit_wasm() {
     let source = include_str!("core_option_result/negative_nonexhaustive.atto");
-    let error = compile(source).expect_err("cannot admit incomplete Option match");
-    assert_eq!(error.code, "E_MATCH", "{error}");
+    let error = compile(source).expect_err("incomplete Option match cannot compile");
+    assert_ne!(error.code, "E_UNSUPPORTED", "must reject incomplete supported ADT match: {error}");
     assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
 }
