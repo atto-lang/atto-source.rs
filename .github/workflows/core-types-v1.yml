@@ -4,6 +4,7 @@ on:
     paths:
       - 'core/types.atto'
       - 'tests/core-types-source.test.mjs'
+      - 'tests/core-types-matrix-source.test.mjs'
       - 'tests/core-types-wasm-guest.mjs'
       - 'tests/fixtures/core-types-v1/**'
       - '.github/workflows/core-types-v1.yml'
@@ -28,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          node --test tests/core-types-source.test.mjs
+          node --test tests/core-types-source.test.mjs tests/core-types-matrix-source.test.mjs
           echo 'CORE_TYPES_SOURCE_ONLY=PASS guest=NOT_PROVEN'
   compiled-wasm-guest:
     runs-on: ubuntu-24.04
@@ -49,7 +50,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           cargo build --locked --bin attoc
           test -x target/debug/attoc
-      - name: Execute one compiled Wasm guest and reject four negative compilations
+      - name: Execute two compiled Wasm guests and reject four negative compilations
         env:
           ATTOC: target/debug/attoc
         run: node tests/core-types-wasm-guest.mjs

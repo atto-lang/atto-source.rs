@@ -9,16 +9,18 @@ const compiler=process.env.ATTOC ?? fileURLToPath(new URL('../target/debug/attoc
 const fixtures=fileURLToPath(new URL('./fixtures/core-types-v1/',import.meta.url));
 const work=await mkdtemp(join(tmpdir(),'core-types-rs-'));
 try{
-  const source=join(fixtures,'edge-positive.atto'),out=join(work,'positive.wasm');
-  const positive=spawnSync(compiler,[source,'-o',out],{encoding:'utf8',timeout:120000});
-  assert.equal(positive.status,0,'real attoc failed to link core/types: '+positive.stderr);
-  const wasm=await readFile(out);
-  assert.ok(WebAssembly.validate(wasm),'compiler emitted invalid WebAssembly');
-  const {instance}=await WebAssembly.instantiate(wasm,{atto:{}});
-  assert.equal(typeof instance.exports.main,'function','compiled main missing');
-  assert.equal(instance.exports.main(),0n,'all range checks must execute to exit 0');
-  if(instance.exports.panic_code)assert.equal(instance.exports.panic_code.value,0);
-  console.log('CORE_TYPES_RS_WASM_GUEST=EXECUTED_EXIT_0');
+  for(const fixture of ['edge-positive.atto','edge-matrix-positive.atto']){
+    const source=join(fixtures,fixture),out=join(work,fixture+'.wasm');
+    const positive=spawnSync(compiler,[source,'-o',out],{encoding:'utf8',timeout:120000});
+    assert.equal(positive.status,0,fixture+': real attoc failed to link core/types: '+positive.stderr);
+    const wasm=await readFile(out);
+    assert.ok(WebAssembly.validate(wasm),fixture+': invalid emitted WebAssembly');
+    const {instance}=await WebAssembly.instantiate(wasm,{atto:{}});
+    assert.equal(typeof instance.exports.main,'function',fixture+': compiled main missing');
+    assert.equal(instance.exports.main(),0n,fixture+': actual guest boundary failure');
+    if(instance.exports.panic_code)assert.equal(instance.exports.panic_code.value,0);
+    console.log('CORE_TYPES_RS_WASM_GUEST='+fixture+':EXECUTED_EXIT_0');
+  }
   for(const name of ['void-value-negative.atto','void-return-negative.atto',
     'bool-truthiness-negative.atto','i64-literal-overflow-negative.atto']){
     const rejected=join(work,name+'.wasm');
