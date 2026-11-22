@@ -2647,7 +2647,10 @@ impl Parser {
             let failure = self.parse_block()?;
             // Preserve existing rejection of mixed guard delimiters;
             // `else` is valid only for the keyword-delimited form.
-            if self.is_word("else") {
+            // A keyword-delimited outer if owns its following 'else'.
+            // Only a standalone braced guard with an adjacent 'else'
+            // constitutes invalid mixing of the two guard forms.
+            if self.is_word("else") && self.keyword_if_depth == 0 {
                 return Err(Diagnostic::new(self.pos(),
                     "E_GUARD_ELSE_NOT_REQUIRED",
                     "braced guard already contains its failure block; remove 'else'"));
