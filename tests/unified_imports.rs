@@ -159,3 +159,144 @@ fn import_names_may_coexist_with_unrelated_methods_and_local_names() {
     assert_eq!(headers.imports, ["foo"]);
     assert_eq!(headers.receivers.len(), 1);
 }
+
+
+#[test]
+fn canonical_package_shorthand_records_static_local_bindings_only() {
+    let headers = parse(r#"
+        use namespace storefront;
+        import pkg 'z';
+        import pkg 'core.telemetry' as tracer;
+        import pkg '@scope/math' as math;
+        import pkg '+/utils' as utils;
+        import * as local from './helpers.atto';
+        pub fnc main(): int { return 0; }
+    "#);
+    assert_eq!(headers.namespace.as_deref(), Some("storefront"));
+    assert_eq!(headers.imports, ["z", "tracer", "math", "utils", "local"]);
+}
+
+#[test]
+fn canonical_package_imports_reject_implicit_bad_names_and_collisions() {
+    for src in [
+        "import pkg 'my-lib';",
+        "import pkg '@scope/math';",
+        "import pkg '+/utils';",
+        "import pkg 'core.class';",
+        "import pkg '';",
+        "import pkg 'core..math' as math;",
+        "import pkg 'z' as class;",
+        "import pkg z;",
+        "import pkg 'z' as;",
+        "import pkg 'z'",
+        "import pkg './local' as local;",
+    ] {
+        reject(src, "E_SYNTAX");
+    }
+    for src in [
+        "import pkg 'z'; import pkg 'other' as z;",
+        "import pkg 'z'; import * as z from './local.atto';",
+    ] {
+        reject(src, "E_DUPLICATE");
+    }
+}
+
+#[test]
+fn canonical_pkg_imports_remain_unlinked_in_executable_relative_file_compiler() {
+    use atto_compiler::compile_with_imports;
+    use std::{io, path::Path};
+    for src in [
+        "import pkg 'z'; pub fnc main():int{return 0;}",
+        "import pkg 'z' as zed; pub fnc main():int{return 0;}",
+    ] {
+        let failure = compile_with_imports(src, Path::new("project/main.atto"), |_path| {
+            Err(io::Error::new(io::ErrorKind::NotFound, "no package imports"))
+        }).expect_err("unverified package source must not produce Wasm");
+        assert_eq!(failure.code, "E_UNSUPPORTED", "{failure}");
+    }
+}
+
+
+#[test]
+fn canonical_atto_libraries_must_not_load_from_guest_filesystem() {
+    use atto_compiler::compile_with_imports;
+    use std::path::Path;
+
+    for spec in [
+        "core.result",
+        "alloc.arena",
+        "std.fs",
+        "std.missing",
+        "atto.core/numeric",
+        "atto.core/numeric.atto",
+        "atto.alloc/byte_region",
+        "atto.std/fs",
+        "atto.runtime.actor",
+        "./atto.core/numeric.atto",
+        "../atto.std/fs.atto",
+        "./vendor/atto.alloc/byte_region.atto",
+    ] {
+        let src = format!(
+            "import * as library from \"{spec}\"; pub fnc main(): int {{ return 0; }}"
+        );
+        let mut loaded = false;
+        let err = compile_with_imports(&src, Path::new("project/main.atto"), |_| {
+            loaded = true;
+            panic!("reserved library names must be denied before host file I/O")
+        })
+        .expect_err("unsupported library/profile must not emit Wasm");
+        assert_eq!(err.code, "E_STDLIB_UNLINKED", "{spec}: {err}");
+        assert!(!loaded, "{spec} touched the external source loader");
+    }
+
+    // The normal one-hop local source import remains a separate capability,
+    // not a blanket ban on every relative file import.
+    let regular = r#"import * as helpers from "./helpers.atto"; pub fnc main(): int { return helpers.answer(); }"#;
+    let mut called = false;
+    let _ = compile_with_imports(regular, Path::new("project/main.atto"), |_| {
+        called = true;
+        Ok("pub fnc answer(): int { return 42; }".to_string())
+    });
+    assert!(called, "ordinary relative source import should still reach the loader");
+}
+
+
+#[test]
+fn canonical_compiler_builtin_imports_are_pkg_free_and_parse_only() {
+    let headers = parse(r#"
+        import * as result from "core.result";
+        import * as arena from "alloc.arena";
+        import * as fs from "std.fs";
+        import read_text as reader from "std.fs";
+        import * as local from "./helpers.atto";
+        import * as vendor from pkg "vendor.files";
+        pub fnc main(): int { return 0; }
+    "#);
+    assert_eq!(headers.imports,
+        ["result", "arena", "fs", "reader", "local", "vendor"]);
+
+    // Parse-only acceptance cannot grant host I/O or a fabricated builtin.
+    // Executable linking is independently denied by the file-only compiler.
+    for builtin in ["std.fs", "std.not_available", "core.result", "alloc.arena"] {
+        use atto_compiler::compile_with_imports;
+        use std::path::Path;
+        let src = format!(
+            "import * as built_in from \"{builtin}\"; pub fnc main(): int {{ return 42; }}"
+        );
+        let mut touched_loader = false;
+        let err = compile_with_imports(&src, Path::new("project/main.atto"), |_| {
+            touched_loader = true;
+            panic!("reserved module must not be loaded as project source");
+        }).expect_err("missing compiler builtin resolver must fail closed");
+        assert_eq!(err.code, "E_STDLIB_UNLINKED");
+        assert!(!touched_loader, "{builtin}: attempted host loader");
+    }
+
+    for invalid in [
+        "import * as fs from \"std..fs\";",
+        "import * as fs from \"std./fs\";",
+        "import * as fs from \"core.\";",
+    ] {
+        reject(invalid, "E_SYNTAX");
+    }
+}

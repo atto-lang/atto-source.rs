@@ -41,6 +41,21 @@ fn token(tok: Tok, pos: Pos) -> Token { Token { tok, pos } }
 fn ident(s: &str, pos: Pos) -> Token { token(Tok::Ident(s.to_owned()), pos) }
 
 fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
+    // New canonical built-in roots are pkg-free: "std.fs", "core.result",
+    // "alloc.arena". Never reinterpret these as ordinary source files.
+    // This linker still supports only one-hop relative .atto files; a real
+    // built-in import needs the separate compiler-owned module table.
+    let canonical_builtin = ["core", "alloc", "std"].into_iter().any(|root| {
+        value == *root || value.strip_prefix(root)
+            .is_some_and(|tail| tail.starts_with('.'))
+    });
+    // Legacy reserved Atto module paths are also denied before any loader.
+    if canonical_builtin || value.split('/').any(|part| matches!(part,
+        "atto.core" | "atto.alloc" | "atto.std" | "atto.runtime.actor"
+    )) {
+        return Err(diagnostic(pos, "E_STDLIB_UNLINKED",
+            "compiler-owned Atto library requires verified profile resolver"));
+    }
     if !(value.starts_with("./") || value.starts_with("../")) || value.contains('\\') || value.contains('\0') {
         return Err(diagnostic(pos, "E_IMPORT_PATH", "file import requires a relative ./ or ../ path"));
     }
@@ -84,6 +99,14 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
     while word(toks.get(i), "import") {
         let pos = toks[i].pos;
         i += 1;
+        // Canonical package shorthand is NOT a file import. The bounded
+        // one-hop relative-file linker must not try a host filesystem lookup.
+        // This explicit rejection precedes generic selected-name parsing.
+        if word(toks.get(i), "pkg")
+            && toks.get(i + 1).is_some_and(|t| matches!(&t.tok, Tok::Str(_))) {
+            return Err(diagnostic(pos, "E_UNSUPPORTED",
+                "package namespace imports require a verified package-export resolver"));
+        }
         let mut namespace = None;
         let mut names = Vec::new();
         if toks.get(i).is_some_and(|t| t.tok == Tok::Star) {
