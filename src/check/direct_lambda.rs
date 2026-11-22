@@ -212,6 +212,7 @@ pub fn lower(input: &Program) -> R<Program> {
                     name, ty, mutable: false, pos: d.lambda.pos,
                 }).collect(),
                 ret: callable.signature().result,
+                contracts: Vec::new(),
                 body: lambda_body,
             });
         }
