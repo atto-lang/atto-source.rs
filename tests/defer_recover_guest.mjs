@@ -14,6 +14,89 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 const cases = [
 
   {
+    name: 'canonical trap bang preserves Error handle identity, not message equality',
+    src: `fnc fail(Error original): int throws(Error) { throw! original; }
+      pub fnc main(): int {
+        val Error original = Error("same message");
+        val Error distinct = Error("same message");
+        val Result<int,Error> caught = trap! fail(original);
+        match caught over
+          on Ok(n) -> { return 0; }
+          on Err(e) -> {
+            if e.is_same_instance(original) then
+              if e.is_same_instance(distinct) then return 0;
+              else return 49;
+              fi
+            else return 0;
+            fi
+          }
+        end
+      }`,
+    stdout: '', value: 49n,
+  },
+  {
+    name: 'canonical trap bang keeps Option None inside Result Ok',
+    src: `fnc maybe(): Option<int> { return None; }
+      pub fnc main(): int {
+        val Result<Option<int>,Error> result = trap! maybe();
+        match result over
+          on Err(e) -> { return 0; }
+          on Ok(option) -> {
+            match option over
+              on Some(v) -> { return 0; }
+              on None -> { stdio.println("None retained"); return 50; }
+            end
+          }
+        end
+      }`,
+    stdout: 'None retained\n', value: 50n,
+  },
+  {
+    name: 'two nested canonical trap bangs remain one Result layer',
+    src: `pub fnc main(): int {
+        val Result<int,Error> result = trap! trap! 51;
+        match result over
+          on Ok(n) -> { return n; }
+          on Err(e) -> { return 0; }
+        end
+      }`,
+    stdout: '', value: 51n,
+  },
+  {
+    name: 'canonical trap bang Err question propagation runs LIFO cleanup',
+    src: `fnc fail(): int throws(Error) { throw! Error("cleanup failure"); }
+      fnc checked(): Result<int,Error> {
+        defer || -> { stdio.println("cleanup A"); };
+        defer || -> { stdio.println("cleanup B"); };
+        val Result<int,Error> result = trap! fail();
+        val int n = result?;
+        return Ok(n);
+      }
+      pub fnc main(): int {
+        val Result<int,Error> result = checked();
+        match result over
+          on Ok(v) -> { return 0; }
+          on Err(e) -> { stdio.println(e.message); return 52; }
+        end
+      }`,
+    stdout: 'cleanup B\ncleanup A\ncleanup failure\n', value: 52n,
+  },
+  {
+    name: 'canonical trap bang does not intercept raise bang, recover sees original',
+    src: `fnc fail(): int raises(Error) { raise! Error("raise bypasses trap"); }
+      fnc checked(): int {
+        recover |err, cursor| -> {
+          stdio.println(err.message);
+          return 53;
+        };
+        val Result<int,Error> value = trap! fail();
+        return 0;
+      }
+      pub fnc main(): int { return checked(); }`,
+    stdout: 'raise bypasses trap\n', value: 53n,
+  },
+
+  {
     name: 'canonical trap bang captures original typed throw as one Result Err',
     src: `fnc fail(): int throws(Error) { throw! Error("bang original"); }
       pub fnc main(): int {
