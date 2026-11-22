@@ -26,6 +26,8 @@ pub mod collection_layout_type;
 #[allow(clippy::needless_return)]
 pub mod copy_graph_v1;
 pub mod borrow_export;
+/// Fail-closed compiler-core preflight for sealed Future-family ownership.
+pub mod core_future_ownership;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -119,6 +121,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // Affine Future-family violations are diagnosed before any lowerer/emitter.
+    // Valid candidates still fail closed until typed await/actor runtime exists.
+    core_future_ownership::preflight(&original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
