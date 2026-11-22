@@ -373,6 +373,15 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
     let mut returned = false;
     let mut i = 0;
     while i < t.len() {
+        if at(t, i) == Some(&Tok::Eof) {
+            break;
+        }
+        if at(t, i) == Some(&Tok::RBrace) && (!pending.is_empty() || !handles.is_empty()) {
+            return Err(err(t, i,
+                if pending.is_empty() { "E_PROTOCOL_TERMINAL_INCOMPLETE" }
+                else { "E_PROTOCOL_REPLY_REQUIRED" },
+                "protocol authority cannot escape its enclosing source block"));
+        }
         if [
             "if", "else", "elif", "elseif", "fi", "match", "switch",
             "select", "maybe", "guard", "while", "for", "loop",
