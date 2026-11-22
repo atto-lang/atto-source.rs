@@ -4,10 +4,24 @@
 // 56 unique pipeline producer actor, 64 unique pipeline consumer actor.
 // These two additional words prevent silent duplicate DATA attachments.
 
+// Only the internal unbounded constructor may use capacity -1. Other
+// negative values are invalid; never silently turn them into unbounded queues.
 fnc __chan_new(int cap): int {
+  if cap < -1 then
+    __panic(14);
+  fi
   val c = __alloc(72);
   __store(c, 0, cap);
   return c;
+}
+
+// Public bounded admission must reject -1 as well: it is the separate
+// private unbounded sentinel, not a valid bounded capacity.
+fnc __chan_new_bounded(int cap): int {
+  if cap < 0 then
+    __panic(14);
+  fi
+  return __chan_new(cap);
 }
 
 // 1 when the value was accepted, 0 when a bounded channel is full.
