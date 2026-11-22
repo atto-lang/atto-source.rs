@@ -5,8 +5,8 @@ use atto_compiler::{compile, compile_with_imports, Diagnostic};
 use std::path::Path;
 
 const POSITIVE: &str = r#"
-import * as http from pkg "std.http";
-import * as fs from pkg "std.fs";
+import * as http from "std.http";
+import * as fs from "std.fs";
 pub fnc main(): int {
     if http.http_status_success(200) == false then return 1; fi
     if http.http_status_client_error(404) == false then return 2; fi
@@ -166,5 +166,49 @@ fn standalone_default_namespace_keeps_original_missing_path_diagnostic() {
     let outcome = compile(ordinary);
     if let Err(err) = outcome {
         assert_ne!(err.code, "E_IMPORT", "standalone namespace must not trigger source loading");
+    }
+}
+
+
+#[test]
+fn canonical_builtin_std_fs_links_compiler_owned_atto_api_and_io_rules() {
+    let source = r#"
+import fs_open_options_valid as options_ok, fs_io_next_chunk as next,
+       fs_copy_fits_budget as copy_fits from "std.fs";
+pub fnc main(): int {
+    if options_ok(true, false, false, false, false, false) == false then return 1; fi
+    if next(10, 4, 8) != 4 then return 2; fi
+    if copy_fits(4, 2, 6, 9, 10) then return 3; fi
+    return 42;
+}
+"#;
+    let generated = compile(source).expect("compiler-owned std.fs .atto policy must compile");
+    assert!(generated.starts_with(b"\0asm\x01\0\0\0"));
+    assert!(!generated.windows(b"atto_fs_v1".len()).any(|w| w == b"atto_fs_v1"));
+
+    // The built-in never consults the external project file loader.
+    let mut reads = 0;
+    let linked = compile_with_imports(source, Path::new("src/main.atto"), |_| {
+        reads += 1;
+        Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
+            "built-in may not load guest files"))
+    }).expect("only compiler-embedded policy sources are needed");
+    assert_eq!(reads, 0);
+    assert_eq!(generated, linked);
+}
+
+#[test]
+fn missing_builtin_modules_reject_without_invoking_project_source_loader() {
+    for target in ["core.result", "alloc.arena", "std.unregistered"] {
+        let source = format!(
+            "import * as missing from \"{target}\"; pub fnc main(): int {{ return 42; }}"
+        );
+        let mut reads = 0;
+        let err = compile_with_imports(&source, Path::new("src/main.atto"), |_| {
+            reads += 1;
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "no ambient files"))
+        }).expect_err("unimplemented built-in must produce no executable");
+        assert_eq!(err.code, "E_STDLIB_UNLINKED", "{target}: {err}");
+        assert_eq!(reads, 0, "{target} must fail before host loader");
     }
 }
