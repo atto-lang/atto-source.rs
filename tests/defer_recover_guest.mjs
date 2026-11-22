@@ -14,6 +14,17 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 const cases = [
 
   {
+    name: 'canonical throw bang uses catch then finally in that order',
+    src: `fnc fail(): int throws(Error) { throw! Error("bang throw"); }
+      pub fnc main(): int {
+        try { return fail(); }
+        catch (Error e) { stdio.println("caught bang"); return 54; }
+        finally { stdio.println("finally"); }
+      }`,
+    stdout: 'caught bang\nfinally\n', value: 54n,
+  },
+
+  {
     name: 'canonical trap bang preserves Error handle identity, not message equality',
     src: `fnc fail(Error original): int throws(Error) { throw! original; }
       pub fnc main(): int {

@@ -20,6 +20,27 @@ fn reject(code: &str, s: &str) {
 }
 
 
+
+#[test]
+fn bang_throw_catch_finally_and_raise_recover_compile_to_real_wasm() {
+    pass(r#"
+        fnc fail(): int throws(Error) { throw! Error("bang throw"); }
+        pub fnc main(): int {
+            try { return fail(); }
+            catch (Error e) { stdio.println("caught bang"); return 54; }
+            finally { stdio.println("finally"); }
+        }
+    "#);
+    pass(r#"
+        fnc fail(): int raises(Error) { raise! Error("bang raise"); }
+        fnc checked(): int {
+            recover |err, cursor| -> { return 44; };
+            return fail();
+        }
+        pub fnc main(): int { return checked(); }
+    "#);
+}
+
 #[test]
 fn canonical_bang_trap_compiles_to_result_guest_wasm() {
     // Canonical trap! uses the same checked Result lowering as bare trap.
