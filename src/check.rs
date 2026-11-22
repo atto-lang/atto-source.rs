@@ -4416,7 +4416,26 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            let v = self.consume_expected(a, *want)?;
+            // The bounded, immutable scalar ADTs have no owned class, heap
+            // resource or mutable payload. Read-only borrow! is legal ONLY
+            // when a resolved, typed function argument consumes that loan
+            // synchronously. It is not an expression-wide owner conversion.
+            // In particular, returning or storing borrow! Option<int> is
+            // rejected by explicit_ownership(), and this branch never
+            // applies to generic/affine Option<T> or Result<T,E>.
+            let borrowed_concrete_adt = match &a.kind {
+                ExprKind::Ownership(OwnershipOp::Borrow, false, owner)
+                    if matches!(&owner.kind, ExprKind::Var(_))
+                    && matches!(*want, Type::OptionInt | Type::ResultIntStr) =>
+                {
+                    Some(self.value(owner)?)
+                }
+                _ => None,
+            };
+            let v = match borrowed_concrete_adt {
+                Some(value) => value,
+                None => self.consume_expected(a, *want)?,
+            };
             if v.ty != *want {
                 return Err(type_err(
                     a.pos,
