@@ -61,3 +61,31 @@ fn source_without_future_family_keeps_normal_wasm_compilation() {
     let source = "pub fnc main(): int { return 42; }";
     assert!(compile_with_path(source, Path::new("src/main.atto")).is_ok());
 }
+
+#[test]
+fn core_future_cannot_be_used_after_successful_await_consumes_receipt() {
+    let source=r#"use namespace std.actor;
+pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
+    val int first = await receipt;
+    return receipt;
+}"#;
+    assert_eq!(code(source),"E_MOVED");
+}
+#[test]
+fn core_future_may_not_be_awaited_while_borrow_is_live() {
+    let source=r#"use namespace std.actor;
+pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
+    val loan = borrow! receipt;
+    return await receipt;
+}"#;
+    assert_eq!(code(source),"E_BORROW");
+}
+#[test]
+fn core_future_take_then_await_is_use_after_move() {
+    let source=r#"use namespace std.actor;
+pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
+    val taken = take! receipt;
+    return await receipt;
+}"#;
+    assert_eq!(code(source),"E_MOVED");
+}
