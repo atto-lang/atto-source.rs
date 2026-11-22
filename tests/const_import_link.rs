@@ -103,3 +103,22 @@ fn malformed_source_never_publishes_fallback_artifact() {
         assert!(compile(source, "define pub const int x = 1;").is_err());
     }
 }
+
+#[test]
+fn forged_compiler_import_identifiers_fail_closed() {
+    let file = "define pub const int status_valid = 200;";
+    assert_eq!(
+        error(
+            "import const status_valid from \"./config.atto\"; pub fnc main(): int {return __atto_file_import_0.status_valid;}",
+            file,
+        ),
+        "E_RESERVED"
+    );
+    assert_eq!(
+        error(
+            "import const status_valid from \"./config.atto\"; pub fnc main(): int {return 0;}",
+            "define pub const int __atto_internal_module_0 = 200; define pub const int status_valid = 200;",
+        ),
+        "E_RESERVED"
+    );
+}
