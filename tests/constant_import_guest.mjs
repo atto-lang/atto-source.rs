@@ -64,6 +64,12 @@ try {
     provider, 'E_ASSIGN_CONST');
   rejected(main, 'define const int status_valid = 200;', 'E_PRIVATE');
   rejected(main, 'pub fnc status_valid(): int { return 200; }', 'E_IMPORT_KIND');
+  {
+    const { result, output } = compile(main,
+      'pub fnc malformed(: int { return 7; } ' + provider);
+    assert.notEqual(result.status, 0, 'malformed unused sibling function cannot be skipped');
+    assert.equal(existsSync(output), false, 'rejected source may not publish guest artifact');
+  }
   rejected(main, 'define pub const int status_valid = "bad";', 'E_CONST_TYPE');
   rejected(main, 'define pub const string status_valid = std.env.read_env("status_valid");',
     'E_UNSUPPORTED');
