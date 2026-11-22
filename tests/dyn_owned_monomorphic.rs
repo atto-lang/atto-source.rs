@@ -100,6 +100,19 @@ fn checked_as_preserves_use_after_move_and_interface_visibility() {
 }
 
 #[test]
+fn owned_erasure_rejects_suffixes_after_complete_transfer_expression() {
+    for rhs in [
+        "take! concrete as Greeting",
+        "take! concrete + 1",
+        "Dyn<Printable>(take! concrete) as Greeting",
+        "Dyn<Printable>(take! concrete) + 1",
+    ] {
+        let src = POSITIVE.replace("Dyn<Printable>(take! concrete)", rhs);
+        error(&src, "E_DYN_OWNERSHIP");
+    }
+}
+
+#[test]
 fn moved_source_owner_is_unusable() {
     let src = POSITIVE.replace(
         EXIT,
