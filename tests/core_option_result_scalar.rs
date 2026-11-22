@@ -75,9 +75,10 @@ fn nonexhaustive_match_does_not_emit_wasm() {
 }
 
 #[test]
-fn borrowed_option_result_tags_execute_wasm_and_preserve_copy_owners() {
-    // This must compile through the real Rust frontend and execute Wasm.
-    // A pure Rust host model or an unsupported-grammar rejection is not a pass.
+fn explicit_borrow_marker_on_copyable_option_result_is_nondestructive() {
+    // These concrete carriers are Copy; this checks nondestructive value-copy
+    // behavior after borrow! syntax, NOT a lifetime-bearing generic loan.
+    // A pure Rust host model is not a compiled guest pass.
     let source = include_str!("core_option_result/borrowed_read_42.atto");
     let first = compile(source).expect("borrowed Option/Result tag queries need typed admission");
     assert_eq!(first, compile(source).unwrap(), "borrow guest Wasm must be deterministic");
