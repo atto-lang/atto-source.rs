@@ -1,7 +1,7 @@
 // expect-exit: 42
-// Exact Rust-browser Wasm guest: *concrete* immutable ADT loans only.
-// Option<int> / Result<int,string> are tagged scalar profiles. This test
-// does not claim a generic borrow formal or affine Option<Payload> ABI.
+// Exact Rust-browser Wasm guest: concrete Option<int> / Result<int,string>
+// are Copy carriers. borrow! here reads a Copy value; it does NOT prove a
+// lifetime-bearing generic loan or affine Option<Payload> ABI.
 fnc option_value(int input): Option<int> {
   return Some(input);
 }
@@ -23,8 +23,8 @@ fnc read_result_tag(Result<int,string> value): bool {
 pub fnc main(): int {
   val left = option_value(40);
   val right = result_value(2);
-  // borrow! is an explicit read-only, nonescaping call operand. The
-  // original named owners must both remain usable after either call.
+  // borrow! is accepted here because both concrete carriers are Copy. The
+  // original named values remain usable after the value-copy call.
   if read_option_tag(borrow! left) then
     if read_result_tag(borrow! right) then
       match left over
