@@ -17,6 +17,10 @@ const cases = [
   ['panic/235-v2-negative-bounded-channel.atto', null, '', 14],
   ['panic/236-v2-negative-other-capacity.atto', null, '', 14],
   ['panic/237-v2-negative-legacy-channel-constructor.atto', null, '', 14],
+  ['panic/241-v2-legacy-pipe-producer-pending-read-denial.atto', null, '', 10],
+  ['panic/242-v2-legacy-pipe-consumer-pending-read-denial.atto', null, '', 10],
+  ['panic/243-v2-legacy-pipe-producer-preloaded-denial.atto', null, '', 10],
+  ['panic/244-v2-legacy-pipe-consumer-preloaded-denial.atto', null, '', 10],
 ];
 
 function runSingleGuest(path) {
