@@ -70,6 +70,6 @@ fn wrong_nominal_carrier_does_not_emit_wasm() {
 fn nonexhaustive_match_does_not_emit_wasm() {
     let source = include_str!("core_option_result/negative_nonexhaustive.atto");
     let error = compile(source).expect_err("incomplete Option match cannot compile");
-    assert_ne!(error.code, "E_UNSUPPORTED", "must reject incomplete supported ADT match: {error}");
+    assert_eq!(error.code, "E_MATCH", "must reject non-exhaustive Option match: {error}");
     assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
 }
