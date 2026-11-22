@@ -1,0 +1,12 @@
+// flags: --target-os=linux
+// expect-exit: 47
+// expect-stdout-json: "usr/lib"
+import module path from "std/path";
+import module io from "std/io";
+pub fnc main(): int {
+  io.write_str(path.join("usr", "lib"));
+  if path.is_windows() || path.list_separator_code() != 58 || path.is_separator_code(92) then
+    return 1;
+  fi
+  return path.separator_code();
+}

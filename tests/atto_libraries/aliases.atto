@@ -1,0 +1,7 @@
+// expect-exit: 32
+// Long-form and suffixed selectors name the same unit identity.
+import module num from "atto.core/num.atto";
+import module cmp from "core/cmp.atto";
+pub fnc main(): int {
+  return num.max(1, 2) + cmp.max3(10, 20, 30);
+}

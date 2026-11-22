@@ -28,6 +28,19 @@ fn main() -> ExitCode {
     let (mut report_path, mut compiler_sha, mut case) = (None, None, None);
     let mut it = raw.into_iter();
     while let Some(a) = it.next() {
+        if let Some(os) = a.strip_prefix("--target-os=") {
+            // Selects platform-variant library units such as std/path.
+            match os {
+                "windows" => atto_compiler::library::set_target_os(atto_compiler::library::TargetOs::Windows),
+                "linux" | "macos" | "freebsd" | "posix" =>
+                    atto_compiler::library::set_target_os(atto_compiler::library::TargetOs::Posix),
+                _ => {
+                    eprintln!("unknown --target-os (expected linux|macos|freebsd|posix|windows)");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
         let slot = match a.as_str() {
             "--borrow-report" => &mut report_path,
             "--compiler-git-sha" => &mut compiler_sha,
