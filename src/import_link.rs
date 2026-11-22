@@ -41,10 +41,16 @@ fn token(tok: Tok, pos: Pos) -> Token { Token { tok, pos } }
 fn ident(s: &str, pos: Pos) -> Token { token(Tok::Ident(s.to_owned()), pos) }
 
 fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
-    // Atto compiler-owned library namespaces may never be interpreted as
-    // project-relative paths (including by prefixing "./"). Their typed
-    // resolver and profile admission are not yet linked in this subset.
-    if value.split('/').any(|part| matches!(part,
+    // New canonical built-in roots are pkg-free: "std.fs", "core.result",
+    // "alloc.arena". Never reinterpret these as ordinary source files.
+    // This linker still supports only one-hop relative .atto files; a real
+    // built-in import needs the separate compiler-owned module table.
+    let canonical_builtin = ["core", "alloc", "std"].iter().any(|root| {
+        value == *root || value.strip_prefix(root)
+            .is_some_and(|tail| tail.starts_with('.'))
+    });
+    // Legacy reserved Atto module paths are also denied before any loader.
+    if canonical_builtin || value.split('/').any(|part| matches!(part,
         "atto.core" | "atto.alloc" | "atto.std" | "atto.runtime.actor"
     )) {
         return Err(diagnostic(pos, "E_STDLIB_UNLINKED",
