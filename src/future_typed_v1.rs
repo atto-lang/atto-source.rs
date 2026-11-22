@@ -3,7 +3,7 @@
 //! Future<T> runtime or a guest-side interpreter. Only closed, straight-line
 //! immutable pending futures are supported. Unsupported cases fail closed.
 use std::collections::{BTreeMap,BTreeSet};
-use crate::ast::{BindKind,Expr,ExprKind,Program,Stmt,Type};
+use crate::ast::{BindKind,Expr,ExprKind,OwnershipOp,Program,Stmt,Type};
 use crate::diag::{Diagnostic,Pos};
 
 fn unsupported(pos:Pos,message:impl Into<String>)->Diagnostic{
@@ -23,6 +23,17 @@ fn key(expr:&Expr,scalar:&BTreeSet<String>,futures:&BTreeMap<String,bool>)->Resu
 fn take_future(expr:&Expr,scalar:&BTreeSet<String>,futures:&mut BTreeMap<String,bool>)
     ->Result<Expr,Diagnostic>{
     match &expr.kind{
+        // An explicit owned named receipt is the same unique, consumed result
+        // right as bare await.  It cannot be a scalar, temporary or nested
+        // ownership expression.  The normal AOT key lowerer sees only the
+        // checked, unwrapped variable after this gate.
+        ExprKind::Ownership(OwnershipOp::Take,false,owned)=>{
+            if !matches!(&owned.kind,ExprKind::Var(_)) {
+                return Err(type_error(owned.pos,
+                    "take! requires a named owned Future<int> local"));
+            }
+            take_future(owned,scalar,futures)
+        },
         ExprKind::Var(n) if futures.contains_key(n)=>{
             if *futures.get(n).unwrap() {
                 return Err(Diagnostic::new(expr.pos,"E_MOVED",

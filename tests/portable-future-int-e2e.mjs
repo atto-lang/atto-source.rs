@@ -3,7 +3,7 @@
 // Guest code is never interpreted or generated at runtime.
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,writeFile,access,rm} from 'node:fs/promises';
 import {Worker,MessageChannel} from 'node:worker_threads';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -14,9 +14,9 @@ import {createPortableTaskHostV5,verifyPortableTaskGuestV5}
 const source=`pub susp fnc main(): int {
   val key: int=41;
   val first: Future<int>=pending_future_int(key);
-  await first;
+  await take! first;
   val second: Future<int>=pending_future_int(42);
-  return await second;
+  return await take! second;
 }`;
 const temp=await mkdtemp(join(tmpdir(),'atto-typed-future-'));
 try{
@@ -99,10 +99,13 @@ try{
   const invalid=join(temp,'moved.atto');
   await writeFile(invalid,`pub susp fnc main():int {
     val f:Future<int>=pending_future_int(41);
-    await f; return await f;
+    await take! f; return await f;
   }`);
+  const deniedOut=join(temp,'invalid-moved.wasm');
   assert.throws(()=>execFileSync(process.env.ATTOC||'target/release/attoc',
-    ['--future-int-aot',invalid,'-o',out],{stdio:'pipe',timeout:30000}),
+    ['--future-int-aot',invalid,'-o',deniedOut],{stdio:'pipe',timeout:30000}),
     'source must reject a second await of the moved Future<int>');
+  await assert.rejects(access(deniedOut),{code:'ENOENT'},
+    'rejected Future ownership must never emit a guest artifact');
   console.log('PASS typed Future<int>: non-opt-in profiles and use-after-move fail closed');
 }finally{await rm(temp,{recursive:true,force:true});}

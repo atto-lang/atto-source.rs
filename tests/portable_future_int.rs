@@ -54,3 +54,35 @@ fn rejects_wrong_type_branches_mutation_and_unsupported_generic_future() {
         assert!(compile_future_int_aot(src).is_err(),"fail-closed unsupported future expression: {src}");
     }
 }
+
+#[test]
+fn explicit_take_future_int_compiles_to_existing_aot_lifecycle(){
+    let src="pub susp fnc main():int { \
+      val first:Future<int>=pending_future_int(41); \
+      await take! first; \
+      val second:Future<int>=pending_future_int(42); \
+      return await take! second; }";
+    let wasm=compile_future_int_aot(src).expect("single owned Future<int> await");
+    assert_eq!(wasm,compile_future_int_aot(src).expect("deterministic output"));
+    assert!(marker(&wasm,"atto.browser.source.future.v1",1));
+    assert!(marker(&wasm,"atto.browser.guest.v5",5));
+    assert!(compile(src).is_err(),"normal compile may not reinterpret the v5 ABI");
+}
+#[test]
+fn explicit_take_future_rejects_replay_forged_or_borrowed_receipts(){
+    for src in [
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); await take! f; return await f; }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); await f; return await take! f; }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); return await take! 41; }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); return await take! pending_future_int(41); }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); return await borrow! f; }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); return await take! borrow! f; }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); return await take ! f; }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); return await take/*gap*/! f; }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); return await take\n! f; }",
+      "pub susp fnc main():int { val f:Future<int>=pending_future_int(41); return await take! missing; }"
+    ] {
+      assert!(compile_future_int_aot(src).is_err(),
+        "unproven Future receipt must not emit AOT: {src}");
+    }
+}

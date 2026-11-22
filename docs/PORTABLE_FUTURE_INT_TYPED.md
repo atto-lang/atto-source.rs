@@ -85,3 +85,20 @@ is confined to its specified straight-line scalar profile.
 Keep the compiler PR Draft until review and cross-backend validation
 are performed. Do not enable this profile silently in the public
 playground or claim parity beyond the verified Rust/Wasm guest + JS host.
+
+## Bounded explicit `take!` await (candidate)
+
+The typed `Future<int>` AOT v1 profile additionally recognizes
+`await take! future_local` when `future_local` is a named, live
+affine receipt created by the admitted `pending_future_int(key)` path.
+The compiler consumes precisely the same right as ordinary
+`await future_local` and erases the checked prefix before AOT lowering.
+Two awaits (including mixed bare/explicit forms), arbitrary scalar
+`take!`, borrowed/computed futures, and a separated `take !` marker
+must be rejected without emitting an artifact.
+
+This is **not** general `Future<T>` monomorphization, native .atto
+stdlib generic function compilation, `TaskFuture<T>` control splitting,
+or arbitrary result storage across `await`. Keep other profiles
+fail-closed; native Rust/wasm32 compiler plus Node/Chromium compiled
+guest evidence is required before calling this executable.
