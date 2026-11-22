@@ -172,6 +172,43 @@ fnc __chan_nb(int c): int {
   return f;
 }
 
+// Explicit cancellation of a registered *public* nb readch Future.
+// This is a single-tenant cooperative scheduler: there is no yield between
+// the membership check, queue unlink, and terminal state publication.
+// Return 1 only when this exact Future was still queued on this channel.
+// A future already handed a value or settled on close returns 0 unchanged.
+// We never cancel a reader on another channel or an actor DATA channel.
+// Future state 2 means CANCELLED; awaiting it must trap, not fake EOF.
+fnc __chan_cancel_read(int c, int f): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  let prev = 0;
+  let node = __load(c, 40);
+  while node != 0 do
+    val next = __load(node, 8);
+    if __load(node, 0) == f then
+      // The registration must still be pending. A stale or already
+      // completed Future may not be cancelled a second time.
+      if __load(f, 0) != 0 then __panic(15); fi
+      if prev == 0 then
+        __store(c, 40, next);
+      else
+        __store(prev, 8, next);
+      fi
+      if __load(c, 48) == node then
+        __store(c, 48, prev);
+      fi
+      __store(node, 8, 0);
+      __store(f, 0, 2);
+      __set_rt(4, 1);
+      return 1;
+    fi
+    prev = node;
+    node = next;
+  done
+  return 0;
+}
+
 // Internal EOF propagation is allowed for the current graph owner only.
 fnc __chan_close_internal(int c): void {
   if __load(c, 32) != 0 then
