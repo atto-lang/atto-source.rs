@@ -1,0 +1,6 @@
+// Expected: runtime failure on construction with an invalid ledger budget.
+import module stats from "atto.alloc/stats";
+pub fnc main(): int {
+  val ledger = stats.ledger(0);
+  return ledger.live();
+}
