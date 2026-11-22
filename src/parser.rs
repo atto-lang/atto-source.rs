@@ -502,6 +502,16 @@ impl Parser {
                 }
                 Type::ChannelInt
             }
+            "ActorFuture" => {
+                self.expect(Tok::Lt, "'<' after ActorFuture")?;
+                let payload=self.parse_type()?;
+                self.expect_type_gt("'>' after ActorFuture payload")?;
+                if payload!=Type::Int {
+                    return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "ActorFuture currently admits only int; actor streams require ActorStream<T>"));
+                }
+                Type::ActorFutureInt
+            }
             "Future" => {
                 self.expect(Tok::Lt, "'<' after Future")?;
                 let result=self.parse_type()?;
