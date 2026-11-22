@@ -1,6 +1,7 @@
 //! Strict single-instance AOT continuation profile. No JSPI inside v3 exports.
-//! Only scalar literal awaits ending in an explicit literal return-await are
-//! admitted. One mutable-global frame per Wasm instance, bounded to 8 awaits.
+//! Only straight-line scalar awaits ending in an explicit return-await are
+//! admitted. Up to 8 initialized i64 locals are compiler-spilled across
+//! suspension; one private global frame per instance, bounded to 8 awaits.
 //! The trusted host supplies owner/epoch identity; NOT cryptographic authority.
 //! Status READY=0, PENDING=1, DONE=2, CANCELLED=4, INVALID=-1.
 use super::{name, sleb, uleb, I32, I64, Sig, TExpr, TProgram, TStmt, Types};
@@ -9,36 +10,86 @@ use crate::check::Import;
 
 const OWNER:u32=1; const EPOCH:u32=2; const STATE:u32=3;
 const LAST_EPOCH:u32=4; const RESULT:u32=5;
+const AWAITED:u32=6; const LOCAL_BASE:u32=7;
 const INVALID:i64=-1; const PENDING:i64=1; const DONE:i64=2; const CANCELLED:i64=4;
 
-pub(super) struct PortableTaskV3 { awaited:Vec<i64> }
+#[derive(Clone, Copy)]
+enum ScalarOperand { Literal(i64), Local(u32) }
+struct Step { assignments:Vec<(u32,ScalarOperand)>, await_operand:ScalarOperand }
+pub(super) struct PortableTaskV3 { steps:Vec<Step>, locals:usize }
 impl PortableTaskV3 {
+    // Keep v3 narrow: typed local assignment plus exactly one scalar await per
+    // step. This is fully emitted control flow, NOT a runtime interpreter.
     pub(super) fn from_program(p:&TProgram)->Option<Self> {
         if p.funcs.len()!=1 || p.main!=0 || !p.tasks.is_empty() ||
            !p.generators.is_empty() || !p.actors.is_empty() ||
            !p.globals.is_empty() || p.heap || p.strings || p.guest_eh ||
            !p.data.is_empty() || p.imports!=[Import::Cooperate] {return None;}
         let main=&p.funcs[0];
-        if main.name!="main" || !main.params.is_empty() || !main.locals.is_empty() ||
-           main.ret!=Type::Int || main.body.is_empty() || main.body.len()>8 {return None;}
-        let mut awaited=Vec::new();
+        if main.name!="main" || !main.params.is_empty() ||
+           main.ret!=Type::Int || main.body.is_empty() || main.body.len()>32 ||
+           main.locals.len()>8 || main.locals.iter().any(|t| *t!=Type::Int) {return None;}
+        let mut assigned=vec![false;main.locals.len()];
+        let mut pending=Vec::new();
+        let mut steps=Vec::new();
         for (i,stmt) in main.body.iter().enumerate() {
-            let e=match stmt {
-                TStmt::Expr(v) if i+1<main.body.len()=>v,
-                TStmt::Return(Some(v)) if i+1==main.body.len()=>v,
-                _=>return None,
-            };
-            let TExpr::AwaitYield(inner)=&e.e else {return None};
-            if e.ty!=Type::Int || inner.ty!=Type::Int {return None;}
-            let TExpr::I64(v)=inner.e else {return None};
-            awaited.push(v);
+            match stmt {
+                TStmt::Set(slot,value) if i+1<main.body.len() => {
+                    let index=*slot as usize;
+                    if index>=assigned.len() || value.ty!=Type::Int {return None;}
+                    let rhs=operand(value, &assigned)?;
+                    pending.push((*slot,rhs));
+                    assigned[index]=true;
+                }
+                TStmt::Expr(value) if i+1<main.body.len() => {
+                    steps.push(Step{
+                        assignments:std::mem::take(&mut pending),
+                        await_operand:await_operand(value,&assigned)?
+                    });
+                }
+                TStmt::Return(Some(value)) if i+1==main.body.len() => {
+                    steps.push(Step{
+                        assignments:std::mem::take(&mut pending),
+                        await_operand:await_operand(value,&assigned)?
+                    });
+                }
+                _ => return None,
+            }
+            if steps.len()>8 {return None;}
         }
-        Some(Self{awaited})
+        if steps.is_empty(){return None;}
+        Some(Self{steps,locals:main.locals.len()})
     }
+    pub(super) fn extra_globals(&self)->usize { 6+self.locals }
     pub(super) fn global_defs(&self,globals:&mut Vec<u8>) {
-        // owner, epoch, resume PC, permanent epoch tombstone, result slot
+        // owner, epoch, resume PC, permanent epoch tombstone, result, await slot
         for _ in 0..4 {globals.extend_from_slice(&[I32,1,0x41,0,0x0B]);}
-        globals.extend_from_slice(&[I64,1,0x42,0,0x0B]);
+        for _ in 0..(2+self.locals) {globals.extend_from_slice(&[I64,1,0x42,0,0x0B]);}
+    }
+    fn emit_operand(&self,c:&mut Vec<u8>,v:ScalarOperand) {
+        match v {
+            ScalarOperand::Literal(n)=>i64c(c,n),
+            ScalarOperand::Local(slot)=>gget(c,LOCAL_BASE+slot),
+        }
+    }
+    fn emit_step(&self,c:&mut Vec<u8>,i:usize) {
+        let step=&self.steps[i];
+        for (slot,value) in &step.assignments {
+            self.emit_operand(c,*value);
+            gset(c,LOCAL_BASE+*slot);
+        }
+        // Evaluate await's operand before yielding, exactly once. The later
+        // resume consumes the saved i64 and never re-evaluates source code.
+        self.emit_operand(c,step.await_operand);
+        gset(c,AWAITED);
+    }
+    fn clear_data(&self,c:&mut Vec<u8>) {
+        for slot in [RESULT,AWAITED] {
+            i64c(c,0);gset(c,slot);
+        }
+        for local in 0..self.locals {
+            i64c(c,0);gset(c,LOCAL_BASE+local as u32);
+        }
     }
     pub(super) fn append_functions(&self,types:&mut Types,
         function_types:&mut Vec<u32>,bodies:&mut Vec<Vec<u8>>) {
@@ -74,7 +125,8 @@ impl PortableTaskV3 {
         lget(&mut c,1);gset(&mut c,EPOCH);
         lget(&mut c,1);gset(&mut c,LAST_EPOCH);
         i32c(&mut c,1);gset(&mut c,STATE);
-        i64c(&mut c,0);gset(&mut c,RESULT);
+        self.clear_data(&mut c);
+        self.emit_step(&mut c,0);
         i32c(&mut c,PENDING);c.push(0x0B);c
     }
     fn check_owner(&self,c:&mut Vec<u8>) {
@@ -84,14 +136,15 @@ impl PortableTaskV3 {
     }
     fn resume(&self)->Vec<u8> {
         let mut c=vec![0];self.check_owner(&mut c);
-        for i in 1..=self.awaited.len() {
+        for i in 1..=self.steps.len() {
             gget(&mut c,STATE);i32c(&mut c,i as i64);c.push(0x46);
             c.extend_from_slice(&[0x04,0x40]);
-            if i==self.awaited.len() {
-                i64c(&mut c,self.awaited[i-1]);gset(&mut c,RESULT);
+            if i==self.steps.len() {
+                gget(&mut c,AWAITED);gset(&mut c,RESULT);
                 i32c(&mut c,(i+1) as i64);gset(&mut c,STATE);
                 i32c(&mut c,DONE);
             } else {
+                self.emit_step(&mut c,i);
                 i32c(&mut c,(i+1) as i64);gset(&mut c,STATE);
                 i32c(&mut c,PENDING);
             }
@@ -101,22 +154,22 @@ impl PortableTaskV3 {
     }
     fn cancel(&self)->Vec<u8> {
         let mut c=vec![0];self.check_owner(&mut c);
-        gget(&mut c,STATE);i32c(&mut c,self.awaited.len() as i64);
+        gget(&mut c,STATE);i32c(&mut c,self.steps.len() as i64);
         c.push(0x4B);invalid_if(&mut c); // completed or cancelled
-        i32c(&mut c,(self.awaited.len()+2) as i64);gset(&mut c,STATE);
-        i64c(&mut c,0);gset(&mut c,RESULT);
+        i32c(&mut c,(self.steps.len()+2) as i64);gset(&mut c,STATE);
+        self.clear_data(&mut c);
         i32c(&mut c,CANCELLED);c.push(0x0B);c
     }
     fn drop_frame(&self)->Vec<u8> {
         let mut c=vec![0];self.check_owner(&mut c);
-        i64c(&mut c,0);gset(&mut c,RESULT);
+        self.clear_data(&mut c);
         for g in [OWNER,EPOCH,STATE] {i32c(&mut c,0);gset(&mut c,g);}
         // LAST_EPOCH never resets: reused generations and stale tickets denied.
         i32c(&mut c,0);c.push(0x0B);c
     }
     fn result(&self)->Vec<u8> {
         let mut c=vec![0];
-        gget(&mut c,STATE);i32c(&mut c,(self.awaited.len()+1) as i64);
+        gget(&mut c,STATE);i32c(&mut c,(self.steps.len()+1) as i64);
         c.push(0x47);trap_if(&mut c);
         lget(&mut c,0);gget(&mut c,OWNER);c.push(0x47);trap_if(&mut c);
         lget(&mut c,1);gget(&mut c,EPOCH);c.push(0x47);trap_if(&mut c);
@@ -130,3 +183,18 @@ fn gget(c:&mut Vec<u8>,n:u32){c.push(0x23);uleb(c,n as u64);}
 fn gset(c:&mut Vec<u8>,n:u32){c.push(0x24);uleb(c,n as u64);}
 fn invalid_if(c:&mut Vec<u8>){c.extend_from_slice(&[0x04,0x40]);i32c(c,INVALID);c.extend_from_slice(&[0x0F,0x0B]);}
 fn trap_if(c:&mut Vec<u8>){c.extend_from_slice(&[0x04,0x40,0x00,0x0B]);}
+
+fn operand(value:&super::TE,assigned:&[bool])->Option<ScalarOperand> {
+    if value.ty!=Type::Int {return None;}
+    match &value.e {
+        TExpr::I64(n)=>Some(ScalarOperand::Literal(*n)),
+        TExpr::Local(slot) if assigned.get(*slot as usize)==Some(&true)=>
+            Some(ScalarOperand::Local(*slot)),
+        _=>None,
+    }
+}
+fn await_operand(value:&super::TE,assigned:&[bool])->Option<ScalarOperand> {
+    if value.ty!=Type::Int {return None;}
+    let TExpr::AwaitYield(inner)=&value.e else {return None};
+    operand(inner,assigned)
+}
