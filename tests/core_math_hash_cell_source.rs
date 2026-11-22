@@ -39,9 +39,12 @@ fn checked_byte_fold_reference_vectors() {
 }
 #[test]
 fn borrowing_admission_is_policy_not_a_granted_loan() {
-    let read=|readers:i64,writer:bool|readers>=0&&readers<=65_535&&!writer;
+    let read=|readers:i64,writer:bool|readers>=0&&readers<65_535&&!writer;
     let write=|readers:i64,writer:bool|readers==0&&!writer;
-    assert!(read(65_535,false));
+    assert!(read(65_534,false));
+    assert!(!read(65_535,false), "full shared reader count must reject admission");
+    let owner_read=|readers:i64,writer:bool|readers>=0&&readers<=65_535&&!writer;
+    assert!(owner_read(65_535,false), "existing owner read remains permitted");
     assert!(!read(65_536,false));
     assert!(!read(3,true));
     assert!(write(0,false));
