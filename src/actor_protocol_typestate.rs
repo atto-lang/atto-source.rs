@@ -387,7 +387,11 @@ fn flow(t: &[Token], index: &mut ProtocolIndex) -> R<()> {
                     return Err(err(t, i, "E_PROTOCOL_SYNTAX", "call requires nominal message"));
                 }
                 let message = match at(t, i+7) {Some(Tok::Ident(v)) => v.clone(), _ => unreachable!()};
-                let next = index.protocols[&handle.protocol].check_send(&handle.states, &message)?;
+                let next = index.protocols[&handle.protocol].check_send(&handle.states, &message)
+                    .map_err(|mut diagnostic| {
+                        diagnostic.pos = t[i+7].pos;
+                        diagnostic
+                    })?;
                 if !matches!(&next.response, Response::Unary(_)) {
                     return Err(err(t, i+7, "E_PROTOCOL_REPLY_MISMATCH",
                         "stream transition requires an EOF-checked stream lease, not call()"));
