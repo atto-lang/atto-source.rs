@@ -1,0 +1,18 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Backpressure recovery cannot change a previously committed FIFO value.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  ch.send(20);
+  val ticket = ch.send_pending(22);
+  val recovered = ch.cancel_write(ticket);
+  val int old = await ch.receive();
+  val int lost = match recovered over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  ch.close();
+  val total = old + lost;
+  stdio.println(total);
+  return total;
+}
