@@ -66,8 +66,12 @@ The three regression guests are:
 - `tests/fixtures/pass/239-v2-rendezvous-for-await.atto`
 - `tests/fixtures/pass/240-v2-rendezvous-close-wakes-reader.atto`
 
-`tests/node-v2-channel-guest.mjs` compiles and executes eight positive and
-negative channel fixtures as actual independent Wasm guests. Each guest runs
+`tests/node-v2-channel-guest.mjs` compiles and executes **15** positive and
+negative channel fixtures (six successful, nine expected guest denials)
+as actual independent Wasm guests. These now cover direct rendezvous,
+for-await rendezvous, close/wakeup, invalid capacities, legacy two-port
+actor pipe ownership admission, and closed-versus-empty immediate read.
+Each guest runs
 in a bounded child process; a hang, nonzero child exit, incorrect stdout,
 wrong return value, or wrong panic code **fails** the gate. The harness is
 wired into the Rust `.github/workflows/ci.yml` after the native `attoc`
@@ -99,3 +103,26 @@ The Java/Graal implementation is independently source-owned in
 `atto-source.java` PR #1783. No byte-identical library implementation
 is required between compilers; identical public behavior is a
 future conformance target.
+
+## Legacy actor-pipe admission and closed immediate reads
+
+The checked three-part `PipeHandle` path previously refused a buffered
+channel or pending public `nb readch` Future. The older two-part actor-pipe
+helpers (`__actor_pipe_channel` and `__channel_pipe_actor`) lacked these
+checks. Both now fail closed with guest panic code **10** if the channel
+has buffered data or registered public readers, *before* either actor
+DATA port is claimed. Four guest denial fixtures cover both directions
+and both admission hazards.
+
+`try readch` on an open, temporarily empty channel continues to return
+`None`. Once a channel is closed and its committed FIFO has drained,
+the same immediate read reports guest panic code **9**; it must not
+pretend that terminal closure is transient emptiness. Three additional
+guest cases cover open-empty, post-close drain, and terminal immediate
+read, including stdout-before-denial order.
+
+These improvements do **not** implement cancellation of pending `nb`
+Futures. The v2 runtime currently does not expose a verified cancellation
+token / removal protocol. Cancellation remains **NOT_IMPLEMENTED** until
+registrations are safely unlinked under a defined scheduler contract.
+There is no claim of guest PASS without stepful exact-head execution.
