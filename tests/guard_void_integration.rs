@@ -140,3 +140,32 @@ fn multiple_nonvoid_guards_without_success_return_still_reject() {
         compile(&source).expect_err("nonvoid function must not silently fall through");
     }
 }
+
+
+#[test]
+fn guard_lazy_boolean_canaries_compile_in_both_styles() {
+    for prefix in [
+        "guard false, overflow_if_called(9223372036854775807)",
+        "guard true | overflow_if_called(9223372036854775807)",
+    ] {
+        for end in [
+            "else ^ void end",
+            "{ ^ void }",
+        ] {
+            let src=format!(
+                "fnc overflow_if_called(int v): bool {{ return v + 1 > 0; }}\n\
+                 fnc process_explicit() -> void\n    {prefix} {end}\nend\n{}",
+                entry()
+            );
+            accepts(&src);
+        }
+    }
+}
+
+#[test]
+fn guard_requires_strict_boolean_predicate() {
+    for failure in ["guard 7 else ^ void end", "guard 7 { ^ void }"] {
+        let src=format!("fnc process_explicit() -> void\n    {failure}\nend\n{}",entry());
+        rejects(&src,"E_TYPE");
+    }
+}
