@@ -182,3 +182,16 @@ fn identical_source_conformance_negatives_are_compiler_diagnostics() {
     assert_eq!(inspect_source(typed).unwrap().unwrap().completed_handles, 1);
     rejects(typed, "E_PROTOCOL_RUNTIME_UNSUPPORTED");
 }
+
+#[test]
+fn forward_actor_declaration_may_match_exact_protocol_definition() {
+    let src = GOOD.replace("define actor Connection implements ConnectionProtocol as end",
+        "declare actor Connection implements ConnectionProtocol;\n" +
+        "define actor Connection implements ConnectionProtocol as end");
+    assert_eq!(inspect_source(&src).unwrap().unwrap().completed_handles, 1);
+    rejects(&src, "E_PROTOCOL_RUNTIME_UNSUPPORTED");
+    let bad = GOOD.replace("define actor Connection implements ConnectionProtocol as end",
+        "define actor Connection implements ConnectionProtocol as end\n" +
+        "define actor Connection implements ConnectionProtocol as end");
+    rejects(&bad, "E_PROTOCOL_DUPLICATE");
+}
