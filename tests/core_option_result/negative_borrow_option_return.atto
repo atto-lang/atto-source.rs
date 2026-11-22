@@ -1,0 +1,13 @@
+// expect-error: E_BORROW
+// A read-only loan of immutable Option<int> is a call-scoped projection,
+// never an owned return. Requiring a named owner is not enough: the borrow
+// must stay inside a resolved synchronous call argument.
+fnc option_value(): Option<int> { return Some(42); }
+fnc leak(Option<int> owner): Option<int> {
+  return borrow! owner;
+}
+pub fnc main(): int {
+  val original = option_value();
+  val copied_owner = leak(original);
+  return 0;
+}
