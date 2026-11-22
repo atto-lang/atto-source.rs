@@ -1615,6 +1615,7 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
         let next = match stmt {
             TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
             | TStmt::Expr(value) | TStmt::StateRegister(value)
+            | TStmt::ContractCheck { predicate: value, .. }
             | TStmt::Return(Some(value)) =>
                 expr_escape_effects(value, effects),
             TStmt::Return(None) | TStmt::UnwindFrame { .. }
@@ -2479,7 +2480,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
 
 fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
     body.iter().all(|stmt| match stmt {
-        TStmt::Set(_, value) | TStmt::Expr(value) =>
+        TStmt::Set(_, value) | TStmt::Expr(value) |
+        TStmt::ContractCheck { predicate: value, .. } =>
             pure_expr(value, pure_indices),
         TStmt::Return(value) =>
             value.as_ref().is_none_or(|value| pure_expr(value, pure_indices)),
@@ -2505,7 +2507,8 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
-        TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) |
+        TStmt::ContractCheck { predicate: e, .. } => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
         TStmt::CollectionStore { array, value, .. } =>
