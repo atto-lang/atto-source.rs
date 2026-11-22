@@ -55,17 +55,27 @@ export function createPortableTaskHostV3({
   let pendingResolve,pendingReject,turns=0,resumes=0,cleanups=0;
   let promise;
   function cleanup(cancellation=false) {
-    if(frameLive) {
-      if(cancellation) {
-        const status=api.task_cancel_v3(ownerId,epoch);
-        if(status!==CANCELLED&&status!==INVALID)throw new Error('E_V3_CANCEL_STATUS');
+    try {
+      if(frameLive) {
+        try {
+          if(cancellation) {
+            const status=api.task_cancel_v3(ownerId,epoch);
+            if(status!==CANCELLED&&status!==INVALID)
+              throw new Error('E_V3_CANCEL_STATUS');
+          }
+        } finally {
+          // Physical frame destruction must still run if cancellation fails.
+          // A faulty guest stays quarantined: its owner is retired in the
+          // outer finally, and the failed cleanup is reported to the caller.
+          const dropped=api.task_drop_v3(ownerId,epoch);
+          if(dropped!==READY)throw new Error('E_V3_DROP_STATUS');
+          frameLive=false;cleanups++;
+        }
       }
-      const dropped=api.task_drop_v3(ownerId,epoch);
-      if(dropped!==READY)throw new Error('E_V3_DROP_STATUS');
-      frameLive=false;cleanups++;
+    } finally {
+      finished=true;
+      loop.retireOwner(owner,epoch);
     }
-    finished=true;
-    loop.retireOwner(owner,epoch);
   }
   function finish(error,value) {
     if(finished)return;
