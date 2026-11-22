@@ -3,8 +3,13 @@ on:
   pull_request:
     paths:
       - 'src/parser.rs'
+      - 'src/ast.rs'
+      - 'src/check.rs'
+      - 'src/check/direct_lambda.rs'
+      - 'src/wasm.rs'
       - 'src/lib.rs'
       - 'tests/design_contracts_static_aot.rs'
+      - 'tests/design_contracts_guest.mjs'
       - 'docs/design-contracts-static-aot-v1.md'
       - '.github/workflows/design-contracts-static-aot.yml'
   workflow_dispatch:
@@ -28,7 +33,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           git diff --exit-code HEAD --
           git rev-parse HEAD^{tree}
-          for f in src/parser.rs src/lib.rs tests/design_contracts_static_aot.rs; do
+          for f in src/parser.rs src/ast.rs src/check.rs src/check/direct_lambda.rs src/wasm.rs src/lib.rs tests/design_contracts_static_aot.rs tests/design_contracts_guest.mjs; do
             test "$(git hash-object --no-filters "$f")" = "$(git rev-parse "HEAD:$f")"
           done
       - name: Compile real Rust compiler and run contract tests
@@ -38,5 +43,13 @@ jobs:
           rustc --version
           cargo --version
           cargo test --locked --test design_contracts_static_aot -- --nocapture
-      - name: No guest-parity overclaim
-        run: echo 'This runs compiled Atto->Wasm emission and negative compiler tests; it does not execute Wasm guests or prove dynamic contract panic semantics.'
+      - name: Build real compiler and run guest Wasm via Node
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          cargo build --locked --bin attoc
+          node --check tests/design_contracts_guest.mjs
+          node tests/design_contracts_guest.mjs target/debug/attoc
+      - name: Evidence scope
+        run: echo 'PASS, if all steps execute, verifies bounded source-compiled scalar contracts and panic codes; actor CONTROL and cleanup/? remain unsupported.'
