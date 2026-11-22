@@ -174,3 +174,17 @@ fn public_protocol_visibility_spelling_is_accepted_only_as_type_contract() {
         rejects(&source, "E_PROTOCOL_RUNTIME_UNSUPPORTED");
     }
 }
+
+#[test]
+fn required_nominal_reply_types_are_checked_before_successor_is_minted() {
+    let typed = GOOD.replace("val (ack, connected) = await connecting?;",
+        "val (ack: ConnectedAck, connected) = await connecting?;");
+    assert_eq!(inspect_source(&typed).unwrap().unwrap().completed_handles, 1);
+    rejects(&typed, "E_PROTOCOL_RUNTIME_UNSUPPORTED");
+    let wrong = GOOD.replace("val (ack, connected) = await connecting?;",
+        "val (ack: WrongAck, connected) = await connecting?;");
+    rejects(&wrong, "E_PROTOCOL_REPLY_MISMATCH");
+    let mutable = GOOD.replace("val (ack, connected) = await connecting?;",
+        "let (ack: ConnectedAck, connected) = await connecting?;");
+    rejects(&mutable, "E_PROTOCOL_AFFINE_HANDLE");
+}
