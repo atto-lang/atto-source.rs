@@ -130,6 +130,22 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
     Ok((result, toks[i..].to_vec()))
 }
 
+// A namespace is file identity, NOT an import or a capability grant. The
+// direct-function linker must validate it before looking for an import, then
+// remove only the validated header from each independently owned source file.
+// Never erase misplaced/duplicate declarations or invent ambient exports.
+fn without_namespace_header(tokens: &[Token], logical: &Path) -> R<Vec<Token>> {
+    let normalized = crate::namespace::normalize(tokens, Some(logical))?;
+    if !word(normalized.first(), "use") || !word(normalized.get(1), "namespace") {
+        return Ok(normalized);
+    }
+    // The namespace parser has already validated bounded dotted identifiers
+    // and the terminating semicolon, including derived folder namespaces.
+    let end = normalized.iter().position(|t| t.tok == Tok::Semi)
+        .ok_or_else(|| diagnostic(tokens[0].pos, "E_SYNTAX", "unterminated namespace header"))?;
+    Ok(normalized[end + 1..].to_vec())
+}
+
 fn functions(tokens: &[Token]) -> R<(BTreeMap<String, bool>, BTreeSet<usize>)> {
     let mut funcs = BTreeMap::new();
     let mut heads = BTreeSet::new();
@@ -201,7 +217,10 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         return Err(diagnostic(Pos { line: 1, col: 1 }, "E_IMPORT_PATH", "logical path must be project-relative"));
     }
     let lexed = lexer::lex(source)?;
-    let (imports, root) = imports(&lexed, logical)?;
+    // The ordinary compiler validates namespace headers later, but relative
+    // import discovery must also recognize the legal namespace-first form.
+    let prepared = without_namespace_header(&lexed, logical)?;
+    let (imports, root) = imports(&prepared, logical)?;
     if imports.is_empty() { return Ok(lexed); }
     reject_forged_names(&root)?;
     let mut parser = Parser::new(root.clone());
@@ -224,7 +243,8 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             if text.len() > crate::SOURCE_CAP {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "imported file exceeds 64 KiB"));
             }
-            let toks = lexer::lex(&text)?;
+            let lexed = lexer::lex(&text)?;
+            let toks = without_namespace_header(&lexed, &imp.path)?;
             reject_forged_names(&toks)?;
             let (funcs, heads) = functions(&toks)?;
             let module = format!("{RESERVED}{}", units.len());
