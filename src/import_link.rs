@@ -66,19 +66,29 @@ fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SealedStd {
     HttpPolicy,
-    FsTextPolicy,
+    FsPolicyBundle,
 }
 impl SealedStd {
-    fn source(self) -> &'static str {
+    fn source(self) -> String {
         match self {
-            Self::HttpPolicy => include_str!("../stdlib/std/http_response_policy.atto"),
-            Self::FsTextPolicy => include_str!("../stdlib/std/fs_text_policy.atto"),
+            Self::HttpPolicy => include_str!("../stdlib/std/http_response_policy.atto").to_owned(),
+            Self::FsPolicyBundle => {
+                // Compiler-embedded, bounded pure Atto sources only.
+                // This never grants a host filesystem capability or exports
+                // File/read_file/open/stream runtime functions.
+                let mut source = include_str!("../stdlib/std/fs_text_policy.atto").to_owned();
+                source.push('\n');
+                source.push_str(include_str!("../stdlib/std/fs_api_policy.atto"));
+                source.push('\n');
+                source.push_str(include_str!("../stdlib/std/fs_io_policy.atto"));
+                source
+            }
         }
     }
     fn source_path(self) -> &'static str {
         match self {
             Self::HttpPolicy => "stdlib/std/http_response_policy.atto",
-            Self::FsTextPolicy => "stdlib/std/fs_text_policy.atto",
+            Self::FsPolicyBundle => "stdlib/std/fs_text_policy.atto",
         }
     }
 }
@@ -130,25 +140,39 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
             }
         }
         require_word(toks, &mut i, "from", pos)?;
-        let (path, sealed_std) = if word(toks.get(i), "pkg") {
-            i += 1;
-            let source = match toks.get(i).map(|t| &t.tok) {
-                Some(Tok::Str(s)) => s.as_str(),
-                _ => return Err(diagnostic(pos, "E_SYNTAX", "expected quoted package identifier")),
-            };
-            let sealed = match source {
-                "std.http" => SealedStd::HttpPolicy,
-                "std.fs" => SealedStd::FsTextPolicy,
-                _ => return Err(diagnostic(pos, "E_UNSUPPORTED",
-                    "only the sealed pure-policy std.http and std.fs subset is linked; other packages are unsupported")),
-            };
+        // Canonical built-ins use bare quoted module identities. External
+        // package imports retain explicit pkg and never masquerade as std.*.
+        let external_pkg = word(toks.get(i), "pkg");
+        if external_pkg { i += 1; }
+        let source = match toks.get(i).map(|t| &t.tok) {
+            Some(Tok::Str(s)) if !s.is_empty() => s.as_str(),
+            _ => return Err(diagnostic(pos, "E_SYNTAX", "expected nonempty quoted import source")),
+        };
+        if external_pkg {
+            if source == "std.http" || source == "std.fs" {
+                return Err(diagnostic(pos, "E_SYNTAX",
+                    "compiler built-ins must be imported without pkg"));
+            }
+            return Err(diagnostic(pos, "E_UNSUPPORTED",
+                "third-party packages require a verified package resolver"));
+        }
+        let sealed_std = match source {
+            "std.http" => Some(SealedStd::HttpPolicy),
+            "std.fs" => Some(SealedStd::FsPolicyBundle),
+            _ => None,
+        };
+        let (path, sealed_std) = if let Some(sealed) = sealed_std {
             (PathBuf::from(sealed.source_path()), Some(sealed))
         } else {
-            let value = match toks.get(i).map(|t| &t.tok) {
-                Some(Tok::Str(s)) => s,
-                _ => return Err(diagnostic(pos, "E_SYNTAX", "expected quoted source file")),
-            };
-            (import_path(logical, value, pos)?, None)
+            let reserved = ["core", "alloc", "std"].into_iter().any(|root| {
+                source == root || source.strip_prefix(root)
+                    .is_some_and(|tail| tail.starts_with('.'))
+            });
+            if reserved {
+                return Err(diagnostic(pos, "E_STDLIB_UNLINKED",
+                    "compiler built-in is not registered for this backend"));
+            }
+            (import_path(logical, source, pos)?, None)
         };
         i += 1;
         if toks.get(i).is_none_or(|t| t.tok != Tok::Semi) {
@@ -277,7 +301,7 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             // Sealed builtin sources are compiler-embedded, never loaded from the
             // caller's mutable package tree. External packages remain denied.
             let text = if let Some(sealed) = imp.sealed_std {
-                sealed.source().to_owned()
+                sealed.source()
             } else {
                 load(&imp.path).map_err(|e| diagnostic(imp.pos, "E_IMPORT",
                     format!("cannot load source {}: {:?}", imp.path.display(), e.kind())))?
