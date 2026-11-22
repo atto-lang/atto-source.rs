@@ -516,9 +516,15 @@ impl Globals<'_> {
 
 /// Resolve parser type names against the declaration tables.
 fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> R<Type> {
+    // Public compiler entrypoints also accept manually constructed ASTs.
+    // Nested local annotations and recover callback formals can bypass the
+    // declaration-only index preflight. All type-table accesses must therefore
+    // fail as diagnostics, never panic or become unverified borrow authority.
+    let invalid = || Diagnostic::new(Pos { line: 1, col: 1 }, "E_UNKNOWN_TYPE",
+        "stale or forged type-table index in compiler-owned type resolution");
     Ok(match t {
         Type::Named(i) => {
-            let (n, pos) = &type_names[i as usize];
+            let (n, pos) = type_names.get(i as usize).ok_or_else(invalid)?;
             if let Some(c) = classes.iter().position(|c| c == n) {
                 Type::Class(c as u32)
             } else if let Some(e) = enums.iter().position(|e| e.name == *n) {
@@ -530,34 +536,37 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
             }
         }
         Type::BorrowNamed(i) => {
-            let (name, pos) = &type_names[i as usize];
+            let (name, pos) = type_names.get(i as usize).ok_or_else(invalid)?;
             match classes.iter().position(|c| c == name) {
                 Some(c) => Type::BorrowClass(c as u32),
                 None => return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE",
                     format!("Borrow<{name}> requires a declared class"))),
             }
         }
-        Type::Callable(_) => {
-            // Type recognition and structural signature validation are
-            // available now, but the browser backend has no callable value
-            // storage or verified indirect-call ABI. Stop before emitting.
+        Type::Callable(i) => {
+            let pos = type_names.get(i as usize).ok_or_else(invalid)?.1;
+            // The signature parser validates the canonical spelling; the
+            // browser target still lacks a verified indirect-call ABI.
             let signature = callable_ir::CallableSignature::from_source_type(
-                t, type_names, Pos { line: 1, col: 1 })?;
-            return Err(Diagnostic::new(
-                type_names[match t { Type::Callable(i) => i as usize, _ => unreachable!() }].1,
-                "E_UNSUPPORTED",
+                t, type_names, pos)?;
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 format!("callable value type {} is parsed and checked but requires validated Wasm indirect dispatch",
-                    signature.source_spelling()),
-            ));
+                    signature.source_spelling())));
         }
         Type::NamedRef(i) => {
-            let (n, pos) = &type_names[i as usize];
+            let (n, pos) = type_names.get(i as usize).ok_or_else(invalid)?;
             match actors.iter().position(|a| a == n) {
                 Some(a) => Type::ActorRef(a as u32),
                 None => return Err(type_err(*pos, format!("ActorRef<{n}> needs an actor type, and '{n}' is not one"))),
             }
         }
-        t => t,
+        Type::Class(i) | Type::BorrowClass(i) if classes.get(i as usize).is_none() =>
+            return Err(invalid()),
+        Type::Enum(i) if enums.get(i as usize).is_none() =>
+            return Err(invalid()),
+        Type::ActorRef(i) if actors.get(i as usize).is_none() =>
+            return Err(invalid()),
+        other => other,
     })
 }
 
