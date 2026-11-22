@@ -76,3 +76,36 @@ The full guest remains AOT-compiled with no JSPI, runtime guest
 compiler, interpreter, or JIT. Require native Rust proof, real Node
 compiled Wasm and real Chromium nested actor Worker execution on an
 exact-tree alternative-org GitHub Actions runner. Both PRs stay Draft.
+
+## Bounded explicit `take!` admission (2026-11-22, candidate)
+
+The v1 actor-future compiler profile accepts `await take! reply` as an
+explicit transfer of a **named, locally owned** `ActorFuture<int>` result
+receipt. The checked frontend tracks the same single-use `await` state
+as the existing bare `await reply` syntax; it erases the source-level
+`take!` wrapper only after proving the owner and consumes exactly one
+receipt, then lowers to the established AOT v5 pending-key frame.
+
+Examples of the **narrow** compiled-source candidate:
+
+```atto
+pub susp fnc main(): int {
+  val reply: ActorFuture<int> = actor_future_int(7, 41);
+  return await take! reply;
+}
+```
+
+Negative cases: re-awaiting after transfer, transfer of a scalar, an
+unknown name, `take!` of a computed/temporary request, wrapping an
+unproven borrow, and a `take !` with whitespace/comments/newline
+before the `!`. No guest artifact may be emitted for any rejection.
+
+This does NOT provide general generic `take!` formal passing,
+`TaskFuture<T>`, `ActorFuture<Result<T,E>>`, source-imported native
+stdlib helpers, typed actor message admission, or compiler support
+for non-int `ActorFuture<T>`. Existing narrower actor ID, request key,
+incarnation-fencing and trusted Worker-host semantics remain unchanged.
+
+Evidence is pending exact-head native Rust tests, actual AOT guest
+execution in Node/Chromium and separate independent backend receipts.
+Do not count source-only inspection or zero-step CI as execution.

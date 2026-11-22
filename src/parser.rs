@@ -3038,6 +3038,16 @@ impl Parser {
                     "share" => OwnershipOp::Share,
                     _ => unreachable!(),
                 };
+                // take! is one lexical ownership operator.  Comments,
+                // spaces and newlines before ! must not silently confer an
+                // affine transfer right (borrow-default-v1 lexical contract).
+                if action == OwnershipOp::Take {
+                    let bang=self.toks[self.i+1].pos;
+                    if bang.line != pos.line || pos.col.checked_add(4) != Some(bang.col) {
+                        return Err(Diagnostic::new(pos,"E_SYNTAX",
+                            "take! requires an attached '!' marker"));
+                    }
+                }
                 self.advance(); // name
                 self.advance(); // !
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");

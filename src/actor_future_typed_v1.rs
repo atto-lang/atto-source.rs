@@ -3,7 +3,7 @@
 //! host binding at task admission, NEVER an unauthenticated source integer.
 //! Actor replies use single-use bearer grants and the established v5 AOT ABI.
 use std::collections::{BTreeMap,BTreeSet};
-use crate::ast::{BindKind,Expr,ExprKind,Program,Stmt,Type};
+use crate::ast::{BindKind,Expr,ExprKind,OwnershipOp,Program,Stmt,Type};
 use crate::diag::{Diagnostic,Pos};
 
 #[derive(Clone,Copy)]
@@ -38,6 +38,29 @@ fn awaited(expr:&mut Expr,futures:&mut BTreeMap<String,(ActorAwait,bool)>)
     let ExprKind::Await(inner)=&mut expr.kind else {
         return Err(err(expr.pos,"E_ACTOR_FUTURE","actor reply must be consumed with explicit await"));
     };
+    // Explicit `await take! reply` is an affine transfer of the same
+    // single-result receipt as `await reply`.  The source handle must be a
+    // named, live ActorFuture in this bounded profile; no temporary, borrowed
+    // or computed expression may be promoted to a producer capability.
+    if let ExprKind::Ownership(OwnershipOp::Take, false, owned)=&inner.kind {
+        let ExprKind::Var(name)=&owned.kind else {
+            return Err(err(owned.pos,"E_ACTOR_FUTURE",
+                "take! must name an owned ActorFuture<int> local; no temporary or alias"));
+        };
+        let (info,consumed)=futures.get_mut(name).ok_or_else(||err(owned.pos,
+            "E_ACTOR_FUTURE","take! requires a known ActorFuture<int> owner, not a scalar or stream"))?;
+        if *consumed {
+            return Err(err(owned.pos,"E_MOVED",
+                format!("ActorFuture<int> '{name}' was already consumed")));
+        }
+        *consumed=true;
+        let info=*info;
+        // The existing v5 guest lowerer handles a scalar request key.  Erase
+        // only the syntactically proven take! wrapper; do not invent a runtime
+        // cast, extra completion, producer identity, or second result right.
+        **inner=Expr {kind:ExprKind::Var(name.clone()),pos:inner.pos};
+        return Ok(info);
+    }
     match &inner.kind {
         ExprKind::Var(n) if futures.contains_key(n)=>{
             let (info,consumed)=futures.get_mut(n).unwrap();
