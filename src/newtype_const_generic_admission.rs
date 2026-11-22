@@ -79,7 +79,7 @@ fn parse_newtype(t: &[Token], i: usize, result: &mut Admission) -> R<usize> {
     let name = ident(t, p).ok_or_else(||
         error(t, p, "E_SYNTAX", "newtype requires an identifier"))?.to_string();
     if name.len() > 128 || crate::parser::is_reserved(&name)
-        || matches!(name.as_str(), "int" | "i64" | "u64" | "usize" | "Port" if false)
+        || matches!(name.as_str(), "int" | "i64" | "u64" | "usize")
     {
         return Err(error(t, p, "E_SYNTAX", "newtype name is invalid or reserved"));
     }
@@ -195,6 +195,12 @@ fn exact_factor(t: &[Token], index: &mut usize, end: usize, depth: usize) -> R<u
             *index += 1;
             Ok(*v)
         }
+        Some(Tok::Int(None)) => {
+            // The lexer reserves None for the exact 2^63 literal, which is
+            // invalid as signed i64 but representable as 64-bit usize.
+            *index += 1;
+            Ok(1_u64 << 63)
+        }
         Some(Tok::LParen) => {
             *index += 1;
             let n = exact_const(t, index, end, depth + 1)?;
@@ -271,15 +277,26 @@ fn array_dimensions(t: &[Token], i: usize, formals: &BTreeSet<String>,
 pub fn inspect(t: &[Token]) -> R<Admission> {
     let mut result = Admission::default();
     let mut formals = BTreeSet::new();
+    let mut local_formals = BTreeSet::new();
+    let mut angle_depth = 0usize;
     // Collect declared const value binders. This does not prove their use or
     // general generic instantiation; positive forms still cannot emit Wasm.
     for i in 0..t.len() {
+        match at(t, i) {
+            Some(Tok::Lt) => angle_depth += 1,
+            Some(Tok::Gt) => {
+                angle_depth = angle_depth.saturating_sub(1);
+                if angle_depth == 0 { local_formals.clear(); }
+            }
+            _ => {}
+        }
         if word(t, i, "const") && word(t, i + 1, "usize") {
             let name = ident(t, i + 2).ok_or_else(||
                 error(t, i + 2, "E_CONST_GENERIC_ARG", "missing const generic parameter"))?;
-            if !formals.insert(name.to_owned()) {
+            if angle_depth > 0 && !local_formals.insert(name.to_owned()) {
                 return Err(error(t, i + 2, "E_DUPLICATE", "duplicate const parameter"));
             }
+            formals.insert(name.to_owned());
             result.requires_backend = true;
         }
     }
@@ -372,6 +389,10 @@ pub fn inspect(t: &[Token]) -> R<Admission> {
             if let Some(bounds) = result.nominal.get(name) {
                 if word(t, i + 2, "from_const") && at(t, i + 3) == Some(&Tok::LParen) {
                     let mut value_start = i + 4;
+                    if !matches!(at(t, value_start), Some(Tok::Int(_)) | Some(Tok::Minus)) {
+                        return Err(error(t, value_start, "E_RANGE_UNPROVEN",
+                            "from_const requires an exact integer literal"));
+                    }
                     let value = signed(t, &mut value_start)?;
                     if at(t, value_start) != Some(&Tok::RParen) {
                         return Err(error(t, value_start, "E_RANGE_UNPROVEN",
@@ -401,4 +422,85 @@ pub fn preflight(t: &[Token]) -> R<()> {
             "newtype and const-generic syntax validated, but this browser backend lacks verified nominal guest construction and fixed-layout specialization"));
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::lex;
+
+    fn analyze(source: &str) -> R<Admission> {
+        inspect(&lex(source).expect("lexed AttoLang source"))
+    }
+    fn rejects(source: &str, expected: &str) {
+        let error = analyze(source).expect_err("must fail closed");
+        assert_eq!(error.code, expected, "{source}: {error}");
+    }
+
+    #[test]
+    fn exact_i64_bounds_and_minimum_value() {
+        let program = analyze(
+            "define newtype Port(i64) where value >= 1 and value <= 65535; end"
+        ).unwrap();
+        assert_eq!(program.nominal["Port"], Interval {low: 1, high: 65535});
+        assert!(program.requires_backend);
+        let min = analyze("define newtype Min(i64) where value gte -9223372036854775808; end").unwrap();
+        assert!(min.nominal["Min"].contains(i64::MIN));
+    }
+
+    #[test]
+    fn nominal_ranges_reject_unsafe_values_and_unknown_predicates() {
+        rejects("define newtype Port(i64) where value gte 1 and value lte 65535; end fnc main(): int { val Port p = Port.from_const(0); return 42; }",
+            "E_RANGE_INVALID");
+        rejects("define newtype P(i64) where value gte 9 and value lte 8; end",
+            "E_RANGE_INVALID");
+        rejects("define newtype P(i64) where is_prime(value); end", "E_RANGE_UNPROVEN");
+    }
+
+    #[test]
+    fn nominal_identity_cannot_be_replaced_with_same_base_storage() {
+        rejects("define newtype UserId(i64); define newtype OrderId(i64); fnc accept(UserId id) -> int { return 42; } fnc main(): int { val OrderId order = OrderId.from_const(7); return accept(order); }",
+            "E_NEWTYPE_MISMATCH");
+        rejects("define newtype UserId(i64); fnc main(): int { val UserId id = 7; return 42; }",
+            "E_NEWTYPE_CONSTRUCTION");
+    }
+
+    #[test]
+    fn bounded_dimensions_and_arithmetic() {
+        let a = analyze("fnc main(): int { val Array<int, 4 * 4> a = 0; return 42; }").unwrap();
+        assert_eq!(a.known_lengths, vec![16]);
+        rejects("fnc main(): int { val Array<int, runtime_n> a = 0; return 42; }",
+            "E_CONST_GENERIC_ARG");
+        rejects("fnc main(): int { val Array<int, 9223372036854775807 * 3> a = 0; return 42; }",
+            "E_CONST_OVERFLOW");
+        rejects("fnc main(): int { val Array<int, 1025 * 1024> a = 0; return 42; }",
+            "E_CONST_LAYOUT_BUDGET");
+    }
+
+    #[test]
+    fn integer_unsigned_2_pow_63_is_exact_and_not_silently_sign_wrapped() {
+        rejects("fnc main(): int { val Array<int, 9223372036854775808 * 2> a = 0; return 42; }",
+            "E_CONST_OVERFLOW");
+        let a = analyze("fnc main(): int { val Array<int, 9223372036854775808 - 9223372036854775807> a = 0; return 42; }").unwrap();
+        assert_eq!(a.known_lengths, vec![1]);
+    }
+
+    #[test]
+    fn distinct_generic_headers_can_reuse_parameter_names() {
+        let p = analyze("define struct Matrix<T, const usize N> as end define struct Vector<T, const usize N> as end").unwrap();
+        assert!(p.requires_backend);
+        rejects("define struct Pair<T, const usize N, const usize N> as end", "E_DUPLICATE");
+    }
+
+    #[test]
+    fn ordinary_scalar_source_remains_unaffected() {
+        let p = analyze("fnc main(): int { return 42; }").unwrap();
+        assert!(!p.requires_backend);
+        assert!(p.nominal.is_empty());
+        assert!(p.known_lengths.is_empty());
+        preflight(&lex("fnc main(): int { return 42; }").unwrap()).unwrap();
+        assert_eq!(preflight(&lex("define newtype Port(i64);").unwrap()).unwrap_err().code,
+            "E_UNSUPPORTED");
+    }
 }
