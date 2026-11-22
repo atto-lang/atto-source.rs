@@ -89,3 +89,15 @@ pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
 }"#;
     assert_eq!(code(source),"E_MOVED");
 }
+
+#[test]
+fn committed_core_future_negative_fixtures_produce_stable_diagnostics() {
+    for (source,code_expected) in [
+        (include_str!("../contracts/std-actor-v1/future-use-after-await.reject.atto"),"E_MOVED"),
+        (include_str!("../contracts/std-actor-v1/future-loan-across-await.reject.atto"),"E_BORROW"),
+        (include_str!("../contracts/std-actor-v1/future-take-then-await.reject.atto"),"E_MOVED"),
+        (include_str!("../contracts/std-actor-v1/future-forged-constructor.reject.atto"),"E_RESERVED"),
+    ] {
+        assert_eq!(code(source),code_expected,"real compiler-core diagnostic must match authored fixture");
+    }
+}
