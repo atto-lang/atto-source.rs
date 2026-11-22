@@ -90,8 +90,9 @@ fn borrowed_affine_payload_escape_requires_ownership_diagnostic() {
     let error = compile(source).expect_err("a borrowed affine Option must not return its owned payload");
     // A parser not recognizing borrow or class constructs is NOT a proof.
     // The compiler must reject the typed ownership violation itself.
+    let diagnostic_code = error.code.to_string();
     assert!(
-        matches!(error.code, "E_OWNERSHIP" | "E_BORROW" | "E_MOVED"),
+        ["E_OWNERSHIP", "E_BORROW", "E_MOVED"].contains(&diagnostic_code.as_str()),
         "must reject on typed ownership grounds, not a syntax/type fallback: {error}"
     );
     assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
