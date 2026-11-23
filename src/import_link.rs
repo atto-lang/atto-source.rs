@@ -80,7 +80,13 @@ struct Binding {
 }
 fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
     let mut result = Vec::new();
-    let mut i = 0;
+    // The namespace was normalized on the ORIGINAL input before import
+    // extraction. Retain that file-scoped source identity while finding imports.
+    let prefix_end = if word(toks.first(), "use") && word(toks.get(1), "namespace") {
+        toks.iter().position(|t| t.tok == Tok::Semi)
+            .ok_or_else(|| diagnostic(toks[0].pos, "E_SYNTAX", "unterminated namespace header"))? + 1
+    } else { 0 };
+    let mut i = prefix_end;
     while word(toks.get(i), "import") {
         let pos = toks[i].pos;
         i += 1;
@@ -127,22 +133,26 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
             return Err(diagnostic(pos, "E_SOURCE_LIMIT", "too many import declarations"));
         }
     }
-    Ok((result, toks[i..].to_vec()))
+    let mut remaining = toks[..prefix_end].to_vec();
+    remaining.extend_from_slice(&toks[i..]);
+    Ok((result, remaining))
 }
 
-// A namespace is file identity, NOT an import or a capability grant. The
-// direct-function linker must validate it before looking for an import, then
-// remove only the validated header from each independently owned source file.
-// Never erase misplaced/duplicate declarations or invent ambient exports.
-fn without_namespace_header(tokens: &[Token], logical: &Path) -> R<Vec<Token>> {
+/// Preserve file namespace identity validation, then expose only direct functions
+/// to the one-hop imported-function linker. A source namespace is not a module,
+/// and may never be smuggled into the generated nested module body.
+/// Validate the WHOLE token stream before removing the header: duplicate/late
+/// namespace declarations must still fail with their original diagnostic.
+fn imported_function_tokens(tokens: &[Token], logical: &Path) -> R<Vec<Token>> {
     let normalized = crate::namespace::normalize(tokens, Some(logical))?;
     if !word(normalized.first(), "use") || !word(normalized.get(1), "namespace") {
         return Ok(normalized);
     }
-    // The namespace parser has already validated bounded dotted identifiers
-    // and the terminating semicolon, including derived folder namespaces.
-    let end = normalized.iter().position(|t| t.tok == Tok::Semi)
-        .ok_or_else(|| diagnostic(tokens[0].pos, "E_SYNTAX", "unterminated namespace header"))?;
+    let end = normalized.iter().position(|t| t.tok == Tok::Semi).ok_or_else(|| {
+        diagnostic(normalized[0].pos, "E_SYNTAX", "unterminated namespace header")
+    })?;
+    // Leave EOF intact, but never emit a file-level declaration inside
+    // the generated private module.
     Ok(normalized[end + 1..].to_vec())
 }
 
@@ -216,11 +226,11 @@ where F: FnMut(&Path) -> std::io::Result<String> {
     if logical.is_absolute() {
         return Err(diagnostic(Pos { line: 1, col: 1 }, "E_IMPORT_PATH", "logical path must be project-relative"));
     }
-    let lexed = lexer::lex(source)?;
-    // The ordinary compiler validates namespace headers later, but relative
-    // import discovery must also recognize the legal namespace-first form.
-    let prepared = without_namespace_header(&lexed, logical)?;
-    let (imports, root) = imports(&prepared, logical)?;
+    // Validate the original file order BEFORE removing imports. Without this,
+    // an illegal `import ...; use namespace late;` would be laundered into
+    // a first-position header by the import linker.
+    let lexed = crate::namespace::normalize(&lexer::lex(source)?, Some(logical))?;
+    let (imports, root) = imports(&lexed, logical)?;
     if imports.is_empty() { return Ok(lexed); }
     reject_forged_names(&root)?;
     let mut parser = Parser::new(root.clone());
@@ -244,8 +254,8 @@ where F: FnMut(&Path) -> std::io::Result<String> {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "imported file exceeds 64 KiB"));
             }
             let lexed = lexer::lex(&text)?;
-            let toks = without_namespace_header(&lexed, &imp.path)?;
-            reject_forged_names(&toks)?;
+            reject_forged_names(&lexed)?;
+            let toks = imported_function_tokens(&lexed, &imp.path)?;
             let (funcs, heads) = functions(&toks)?;
             let module = format!("{RESERVED}{}", units.len());
             let mut rewritten = Vec::new();
@@ -317,6 +327,14 @@ where F: FnMut(&Path) -> std::io::Result<String> {
     }
 
     let mut all = Vec::new();
+    // The internal synthetic modules are linker implementation detail.
+    // Hoist the validated root namespace to the beginning of the linked
+    // token stream; otherwise it would become a falsely "late" header.
+    if word(rewritten_root.first(), "use") && word(rewritten_root.get(1), "namespace") {
+        let end = rewritten_root.iter().position(|t| t.tok == Tok::Semi)
+            .ok_or_else(|| diagnostic(imports[0].pos, "E_SYNTAX", "unterminated namespace header"))?;
+        all.extend(rewritten_root.drain(..=end));
+    }
     for file in units {
         let pos = imports[0].pos;
         all.extend([ident("define", pos), ident("module", pos), ident(&file.module, pos), ident("as", pos)]);

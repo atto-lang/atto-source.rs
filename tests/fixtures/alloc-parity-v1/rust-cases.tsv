@@ -1,0 +1,4 @@
+# contract: atto-common-source/contracts/alloc/ownership-parity-v1.json
+# compiler-rejected source programs only; no physical guest runtime or AOT claim
+ownership.double_drop	compile	REJECT	tests/fixtures/alloc-parity-v1/ownership-double-drop.atto	E_MOVED
+borrow.drop_while_live_read	compile	REJECT	tests/fixtures/alloc-parity-v1/borrow-drop-while-live-read.atto	E_BORROW

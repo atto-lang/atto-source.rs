@@ -1,0 +1,40 @@
+name: Rust allocation parity compiler rejection (two cases)
+on:
+  pull_request:
+    paths:
+      - 'tests/fixtures/alloc-parity-v1/**'
+      - 'tests/alloc_parity_ownership_v1.rs'
+      - 'tests/alloc-parity-ownership-v1.sh'
+      - '.github/workflows/alloc-parity-ownership-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  allocation-ownership-negative:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Checkout immutable source HEAD
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Verify triggering commit and source tree
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --quiet
+          git diff --cached --quiet
+          echo "ATTO_RS_ALLOC_SOURCE_HEAD=$EXPECTED_SHA"
+          echo "ATTO_RS_ALLOC_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Execute allocation conformance negative compiler cases
+        shell: bash
+        run: bash tests/alloc-parity-ownership-v1.sh
+      - name: Evidence scope
+        if: always()
+        run: |
+          echo 'Two compile-time Rust Atto rejection fixtures; NOT compiled guest execution, native allocation, Arc, AOT or all-backend parity.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Queued or zero-step workflows are NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"

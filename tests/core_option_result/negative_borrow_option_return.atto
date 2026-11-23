@@ -1,0 +1,10 @@
+// expect-error: E_BORROW
+// Returning a borrowed affine class owner cannot manufacture owned identity.
+// Option<int> is Copy; this negative intentionally uses a non-Copy payload.
+define class Payload as
+  pub val int value = 42;
+end
+fnc leak(Payload owner): Payload {
+  return borrow! owner;
+}
+pub fnc main(): int { return 0; }

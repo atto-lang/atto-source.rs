@@ -1,0 +1,23 @@
+// core/cmp (atto-source.rs): three-way comparison and ordering helpers.
+define module cmp as
+  pub fnc compare(int a, int b): int {
+    if a < b then return 0 - 1; fi
+    if a > b then return 1; fi
+    return 0;
+  }
+  pub fnc between(int value, int lower, int upper): bool {
+    return value >= lower && value <= upper;
+  }
+  pub fnc min3(int a, int b, int c): int {
+    let int m = a;
+    if b < m then m = b; fi
+    if c < m then m = c; fi
+    return m;
+  }
+  pub fnc max3(int a, int b, int c): int {
+    let int m = a;
+    if b > m then m = b; fi
+    if c > m then m = c; fi
+    return m;
+  }
+end
