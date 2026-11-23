@@ -1,0 +1,19 @@
+# core/types v1 — Rust-to-Wasm browser compiler
+
+This backend owns its own `core/types.atto`; it imports no other backend's standard library source.
+
+`int` is signed i64. The module supplies logical scalar value widths, signed 64-bit extrema, and `fits_i8/i16/i32/i64/u8/u16/u32/u64(int)` range checks. These predicates do **not** create narrowed values, prove sized integer compiler enforcement, reveal object/ABI layouts, or perform allocations/host reflection. `fits_u64` only admits nonnegative signed-int inputs.
+
+`void` is a valueless return marker, not an inhabited `Unit`. A future `Unit` singleton, opaque compiler-minted `TypeId`, and static `TypeInfo<T>` metadata require separately verified backend compiler support; user strings/numbers must not substitute for nominal identity.
+
+Conformance target: compile and execute `tests/fixtures/core-types-v1/edge-positive.atto` linked to this source (exit 0); compiler-reject `void-value-negative.atto` with no artifact. Record exact-head, target/toolchain, actual runner steps and failures. **NOT_EXECUTED**: no compiler/guest evidence has been established for this PR. Do not infer AOT or cross-compiler parity from staged source or source-free checks.
+
+## Namespace-only core source
+
+Canonical `use namespace types;` file header plus public top-level functions; no `define module` wrapper. Consumers still explicitly import the symbols. Compiler parse, namespace source identity, static imports, and executed linked guests require separate proofs. Until the current PR compiles and runs, namespace guest parity remains NOT_EXECUTED.
+
+## Import linker hardening (namespace migration)
+
+The one-hop source-file importer validates the **original** token sequence with `namespace::normalize()` before extracting imports. This rejects `import ...; use namespace late;` and duplicate headers rather than accidentally promoting a late header to the first declaration. A valid root `use namespace application;` is retained ahead of compiler-generated private modules; imported file headers are separately validated then removed from the nested module body. Public `fnc` exports remain explicit; private/missing exports, alias collisions, path traversal, nested imports, forged generated symbol prefixes and unresolvable derived namespaces fail closed.
+
+`cargo test --locked --test core_types_namespace_import` now stages nine compiler-backed integration tests. They have **not run** until stepful CI admits the exact head. They do not prove a fully general package/namespace linker or AOT parity.

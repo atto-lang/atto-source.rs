@@ -51,6 +51,13 @@ pub struct TargetHeaders {
     pub namespace: Option<String>,
     /// Local names of static imports. Export paths are not resolved or linked here.
     pub imports: Vec<String>,
+    /// Local aliases from typed `import const` selections; names only, not linked.
+    pub const_imports: Vec<String>,
+    /// File-scoped static `define const` declaration names (parse-only).
+    pub constants: Vec<String>,
+    /// Recognized direct std.env/os startup-read initializer shapes. This is
+    /// *syntax-only* provenance; linker must validate trusted symbol identity.
+    pub env_const_reads: Vec<String>,
     pub actors: Vec<String>,
     /// Non-instantiating class forward declarations.
     pub class_forwards: Vec<String>,
@@ -518,7 +525,16 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
             let mut bindings = Vec::new();
-            let legacy_pkg = if c.take_word("module") {
+            let const_only = c.take_word("const");
+            let legacy_pkg = if const_only {
+                // Typed constant selections may not be namespace-wide or legacy
+                // module imports. Kind checking is deferred to the linker.
+                if !matches!(c.tok(), Tok::Ident(_)) {
+                    return Err(c.err("E_SYNTAX", "import const requires named exports"));
+                }
+                c.import_names(&mut bindings)?;
+                false
+            } else if c.take_word("module") {
                 // Legacy import module name from "./file.atto" syntax.
                 bindings.push(c.ident()?);
                 false
@@ -543,8 +559,19 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                     if package && (path.starts_with("./") || path.starts_with("../")) {
                         return Err(c.err("E_SYNTAX", "package imports cannot use relative file paths"));
                     }
-                    if !package && !path.starts_with("./") && !path.starts_with("../") {
-                        return Err(c.err("E_SYNTAX", "file imports require a quoted relative path"));
+                    // A dotted namespace identity such as "std.http" is an
+                    // unambiguous package selector without the optional `pkg`.
+                    // A bare "math.atto" remains an invalid file import.
+                    let dotted_namespace = !path.ends_with(".atto")
+                        && path.split('.').count() >= 2
+                        && path.split('.').all(|part| {
+                            let mut chars = part.chars();
+                            matches!(chars.next(), Some(ch) if ch.is_alphabetic() || ch == '_')
+                                && chars.all(|ch| ch.is_alphanumeric() || ch == '_')
+                        });
+                    if !package && !path.starts_with("./") && !path.starts_with("../")
+                        && !dotted_namespace {
+                        return Err(c.err("E_SYNTAX", "file imports require ./ or ../; bare packages require a dotted namespace or pkg"));
                     }
                     c.next();
                 }
@@ -556,11 +583,72 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                     return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
                 }
                 import_sites.push((alias.clone(), pos));
+                if const_only { out.const_imports.push(alias.clone()); }
                 out.imports.push(alias);
             }
         } else if c.take_word("define") {
             saw_declaration = true;
-            if c.take_word("state") {
+            let public = c.take_word("pub");
+            if c.take_word("const") {
+                let _ty = c.type_name()?;
+                let name = c.ident()?;
+                if !c.take(&Tok::Assign) && !c.take_word("as") {
+                    return Err(c.err("E_SYNTAX", "define const requires = or as initializer"));
+                }
+                let start = c.i;
+                let mut depth = 0usize;
+                while *c.tok() != Tok::Semi || depth != 0 {
+                    match c.tok() {
+                        Tok::LParen => {
+                            depth += 1;
+                            if depth > 32 { return Err(c.err("E_SOURCE_LIMIT", "const initializer nesting exceeds 32")); }
+                        }
+                        Tok::RParen if depth > 0 => depth -= 1,
+                        Tok::RParen | Tok::LBrace | Tok::RBrace | Tok::LBracket | Tok::RBracket => {
+                            return Err(c.err("E_SYNTAX", "malformed top-level const initializer"));
+                        }
+                        Tok::Eof => return Err(c.err("E_EOF", "unterminated const initializer")),
+                        _ => {}
+                    }
+                    if c.i - start >= 256 {
+                        return Err(c.err("E_SOURCE_LIMIT", "const initializer exceeds 256 tokens"));
+                    }
+                    c.next();
+                }
+                if c.i == start { return Err(c.err("E_SYNTAX", "empty const initializer")); }
+                c.expect(&Tok::Semi, "expected ';' after const declaration")?;
+                let init = &toks[start..c.i - 1];
+                // Observe exact direct environment-read spelling without granting
+                // arbitrary user-defined read_env calls a privileged effect.
+                // Semantic lookup must still authenticate the std.env symbol.
+                let word_at = |i: usize, expected: &str| {
+                    matches!(init.get(i).map(|t| &t.tok), Some(Tok::Ident(s)) if s == expected)
+                };
+                let dot_at = |i: usize| {
+                    init.get(i).is_some_and(|t| t.tok == Tok::Dot)
+                };
+                let canonical = word_at(0, "std") && dot_at(1) && word_at(2, "env")
+                    && dot_at(3) && word_at(4, "read_env");
+                let legacy = word_at(0, "os") && dot_at(1) && word_at(2, "read_env");
+                if canonical || legacy {
+                    let (open, key, close) = if canonical { (5, 6, 7) } else { (3, 4, 5) };
+                    if init.len() != close + 1
+                        || !init.get(open).is_some_and(|t| t.tok == Tok::LParen)
+                        || !init.get(key).is_some_and(|t| matches!(&t.tok, Tok::Str(_) | Tok::Ident(_)))
+                        || !init.get(close).is_some_and(|t| t.tok == Tok::RParen) {
+                        return Err(Diagnostic::new(pos, "E_CONST",
+                            "static read_env requires exactly one literal or constexpr-name key"));
+                    }
+                    out.env_const_reads.push(name.clone());
+                }
+                if out.constants.contains(&name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                        format!("duplicate file constant '{name}'")));
+                }
+                out.constants.push(name);
+            } else if public {
+                return Err(c.err("E_SYNTAX", "define pub requires a supported declaration kind"));
+            } else if c.take_word("state") {
                 let owner = c.state_attachment()?;
                 if out.state_owners.contains(&owner) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
@@ -661,6 +749,17 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
         }
         decls += 1;
     }
+    // Constant headers occupy the same file namespace as callables and nominals.
+    // Import aliases are checked separately below against all declaration kinds.
+    for name in &out.constants {
+        if function_names.contains(name) || out.actors.contains(name)
+            || out.classes.contains(name) || out.class_forwards.contains(name)
+            || out.struct_forwards.contains(name)
+            || out.definitions.iter().any(|decl| &decl.name == name) {
+            return Err(Diagnostic::new(Pos::default(), "E_DUPLICATE",
+                format!("file constant '{name}' conflicts with another declaration")));
+        }
+    }
     // Imports are local static bindings, never permissive aliases that can
     // shadow a declared nominal owner or a file-level callable. Detect
     // collisions independent of declaration order, before any lowering.
@@ -670,7 +769,8 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
             || out.class_forwards.contains(import_name)
             || out.struct_forwards.contains(import_name)
             || out.definitions.iter().any(|decl| &decl.name == import_name);
-        if nominal_collision || function_names.contains(import_name) {
+        if nominal_collision || function_names.contains(import_name)
+            || out.constants.contains(import_name) {
             return Err(Diagnostic::new(*import_pos, "E_DUPLICATE",
                 format!("import binding '{import_name}' conflicts with a local declaration")));
         }

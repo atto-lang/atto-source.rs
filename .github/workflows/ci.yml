@@ -53,6 +53,12 @@ jobs:
           # A deadlocked cap=0 producer/reader must FAIL rather than hang CI.
           node --check tests/node-v2-channel-guest.mjs
           node tests/node-v2-channel-guest.mjs
+      - name: Execute constant import guests and fail-closed import checks
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node --check tests/constant_import_guest.mjs
+          node tests/constant_import_guest.mjs
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc

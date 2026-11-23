@@ -25,11 +25,13 @@ pub mod collection_layout_type;
 // checker. Do not edit its SHA-pinned body for Clippy-only style changes.
 #[allow(clippy::needless_return)]
 pub mod copy_graph_v1;
+pub mod borrow_export;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
+pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
@@ -39,6 +41,7 @@ pub mod scalar_generic;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
+pub mod const_import_link;
 pub mod import_link;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
@@ -100,26 +103,35 @@ fn has_explicit_async_frontend(toks: &[lexer::Token]) -> bool {
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
-    compile_inner(source, None)
+    let source = library::expand(source)?;
+    compile_inner(&source, None)
 }
 
 /// Compile with a caller-supplied logical, package-relative source file path.
 /// Required when the source declares `use default namespace[(N)];`.
 pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
     -> Result<Vec<u8>, Diagnostic> {
-    compile_inner(source, Some(logical_path))
+    let source = library::expand(source)?;
+    compile_inner(&source, Some(logical_path))
 }
 
 /// Compile a project entry with trusted caller-supplied relative source loading.
 pub fn compile_with_imports<F>(
-    source: &str, logical_path: &std::path::Path, load: F,
+    source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    let source = library::expand(source)?;
+    // Bounded relative-file scalar `import const` can substitute only
+    // verified literal values, before the existing checker and guest emitter.
+    // Full package and environment-backed initialization still fail closed.
+    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut load)? {
+        return compile_prelexed(tokens, Some(logical_path));
+    }
     // Same v2 decision as the in-browser path: the source tokens (not the
     // import-linked tokens) decide opt-in, and v2 compiles the source alone,
     // so native and wasm32 hosts emit identical bytes for the same source.
-    let source_tokens = lexer::lex(source)?;
-    let primary = import_link::lower(source, logical_path, load)
+    let source_tokens = lexer::lex(&source)?;
+    let primary = import_link::lower(&source, logical_path, load)
         .and_then(|tokens| compile_prelexed(tokens, Some(logical_path)));
     with_v2_fallback(source_tokens, primary)
 }

@@ -1,5 +1,50 @@
 > **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/atto-lang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
 
+## Bounded relative-file constant import guest candidate (not CI-verified)
+
+This branch implements a first **scalar-literal-only** executable import path:
+
+```atto
+// config.atto
+define pub const int status_valid = 200;
+
+// main.atto
+import const status_valid as ok from "./config.atto";
+pub fnc main(): int { return ok; }
+```
+
+`src/const_import_link.rs` accepts only directly declared public/private
+`int`, `bool`, and `string` literal values in bounded one-hop relative
+`.atto` files. It checks declared type against the literal, visibility,
+duplicate aliases, assignment attempts, caller-supplied path normalization,
+and other unsupported uses. Proven scalar literals enter the existing
+production type checker and Wasm emitter, with no runtime mutable global.
+
+**Remaining unsupported:** package selector `"std.http"`, mixed kinds of
+import, initializer expressions, and runtime-once `std.env.read_env` /
+legacy `os.read_env`. In particular, the build host environment must
+**never** be substituted for a guest startup environment. These forms
+fail closed rather than producing an unverified guest executable.
+The native CLI must separately canonicalize the actual file it loads.
+
+The added Rust `tests/const_import_link.rs` and Node
+`tests/constant_import_guest.mjs` tests cover a Wasm guest and negative
+no-artifact paths, including symlink escape denial. Once source-owned CI
+admits a real runner, verify with:
+
+```sh
+cargo test --locked --test const_import_link
+cargo test --locked --test constant_import_syntax
+cargo build --locked --release --bin attoc
+ATTOC=target/release/attoc node tests/constant_import_guest.mjs
+```
+
+**Evidence:** not executed on exact head, no positive guest CI claim.
+The source repository's private-source export allowlist currently has
+zero destinations approved; do not use cross-org Git-tree mirroring
+without a separately authenticated, reviewed authorization and active
+export guard.
+
 ## Named callable return annotations (strict target)
 
 Under the new strict named-callable rule, every function, routine, class/actor method (including static and out-of-line methods) and actor `receive` handler must explicitly specify a result. Write `-> int`, `-> void`, or opt into `-> infer`. The `: T` / `: infer` spelling is also legal; concrete types are preferred. Missing annotations produce `E_RETURN_ANNOTATION`, never a silently inferred `void`. Constructors and contextual lambdas are separate grammar categories.

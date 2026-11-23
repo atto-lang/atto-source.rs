@@ -378,3 +378,41 @@ fn signed_snapshot_rejects_unreachable_extra_content() {
         "E_LOCK_HASH"
     );
 }
+
+#[test]
+fn namespace_only_core_sources_execute_verified_package_graph_compiler() {
+    let f = Fixture::new();
+    f.write("src/main.atto", r#"use namespace app;
+import namespace slice from "+core/slice.atto";
+import namespace cmp from "+core/cmp.atto";
+pub fnc main(): int {
+  if !slice.valid_range(0, 3, 3) then return 1; fi
+  return cmp.compare_int(21, 20) + 41;
+}"#);
+    f.write("core/slice.atto", include_str!("../core/slice.atto"));
+    f.write("core/cmp.atto", include_str!("../core/cmp.atto"));
+    let actual = compile_package(f.root(), "src/main.atto")
+        .expect("canonical source-only namespace package graph");
+    assert!(actual.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(actual, compile_package(f.root(), "src/main.atto").unwrap());
+    f.write("core/cmp.atto", &include_str!("../core/cmp.atto")
+        .replace("use namespace atto.core.cmp;", "use namespace atto.core.spoofed;"));
+    rejects(f.root(), "src/main.atto", "E_UNBOUND");
+}
+
+#[cfg(unix)]
+#[test]
+fn namespace_only_package_import_still_rejects_symlinked_provider() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    f.write("src/main.atto", r#"import namespace slice from "+core/slice.atto";
+pub fnc main(): int { if slice.valid_range(0, 2, 2) then return 42; fi return 1; }"#);
+    f.write("core/slice.atto", include_str!("../core/slice.atto"));
+    let bytes = compile_package(f.root(), "src/main.atto")
+        .expect("ordinary valid namespace source compiles");
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
+    let original = f.root().join("core/slice.atto");
+    fs::rename(&original, f.root().join("core/source.atto")).unwrap();
+    symlink(f.root().join("core/source.atto"), &original).unwrap();
+    rejects(f.root(), "src/main.atto", "E_IMPORT_PATH");
+}
