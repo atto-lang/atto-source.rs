@@ -102,10 +102,15 @@ pub fn resolve(name: &str, profile: Profile) -> Option<&'static Binding> {
 /// Compiler-owned ADT/collection/loan identities cannot be spoofed by user
 /// declarations, regardless of a file's lexical import order. Additional
 /// convenience prelude names are intentionally not all globally reserved.
+///
+/// Contract-only catalog entries (Pair, Box, Error, Iterator, ...) are NOT
+/// reserved: existing programs legitimately declare classes with those names,
+/// and reserving them would be a breaking change without lowering behind it.
 pub fn protected_identity(name: &str) -> bool {
-    TYPE_INFO.iter().any(|info| {
-        info.name == name && (info.kind == Kind::Constructor || info.scope != Scope::Explicit)
-    }) || matches!(name, "FixedList" | "Vector" | "ReadLoan" | "WriteLoan")
+    TYPE_INFO.iter().any(|info| info.name == name && info.kind == Kind::Constructor)
+        || matches!(name,
+            "Option" | "Result" | "Array" | "FixedArray" | "List" | "FixedList"
+            | "Vector" | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan")
 }
 
 /// A scoped prelude name recognized by source semantics but not necessarily
@@ -171,7 +176,7 @@ impl TypeInfo {
     }
 }
 
-const fn type_info(
+const fn info(
     name: &'static str, canonical: &'static str, scope: Scope, kind: Kind,
     min: u8, max: u8, ownership: Ownership, allocation: Allocation,
     drop_policy: DropPolicy, send_policy: SendPolicy, lowering: LoweringStatus,
@@ -184,56 +189,56 @@ const fn type_info(
 /// CONTRACT_ONLY entries are discoverable for specification/conformance but
 /// MUST still fail closed in this backend until real lowering exists.
 pub const TYPE_INFO: &[TypeInfo] = &[
-    type_info("int","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
-    type_info("Int","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("i64","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
-    type_info("i8","core/primitive/i8",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("i16","core/primitive/i16",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("i32","core/primitive/i32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("uint","core/primitive/u64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("u8","core/primitive/u8",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("u16","core/primitive/u16",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("u32","core/primitive/u32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("u64","core/primitive/u64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("bool","core/primitive/bool",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
-    type_info("Bool","core/primitive/bool",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("float","core/primitive/f64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("f32","core/primitive/f32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("f64","core/primitive/f64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("string","core/primitive/string-view",Scope::Core,Kind::Type,0,0,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::LegacyStringView),
-    type_info("Option","core/option/Option",Scope::Core,Kind::Type,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
-    type_info("Some","core/option/Some",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
-    type_info("None","core/option/None",Scope::Core,Kind::Constructor,0,0,Ownership::PayloadDependent,Allocation::None,DropPolicy::None,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
-    type_info("Result","core/result/Result",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
-    type_info("Ok","core/result/Ok",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
-    type_info("Err","core/result/Err",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
-    type_info("Error","core/error/Error",Scope::Core,Kind::Type,0,0,Ownership::Owned,Allocation::None,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Array","core/array/Array",Scope::Core,Kind::Type,1,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("FixedArray","core/array/FixedArray",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Slice","core/slice/Slice",Scope::Core,Kind::Type,1,1,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::ContractOnly),
-    type_info("Tuple","core/tuple/Tuple",Scope::Core,Kind::Type,0,32,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Pair","core/tuple/Pair",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Iterator","core/iter/Iterator",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("Range","core/range/Range",Scope::Core,Kind::Type,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::None,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Eq","core/cmp/Eq",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("Ord","core/cmp/Ord",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("Ordering","core/cmp/Ordering",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
-    type_info("From","core/convert/From",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("Into","core/convert/Into",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("TryFrom","core/convert/TryFrom",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("TryInto","core/convert/TryInto",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("Display","core/fmt/Display",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("Debug","core/fmt/Debug",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("Sendable","core/marker/Sendable",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
-    type_info("String","alloc/string/String",Scope::Alloc,Kind::Type,0,0,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::LegacyStringView),
-    type_info("List","alloc/list/List",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Vec","alloc/vec/Vec",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Map","alloc/map/Map",Scope::Alloc,Kind::Type,2,2,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Set","alloc/set/Set",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Box","alloc/box/Box",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("HashMap","alloc/hash_map/HashMap",Scope::Explicit,Kind::Type,2,2,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("HashSet","alloc/hash_set/HashSet",Scope::Explicit,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
-    type_info("Entry","alloc/map/Entry",Scope::Explicit,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("int","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
+    info("Int","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("i64","core/primitive/i64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
+    info("i8","core/primitive/i8",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("i16","core/primitive/i16",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("i32","core/primitive/i32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("uint","core/primitive/u64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("u8","core/primitive/u8",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("u16","core/primitive/u16",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("u32","core/primitive/u32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("u64","core/primitive/u64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("bool","core/primitive/bool",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::WasmPrimitive),
+    info("Bool","core/primitive/bool",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("float","core/primitive/f64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("f32","core/primitive/f32",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("f64","core/primitive/f64",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("string","core/primitive/string-view",Scope::Core,Kind::Type,0,0,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::LegacyStringView),
+    info("Option","core/option/Option",Scope::Core,Kind::Type,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    info("Some","core/option/Some",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    info("None","core/option/None",Scope::Core,Kind::Constructor,0,0,Ownership::PayloadDependent,Allocation::None,DropPolicy::None,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    info("Result","core/result/Result",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    info("Ok","core/result/Ok",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    info("Err","core/result/Err",Scope::Core,Kind::Constructor,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::ActivePayloadOnce,SendPolicy::PayloadDependent,LoweringStatus::WasmScalarAdt),
+    info("Error","core/error/Error",Scope::Core,Kind::Type,0,0,Ownership::Owned,Allocation::None,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Array","core/array/Array",Scope::Core,Kind::Type,1,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("FixedArray","core/array/FixedArray",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Slice","core/slice/Slice",Scope::Core,Kind::Type,1,1,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::ContractOnly),
+    info("Tuple","core/tuple/Tuple",Scope::Core,Kind::Type,0,32,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Pair","core/tuple/Pair",Scope::Core,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Iterator","core/iter/Iterator",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("Range","core/range/Range",Scope::Core,Kind::Type,1,1,Ownership::PayloadDependent,Allocation::None,DropPolicy::None,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Eq","core/cmp/Eq",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("Ord","core/cmp/Ord",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("Ordering","core/cmp/Ordering",Scope::Core,Kind::Type,0,0,Ownership::Copy,Allocation::None,DropPolicy::None,SendPolicy::Always,LoweringStatus::ContractOnly),
+    info("From","core/convert/From",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("Into","core/convert/Into",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("TryFrom","core/convert/TryFrom",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("TryInto","core/convert/TryInto",Scope::Core,Kind::Trait,1,1,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("Display","core/fmt/Display",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("Debug","core/fmt/Debug",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("Sendable","core/marker/Sendable",Scope::Core,Kind::Trait,0,0,Ownership::Trait,Allocation::None,DropPolicy::NotAValue,SendPolicy::NotApplicable,LoweringStatus::ContractOnly),
+    info("String","alloc/string/String",Scope::Alloc,Kind::Type,0,0,Ownership::BorrowedView,Allocation::BorrowedView,DropPolicy::None,SendPolicy::NeverBorrowed,LoweringStatus::LegacyStringView),
+    info("List","alloc/list/List",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Vec","alloc/vec/Vec",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Map","alloc/map/Map",Scope::Alloc,Kind::Type,2,2,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Set","alloc/set/Set",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Box","alloc/box/Box",Scope::Alloc,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("HashMap","alloc/hash_map/HashMap",Scope::Explicit,Kind::Type,2,2,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("HashSet","alloc/hash_set/HashSet",Scope::Explicit,Kind::Type,1,1,Ownership::Owned,Allocation::AllocatorRequired,DropPolicy::OwnedStorage,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
+    info("Entry","alloc/map/Entry",Scope::Explicit,Kind::Type,2,2,Ownership::PayloadDependent,Allocation::None,DropPolicy::AllInitializedMembers,SendPolicy::PayloadDependent,LoweringStatus::ContractOnly),
 ];
 
 pub fn type_info(name: &str) -> Option<&'static TypeInfo> {
