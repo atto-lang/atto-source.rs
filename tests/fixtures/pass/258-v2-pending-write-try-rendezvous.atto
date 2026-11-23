@@ -1,0 +1,21 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Immediate non-registering read commits a queued zero-capacity writer.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val ticket = ch.send_pending(42);
+  val ready = try readch ch;
+  val delivered = await ticket;
+  val int value = match ready over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  val int success = match delivered over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if success != 1 then return 91; fi
+  ch.close();
+  stdio.println(value);
+  return value;
+}

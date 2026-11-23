@@ -1,0 +1,15 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Even a late send_pending must preserve rejected ownership on close.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  ch.close();
+  val ticket = ch.send_pending(42);
+  val recovered = ch.cancel_write(ticket);
+  val int value = match recovered over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  stdio.println(value);
+  return value;
+}

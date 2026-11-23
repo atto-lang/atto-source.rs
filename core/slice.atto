@@ -1,0 +1,44 @@
+// Freestanding slice algorithms over an existing integer array.
+// An (offset, count) pair is a checked logical view, NOT a lifetime-
+// bearing Slice<T> reference or an authorization to access foreign memory.
+// The array owner retains ownership. No copies or heap allocations here.
+use namespace atto.core.slice;
+  // Check without evaluating offset + count, which could overflow.
+  pub fnc valid_range(int offset, int count, int total): bool {
+    if offset < 0 || count < 0 || total < 0 then
+      return false;
+    fi
+    if offset > total then
+      return false;
+    fi
+    return count <= total - offset;
+  }
+
+  pub fnc valid_index(int index, int count): bool {
+    return index >= 0 && count >= 0 && index < count;
+  }
+
+  pub fnc is_empty(int count): bool {
+    return count == 0;
+  }
+
+  pub fnc can_split_at(int count, int middle): bool {
+    return count >= 0 && middle >= 0 && middle <= count;
+  }
+
+  pub fnc subslice_offset(int offset, int count, int total,
+                          int relative_offset, int relative_count): Option<int> {
+    if offset < 0 || count < 0 || total < 0 || offset > total then
+      return None;
+    fi
+    if count > total - offset then
+      return None;
+    fi
+    if relative_offset < 0 || relative_count < 0 || relative_offset > count then
+      return None;
+    fi
+    if relative_count > count - relative_offset then
+      return None;
+    fi
+    return Some(offset + relative_offset);
+  }

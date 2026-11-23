@@ -1,0 +1,21 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Removing the first registered read must make the next reader the head.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val removed = nb readch ch;
+  val retained = nb readch ch;
+  if !ch.cancel_read(removed) then return 91; fi
+  val writer = task {
+    ch.send(42);
+    return 0;
+  };
+  val result = await retained;
+  val value: int = match result over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  await writer;
+  stdio.println(value);
+  return value;
+}

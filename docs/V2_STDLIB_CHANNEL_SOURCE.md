@@ -1,0 +1,194 @@
+# Rust/Wasm v2 native Atto `std/channel` source extraction
+
+The v2 in-guest runtime is now composed from
+`src/v2/prelude.atto` plus `stdlib/channel.atto`. The latter is
+a separate compiler-backend-owned **Atto source file**, not a JS queue,
+host function or second compiled language. `src/v2/mod.rs` inserts its
+contents at the unique `@atto-stdlib-channel-source` marker before
+parsing and compiling the guest runtime as a unit.
+
+## Evidence that source semantics were preserved
+
+The original extraction of 12 `__chan_*` routines reproduced the previous
+inlined source exactly. This proof belongs to the initial refactor commit;
+subsequent hardening intentionally changed the composed guest runtime bytes. The assembled prelude's Git blob SHA-1 equals the
+pre-extraction `src/v2/prelude.atto` blob:
+
+```text
+cbbc96d544563d27953796b3a49e88ea43ec0523
+```
+
+This was an exact **pre-hardening source-byte equivalence**, not an executed
+compiler or guest Wasm receipt. The post-hardening source is intentionally
+different, so the old digest is **not** a current-head equivalence receipt. The branch must still pass its full compiler,
+fixture, guest, leak/cancellation and actor-pipe tests at its new HEAD.
+The optional static source guard (now also checking the bounded admission
+route and compiling three capacity-related Wasm fixtures) is
+`cargo test --test v2_channel_stdlib_source`; the new guest fixture is
+`tests/fixtures/pass/235-v2-channel-module-fifo.atto`.
+
+## Bounded capacity safety hardening
+
+The legacy guest constructor treated every negative capacity as effectively
+unbounded. As a result, `Channel<int>.bounded(-1)` silently acquired the
+privileged unbounded semantics. The compiler now lowers both `Channel<T>.bounded(n)` and the legacy
+`channel<T>(capacity: n)` constructor to
+`__chan_new_bounded(n)`, implemented in this backend's `.atto` module.
+This helper rejects all negative values before allocating. Direct internal
+`__chan_new` rejects values below -1, while the dedicated
+`unbounded()` constructor still passes -1. Guest denial uses the distinct
+panic code **14**. This is a runtime trap, not yet the final recoverable
+`Result<Channel<T>,ChannelError>` contract.
+
+New guests:
+- `tests/fixtures/panic/235-v2-negative-bounded-channel.atto` (panic 14)
+- `tests/fixtures/panic/236-v2-negative-other-capacity.atto` (panic 14)
+- `tests/fixtures/panic/237-v2-negative-legacy-channel-constructor.atto` (panic 14)
+- `tests/fixtures/pass/236-v2-unbounded-constructor-atto.atto` (exit 42)
+
+Compiler-to-Wasm assertions are not browser guest execution. All new current
+head native/Rust/Wasm conformance remains NOT_EXECUTED until verified.
+
+## Cooperative zero-capacity rendezvous
+
+Audit uncovered a deadlock in the original v2 runtime: `__chan_send` can
+handoff on capacity zero only to a registered `nb readch` waiter, while
+ordinary `readch` and `for await` originally suspended in a polling loop
+without registering a receiver. A producer and reader could both suspend
+forever. The backend-owned `stdlib/channel.atto` now registers one
+`__chan_nb(c)` future for an empty capacity-zero channel, awaits its
+completion through guest `__await`, and checks both DATA graph ownership
+ports again before using the result. Ordinary `readch` reports closure
+as panic 9; `for await` receives None to terminate iteration cleanly.
+
+The three regression guests are:
+- `tests/fixtures/pass/238-v2-rendezvous-direct-readch.atto`
+- `tests/fixtures/pass/239-v2-rendezvous-for-await.atto`
+- `tests/fixtures/pass/240-v2-rendezvous-close-wakes-reader.atto`
+
+`tests/node-v2-channel-guest.mjs` compiles and executes **34** positive and
+negative channel fixtures (twenty-two successful, twelve expected guest denials)
+as actual independent Wasm guests. These now cover direct rendezvous,
+for-await rendezvous, close/wakeup, invalid capacities, legacy two-port
+actor pipe ownership admission, and closed-versus-empty immediate read.
+Each guest runs
+in a bounded child process; a hang, nonzero child exit, incorrect stdout,
+wrong return value, or wrong panic code **fails** the gate. The harness is
+wired into the Rust `.github/workflows/ci.yml` after the native `attoc`
+build. A source-free/zero-step Actions result is **NOT_EXECUTED**, not a
+pass; these new tests still await stepful admission on the exact PR HEAD.
+
+Pending cancellation and removal of abandoned `nb readch` futures remain
+unverified. This milestone fixes cooperative rendezvous progress, not
+fully lifecycle-safe cancellation or Java/Rust public API parity.
+
+## ABI and unsupported APIs
+
+`__chan_new(-1)` is an in-guest growable queue sentinel. Capacity zero
+is rendezvous, positive capacity is bounded. `__chan_send` and
+`__chan_recv` suspend the cooperative guest task. Closed channels
+drain buffered values, and after drain reads terminate by the v2
+panic-code contract. Direct source reads/writes fail closed when the
+channel has been claimed by an actor DATA graph.
+
+**This is the backend-private runtime portion of std/channel.**
+It does not yet expose the Java `import module channel from
+"std/channel"` API through the Rust v2 package linker; v2 only admits
+the specifically enumerated package imports. Generic ownership,
+TryWriteResult<T> Full/Closed recovery, faithful cancellation of
+pending registered operations, cross-tenant transports and true
+unbounded resource quotas are NOT VERIFIED here.
+
+The Java/Graal implementation is independently source-owned in
+`atto-source.java` PR #1783. No byte-identical library implementation
+is required between compilers; identical public behavior is a
+future conformance target.
+
+## Legacy actor-pipe admission and closed immediate reads
+
+The checked three-part `PipeHandle` path previously refused a buffered
+channel or pending public `nb readch` Future. The older two-part actor-pipe
+helpers (`__actor_pipe_channel` and `__channel_pipe_actor`) lacked these
+checks. Both now fail closed with guest panic code **10** if the channel
+has buffered data or registered public readers, *before* either actor
+DATA port is claimed. Four guest denial fixtures cover both directions
+and both admission hazards.
+
+`try readch` on an open, temporarily empty channel continues to return
+`None`. Once a channel is closed and its committed FIFO has drained,
+the same immediate read reports guest panic code **9**; it must not
+pretend that terminal closure is transient emptiness. Three additional
+guest cases cover open-empty, post-close drain, and terminal immediate
+read, including stdout-before-denial order.
+
+## Explicit pending-reader cancellation (staged, not verified)
+
+The v2 Rust/Wasm backend now exposes `channel.cancel_read(future)` for a
+`Future<Option<T>>` returned by `nb readch channel` on a `Channel<T>`.
+The compiler checks the precise element type. The backend-owned `.atto`
+helper `__chan_cancel_read` scans the channel's pending reader queue and
+unlinks a matched registration, updating both the head and tail when needed
+without a scheduler suspension. It returns true only on an actual removal;
+already delivered, closed, or wrong-channel Futures return false unchanged.
+A revoked future has terminal status 2; awaiting it traps with dedicated
+guest panic code **15**, rather than masquerading as an ordinary EOF `None`.
+Repeated cancellation is idempotently false. Cancellation cannot mint
+permissions to access an actor DATA channel.
+
+Seven successful and one trap-positive `.atto` fixtures cover FIFO/head/middle/tail
+repair, wrong-channel rejection, already-delivered and closed Futures,
+idempotence, await-after-cancellation, and successful checked DATA graph
+admission only after the pending public reader has been removed. Two source fixtures must fail
+compilation for a mismatched `Future<Option<bool>>` or a forged integer
+passed to a `Channel<int>`. The Node real-guest gate now contains **34** runnable
+cases. These are staged tests: no exact-head compiler/guest evidence exists
+until a runner executes the actual `.atto` guests.
+
+**Limitations:** this is explicit pending-*read* cancellation only. The
+underlying cooperative runtime still lacks a general cancellation token
+for pending sends, automatic cancellation on task exit, dynamic select
+registrations, lifecycle-safe actor-pipeline bridge cancellation and
+domain-crossing Futures. Do not report full cancellation parity or a
+runtime PASS on the basis of source-only checks.
+
+## Staged copy-safe pending writes and core transport borrow gate
+
+Rust/Wasm's v2 channel storage has an independent pending writer queue
+(offsets 72/80 in the now-88-byte channel). `send_pending(value)` registers
+a `Future<Option<T>>` for `int` and `bool` payloads only. A successful
+admission completes the Future with `None`; `cancel_write(ticket)`
+returns `Some(original_value)` exactly once if no receiver or buffer has
+accepted the write. A completed or wrong-channel ticket returns `None`.
+
+A close marks uncommitted writers as rejected (Future state 3);
+`await ticket` reports closed, not success, and `cancel_write(ticket)`
+still recovers the original value once. A cancelled/reclaimed ticket never
+resolves success. Readers free bounded slots and rendezvous with the oldest
+queued writer before allowing new sends to overtake. Both checked three-port
+and legacy two-port DATA attachments reject outstanding pending public
+writes, pending reads, or buffered data.
+
+The v2 compiler now checks `Channel<T>` transport types at the **type
+construction boundary**: only primitive immutable scalar values and
+recursively data-only immutable Option/Result/Tuple shapes are admitted.
+Dynamic `Any`, nested Channel capabilities, mutable `List<T>`, actor,
+callable, Future and object payloads fail with `E_BORROW`. This is a
+**conservative transport gate**, not a complete loan/lifetime analysis.
+The new pending-write API is even narrower: only `int` and `bool`
+because there is not yet a verified affine/linear payload ticket or a
+borrow checker for noncopy ownership through suspend boundaries.
+
+The guest harness now targets **34** runnable cases (22 expected
+successes and 12 expected guest traps), plus six additional negative
+`.atto` compile checks for transport/borrow/ticket types. These checks
+must actually compile and execute on a stepful exact-head runner before
+they can be certified; they are currently `NOT_EXECUTED`.
+
+### Not yet supported
+
+Automatic task cancellation of registered writers, linear noncopy
+ownership recovery, cross-TenantVM channel transport, Native AOT,
+sanitizer evidence and public Java-compatible `std/channel` imports
+remain open. Java has a different independently owned API and uses
+`rt take` for transfer; do not describe these provisional Rust v2
+methods as cross-compiler parity yet.

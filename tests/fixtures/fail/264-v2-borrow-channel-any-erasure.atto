@@ -1,0 +1,6 @@
+// expect-error: E_BORROW
+// Dynamic Any cannot erase a borrowed or capability-carrying payload.
+pub suspends fnc main(): int {
+  val ch = Channel<Any>.bounded(1);
+  return 0;
+}

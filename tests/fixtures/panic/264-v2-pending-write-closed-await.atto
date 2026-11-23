@@ -1,0 +1,9 @@
+// expect-panic: 8
+// Closure rejects the uncommitted writer; it must not resolve success.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val ticket = ch.send_pending(42);
+  ch.close();
+  val acknowledged = await ticket;
+  return 0;
+}

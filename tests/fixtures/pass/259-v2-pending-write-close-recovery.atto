@@ -1,0 +1,22 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Close preserves a rejected pending writer's payload; only one recovery.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val ticket = ch.send_pending(42);
+  ch.close();
+  ch.close();
+  val recovered = ch.cancel_write(ticket);
+  val again = ch.cancel_write(ticket);
+  val int value = match recovered over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  val int once = match again over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if once != 1 then return 91; fi
+  stdio.println(value);
+  return value;
+}

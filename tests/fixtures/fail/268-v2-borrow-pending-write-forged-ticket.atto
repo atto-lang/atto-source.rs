@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+// An integer cannot forge a queued writer registration capability.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val recovered = ch.cancel_write(42);
+  return 0;
+}

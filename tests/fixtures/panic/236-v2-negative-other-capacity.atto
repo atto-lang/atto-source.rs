@@ -1,0 +1,7 @@
+// expect-panic: 14
+// Every negative bounded capacity is denied, not just the -1 sentinel.
+pub suspends fnc main(): int {
+  val invalid = Channel<int>.bounded(-2);
+  invalid.send(42);
+  return 42;
+}

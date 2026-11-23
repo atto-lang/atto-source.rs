@@ -1,0 +1,21 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Open+empty => None, but a closed channel drains a committed FIFO item.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  val empty = try readch ch;
+  val int status = match empty over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if status != 1 then return 91; fi
+  ch.send(42);
+  ch.close();
+  val ready = try readch ch;
+  val int value = match ready over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  stdio.println(value);
+  return value;
+}

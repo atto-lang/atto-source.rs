@@ -104,6 +104,15 @@ suspends fnc __await(int f): int {
   while __load(f, 0) == 0 do
     __suspend();
   done
+  // A cancelled pending channel read is not the same as a normal
+  // completed Future<Option<T>> whose value is None on channel EOF.
+  // State 2 is exclusively the cancelled terminal state. Never expose
+  // cancelled registrations as false EOF or a stale delivered payload.
+  if __load(f, 0) == 2 then __panic(15); fi
+  // Pending write Futures retain their payload after close (state 3).
+  // The consumer may recover it exactly once via cancel_write().
+  if __load(f, 0) == 3 then __panic(8); fi
+  if __load(f, 0) == 4 then __panic(15); fi
   __set_rt(4, 1);
   return __load(f, 8);
 }
@@ -256,156 +265,7 @@ fnc __deadline_pop(int old): void {
   __store(__rt(1), 64, old);
 }
 
-// ---------------------------------------------------------------- channels
-// Channel (72 bytes): 0 capacity (-1 unbounded), 8 count, 16 head, 24 tail,
-// 32 closed, 40/48 queue of pending `nb readch` futures.
-// 56 unique pipeline producer actor, 64 unique pipeline consumer actor.
-// These two additional words prevent silent duplicate DATA attachments.
-
-fnc __chan_new(int cap): int {
-  val c = __alloc(72);
-  __store(c, 0, cap);
-  return c;
-}
-
-// 1 when the value was accepted, 0 when a bounded channel is full.
-fnc __chan_offer(int c, int v): int {
-  if __load(c, 32) != 0 then
-    __panic(8);
-  fi
-  if __load(c, 40) != 0 then
-    __fut_done(__q_pop(c + 40), __some(v));
-    return 1;
-  fi
-  val cap = __load(c, 0);
-  if cap >= 0 then
-    if __load(c, 8) >= cap then
-      return 0;
-    fi
-  fi
-  __q_push(c + 16, v);
-  __store(c, 8, __load(c, 8) + 1);
-  __set_rt(4, 1);
-  return 1;
-}
-
-suspends fnc __chan_send(int c, int v): void {
-  // Recheck on EVERY retry. A caller may have suspended on backpressure
-  // while a different task atomically admitted the channel to a graph.
-  loop do
-    if __load(c, 56) != 0 then __panic(10); fi
-    if __load(c, 64) != 0 then __panic(10); fi
-    if __chan_offer(c, v) != 0 then return; fi
-    __suspend();
-  done
-}
-
-// Compiler-runtime-only DATA producer path; never exposed to guest source.
-// Validate the owning actor, not merely the channel pointer.
-suspends fnc __chan_send_pipe(int actor, int c, int v): void {
-  loop do
-    if __load(c, 56) != actor then __panic(10); fi
-    if __load(actor, 8) != c then __panic(10); fi
-    if __load(actor, 24) != 1 then __panic(10); fi
-    if __chan_offer(c, v) != 0 then return; fi
-    __suspend();
-  done
-}
-
-fnc __chan_take(int c): int {
-  __store(c, 8, __load(c, 8) - 1);
-  __set_rt(4, 1);
-  return __q_pop(c + 16);
-}
-
-suspends fnc __chan_recv(int c): int {
-  loop do
-    // A blocked public reader must not consume DATA after pipeline
-    // admission merely because it started before the ownership change.
-    if __load(c, 56) != 0 then __panic(10); fi
-    if __load(c, 64) != 0 then __panic(10); fi
-    if __load(c, 8) > 0 then
-      return __chan_take(c);
-    fi
-    if __load(c, 32) != 0 then
-      __panic(9);
-    fi
-    __suspend();
-  done
-}
-
-// Public Channel<T> iterator read. A caller may have suspended before
-// the channel's owner changed; recheck BOTH DATA ports on every retry.
-// Only internal actor/bridge code may use __chan_recv_opt below.
-suspends fnc __chan_recv_user_opt(int c): int {
-  loop do
-    if __load(c, 56) != 0 then __panic(10); fi
-    if __load(c, 64) != 0 then __panic(10); fi
-    if __load(c, 8) > 0 then
-      return __some(__chan_take(c));
-    fi
-    if __load(c, 32) != 0 then
-      return 0;
-    fi
-    __suspend();
-  done
-}
-
-// Some(item), or None once the channel is closed and drained.
-suspends fnc __chan_recv_opt(int c): int {
-  loop do
-    if __load(c, 8) > 0 then
-      return __some(__chan_take(c));
-    fi
-    if __load(c, 32) != 0 then
-      return 0;
-    fi
-    __suspend();
-  done
-}
-
-fnc __chan_try(int c): int {
-  if __load(c, 56) != 0 then __panic(10); fi
-  if __load(c, 64) != 0 then __panic(10); fi
-  if __load(c, 8) > 0 then
-    return __some(__chan_take(c));
-  fi
-  return 0;
-}
-
-fnc __chan_nb(int c): int {
-  if __load(c, 56) != 0 then __panic(10); fi
-  if __load(c, 64) != 0 then __panic(10); fi
-  val f = __fut_new();
-  if __load(c, 8) > 0 then
-    __fut_done(f, __some(__chan_take(c)));
-    return f;
-  fi
-  if __load(c, 32) != 0 then
-    __fut_done(f, 0);
-    return f;
-  fi
-  __q_push(c + 40, f);
-  return f;
-}
-
-// Internal EOF propagation is allowed for the current graph owner only.
-fnc __chan_close_internal(int c): void {
-  if __load(c, 32) != 0 then
-    return;
-  fi
-  __store(c, 32, 1);
-  while __load(c, 40) != 0 do
-    __fut_done(__q_pop(c + 40), 0);
-  done
-  __set_rt(4, 1);
-}
-
-fnc __chan_close(int c): void {
-  if __load(c, 56) != 0 then __panic(10); fi
-  if __load(c, 64) != 0 then __panic(10); fi
-  __chan_close_internal(c);
-}
+// @atto-stdlib-channel-source
 
 // ------------------------------------------------------------------ actors
 // Actor instance (56-byte prefix): 0 mailbox channel, 8 downstream target,
@@ -544,6 +404,9 @@ fnc __actor_channel_actor_try(int src, int ch, int dst): int {
   // condition claims the producer/channel/consumer on rejection.
   if __load(ch, 8) != 0 then return __box(1, 8); fi
   if __load(ch, 40) != 0 then return __box(1, 8); fi
+  // Registered writers also own pending public DATA; no actor graph may
+  // race an outstanding value or silently steal its recovery right.
+  if __load(ch, 72) != 0 then return __box(1, 8); fi
 
   // Reserve owner state and construct a non-forgeable handle before the
   // scheduler is permitted to run the bridge. Each handle is a guest
@@ -600,6 +463,12 @@ fnc __actor_pipe_channel(int a, int ch): int {
   if __load(__load(a, 0), 32) != 0 then __panic(10); fi
   if __load(a, 8) != 0 then __panic(10); fi
   if __load(ch, 56) != 0 then __panic(10); fi
+  // Legacy two-part setup is still an ownership admission. Never claim a
+  // channel with preexisting DATA or a waiting public nb/readch receiver.
+  // The checked three-part PipeHandle path enforces the same condition.
+  if __load(ch, 8) != 0 then __panic(10); fi
+  if __load(ch, 40) != 0 then __panic(10); fi
+  if __load(ch, 72) != 0 then __panic(10); fi
   __store(ch, 56, a);
   __store(a, 8, ch);
   __store(a, 24, 1);
@@ -614,6 +483,11 @@ fnc __channel_pipe_actor(int ch, int a): int {
   if __load(__load(a, 0), 32) != 0 then __panic(10); fi
   if __load(ch, 64) != 0 then __panic(10); fi
   if __load(a, 48) != 0 then __panic(10); fi
+  // Attaching an actor sink must not redirect prior public writes or a
+  // pending public nb reader into the DATA graph.
+  if __load(ch, 8) != 0 then __panic(10); fi
+  if __load(ch, 40) != 0 then __panic(10); fi
+  if __load(ch, 72) != 0 then __panic(10); fi
   __store(ch, 64, a);
   __store(a, 48, ch);
   // The bridge is a guest task and borrows no host thread. It suspends on

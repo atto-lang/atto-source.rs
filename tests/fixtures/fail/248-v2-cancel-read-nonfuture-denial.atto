@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+// A raw number cannot be forged into a registered channel reader Future.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val cancelled = ch.cancel_read(123);
+  return 0;
+}
