@@ -1,4 +1,4 @@
 // expect-reject
-// expect-error: unknown compiler-owned alloc module
-import module arena from "alloc/x/arena";
+// expect-error: unknown compiler-owned atto.alloc module
+import module arena from "atto.alloc/x/arena";
 pub fnc main(): int { return 0; }

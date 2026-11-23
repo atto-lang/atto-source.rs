@@ -1,4 +1,4 @@
 // expect-reject
-// expect-error: unknown compiler-owned std module 'std/nope'
-import module nope from "std/nope";
+// expect-error: unknown compiler-owned atto.std module 'atto.std/nope'
+import module nope from "atto.std/nope";
 pub fnc main(): int { return 0; }

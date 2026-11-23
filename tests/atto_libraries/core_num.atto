@@ -1,6 +1,6 @@
 // expect-exit: 42
-import module num from "core/num";
-import module option from "core/option";
+import module num from "atto.core/num";
+import module option from "atto.core/option";
 pub fnc main(): int {
   val int a = num.abs(0 - 5) + num.signum(0 - 9) + num.min(3, 9) + num.max(3, 9);
   val int b = (num.saturating_add(num.max_value(), 1) - num.max_value()) + num.clamp(100, 0, 10);

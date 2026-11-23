@@ -23,9 +23,9 @@ pub enum Layer {
 impl Layer {
     pub fn name(self) -> &'static str {
         match self {
-            Layer::Core => "core",
-            Layer::Alloc => "alloc",
-            Layer::Std => "std",
+            Layer::Core => "atto.core",
+            Layer::Alloc => "atto.alloc",
+            Layer::Std => "atto.std",
         }
     }
 }
@@ -86,13 +86,14 @@ pub fn is_reserved(selector: &str) -> bool {
         .any(|root| selector == *root || selector.starts_with(&format!("{root}/")))
 }
 
-/// `"<layer>/<unit>"`, `"atto.<layer>/<unit>"`, legacy `"ores.<layer>/"`,
-/// optional `.atto` suffix. Units are one flat lowercase identifier.
+/// Canonical `"atto.<layer>/<unit>"`, shorthand `"<layer>/<unit>"`, optional
+/// `.atto` suffix. Units are one flat lowercase identifier. No `ores.*`.
 pub fn normalize(selector: &str) -> Option<(Layer, &str)> {
+    // AttoLang names only: ores.* is reserved (fails closed) but never a selector.
     const PREFIXES: &[(&str, Layer)] = &[
-        ("core/", Layer::Core), ("atto.core/", Layer::Core), ("ores.core/", Layer::Core),
-        ("alloc/", Layer::Alloc), ("atto.alloc/", Layer::Alloc),
-        ("std/", Layer::Std), ("atto.std/", Layer::Std), ("ores.std/", Layer::Std),
+        ("atto.core/", Layer::Core), ("core/", Layer::Core),
+        ("atto.alloc/", Layer::Alloc), ("alloc/", Layer::Alloc),
+        ("atto.std/", Layer::Std), ("std/", Layer::Std),
     ];
     for (prefix, layer) in PREFIXES {
         if let Some(rest) = selector.strip_prefix(prefix) {
@@ -260,11 +261,11 @@ fn visit(
 
 fn reserved_layer_name(selector: &str) -> &'static str {
     if selector.starts_with("alloc") || selector.starts_with("atto.alloc") {
-        "alloc"
+        "atto.alloc"
     } else if selector.starts_with("std") || selector.starts_with("atto.std") || selector.starts_with("ores.std") {
-        "std"
+        "atto.std"
     } else {
-        "core"
+        "atto.core"
     }
 }
 
