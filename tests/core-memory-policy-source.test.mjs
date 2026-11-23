@@ -7,16 +7,16 @@ import { runInNewContext } from "node:vm";
 
 const modules = {
   mem: {
-    path: "../stdlib/core/mem.atto",
+    path: "../stdlib/core/policy/mem.atto",
     names: ["is_power_of_two_alignment", "align_up_checked", "layout_stride",
       "array_bytes_checked", "span_fits"]
   },
   ptr: {
-    path: "../stdlib/core/ptr.atto",
+    path: "../stdlib/core/policy/ptr.atto",
     names: ["checked_span_end", "checked_index_offset", "can_split_span"]
   },
   atomic: {
-    path: "../stdlib/core/atomic.atto",
+    path: "../stdlib/core/policy/atomic.atto",
     names: ["default_order", "valid_load_order", "valid_store_order",
       "valid_rmw_order", "valid_fence_order", "valid_compare_exchange_orders"]
   }

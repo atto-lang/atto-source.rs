@@ -1,6 +1,6 @@
 # Rust/Wasm backend-local core memory and atomic policy candidates
 
-The Rust/Wasm compiler owns `stdlib/core/mem.atto`, `ptr.atto`,
+The Rust/Wasm compiler owns `stdlib/core/policy/mem.atto`, `ptr.atto`,
 and `atomic.atto` independently. No compiler may silently substitute host
 Rust implementations for source-owned Atto helpers.
 
@@ -30,3 +30,7 @@ Relevant related work: [Java #1771](https://github.com/atto-lang/atto-source.jav
 [atomic spec #175](https://github.com/atto-lang/atto-spec/pull/175),
 conflicting pointer specs [#18](https://github.com/atto-lang/atto-spec/pull/18)
 and [#154](https://github.com/atto-lang/atto-spec/pull/154).
+
+These three files are source-only policy candidates. They live under
+`stdlib/core/policy/` so they do not shadow the compiler-owned `core/mem`
+library unit (`import module mem from "atto.core/mem"`).

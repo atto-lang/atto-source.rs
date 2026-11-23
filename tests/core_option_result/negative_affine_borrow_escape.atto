@@ -1,0 +1,11 @@
+// expect-error: E_BORROW
+// A genuine compiler-level escape of a class owner's borrowed capability.
+// This does NOT pretend Option<Payload> is admitted: generic affine sum
+// payloads have a separate E_UNSUPPORTED_TYPE fail-closed regression.
+define class Payload as
+  pub val int value = 42;
+end
+fnc leak(Payload owner): Payload {
+  return borrow! owner;
+}
+pub fnc main(): int { return 0; }

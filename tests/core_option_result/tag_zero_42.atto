@@ -1,0 +1,27 @@
+// expect-exit: 42
+// Tag, not zero-valued payload, determines presence and success.
+fnc option_zero(): Option<int> { return Some(0); }
+fnc result_zero(): Result<int,string> { return Ok(0); }
+fnc missing(): Option<int> { return None; }
+fnc failing(): Result<int,string> { return Err("failed"); }
+pub fnc main(): int {
+  match option_zero() over
+    on Some(zero) -> {
+      match result_zero() over
+        on Ok(other) -> {
+          match missing() over
+            on Some(_) -> { return 1; }
+            on None -> {
+              match failing() over
+                on Ok(_) -> { return 2; }
+                on Err(_) -> { return 42 + zero + other; }
+              end
+            }
+          end
+        }
+        on Err(_) -> { return 3; }
+      end
+    }
+    on None -> { return 4; }
+  end
+}

@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// Result<int,string> and Result<int,int> are admitted; other payloads are not.
+fnc result(): Result<int,bool> { return Ok(1); }
+pub fnc main(): int { return 0; }

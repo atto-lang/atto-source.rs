@@ -1,0 +1,8 @@
+// std/path, Windows variant. Import as "std/path"; '\' and '/' separate.
+define module path as
+  pub fnc separator_code(): int { return 92; }
+  pub fnc list_separator_code(): int { return 59; }
+  pub fnc is_separator_code(int code): bool { return code == 92 || code == 47; }
+  pub fnc is_windows(): bool { return true; }
+  pub fnc join(string parent, string child): string { return parent + "\\" + child; }
+end

@@ -1,0 +1,8 @@
+// expect-error: E_BORROW
+// Shared immutable Option<int> needs no writable loan; never grant one.
+fnc option_value(): Option<int> { return Some(42); }
+pub fnc main(): int {
+  val owner = option_value();
+  val writer = borrow! mut owner;
+  return 0;
+}
