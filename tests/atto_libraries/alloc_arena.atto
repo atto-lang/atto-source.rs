@@ -1,6 +1,6 @@
 // expect-exit: 42
-import module arena from "alloc/arena";
-import module option from "core/option";
+import module arena from "atto.alloc/arena";
+import module option from "atto.core/option";
 pub fnc main(): int {
   let int used = arena.reset();
   used = arena.advance(used, 64, 3, 1);

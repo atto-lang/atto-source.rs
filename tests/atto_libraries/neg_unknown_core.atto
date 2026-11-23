@@ -1,4 +1,4 @@
 // expect-reject
-// expect-error: unknown compiler-owned core module 'core/nope'
-import module nope from "core/nope";
+// expect-error: unknown compiler-owned atto.core module 'atto.core/nope'
+import module nope from "atto.core/nope";
 pub fnc main(): int { return 0; }

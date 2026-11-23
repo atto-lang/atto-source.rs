@@ -1,6 +1,6 @@
 // expect-exit: 42
-import module mem from "core/mem";
-import module option from "core/option";
+import module mem from "atto.core/mem";
+import module option from "atto.core/option";
 pub fnc main(): int {
   val int up = option.unwrap_or(mem.align_up(13, 8), 0);
   val int down = option.unwrap_or(mem.align_down(13, 8), 0);

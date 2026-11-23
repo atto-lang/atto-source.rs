@@ -1,6 +1,6 @@
 // alloc/arena (atto-source.rs): deterministic bump placement over an explicit
 // (used, capacity) cursor. No hidden heap, no GC; reset frees everything.
-import module mem from "core/mem";
+import module mem from "atto.core/mem";
 define module arena as
   pub fnc place(int used, int capacity, int size, int align): Option<int> {
     if used < 0 || capacity < used || size < 0 then return None; fi
