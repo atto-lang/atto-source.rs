@@ -37,12 +37,9 @@ pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
-<<<<<<< HEAD
 pub mod v2;
-=======
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
->>>>>>> origin/main
 /// Source-local scalar generic specialization before typed browser lowering.
 pub mod scalar_generic;
 /// Checked single-source module functions; external imports remain unlinked.
