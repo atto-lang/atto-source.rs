@@ -26,14 +26,10 @@ pub const MAX_LOCALS: usize = 1024;
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
-// Canonical collection and loan identities are reserved before guest lowering.
-// This is a name-spoofing guard, not a runtime implementation.
-const RESERVED_COLLECTION_AND_LOAN_NAMES: &[&str] = &[
-    "Option", "Result", "Array", "FixedArray", "List", "FixedList",
-    "Vector", "Slice", "Tuple", "Map", "Set", "ReadLoan", "WriteLoan",
-];
+// Reuse the compiler-owned prelude identity catalog for spoof prevention.
+// This does not grant unsupported generic storage or import resolution.
 fn is_reserved_collection_or_loan_name(name: &str) -> bool {
-    RESERVED_COLLECTION_AND_LOAN_NAMES.contains(&name)
+    crate::prelude::protected_identity(name)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3559,7 +3555,7 @@ impl<'a> FnCx<'a> {
     /// Neither Null nor a bare payload implicitly converts to an ADT.
     fn consume_expected(&mut self, e: &Expr, want: Type) -> R<TE> {
         let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
-            ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
+            ExprKind::Call(name, args) if crate::prelude::core_constructor(name) && name != "None" => {
                 if args.len() != 1 {
                     return Err(Diagnostic::new(e.pos, "E_ARITY",
                         format!("{name} requires one payload argument, got {}", args.len())));
@@ -4290,7 +4286,7 @@ impl<'a> FnCx<'a> {
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) | ExprKind::Ascribe(..) => unreachable!("handled by expr"),
-            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
+            ExprKind::Call(name, _) if crate::prelude::core_constructor(name) =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::StateRead(field) => {

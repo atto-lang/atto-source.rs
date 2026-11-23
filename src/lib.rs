@@ -26,6 +26,8 @@ pub mod collection_layout_type;
 #[allow(clippy::needless_return)]
 pub mod copy_graph_v1;
 pub mod borrow_export;
+/// Fail-closed compiler-core preflight for sealed Future-family ownership.
+pub mod core_future_ownership;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -35,7 +37,12 @@ pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+<<<<<<< HEAD
 pub mod v2;
+=======
+/// Immutable profile-aware canonical names visible without explicit imports.
+pub mod prelude;
+>>>>>>> origin/main
 /// Source-local scalar generic specialization before typed browser lowering.
 pub mod scalar_generic;
 /// Checked single-source module functions; external imports remain unlinked.
@@ -177,6 +184,9 @@ fn with_v2_fallback(source_tokens: Vec<lexer::Token>, primary: Result<Vec<u8>, D
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // Affine Future-family violations are diagnosed before any lowerer/emitter.
+    // Valid candidates still fail closed until typed await/actor runtime exists.
+    core_future_ownership::preflight(&original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
@@ -363,6 +373,27 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
             // inside the lowering helper, never silently compiled as classes.
             let lowered = target_syntax::lower_class_receivers(&toks, &headers)?;
             parser::Parser::new(lowered).parse_program()?
+        } else if headers.namespace.is_some()
+            && headers.imports.is_empty()
+            && headers.actors.is_empty()
+            && headers.class_forwards.is_empty()
+            && headers.state_owners.is_empty()
+            && headers.struct_forwards.is_empty()
+            && headers.constructors.is_empty()
+            && headers.definitions.is_empty()
+            && headers.receivers.is_empty()
+            && headers.receiver_sites.is_empty()
+        {
+            // A source namespace is pure file identity, not an implicit import.
+            // The target declaration parser has already validated the header
+            // and admitted only directly declared ordinary functions here.
+            // Strip only that verified leading header and send the remaining
+            // source through the normal compiler, checker and Wasm emitter.
+            // This never lowers actor/receiver/runtime capability syntax.
+            let end = toks.iter().position(|t| t.tok == lexer::Tok::Semi)
+                .ok_or_else(|| Diagnostic::new(toks[0].pos, "E_SYNTAX",
+                    "unterminated file namespace"))?;
+            parser::Parser::new(toks[end + 1..].to_vec()).parse_program()?
         } else {
             // Actor mtd stays strictly syntax/type preflight only. An ActorRef
             // must never acquire unverified synchronous method dispatch.
