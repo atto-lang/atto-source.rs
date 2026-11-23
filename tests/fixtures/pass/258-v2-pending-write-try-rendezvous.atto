@@ -5,12 +5,12 @@ pub suspends fnc main(): int {
   val ch = Channel<int>.bounded(0);
   val ticket = ch.send_pending(42);
   val ready = try readch ch;
-  val done = await ticket;
+  val delivered = await ticket;
   val int value = match ready over
     on Some(v) -> v,
     on None -> 0,
   end;
-  val int success = match done over
+  val int success = match delivered over
     on None -> 1,
     on Some(_) -> 0,
   end;
