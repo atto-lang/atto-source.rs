@@ -118,6 +118,118 @@ fnc divide(a: PositiveMillis, b: PositiveMillis) -> i32 {
 4. Parse/format round-trip `define dimension`, `define unit`, `define protocol`, and combined `where ... and units in ...`.
 5. Compare Rust/LLVM/Java diagnostics and behavior against the same semantics while allowing independent backend implementation.
 
+
+## Worked examples: dimensions and protocols
+
+All examples below are **illustrative proposed syntax**. They are not executable conformance fixtures until the grammar and semantics are approved.
+
+### 1. Declaring dimensions and units
+
+```atto
+define dimension Time;
+define dimension Length;
+
+define module time as
+    define unit Second: Time;
+    define unit Millis: Time = Second / 1000;
+    define unit Micros: Time = Second / 1000000;
+end
+
+define module length as
+    define unit Meter: Length;
+    define unit Kilometer: Length = 1000 * Meter;
+end
+
+type PositiveMillis = i32
+    where self > 0
+    and units in time.Millis;
+
+type Distance = f64
+    where self >= 0
+    and units in length.Meter;
+
+type Velocity = f64
+    where units in length.Meter / time.Second;
+```
+
+Literal notation `500<time.Millis>` is **proposed**, not accepted grammar. Under the proposal, these checks would apply:
+
+```atto
+let timeout: PositiveMillis = 500<time.Millis>; // valid
+let negative: PositiveMillis = -10<time.Millis>; // reject: refinement
+let wrong: PositiveMillis = 5<length.Meter>;    // reject: dimension
+```
+
+### 2. Dimension-preserving functions
+
+```atto
+fnc speed(
+    distance: Distance,
+    duration: f64 where self > 0
+        and units in time.Second
+) -> Velocity {
+    return distance / duration;
+}
+```
+
+The inferred result dimension is Length / Time. Conversion across scales must be explicit or justified by a defined, lossless conversion policy; integer rounding and overflow cannot be silently ignored.
+
+### 3. Protocol-checked actor transitions
+
+```atto
+define protocol Payment as
+    initial Pending;
+
+    Pending -> Authorized | Rejected;
+    Authorized -> Captured | Cancelled;
+
+    terminal Captured;
+    terminal Cancelled;
+    terminal Rejected;
+end
+
+define actor PaymentProcessor implements Payment as
+    authorize() {
+        transition Authorized;
+    }
+
+    capture() {
+        transition Captured;
+    }
+end
+```
+
+A transition to `Captured` is valid only from `Authorized`. The compiler must ensure handlers are appropriately state-guarded or generate runtime protocol checks for messages arriving in different orders; merely declaring the protocol does not establish that the actor implementation is correct. A verified implementation should also specify the behavior of invalid transitions, concurrency, failures and supervision.
+
+### 4. Protocol transitions with dimensionally constrained payloads
+
+```atto
+type Timeout = i32
+    where self > 0
+    and self <= 60_000
+    and units in time.Millis;
+
+define protocol Connection as
+    initial Disconnected;
+
+    Disconnected -> Connecting(timeout: Timeout);
+    Connecting -> Connected | Failed;
+    Connected -> Disconnected;
+
+    terminal Failed;
+end
+```
+
+A `Connecting` transition must carry a valid timeout. The checker must independently verify the payload's refinement and units and the legality of the transition.
+
+### Required positive/negative fixtures
+
+- Accept `PositiveMillis` initialized with a positive millisecond quantity; reject negative, zero and wrong-dimension literals.
+- Infer `Length / Time` for `speed`; reject returning the result as an unrelated dimension.
+- Accept `Pending -> Authorized -> Captured`; reject `Pending -> Captured` and transitions from terminal states.
+- Reject a connection timeout over 60,000 ms, nonpositive values, and a length quantity passed as timeout.
+- Ensure compiler diagnostics distinguish unit mismatch, refinement failure and protocol-state violation.
+
 ## Architecture and parity
 
 - Specify semantics independently of any particular backend: arithmetic, effects, ownership, actors, errors and unit conversion.
