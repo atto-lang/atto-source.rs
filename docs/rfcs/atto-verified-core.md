@@ -402,3 +402,113 @@ Parametricity free theorems require a sound semantic fragment (effects, divergen
 - What is the smallest stable verification IR shared semantically across independent compiler implementations?
 
 **Non-goals for this RFC:** claiming existing proof support, adding an SMT dependency now, modifying runtime behavior, or marking any compiler backend formally verified.
+
+
+## Generics versus relational parametricity
+
+**Design proposal, not implemented syntax.** Generics are Atto's general abstraction and specialization mechanism; relational parametricity is a **stronger semantic guarantee** attached to selected generic parameters. Do not conflate type correctness with representation independence.
+
+### Core distinction
+
+- Ordinary `<T>` permits the operations supported by its declared bounds, including type-dependent trait/interface behavior, allowed effects and specialization.
+- `<parametric T>` proposes a relational uniformity obligation: the implementation must preserve all admissible relations between interpretations of `T` under the chosen semantic model. Reflection, concrete-type dispatch, representation tests, layout/size observations, unchecked casts, unsafe code and specialization that changes observable behavior must be disallowed or explicitly justified by a verified relational specification.
+- Parametricity is not synonymous with purity. Effects require an effect-aware relational interpretation; a pure, total fragment is the initial proof target.
+- `parametric` is proposed as a **contextual modifier of an existing generic parameter**, not a separate generic declaration system or necessarily a globally reserved keyword.
+- A function declared `parametric` must not be automatically marked `proven`; the checker must establish the relational obligations or return `unknown`/`refuted`.
+
+### Examples
+
+```atto
+// Ordinary generic: Display may depend on the concrete type.
+fnc describe<T>(value: T) -> String
+    where T: Display
+{
+    return value.to_string();
+}
+
+// Stronger proposed contract: no observations of the representation of T.
+fnc identity<parametric T>(value: T) -> T
+    pure
+{
+    return value;
+}
+```
+
+For a **pure and total** `identity<parametric T>(T) -> T`, relational parametricity implies the result is its input (subject to the exact language semantics). In the presence of divergence, bottom values, effects or unsafe observations, the theorem needs corresponding qualifications.
+
+```atto
+fnc reverse<parametric T>(values: List<T>) -> List<T>
+    pure
+    ensures result.length == values.length
+{
+    // implementation
+}
+```
+
+Parametricity alone does **not** prove preservation of length, order or contents. The `ensures` clause creates a separate implementation proof obligation.
+
+```atto
+fnc map<parametric T, parametric R>(
+    values: List<T>,
+    transform: fnc(T) -> R
+) -> List<R>
+    pure
+{
+    // implementation
+}
+```
+
+Here `map` is relationally uniform **relative to its callback**. Its proof must quantify over callbacks that preserve the selected input/output relations. A concrete callback may be type-specific; it does not imply arbitrary callbacks satisfy all relational interpretations. The `pure` annotation requires a pure callback or an appropriate effect-constrained function type.
+
+### Generic parameter kinds (proposed)
+
+| Kind | Example | Meaning |
+| --- | --- | --- |
+| Type | `<T>` | Existing general type generic |
+| Constant | `<const N: usize>` | Compile-time numeric/value parameter |
+| Dimension | `<dimension D>` | Dimension-polymorphic operations |
+| Unit | `<unit U>` | Unit-polymorphic operations and derived unit expressions |
+| Protocol | `<protocol P>` | Protocol-polymorphic actor/channel contracts |
+| Lifetime | syntax TBD | Borrow-region relationships |
+| Effect | `<effect E>` | Effect-polymorphic operations |
+
+These are **parameter kinds**, not proof that each requires a new globally reserved keyword. Preserve compatibility with existing generic defaults, named arguments, inference and specialization rules. `unit U` and `dimension D` require distinct kinds and dimension-consistent algebra.
+
+```atto
+fnc square<unit U>(
+    x: f64 where units in U
+) -> f64 where units in U * U
+    pure
+{
+    return x * x;
+}
+```
+
+The compiler must check unit expression kinds, scale factors, floating-point behavior and conversions. A type parameter `T` must not be silently confused with a unit or dimension parameter.
+
+### Ownership, effects, actors and backends
+
+```atto
+fnc send_value<parametric T>(
+    actor: Actor<T>,
+    value: T
+) -> Result<(), SendError>
+{
+    return actor.send(take! value);
+}
+```
+
+This is **not automatically verified**. A relational interpretation of actor effects must account for ownership transfer, mailbox ordering, failures, cancellation, scheduler observations and error behavior. `take!`, `borrow!`, and `share!` remain governed by the borrow checker; their use does not itself establish parametricity. The actor example is illustrative and requires a defined `Actor<T>` API/effect contract.
+
+Backend monomorphization or specialization is permitted only when it preserves the observable relational theorem. Proofs must not rely on unverified assumptions about compiler lowering; record the trusted computing base and any translation-validation requirement.
+
+### Proof obligations and negative tests
+
+1. Accept ordinary `<T>` generics with bounded type-specific operations; reject such observations under `<parametric T>` without a sound relational rule.
+2. Verify pure total identity; reject or qualify unsound free-theorem claims involving divergence, effects, reflection, unsafe code or representation-sensitive primitives.
+3. Prove `reverse` length preservation from implementation/contracts, not parametricity alone; reject a false postcondition.
+4. Verify `map` only under a callback relation/effect contract; reject an unconstrained callback when the theorem requires relational preservation.
+5. Type-check `<unit U>`, `<dimension D>` and derived units; reject kind mismatches, invalid scaling and unsafe conversions.
+6. Check ownership transfers and effect/actor boundaries in relational verification; do not claim actor liveness or determinism from genericity.
+7. Test parser/formatter round trips, named/default generic arguments, and Rust/LLVM/Java semantic parity. Emit `proven`, `refuted`, `unknown` or `assumed` status without upgrading unknown to proven.
+
