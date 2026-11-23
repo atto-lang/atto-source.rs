@@ -1,0 +1,17 @@
+// expect-exit: 42
+// Result<int,int> carries integer error codes (core/result v1).
+fnc checked(int x): Result<int,int> {
+  if x < 0 then return Err(7); fi
+  return Ok(x);
+}
+pub fnc main(): int {
+  match checked(0 - 1) over
+    on Ok(v) -> { return 0; }
+    on Err(code) -> {
+      match checked(35) over
+        on Ok(v) -> { return v + code; }
+        on Err(e) -> { return 1; }
+      end
+    }
+  end
+}

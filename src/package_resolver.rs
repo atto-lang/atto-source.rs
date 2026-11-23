@@ -200,6 +200,9 @@ fn compile_package_impl(root: &Path, entry: &str, pins: Option<&LockedSources>) 
             }
         }
         for child in linker::import_paths(&src, &relative)? {
+            // Compiler-embedded allocation libraries never live in the
+            // caller's writable package tree or authenticated lockfile.
+            if child.starts_with("__atto_builtin/alloc/") { continue; }
             pending.push(child);
         }
         loaded.insert(relative, src);
@@ -460,6 +463,9 @@ pub fn compile_locked_snapshot(
             .get(path.as_str())
             .ok_or_else(|| error("E_LOCK_HASH", format!("snapshot omitted reachable source '{path}'")))?;
         for child in linker::import_paths(source, &path)? {
+            // Snapshot membership includes owned package files only. The
+            // compiler independently supplies vetted built-in source.
+            if child.starts_with("__atto_builtin/alloc/") { continue; }
             pending.push(child);
         }
     }

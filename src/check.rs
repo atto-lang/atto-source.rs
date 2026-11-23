@@ -3080,7 +3080,7 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -3302,6 +3302,10 @@ impl<'a> FnCx<'a> {
                     let (tag, needed) = match (sty, name.as_str()) {
                         (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+            (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
+            (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
+                        (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
+                        (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
                         (Type::OptionResultIntStr, "None") => (0, None),
@@ -3564,6 +3568,8 @@ impl<'a> FnCx<'a> {
         let (tag, payload_type) = match (want, variant) {
             (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
             (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+            (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
+            (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
             (Type::OptionResultIntStr, "None") => (0, None),
@@ -3696,14 +3702,17 @@ impl<'a> FnCx<'a> {
                     }
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
                 }
+                // Borrowed concrete ADTs are only legal in checked call
+                // argument position (see args()). A standalone borrow! must
+                // never become an owned return or a stored carrier handle.
                 let value = self.value(inner)?;
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
                         tr.borrow_escaping(*slot, false, pos);
                     }
                 }
-                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding"));
+                if !is_copy_scalar(value.ty) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding; unproved ADT payload loans are forbidden"));
                 }
                 Ok(value)
             }
@@ -3912,7 +3921,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
                 let success_tag = match value.ty {
-                    Type::ResultIntStr => 0,
+                    Type::ResultIntStr | Type::ResultIntInt => 0,
                     Type::OptionInt => 1,
                     _ => return Err(type_err(e.pos,
                         format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
@@ -4116,7 +4125,7 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
@@ -4409,6 +4418,10 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
+            // Option<int> and Result<int,string> are concrete Copy carriers
+            // (their active payload types are themselves Copy). Their normal
+            // consume path therefore preserves a reusable local. This is
+            // deliberately not generic borrowing or affine ownership.
             let v = self.consume_expected(a, *want)?;
             if v.ty != *want {
                 return Err(type_err(
@@ -5156,5 +5169,6 @@ fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
 
 /// Identity-free admitted scalars: value copies, never ownership roots.
 fn is_copy_scalar(t: Type) -> bool {
-    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))
+    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)
+        | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr)
 }
