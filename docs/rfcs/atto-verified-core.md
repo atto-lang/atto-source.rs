@@ -44,6 +44,80 @@ type PositiveInt = i32 where self > 0;
 fnc identity<parametric T>(x: T) -> T pure { return x; }
 ```
 
+
+## Proposed first-class language declarations (design direction)
+
+The language should support **`define dimension`**, **`define unit`**, and **`define protocol`** as native declarations, not library-only conventions. Grammar, namespace placement and lowering remain subject to review.
+
+```atto
+// Illustrative syntax, NOT yet accepted by any compiler.
+define dimension Time;
+define dimension Length;
+
+namespace time {
+    define unit Second: Time;
+    define unit Millis: Time = Second / 1000;
+    define unit Micros: Time = Second / 1000000;
+}
+
+namespace length {
+    define unit Meter: Length;
+    define unit Kilometer: Length = 1000 * Meter;
+}
+
+type PositiveMillis = i32
+    where self > 0
+    and units in time.Millis;
+
+type Duration = i64
+    where self >= 0
+    and units in time;
+
+type Velocity = f64
+    where units in length.Meter / time.Second;
+
+define protocol Payment as
+    Start -> Authorized | Rejected;
+    Authorized -> Captured | Cancelled;
+end
+```
+
+### Dimension and unit semantics
+
+- `dimension` defines a nominal base dimension; composite dimensions form a normalized exponent vector (supporting rational exponents where representable).
+- `unit` belongs to a dimension and defines an exact scale relative to a canonical unit; cycles, conflicting definitions and dimensional mismatches are compile errors.
+- `units in time.Millis` constrains a **specific unit**; `units in time` constrains a **dimension**, with the concrete scale retained or made explicit at each use. It must not permit implicit mixing of seconds and milliseconds.
+- Refinement predicates (`where self > 0`) and unit predicates (`and units in ...`) are independent, composable compile-time constraints. `where`/ `and units in` are proposed syntax, not committed grammar.
+- Addition/subtraction require compatible quantities with defined conversion rules; multiplication/division derive resulting dimensions. A dimensionless value divided by milliseconds has dimension `Time^-1`, **not** dimensionless `i32`.
+- Compile-time unit annotations are erased by default. Optional runtime quantity reflection/conversion may be added later without changing the static semantics.
+- Integer conversion must not silently truncate, overflow or change the meaning of refinement predicates; provide explicit checked/fallible conversions and rounding policies.
+- Offset/affine quantities (e.g. Celsius) are distinct from multiplicative quantities; floating-point proofs must model rounding and NaN/Infinity explicitly.
+
+### Protocol semantics
+
+- `define protocol` declares a nominal, type-checkable state-transition contract for actors and message channels; it is **not** equivalent to an interface/trait.
+- Define initial/terminal states, legal transitions, message payload types, ownership transfer, cancellation/failure and supervisor behavior.
+- Static checking enforces legal local transitions. Global deadlock freedom, liveness and fairness require separately stated assumptions and optional model checking.
+- Protocol names, states and transition arms must resolve consistently through namespacing and formatter round trips.
+
+### Illustrative dimensionally valid division
+
+```atto
+type PositiveMillis = i32 where self > 0 and units in time.Millis;
+
+fnc divide(a: PositiveMillis, b: PositiveMillis) -> i32 {
+    return a / b; // dimensionless quotient; integer division semantics apply
+}
+```
+
+### Follow-up acceptance fixtures
+
+1. Accept valid unit declarations, namespace-qualified references, composite dimensions and same-unit division.
+2. Reject `meter + second`, implicit mixed-scale arithmetic, incompatible unit aliases, declaration cycles and invalid protocol transitions.
+3. Check unit conversion precision/overflow, zero denominators, refinement preservation and signed integer division edge cases.
+4. Parse/format round-trip `define dimension`, `define unit`, `define protocol`, and combined `where ... and units in ...`.
+5. Compare Rust/LLVM/Java diagnostics and behavior against the same semantics while allowing independent backend implementation.
+
 ## Architecture and parity
 
 - Specify semantics independently of any particular backend: arithmetic, effects, ownership, actors, errors and unit conversion.
