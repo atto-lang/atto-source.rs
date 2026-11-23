@@ -1,5 +1,5 @@
 // TARGET_REJECT_NO_ARTIFACT: ordinary formal is borrowed; cannot await/move.
-use namespace std.actor.future_negative;
+use namespace std.actors.future_negative;
 
 pub susp fnc reject_borrowed_reply(ActorFuture<int> receipt) -> int {
   return await receipt;

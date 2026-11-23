@@ -1,4 +1,4 @@
-use namespace std.actor;
+use namespace std.actors;
 // rs compiler-owned implementation; no shared-source requirement.
 
 // Native Atto std/actor policy slice (v1).

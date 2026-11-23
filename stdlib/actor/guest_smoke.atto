@@ -1,6 +1,6 @@
 // Candidate executable guest policy tests: compile and run with actual Atto compiler.
-// This is NOT a host-side reimplementation of std.actor.
-use namespace std.actor.smoke;
+// This is NOT a host-side reimplementation of std.actors.
+use namespace std.actors.smoke;
 import actor_mailbox_admissible, actor_future_transition_valid,
        actor_lifecycle_transition_valid, actor_should_restart,
        actor_restart_first, actor_restart_end_exclusive,

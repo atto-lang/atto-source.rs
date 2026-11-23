@@ -23,7 +23,7 @@ fn valid_owned_actor_future_remains_explicitly_unsupported_until_typed_mir_and_r
 }
 #[test]
 fn nested_result_future_does_not_lose_affine_ownership_at_generic_depth() {
-    let source = r#"use namespace std.actor;
+    let source = r#"use namespace std.actors;
 pub susp fnc sample(take! ActorFuture<Result<int,String>> receipt) -> Result<int,String> {
     return await receipt;
 }"#;
@@ -32,9 +32,9 @@ pub susp fnc sample(take! ActorFuture<Result<int,String>> receipt) -> Result<int
 #[test]
 fn sealed_future_types_cannot_be_guest_constructed_or_user_declared() {
     for source in [
-        "use namespace std.actor; define class ActorFuture as end",
-        "use namespace std.actor; declare actor TaskFuture;",
-        "use namespace std.actor; pub fnc main(): int { val receipt = new Future<int>(); return 42; }",
+        "use namespace std.actors; define class ActorFuture as end",
+        "use namespace std.actors; declare actor TaskFuture;",
+        "use namespace std.actors; pub fnc main(): int { val receipt = new Future<int>(); return 42; }",
     ] {
         assert_eq!(code(source), "E_RESERVED");
     }
@@ -42,7 +42,7 @@ fn sealed_future_types_cannot_be_guest_constructed_or_user_declared() {
 #[test]
 fn unrelated_comments_and_strings_do_not_mint_future_capabilities() {
     let source = "// ActorFuture<int> and take! ActorFuture<int> are comments\n\
-        use namespace std.actor.local_only;\n\
+        use namespace std.actors.local_only;\n\
         pub fnc main(): int { return 42; }";
     let wasm = compile_with_path(source, Path::new("stdlib/actor/local_only.atto"))
         .expect("comments are not Future-family type declarations");
@@ -50,7 +50,7 @@ fn unrelated_comments_and_strings_do_not_mint_future_capabilities() {
 }
 #[test]
 fn borrowed_task_future_is_rejected_before_unsupported_await_error() {
-    let source = r#"use namespace std.task;
+    let source = r#"use namespace std.tasks;
 pub susp fnc sample(TaskFuture<int> receipt) -> int {
     return await receipt;
 }"#;
@@ -64,7 +64,7 @@ fn source_without_future_family_keeps_normal_wasm_compilation() {
 
 #[test]
 fn core_future_cannot_be_used_after_successful_await_consumes_receipt() {
-    let source=r#"use namespace std.actor;
+    let source=r#"use namespace std.actors;
 pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
     val int first = await receipt;
     return receipt;
@@ -73,7 +73,7 @@ pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
 }
 #[test]
 fn core_future_may_not_be_awaited_while_borrow_is_live() {
-    let source=r#"use namespace std.actor;
+    let source=r#"use namespace std.actors;
 pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
     val loan = borrow! receipt;
     return await receipt;
@@ -82,7 +82,7 @@ pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
 }
 #[test]
 fn core_future_take_then_await_is_use_after_move() {
-    let source=r#"use namespace std.actor;
+    let source=r#"use namespace std.actors;
 pub susp fnc sample(take! ActorFuture<int> receipt) -> int {
     val taken = take! receipt;
     return await receipt;

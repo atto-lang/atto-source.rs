@@ -1,6 +1,6 @@
 // expect-error: E_MOVED
 // Core ownership: taking a receipt consumes its unique owner.
-use namespace std.actor.future_negative_take_await;
+use namespace std.actors.future_negative_take_await;
 pub susp fnc reject_take_await(take! ActorFuture<int> receipt) -> int {
   val moved = take! receipt;
   return await receipt;

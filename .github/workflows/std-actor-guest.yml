@@ -1,4 +1,4 @@
-name: Atto std.actor exact-head namespace guests
+name: Atto std.actors exact-head namespace guests
 on:
   pull_request:
     paths:

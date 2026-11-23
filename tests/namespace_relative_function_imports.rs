@@ -84,7 +84,7 @@ fn malformed_or_misplaced_namespace_headers_fail_closed() {
 
 #[test]
 fn standalone_namespaced_pure_function_is_real_guest_not_syntax_only() {
-    let src = "use namespace std.actor.helpers; pub fnc main(): int { return 42; }";
+    let src = "use namespace std.actors.helpers; pub fnc main(): int { return 42; }";
     let wasm = compile_with_path(src, Path::new("project/src/standalone.atto"))
         .expect("valid namespace should not force syntax-only actor receiver mode");
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
@@ -93,7 +93,7 @@ fn standalone_namespaced_pure_function_is_real_guest_not_syntax_only() {
 
 #[test]
 fn standalone_namespace_cannot_forge_an_unimported_policy_function() {
-    let no_import = r#"use namespace std.actor.consumer;
+    let no_import = r#"use namespace std.actors.consumer;
 pub fnc main(): int {
   if actor_mailbox_admissible(true, true, true, true, 0, 1) then
     return 1;
@@ -103,7 +103,7 @@ pub fnc main(): int {
     let err = compile_with_path(no_import, Path::new("project/src/standalone.atto"))
         .expect_err("namespace alone must not bind an actor policy function");
     assert_eq!(err.code, "E_UNBOUND", "must reject unbound import, not a syntax-only fallback");
-    let nominal = "use namespace std.actor; declare actor Supervisor; pub fnc main(): int { return 42; }";
+    let nominal = "use namespace std.actors; declare actor Supervisor; pub fnc main(): int { return 42; }";
     assert!(compile_with_path(nominal, Path::new("project/src/standalone.atto")).is_err(),
         "actor declaration is not a permitted pure-function lowering");
 }

@@ -1,6 +1,6 @@
 // Native Atto adversarial boundary corpus; no host emulation.
 // Actual execution is required to call this PASS. Failed guards return unique codes.
-use namespace std.actor.boundaries;
+use namespace std.actors.boundaries;
 import actor_mailbox_admissible,
        actor_future_transition_valid,
        actor_lifecycle_transition_valid,

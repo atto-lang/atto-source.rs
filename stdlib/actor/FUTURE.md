@@ -1,7 +1,7 @@
-# std.actor — ActorFuture adapters (candidate)
+# std.actors — ActorFuture adapters (candidate)
 
 This backend owns `stdlib/actor/future.atto` and declares
-`use namespace std.actor;` (not `define module`).
+`use namespace std.actors;` (not `define module`).
 
 `await_reply<T>(take! ActorFuture<T>) -> T` and
 `await_reply_result<T,E>(take! ActorFuture<Result<T,E>>)`

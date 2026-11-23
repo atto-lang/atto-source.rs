@@ -19,7 +19,7 @@ const guards=source=>[...source.matchAll(/^([ \t]*)if (.+?) then return (\d+); f
   .map(m=>Number(m[3]));
 
 test('namespace-only guest is pure and has no implicit imports or runtime authority',()=>{
-  assert.match(standalone,/^use namespace std\.actor\.local_only;/m);
+  assert.match(standalone,/^use namespace std\.actors\.local_only;/m);
   assert.doesNotMatch(standalone,/^\s*import\b/m);
   assert.doesNotMatch(standalone,/^\s*(?:define|declare)\s+actor\b/m);
   assert.match(standalone,/pub fnc main\(\): int \{ return add_two\(40\); \}/);
@@ -35,7 +35,7 @@ test('guard fixtures preserve all distinct failure exits and six compiled mutati
   assert.deepEqual([a[0],a[Math.floor(a.length/2)],a.at(-1)],[1,18,34]);
   assert.deepEqual([b[0],b[Math.floor(b.length/2)],b.at(-1)],[100,166,232]);
   for(const source of [smoke,edges]) {
-    assert.match(source,/use namespace std\.actor\./);
+    assert.match(source,/use namespace std\.actors\./);
     assert.match(source,/from "\.\/policy\.atto";/);
     assert.match(source,/return 42;/);
   }
@@ -66,7 +66,7 @@ test('core Future receipts reject post-await use, live loans, repeat takes and g
   for(const [path,diagnostic,proof] of scenarios) {
     const source=read(path);
     assert.match(source,new RegExp('expect-error: '+diagnostic+'\\b'));
-    assert.match(source,/use namespace std\.actor\./);
+    assert.match(source,/use namespace std\.actors\./);
     assert.match(source,proof);
     if(diagnostic!=='E_RESERVED')assert.match(source,/take! ActorFuture<int> receipt/);
   }

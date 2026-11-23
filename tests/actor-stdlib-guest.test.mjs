@@ -14,7 +14,7 @@ for (const [fixture, label] of [
   ['stdlib/actor/guest_edges.atto', '133 adversarial boundary assertions'],
   ['stdlib/actor/guest_namespace_only.atto', 'standalone namespace function'],
 ]) {
-  test('std.actor ' + label + ' executes as linked Atto Wasm with no host imports', () => {
+  test('std.actors ' + label + ' executes as linked Atto Wasm with no host imports', () => {
     const dir = mkdtempSync(join(tmpdir(), 'atto-std-actor-'));
     const output = join(dir, 'actor-policy.wasm');
     try {
@@ -46,7 +46,7 @@ for (const [fixture, expectedAssertions] of [
   ['stdlib/actor/guest_smoke.atto', 34],
   ['stdlib/actor/guest_edges.atto', 133],
 ]) {
-  test('std.actor compiled guest mutation controls: ' + fixture, () => {
+  test('std.actors compiled guest mutation controls: ' + fixture, () => {
     const source = readFileSync(join(root, fixture), 'utf8');
     const guards = [...source.matchAll(/^([ \t]*)if (.+?) then return (\d+); fi[ \t]*$/gm)];
     assert.equal(guards.length, expectedAssertions,
@@ -97,7 +97,7 @@ for (const [fixture, expectedCode] of [
   ['contracts/std-actor-v1/namespace-duplicate.reject.atto', 'E_DUPLICATE'],
   ['contracts/std-actor-v1/namespace-after-declaration.reject.atto', 'E_SYNTAX'],
 ]) {
-  test('std.actor negative compiler fixture rejects before artifact: ' + fixture, () => {
+  test('std.actors negative compiler fixture rejects before artifact: ' + fixture, () => {
     const dir = mkdtempSync(join(tmpdir(), 'atto-actor-negative-'));
     const output = join(dir, 'unexpected.wasm');
     try {

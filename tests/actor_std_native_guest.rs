@@ -16,7 +16,7 @@ fn compile_guest(entry: &str, filename: &str) -> Vec<u8> {
         } else {
             Err(io::Error::new(io::ErrorKind::NotFound, "unauthorized actor import"))
         }
-    }).expect("production Atto compiler must link the actual std.actor policy")
+    }).expect("production Atto compiler must link the actual std.actors policy")
 }
 
 #[test]

@@ -7,7 +7,7 @@ const positive = readFileSync(new URL('../contracts/std-actor-v1/future-owned.ac
 const negative = readFileSync(new URL('../contracts/std-actor-v1/future-borrowed.reject.atto', import.meta.url), 'utf8');
 const doubleAwait = readFileSync(new URL('../contracts/std-actor-v1/future-double-await.reject.atto', import.meta.url), 'utf8');
 test('ActorFuture is sealed, affine and namespace-owned, never user-constructed', () => {
-  assert.match(future, /use namespace std\.actor;/);
+  assert.match(future, /use namespace std\.actors;/);
   assert.match(future, /pub susp fnc await_reply<T>\(take! ActorFuture<T> receipt\) -> T/);
   assert.match(future, /take! ActorFuture<Result<T,E>> receipt\) -> Result<T,E>/);
   assert.equal((future.match(/return await receipt;/g) || []).length, 2);

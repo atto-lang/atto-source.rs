@@ -2,7 +2,7 @@
 // TARGET_NOT_EXECUTED; do not count as a generic unlinked pass fixture.
 // expect-exit: 0
 // expect-stdout: 42
-use namespace std.actor.example;
+use namespace std.actors.example;
 
 define actor Echo as
   receive(ActorMail<int> mail): void {

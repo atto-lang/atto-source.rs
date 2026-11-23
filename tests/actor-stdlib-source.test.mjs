@@ -17,9 +17,9 @@ const functions = [
   "actor_reply_admissible"
 ];
 
-test("all actor policy APIs belong to std.actor namespace, not a module", () => {
-  assert.match(source, /^use namespace std\.actor;\s/);
-  assert.match(smoke, /^\/\/[^\n]*\n\/\/[^\n]*\nuse namespace std\.actor\.smoke;/);
+test("all actor policy APIs belong to std.actors namespace, not a module", () => {
+  assert.match(source, /^use namespace std\.actors;\s/);
+  assert.match(smoke, /^\/\/[^\n]*\n\/\/[^\n]*\nuse namespace std\.actors\.smoke;/);
   assert.doesNotMatch(source, /\bdefine\s+(?:pub\s+)?module\b/);
   assert.doesNotMatch(source, /\b(?:native|extern|Java\.type|require\(|import\s+java)\b/);
   for (const name of functions) {
@@ -39,7 +39,7 @@ test("restart and physical stop policies remain fail-closed", () => {
 });
 
 test("native actor adversarial boundary matrix is broad and fail-closed", () => {
-  assert.match(edges, /use namespace std\.actor\.boundaries;/);
+  assert.match(edges, /use namespace std\.actors\.boundaries;/);
   assert.match(edges, /from "\.\/policy\.atto";/);
   assert.doesNotMatch(edges, /from "\.\.\/|from pkg/);
   for (const name of functions) {

@@ -1,6 +1,6 @@
 # Atto `std/actor` — native `.atto` namespace
 
-**Namespace:** `use namespace std.actor;` (not `define module actor`).
+**Namespace:** `use namespace std.actors;` (not `define module actor`).
 The optional runtime **profile** name `atto.runtime.actor` is a separate
 capability gate, not an importable alias or an implicit source namespace.
 See `atto-platform-conformance#320` for the eleven-backend parity contract.
