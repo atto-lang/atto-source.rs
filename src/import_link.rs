@@ -233,7 +233,14 @@ where F: FnMut(&Path) -> std::io::Result<String> {
     let (imports, root) = imports(&lexed, logical)?;
     if imports.is_empty() { return Ok(lexed); }
     reject_forged_names(&root)?;
-    let mut parser = Parser::new(root.clone());
+    // The validated namespace header is file identity, not a declaration:
+    // analyze the root's functions without it (it stays in the output).
+    let declarations = if word(root.first(), "use") && word(root.get(1), "namespace") {
+        let end = root.iter().position(|t| t.tok == Tok::Semi)
+            .ok_or_else(|| diagnostic(root[0].pos, "E_SYNTAX", "unterminated namespace header"))?;
+        root[end + 1..].to_vec()
+    } else { root.clone() };
+    let mut parser = Parser::new(declarations);
     let program = parser.parse_program()?;
     if !program.classes.is_empty() || !program.actors.is_empty() || !program.enums.is_empty() {
         return Err(diagnostic(imports[0].pos, "E_UNSUPPORTED", "file linking currently supports direct functions only"));
