@@ -230,6 +230,144 @@ A `Connecting` transition must carry a valid timeout. The checker must independe
 - Reject a connection timeout over 60,000 ms, nonpositive values, and a length quantity passed as timeout.
 - Ensure compiler diagnostics distinguish unit mismatch, refinement failure and protocol-state violation.
 
+
+## Native formal-methods syntax: phased proposal
+
+The following is a **language design proposal**, not a claim of current parser or solver support. Formal verification should be endemic to the typed HIR/borrow/effect system, rather than implemented solely as external annotations.
+
+### P0: declarations, contracts, and basic verification
+
+| Construct | Intended meaning |
+| --- | --- |
+| `define dimension`, `define unit` | Dimension algebra and unit scales |
+| `define protocol` | Nominal actor/channel state-transition contract |
+| `where` / contextual `units in` | Refinement and dimension constraints |
+| `requires` | Caller obligation / function precondition |
+| `ensures` | Callee obligation / function postcondition |
+| `invariant` | Loop, type or actor state preservation |
+| `pure` | Effect-constrained, observationally pure function |
+| `assert` | Check or prove an obligation, depending on verification mode |
+| contextual `transition` | Protocol state transition, validated against the protocol |
+
+### P1: explicit proofs and trust accounting
+
+| Construct | Intended meaning |
+| --- | --- |
+| `proof` | Proof-only statement/expression context |
+| `ghost` | Erasable specification state with noninterference checks |
+| `decreases` | Well-founded termination measure |
+| `old(expr)` | Snapshot of an allowed pre-state expression |
+| `forall`, `exists` | Typed logical quantification |
+| `assume` | Explicit trusted assumption; always audited |
+| `lemma` | Reusable proof function/theorem |
+| `spec` | Specification-only function |
+| `reads`, `modifies` | Frame conditions governing effects/state access |
+| `trusted` | Explicit trusted boundary, never a proof claim |
+
+### P2: advanced reasoning
+
+| Construct | Intended meaning |
+| --- | --- |
+| `temporal` | Temporal property context |
+| `always`, `eventually` | Safety/liveness operators with specified trace/fairness model |
+| `parametric` | Representation-independent polymorphism with restrictions on effects, reflection and divergence |
+
+**Keyword policy:** reserve globally only where unambiguous parsing requires it. Prefer contextual keywords in declarations/contracts and library-level proof combinators over a large globally reserved vocabulary. Reuse existing Atto syntax where compatible. In particular, `old`, `reads`, `modifies`, `transition`, `units`, `temporal`, and `parametric` can initially be contextual. Parser design must check existing identifiers and compatibility before reserving any word.
+
+### Illustrative contracts and dimension checks
+
+```atto
+type PositiveMillis = i32
+    where self > 0
+    and units in time.Millis;
+
+fnc halve(duration: PositiveMillis) -> PositiveMillis
+    requires duration >= 2<time.Millis>
+    ensures result > 0<time.Millis>
+    ensures result <= duration
+    pure
+{
+    return duration / 2;
+}
+```
+
+The type checker must model integer division, overflow and exact unit scaling. A declaration alone does not prove an implementation; the postconditions are verification obligations.
+
+### Illustrative proofs and explicit assumptions
+
+```atto
+lemma positive_sum(x: i32, y: i32)
+    requires x > 0
+    requires y > 0
+    requires x <= i32.MAX - y
+    ensures x + y > 0
+{
+    proof {
+        assert(x + y > 0);
+    }
+}
+```
+
+```atto
+proof {
+    assert(x > 0);  // Must be proved, or fail in strict mode.
+    assume(y > 0);  // Creates an explicit, reviewable trust obligation.
+}
+```
+
+Unrestricted `assume(false)` would make arbitrary propositions derivable. Every assumption and `trusted` boundary must be recorded in a machine-readable proof manifest, attributed to a source location, and rejected by strict mode unless explicitly approved. Unknown/timeout is never `proven`.
+
+### Illustrative actor invariant, frame condition and protocol
+
+```atto
+define protocol Connection as
+    initial Disconnected;
+    Disconnected -> Connecting;
+    Connecting -> Connected | Failed;
+    Connected -> Disconnected;
+    terminal Failed;
+end
+
+define actor Connector implements Connection as
+    invariant retries >= 0;
+
+    connect(timeout: PositiveMillis)
+        requires timeout <= 60_000<time.Millis>
+        modifies state
+    {
+        // Implementation must establish a legal transition.
+        transition Connecting;
+    }
+end
+```
+
+Protocol transitions require a proof of the source state, correct message ownership, and preservation of actor invariants at observable boundaries. Concurrency, cancellation and supervision must be modeled explicitly; local type checking does not by itself prove global liveness or deadlock freedom.
+
+### Illustrative advanced properties
+
+```atto
+fnc identity<parametric T>(x: T) -> T pure {
+    return x;
+}
+
+temporal Connection {
+    always(no_use_after_close);
+    // eventually(Connected) requires explicit progress/fairness assumptions.
+}
+```
+
+Parametricity free theorems require a sound semantic fragment (effects, divergence, reflection, unsafe and identity observations constrained). Temporal `eventually` cannot be guaranteed without a progress model.
+
+### Acceptance and implementation gates
+
+1. Produce a grammar/keyword collision audit and formatter round-trip cases for each proposed construct.
+2. Define typed HIR nodes, effect/borrow interactions and verification IR obligations; do not implement verification as a text-only macro.
+3. Test both valid and invalid contracts, refinements, quantifiers, termination, frame conditions, protocol transitions and unit arithmetic.
+4. Verify that ghost/spec code cannot leak into observable runtime behavior and that proof erasure preserves executable semantics.
+5. Check that `assume`/`trusted` and solver `unknown` cannot silently satisfy strict builds; emit complete proof manifests.
+6. Verify compiler-core integration and semantic parity in Rust, LLVM and Java with executable positive/negative fixtures. Backend-specific implementations may differ.
+7. Distinguish source-level proof from verified generated code; document compiler/runtime trusted computing base and translation-validation requirements.
+
 ## Architecture and parity
 
 - Specify semantics independently of any particular backend: arithmetic, effects, ownership, actors, errors and unit conversion.
