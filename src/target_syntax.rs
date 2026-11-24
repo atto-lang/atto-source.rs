@@ -528,7 +528,15 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
             }
             if crate::import_v2::is_mixed(toks, c.i) {
                 let (mixed, end) = crate::import_v2::parse_mixed(toks, c.i)?;
+                // Cap the aggregate file import set, not merely each list.
+                if out.imports.len().saturating_add(mixed.selectors.len()) > crate::import_v2::MAX_ITEMS {
+                    return Err(c.err("E_SOURCE_LIMIT", "too many file import bindings"));
+                }
                 for item in &mixed.selectors {
+                    if out.mixed_imports.iter().flat_map(|m| m.selectors.iter())
+                        .any(|prior| crate::import_v2::obstructs(prior, item)) {
+                        return Err(c.err("E_DUPLICATE", "non-namespace import obstructs qualified binding"));
+                    }
                     let alias = &item.binding;
                     if out.imports.contains(alias) {
                         return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
@@ -596,6 +604,9 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 _ => return Err(c.err("E_SYNTAX", "expected a nonempty quoted import path")),
             }
             c.expect(&Tok::Semi, "expected ';' after import")?;
+            if out.imports.len().saturating_add(bindings.len()) > crate::import_v2::MAX_ITEMS {
+                return Err(c.err("E_SOURCE_LIMIT", "too many file import bindings"));
+            }
             for alias in bindings {
                 if out.imports.contains(&alias) {
                     return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
@@ -782,12 +793,21 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     // shadow a declared nominal owner or a file-level callable. Detect
     // collisions independent of declaration order, before any lowering.
     for (import_name, import_pos) in &import_sites {
+        // A declared file-local value/callable/nominal cannot also serve
+        // as the root of an explicitly qualified mixed namespace alias.
+        let blocked_prefix = out.mixed_imports.iter().any(|m| m.selectors.iter()
+            .any(|s| &s.binding == import_name && s.binding.contains('.')))
+            && function_names.iter().chain(out.constants.iter())
+                .chain(out.actors.iter()).chain(out.classes.iter())
+                .chain(out.class_forwards.iter()).chain(out.struct_forwards.iter())
+                .chain(out.definitions.iter().map(|d| &d.name))
+                .any(|n| crate::import_v2::strict_prefix(n, import_name));
         let nominal_collision = out.actors.contains(import_name)
             || out.classes.contains(import_name)
             || out.class_forwards.contains(import_name)
             || out.struct_forwards.contains(import_name)
             || out.definitions.iter().any(|decl| &decl.name == import_name);
-        if nominal_collision || function_names.contains(import_name)
+        if blocked_prefix || nominal_collision || function_names.contains(import_name)
             || out.constants.contains(import_name) {
             return Err(Diagnostic::new(*import_pos, "E_DUPLICATE",
                 format!("import binding '{import_name}' conflicts with a local declaration")));
