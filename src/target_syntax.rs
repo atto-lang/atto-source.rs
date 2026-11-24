@@ -51,6 +51,8 @@ pub struct TargetHeaders {
     pub namespace: Option<String>,
     /// Local names of static imports. Export paths are not resolved or linked here.
     pub imports: Vec<String>,
+    /// Typed mixed-kind selections, syntax-only until authenticated linking.
+    pub mixed_imports: Vec<crate::import_v2::MixedImport>,
     /// Local aliases from typed `import const` selections; names only, not linked.
     pub const_imports: Vec<String>,
     /// File-scoped static `define const` declaration names (parse-only).
@@ -523,6 +525,22 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                !out.struct_forwards.is_empty() || !out.state_owners.is_empty() ||
                !out.constructors.is_empty() || !out.receivers.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
+            }
+            if matches!(c.tok(), Tok::LParen | Tok::LBracket) {
+                let (mixed, end) = crate::import_v2::parse_mixed(toks, c.i)?;
+                for item in &mixed.selectors {
+                    let alias = &item.binding;
+                    if out.imports.contains(alias) {
+                        return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
+                    }
+                    import_sites.push((alias.clone(), pos));
+                    if item.kind == crate::import_v2::Kind::Const { out.const_imports.push(alias.clone()); }
+                    out.imports.push(alias.clone());
+                }
+                out.mixed_imports.push(mixed);
+                c.i = end;
+                decls += 1;
+                continue;
             }
             let mut bindings = Vec::new();
             let const_only = c.take_word("const");
