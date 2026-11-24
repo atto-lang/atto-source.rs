@@ -354,3 +354,95 @@ fn builtin_aliases_are_static_and_cannot_capture_runtime_bindings() {
         assert_eq!(loads, 0, "{source}");
     }
 }
+
+#[test]
+fn builtin_header_parser_matches_all_six_binding_sets() {
+    for (declaration, bindings) in [
+        ("import namespace num from core.num;", vec!["num", "core.num"]),
+        ("import num from core.num;", vec!["num", "core.num"]),
+        ("import core.num from core.num;", vec!["core.num"]),
+        ("import core.num as num;", vec!["num"]),
+        ("import core.num as core.num;", vec!["core.num"]),
+        ("import core.num;", vec!["num", "core.num"]),
+        ("import namespace core.num;", vec!["core.num"]),
+        ("import namespace num as arithmetic from 'core.num';", vec!["arithmetic"]),
+        ("import namespace core.num as custom.math from \"core.num\";", vec!["custom.math"]),
+    ] {
+        assert_eq!(parse_v2(declaration).imports, bindings, "{declaration}");
+    }
+    // A pkg domain remains syntactically admissible, never builtin-trusted.
+    assert_eq!(parse_v2("import num from pkg 'core.num';").imports, ["num"]);
+    assert_eq!(parse_v2("import const PI from 'core.math';").const_imports, ["PI"]);
+    for src in [
+        "import core.num; import core.num as num;",
+        "import core.num as root; import core.cmp as root.child;",
+        "import core.num as core.num; pub fnc core(): int { return 1; }",
+    ] {
+        reject_v2(src, "E_DUPLICATE");
+    }
+}
+
+#[test]
+fn namespace_header_order_cannot_be_laundered_by_builtin_expansion() {
+    for src in [
+        "import core.num; use namespace app; pub fnc main(): int { return 0; }",
+        "import num from core.num; use default namespace; pub fnc main(): int { return 0; }",
+        "import module num from 'core/num'; use namespace app; pub fnc main(): int { return 0; }",
+        "import core.num; use default namespace(1); pub fnc main(): int { return 0; }",
+    ] {
+        assert_eq!(compile(src).unwrap_err().code, "E_SYNTAX", "{src}");
+        assert_eq!(atto_compiler::compile_with_path(src, Path::new("app/main.atto")).unwrap_err().code, "E_SYNTAX");
+        let mut loads = 0;
+        assert_eq!(compile_with_imports(src, Path::new("app/main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err().code, "E_SYNTAX");
+        assert_eq!(loads, 0);
+    }
+    assert_eq!(compile("use namespace app; import core.num; use namespace other; pub fnc main(): int { return 0; }").unwrap_err().code, "E_DUPLICATE");
+    assert!(compile("use namespace app; import core.num; pub fnc main(): int { return core.num.clamp(42, 0, 100); }").is_ok());
+}
+
+#[test]
+fn builtin_from_aliases_do_not_leak_identity_or_ignore_selected_name() {
+    for src in [
+        "import namespace num as math from core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
+        "import namespace core.num as custom.math from 'core.num'; pub fnc main(): int { return custom.math.clamp(42, 0, 100); }",
+    ] {
+        let wasm = compile(src).unwrap();
+        assert_eq!(&wasm[..4], b"\0asm");
+        assert_eq!(atto_compiler::compile_with_path(src, Path::new("app/main.atto")).unwrap(), wasm);
+        let mut loads = 0;
+        assert_eq!(compile_with_imports(src, Path::new("app/main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap(), wasm);
+        assert_eq!(loads, 0);
+    }
+    for src in [
+        "import namespace unrelated as math from core.num;",
+        "import namespace num as from from core.num;",
+        "import namespace num as __atto_forged from core.num;",
+        "import core.num as enum;",
+        "import core.num as pkg;",
+        "import core.num as math; pub fnc main(): int { return core.num.clamp(42, 0, 100); }",
+        "import namespace num as math from core.num; pub fnc main(): int { return num.clamp(42, 0, 100); }",
+    ] {
+        assert!(compile(src).is_err(), "{src}");
+    }
+}
+
+#[test]
+fn multiline_alias_rewrite_preserves_lines_and_unicode_boundary() {
+    let source = "import core.num as 数学.函数;\npub fnc main(): int {\n    return 数学 /* café\n    comment */ . 函数.clamp(42, 0, 100);\n}\n";
+    let lowered = atto_compiler::library::expand(source).unwrap();
+    let before_library = lowered.split("define module num as").next().unwrap();
+    assert_eq!(before_library.lines().position(|line| line.contains(".clamp")), Some(3));
+    assert!(compile(source).is_ok());
+}
+
+#[test]
+fn builtin_bindings_budget_applies_to_repeated_aliases_of_one_unit() {
+    let imports = (0..257).map(|i| format!("import core.num as alias{i};")).collect::<Vec<_>>().join("\n");
+    let source = format!("{imports}\npub fnc main(): int {{ return 0; }}");
+    assert_eq!(compile(&source).unwrap_err().code, "E_SOURCE_LIMIT");
+    reject_v2(&imports, "E_SOURCE_LIMIT");
+}
