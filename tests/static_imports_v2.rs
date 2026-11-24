@@ -446,3 +446,26 @@ fn builtin_bindings_budget_applies_to_repeated_aliases_of_one_unit() {
     assert_eq!(compile(&source).unwrap_err().code, "E_SOURCE_LIMIT");
     reject_v2(&imports, "E_SOURCE_LIMIT");
 }
+
+#[test]
+fn reject_internal_names_and_unsafe_remote_selector_shapes() {
+    for src in [
+        "import class [__atto_internal_module_fake] from pkg '@a/b/c';",
+        "import fnc [f as __atto_forged] from pkg '@a/b/c';",
+        "import namespace [n as org.__atto_hidden] from pkg '@a/b/c';",
+    ] {
+        reject_v2(src, "E_SYNTAX");
+    }
+    for source in ["http://example.test/lib.atto", "file:///tmp/lib.atto",
+                   "https://", "https:///lib.atto", "https://user:pass@example.test/lib.atto",
+                   "@a/b/ c"] {
+        let src = format!("import fnc [f] from pkg '{source}';");
+        reject_v2(&src, "E_IMPORT_PATH");
+        let mut loads = 0;
+        assert_eq!(compile_with_imports(&src, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err().code, "E_IMPORT_PATH");
+        assert_eq!(loads, 0);
+    }
+    assert_eq!(parse_v2("import namespace [n] from pkg 'https://example.test/lib.atto';").imports, ["n"]);
+}
