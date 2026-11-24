@@ -276,6 +276,14 @@ pub(crate) fn builtin_bindings(tokens: &[Token], start: usize) -> R<Option<(Vec<
     let mut end = start;
     while tokens.get(end).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { end += 1; }
     let Some(body) = tokens.get(start..end) else { return Ok(None); };
+    // Preserve legacy syntax-only external and typed symbol admission. An
+    // explicit pkg domain is never a builtin, even for reserved spellings.
+    // The executable dispatcher independently rejects unsupported resolution.
+    if matches!(ident(body.get(1)), Some("pkg" | "const" | "fnc" | "class" | "actor" | "enum" | "type" | "trait" | "interface"))
+        || body.iter().any(|t| ident(Some(t)) == Some("pkg"))
+        || body.get(1).is_some_and(|t| t.tok == Tok::Star) {
+        return Ok(None);
+    }
     let Some(imp) = parse_builtin_clause(body)? else { return Ok(None); };
     if tokens.get(end).is_none_or(|t| t.tok != Tok::Semi) {
         return Err(err(imp.pos, "E_SYNTAX", "expected semicolon after builtin import"));
@@ -288,16 +296,6 @@ pub(crate) fn builtin_bindings(tokens: &[Token], start: usize) -> R<Option<(Vec<
 fn library_imports(source: &str) -> R<Vec<LibImport>> {
     let toks = lexer::lex(source)?;
     let mut out = Vec::new();
-    // Reject late/duplicate file headers before erasing any imports. The
-    // normalizer will still validate the actual header and logical path.
-    for (i, window) in toks.windows(2).enumerate() {
-        if i != 0 && ident(window.first()) == Some("use")
-            && (ident(window.get(1)) == Some("namespace")
-                || (ident(window.get(1)) == Some("default")
-                    && ident(toks.get(i + 2)) == Some("namespace"))) {
-            return Err(err(window[0].pos, "E_SYNTAX", "namespace header must precede imports"));
-        }
-    }
     let mut i = 0;
     // Optional `use [default] namespace ...;` header.
     if ident(toks.get(i)) == Some("use") {
@@ -313,7 +311,7 @@ fn library_imports(source: &str) -> R<Vec<LibImport>> {
             j += 1;
         }
         if toks.get(j).map(|t| &t.tok) != Some(&Tok::Semi) {
-            return Ok(out);
+            return Err(err(toks[start_tok].pos, "E_SYNTAX", "unterminated import"));
         }
         if let Some(mut imp) = parse_builtin_clause(&toks[start_tok..j])? {
             imp.start = byte_offset(source, imp.pos);
@@ -324,6 +322,19 @@ fn library_imports(source: &str) -> R<Vec<LibImport>> {
             }
         }
         i = j + 1;
+    }
+    if !out.is_empty() {
+        // Reject late/duplicate file headers before erasing any imports. The
+        // normalizer will still validate the actual header and logical path.
+        for (i, window) in toks.windows(2).enumerate() {
+            if i != 0 && ident(window.first()) == Some("use")
+                && (ident(window.get(1)) == Some("namespace")
+                    || (ident(window.get(1)) == Some("default")
+                        && ident(toks.get(i + 2)) == Some("namespace"))) {
+                let code = if ident(toks.first()) == Some("use") { "E_DUPLICATE" } else { "E_SYNTAX" };
+                return Err(err(window[0].pos, code, "namespace header must precede imports and occur only once"));
+            }
+        }
     }
     Ok(out)
 }
@@ -452,8 +463,12 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
         let (n, unit) = matched.ok_or_else(|| err(token.pos, "E_UNSUPPORTED",
             "unbound, shadowed or non-call builtin namespace reference"))?;
         let last = &tokens[i + (n-1)*2];
-        let start = offsets[&(token.pos.line, token.pos.col)];
-        let end = offsets[&(last.pos.line, last.pos.col)] + ident(Some(last)).unwrap().len();
+        let start = *offsets.get(&(token.pos.line, token.pos.col))
+            .ok_or_else(|| err(token.pos, "E_INTERNAL", "missing import alias source offset"))?;
+        let end = offsets.get(&(last.pos.line, last.pos.col)).copied()
+            .and_then(|offset| offset.checked_add(ident(Some(last))?.len()))
+            .filter(|end| *end <= source.len() && *end >= start && source.is_char_boundary(*end))
+            .ok_or_else(|| err(last.pos, "E_INTERNAL", "invalid import alias source span"))?;
         // Preserve original line count and, when the alias span is long
         // enough, byte columns. The replacement is placed at the first
         // token; comments/whitespace in the span become whitespace.
@@ -485,6 +500,9 @@ pub fn expand(source: &str) -> R<String> {
     let mut done = Vec::new();
     let mut seen = BTreeSet::new();
     for imp in &imports {
+        if seen.len().saturating_add(imp.aliases.len()) > crate::import_v2::MAX_ITEMS {
+            return Err(err(imp.pos, "E_SOURCE_LIMIT", "too many builtin import bindings"));
+        }
         for alias in &imp.aliases {
             if !seen.insert(alias.clone()) {
                 return Err(err(imp.pos, "E_DUPLICATE", format!("duplicate imported module binding '{alias}'")));
