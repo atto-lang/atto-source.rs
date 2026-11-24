@@ -4813,8 +4813,21 @@ impl<'a> FnCx<'a> {
         }
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
+        // Lowering evaluates the receiver before the arguments, and the
+        // method uses it after all arguments have evaluated. A live local
+        // receiver must therefore survive their evaluation. A receiver
+        // already transferred into a temporary (`(take! x).method(...)`)
+        // owns that value independently of the source local's moved state.
+        let live_receiver = match &recv.e {
+            TExpr::Local(slot) if !self.moved.contains(slot) => Some(*slot),
+            _ => None,
+        };
         let mut targs = vec![recv];
         targs.extend(self.args(&label, args, &m.params)?);
+        if live_receiver.is_some_and(|slot| self.moved.contains(&slot)) {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "cannot move a method receiver while evaluating its arguments"));
+        }
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,
