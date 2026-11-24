@@ -526,7 +526,7 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                !out.constructors.is_empty() || !out.receivers.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
-            if matches!(c.tok(), Tok::LParen | Tok::LBracket) {
+            if crate::import_v2::is_mixed(toks, c.i) {
                 let (mixed, end) = crate::import_v2::parse_mixed(toks, c.i)?;
                 for item in &mixed.selectors {
                     let alias = &item.binding;
