@@ -19,17 +19,24 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Verify exact head and test actual compiler
+      - name: Verify exact head and physical tree
+        id: identity
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eu
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git rev-parse HEAD HEAD^{tree}
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code HEAD --
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          test -z "$(git ls-files --others --exclude-standard)"
           rustc --version
+      - name: Run focused and compatibility compiler suites
+        run: |
           cargo test --locked --no-fail-fast --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
       - name: Compile real builtin guests and run exported main
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
           set -eu
           cargo build --locked --bin attoc
@@ -60,5 +67,5 @@ jobs:
           test ! -e "$work/denied.wasm"
           grep -F 'E_UNSUPPORTED' "$work/denied.log"
       - name: Legacy core alloc std real guest regression suite
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: node tests/atto_libraries.mjs target/debug/attoc
