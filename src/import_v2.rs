@@ -50,7 +50,9 @@ impl Cursor<'_> {
     }
     fn ident(&mut self) -> R<String> {
         match self.tok() {
-            Tok::Ident(s) if !is_reserved(s) && !matches!(s.as_str(), "pkg" | "enum" | "use" | "declare" | "mtd") => {
+            Tok::Ident(s) if !is_reserved(s) && !s.starts_with("__atto_")
+                && s.len() <= 64
+                && !matches!(s.as_str(), "pkg" | "enum" | "use" | "declare" | "mtd") => {
                 let s = s.clone(); self.i += 1; Ok(s)
             }
             _ => Err(self.err("E_SYNTAX", "expected import identifier")),
@@ -128,6 +130,16 @@ impl Cursor<'_> {
         if package {
             if text.starts_with("./") || text.starts_with("../") || text.starts_with('/') {
                 return Err(self.err("E_SYNTAX", "invalid package selector"));
+            }
+            if text.chars().any(char::is_whitespace) {
+                return Err(self.err("E_IMPORT_PATH", "package selector contains whitespace"));
+            }
+            if text.contains("://") {
+                let authority = text.strip_prefix("https://").and_then(|rest|
+                    rest.split(['/', '?', '#']).next());
+                if authority.is_none_or(|host| host.is_empty() || host.contains('@')) {
+                    return Err(self.err("E_IMPORT_PATH", "remote package requires HTTPS and a credential-free authority"));
+                }
             }
             return Ok(Source::Package(text));
         }
