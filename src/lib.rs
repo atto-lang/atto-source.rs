@@ -46,6 +46,7 @@ pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
 pub mod const_import_link;
 pub mod import_link;
+pub mod import_v2;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
 pub mod linker;
