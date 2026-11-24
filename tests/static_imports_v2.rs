@@ -128,3 +128,42 @@ fn kind_first_groups_and_singletons_bind_equivalently() {
         assert!(parse_target_declarations(&lex(src).unwrap()).is_err(), "{src}");
     }
 }
+
+#[test]
+fn brackets_and_parentheses_are_interchangeable_at_each_group_position() {
+    let forms = [
+        "import class [C, D as Data], fnc [f as fetch, g], module (m, n), namespace (z) from pkg '@a/b/c';",
+        "import class (C, D as Data), fnc (f as fetch, g), module [m, n], namespace [z] from pkg '@a/b/c';",
+        "import (class [C, D as Data], fnc (f as fetch, g), [module m, n], namespace [z]) from pkg '@a/b/c';",
+        "import [(class C, D as Data), fnc [f as fetch, g], module (m, n), [namespace z]] from pkg '@a/b/c';",
+        "import [class C, D as Data], [fnc f as fetch, g], module [m, n], [namespace z] from pkg '@a/b/c';",
+    ];
+    let expected = parse_target_declarations(&lex(forms[0]).unwrap()).unwrap();
+    assert_eq!(expected.imports, ["C", "Data", "fetch", "g", "m", "n", "z"]);
+    for src in forms {
+        let actual = parse_target_declarations(&lex(src).unwrap()).unwrap();
+        assert_eq!(actual.mixed_imports, expected.mixed_imports, "{src}");
+        let mut loads = 0;
+        assert_eq!(compile_with_imports(src, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err().code, "E_UNSUPPORTED");
+        assert_eq!(loads, 0, "{src}");
+    }
+    for src in ["import namespace [z] from pkg '@a/b/c';",
+                "import [namespace z] from pkg '@a/b/c';",
+                "import [[namespace z]] from pkg '@a/b/c';"] {
+        assert_eq!(parse_target_declarations(&lex(src).unwrap()).unwrap().imports, ["z"]);
+    }
+    for src in [
+        "import class [C, D) from pkg '@a/b/c';",
+        "import class (C, D] from pkg '@a/b/c';",
+        "import class [] from pkg '@a/b/c';",
+        "import class [C, fnc f] from pkg '@a/b/c';",
+        "import class [C, D,] from pkg '@a/b/c';",
+        "import class [[C]] from pkg '@a/b/c';",
+        "import class [C], fnc [f as C] from pkg '@a/b/c';",
+        "import class [C], g from pkg '@a/b/c';",
+    ] {
+        assert!(parse_target_declarations(&lex(src).unwrap()).is_err(), "{src}");
+    }
+}
