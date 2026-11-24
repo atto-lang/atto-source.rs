@@ -34,14 +34,20 @@ jobs:
           cargo build --locked --bin attoc
           work="$(mktemp -d ./import-v2-guest.XXXXXX)"
           trap 'rm -rf "$work"' EXIT
-          for variant in legacy bare single double; do
+          for variant in legacy bare single double shorthand qualified alias qualified_alias direct; do
+            binding=num
             case "$variant" in
               legacy) selector="import module num from 'core/num';" ;;
               bare) selector="import namespace num from core.num;" ;;
               single) selector="import namespace num from 'core.num';" ;;
               double) selector='import namespace num from "core.num";' ;;
+              shorthand) selector='import num from core.num;' ;;
+              qualified) selector='import core.num from core.num;'; binding=core.num ;;
+              alias) selector='import core.num as num;' ;;
+              qualified_alias) selector='import core.num as core.num;'; binding=core.num ;;
+              direct) selector='import core.num;'; binding=core.num ;;
             esac
-            printf '%s\n%s\n' "$selector" 'pub fnc main(): int { return num.clamp(42, 0, 100); }' > "$work/$variant.atto"
+            printf '%s\n%s\n' "$selector" "pub fnc main(): int { return $binding.clamp(42, 0, 100); }" > "$work/$variant.atto"
             target/debug/attoc "$work/$variant.atto" -o "$work/$variant.wasm"
             node -e 'const fs=require("node:fs"); const b=fs.readFileSync(process.argv[1]); if(!WebAssembly.validate(b)) throw Error("invalid guest"); const i=new WebAssembly.Instance(new WebAssembly.Module(b),{}); if(i.exports.main()!==42n) throw Error("guest did not return 42"); console.log(process.argv[1]+": main=42");' "$work/$variant.wasm"
           done
