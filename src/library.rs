@@ -190,6 +190,7 @@ fn parse_builtin_clause(body: &[Token]) -> R<Option<LibImport>> {
     let mut direct = false;
     let mut explicit_alias = false;
     let mut legacy_module = false;
+    let mut selected = None;
     if let Some(at) = source_at {
         let explicit_package = ident(body.get(at)) == Some("pkg");
         let source = if explicit_package { &body[at + 1..] } else { &body[at..] };
@@ -217,7 +218,14 @@ fn parse_builtin_clause(body: &[Token]) -> R<Option<LibImport>> {
             let mut left = &body[1..at - 1];
             legacy_module = ident(left.first()) == Some("module");
             if legacy_module || ident(left.first()) == Some("namespace") { left = &left[1..]; }
-            requested = Some(binding_path(left, pos)?);
+            if let Some(at) = left.iter().position(|t| ident(Some(t)) == Some("as")) {
+                if legacy_module { return Err(err(pos, "E_IMPORT", "legacy module import does not accept aliases")); }
+                selected = Some(binding_path(&left[..at], pos)?);
+                requested = Some(binding_path(&left[at + 1..], pos)?);
+                explicit_alias = true;
+            } else {
+                requested = Some(binding_path(left, pos)?);
+            }
         }
     } else {
         let mut left = &body[1..];
@@ -239,6 +247,9 @@ fn parse_builtin_clause(body: &[Token]) -> R<Option<LibImport>> {
         let (layer, unit) = normalize(&selector).ok_or_else(|| err(pos, "E_IMPORT",
             format!("unknown compiler-owned {} module '{}'", reserved_layer_name(&selector), selector)))?;
         let canonical = format!("{}.{}", layer.name().trim_start_matches("atto."), unit);
+        if selected.as_deref().is_some_and(|name| name != unit && name != canonical.as_str()) {
+            return Err(err(pos, "E_IMPORT", "namespace selection does not match builtin identity"));
+        }
         let v2 = !legacy_module;
         let mut aliases = Vec::new();
         if legacy_module {
@@ -473,12 +484,12 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
         // enough, byte columns. The replacement is placed at the first
         // token; comments/whitespace in the span become whitespace.
         let mut replacement = unit.clone();
-        let span = &source[start..end];
+        let span = source.get(start..end).ok_or_else(|| err(token.pos, "E_INTERNAL", "invalid alias UTF-8 span"))?;
         let mut skipped = 0usize;
         for ch in span.chars() {
             if ch == '\n' { replacement.push('\n'); }
             else if skipped < unit.len() { skipped += ch.len_utf8(); }
-            else { replacement.extend(std::iter::repeat_n(' ', ch.len_utf8())); }
+            else { for _ in 0..ch.len_utf8() { replacement.push(' '); } }
         }
         edits.push((start, end, replacement));
         i += n*2 + 1;
