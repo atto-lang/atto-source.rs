@@ -27,8 +27,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git rev-parse HEAD HEAD^{tree}
           rustc --version
-          cargo test --locked --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
+          cargo test --locked --no-fail-fast --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
       - name: Compile real builtin guests and run exported main
+        if: ${{ !cancelled() }}
         run: |
           set -eu
           cargo build --locked --bin attoc
@@ -59,4 +60,5 @@ jobs:
           test ! -e "$work/denied.wasm"
           grep -F 'E_UNSUPPORTED' "$work/denied.log"
       - name: Legacy core alloc std real guest regression suite
+        if: ${{ !cancelled() }}
         run: node tests/atto_libraries.mjs target/debug/attoc
