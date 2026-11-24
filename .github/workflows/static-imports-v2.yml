@@ -28,3 +28,27 @@ jobs:
           git rev-parse HEAD HEAD^{tree}
           rustc --version
           cargo test --locked --test static_imports_v2 --test unified_imports
+      - name: Compile real builtin guests and run exported main
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./import-v2-guest.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          for variant in legacy bare single double; do
+            case "$variant" in
+              legacy) selector="import module num from 'core/num';" ;;
+              bare) selector="import namespace num from core.num;" ;;
+              single) selector="import namespace num from 'core.num';" ;;
+              double) selector='import namespace num from "core.num";' ;;
+            esac
+            printf '%s\n%s\n' "$selector" 'pub fnc main(): int { return num.clamp(42, 0, 100); }' > "$work/$variant.atto"
+            target/debug/attoc "$work/$variant.atto" -o "$work/$variant.wasm"
+            node -e 'const fs=require("node:fs"); const b=fs.readFileSync(process.argv[1]); if(!WebAssembly.validate(b)) throw Error("invalid guest"); const i=new WebAssembly.Instance(new WebAssembly.Module(b),{}); if(i.exports.main()!==42n) throw Error("guest did not return 42"); console.log(process.argv[1]+": main=42");' "$work/$variant.wasm"
+          done
+          printf '%s\n' "import class [C, D], fnc (f, g) from pkg '@a/b/c';" 'pub fnc main(): int { return 42; }' > "$work/denied.atto"
+          if target/debug/attoc "$work/denied.atto" -o "$work/denied.wasm" 2>"$work/denied.log"; then
+            echo 'unsupported import produced a guest' >&2
+            exit 1
+          fi
+          test ! -e "$work/denied.wasm"
+          grep -F 'E_UNSUPPORTED' "$work/denied.log"
