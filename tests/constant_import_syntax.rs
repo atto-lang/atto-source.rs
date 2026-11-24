@@ -14,7 +14,7 @@ fn reject(src: &str, expected: &str) {
 fn named_const_imports_support_dotted_packages_pkg_and_relative_files() {
     let headers = parse(r#"
         use namespace app;
-        import const status_valid, route_matches as matches from "std.http";
+        import const status_valid, route_matches as route_match from "std.http";
         import const status_not_found as missing from pkg "std.http";
         import const threshold from "./config.atto";
         pub fnc main(): int { return status_valid; }
@@ -22,7 +22,7 @@ fn named_const_imports_support_dotted_packages_pkg_and_relative_files() {
     assert_eq!(headers.namespace.as_deref(), Some("app"));
     assert_eq!(
         headers.imports,
-        ["status_valid", "matches", "missing", "threshold"]
+        ["status_valid", "route_match", "missing", "threshold"]
     );
     assert_eq!(headers.const_imports, headers.imports);
 }
@@ -107,6 +107,7 @@ fn typed_and_untyped_imports_share_the_same_collision_domain() {
 #[test]
 fn invalid_const_import_forms_fail_closed() {
     for source in [
+        "import const route_matches as matches from \"std.http\";",
         "import const * as http from \"std.http\";",
         "import const from \"std.http\";",
         "import const a, from \"std.http\";",
