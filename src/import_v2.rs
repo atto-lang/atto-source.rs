@@ -129,7 +129,7 @@ pub fn parse_mixed(tokens: &[Token], start: usize) -> R<(MixedImport, usize)> {
 }
 
 /// Refuse new forms before legacy library expansion or caller-supplied loading.
-/// Only the natural-name builtin namespace lane is currently executable.
+/// The existing legacy linker remains unchanged; the natural-name builtin namespace lane is the new executable candidate.
 /// Mixed lists have a real syntax AST, but not a typed linker yet.
 pub fn preflight(source: &str) -> R<()> {
     if !source.contains("import") { return Ok(()); }
@@ -145,15 +145,10 @@ pub fn preflight(source: &str) -> R<()> {
             parse_mixed(&tokens, start)?;
             return Err(Diagnostic::new(tokens[i].pos, "E_UNSUPPORTED", "mixed import syntax parsed; typed linking is not implemented"));
         }
-        // Explicit external selectors must never be consumed by the compiler-owned
-        // library registry, even when their spelling resembles a built-in.
+        // Leave legacy forms to their existing linkers. The builtin
+        // registry separately rejects explicit pkg selectors under reserved roots.
         let mut j = start;
         while j < tokens.len() && !matches!(tokens[j].tok, Tok::Semi | Tok::Eof) { j += 1; }
-        let body = &tokens[start..j];
-        let external = body.iter().any(|t| matches!(&t.tok, Tok::Ident(s) if s == "pkg"));
-        if external {
-            return Err(Diagnostic::new(tokens[i].pos, "E_UNSUPPORTED", "external package import requires authenticated package linking"));
-        }
         i = j.saturating_add(1);
     }
     Ok(())
