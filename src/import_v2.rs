@@ -5,7 +5,7 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 use crate::parser::is_reserved;
 type R<T> = Result<T, Diagnostic>;
-const MAX_ITEMS: usize = 256;
+pub(crate) const MAX_ITEMS: usize = 256;
 const MAX_PATH: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +20,21 @@ pub struct Selection {
 pub enum Source { Builtin(String), Local(String), Package(String) }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MixedImport { pub selectors: Vec<Selection>, pub source: Source }
+
+/// A dotted alias is a static path, not a member of a runtime value.
+pub(crate) fn strict_prefix(prefix: &str, path: &str) -> bool {
+    path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+pub(crate) fn obstructs(a: &Selection, b: &Selection) -> bool {
+    // A module or namespace may expose a nested static export; defer those
+    // overlaps to the authenticated export graph. Other declaration kinds
+    // cannot be synthetic namespace prefixes.
+    (!matches!(a.kind, Kind::Namespace | Kind::Module)
+        && strict_prefix(&a.binding, &b.binding))
+        || (!matches!(b.kind, Kind::Namespace | Kind::Module)
+        && strict_prefix(&b.binding, &a.binding))
+}
 
 struct Cursor<'a> { tokens: &'a [Token], i: usize }
 impl Cursor<'_> {
@@ -72,7 +87,11 @@ impl Cursor<'_> {
         if out.iter().any(|s| s.binding == binding) {
             return Err(self.err("E_DUPLICATE", "duplicate mixed import binding"));
         }
-        out.push(Selection { kind, path: parts.join("."), binding });
+        let selection = Selection { kind, path: parts.join("."), binding };
+        if out.iter().any(|s| obstructs(s, &selection)) {
+            return Err(self.err("E_DUPLICATE", "non-namespace import obstructs qualified binding"));
+        }
+        out.push(selection);
         Ok(())
     }
     fn opening_group(&mut self) -> Option<Tok> {
@@ -101,8 +120,13 @@ impl Cursor<'_> {
             _ if !package => self.path()?.join("."),
             _ => return Err(self.err("E_SYNTAX", "pkg requires a quoted dependency identity")),
         };
+        // Decoded strings can contain escaped controls even if source bytes
+        // have no literal NUL. Never forward such selectors to a resolver.
+        if text.chars().any(|ch| ch.is_control()) || text.contains('\\') {
+            return Err(self.err("E_IMPORT_PATH", "import selector contains control or backslash"));
+        }
         if package {
-            if text.starts_with("./") || text.starts_with("../") || text.contains('\0') {
+            if text.starts_with("./") || text.starts_with("../") || text.starts_with('/') {
                 return Err(self.err("E_SYNTAX", "invalid package selector"));
             }
             return Ok(Source::Package(text));
@@ -110,8 +134,13 @@ impl Cursor<'_> {
         if text.starts_with("./") || text.starts_with("../") {
             return Ok(Source::Local(text));
         }
-        if crate::library::normalize(&text).is_some() {
-            return Ok(Source::Builtin(text));
+        if let Some((layer, unit)) = crate::library::normalize(&text) {
+            let root = match layer {
+                crate::library::Layer::Core => "core",
+                crate::library::Layer::Alloc => "alloc",
+                crate::library::Layer::Std => "std",
+            };
+            return Ok(Source::Builtin(format!("{root}.{unit}")));
         }
         Err(self.err("E_IMPORT", "expected registered builtin spelling or relative source"))
     }
@@ -178,7 +207,16 @@ pub fn parse_mixed(tokens: &[Token], start: usize) -> R<(MixedImport, usize)> {
                 Ok(result) => Ok(result),
                 Err(first) => match parse_list(tokens, start, false) {
                     Ok(result) => Ok(result),
-                    Err(_) => Err(first),
+                    Err(second) => {
+                        // Prefer a specific collision/limit/path failure over a
+                        // failed interpretation's generic syntax diagnostic.
+                        // For equally specific failures, keep the furthest
+                        // original source location (deterministic on ties).
+                        if (first.code == "E_SYNTAX" && second.code != "E_SYNTAX")
+                            || (first.code == second.code
+                                && (second.pos.line, second.pos.col) > (first.pos.line, first.pos.col))
+                        { Err(second) } else { Err(first) }
+                    },
                 },
             }
         }
