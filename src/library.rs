@@ -165,7 +165,7 @@ fn binding_path(tokens: &[Token], pos: Pos) -> R<String> {
         if i % 2 == 1 {
             if token.tok != Tok::Dot { return Err(err(token.pos, "E_IMPORT", "expected dot in import path")); }
         } else if let Some(name) = ident(Some(token)) {
-            if crate::parser::is_reserved(name) || name == "pkg" || name.len() > 64
+            if crate::parser::is_reserved(name) || matches!(name, "pkg" | "enum" | "use" | "declare" | "mtd") || name.len() > 64
                 || name.starts_with("__atto_") {
                 return Err(err(token.pos, "E_IMPORT", "invalid import binding identifier"));
             }
@@ -175,11 +175,129 @@ fn binding_path(tokens: &[Token], pos: Pos) -> R<String> {
     Ok(parts.join("."))
 }
 
+/// Shared parser for one complete builtin import clause, excluding semicolon.
+/// No loading, registry lookup or binding publication occurs here.
+fn parse_builtin_clause(body: &[Token]) -> R<Option<LibImport>> {
+    let pos = body.first().map_or(Pos::default(), |t| t.pos);
+    if ident(body.first()) != Some("import") { return Ok(None); }
+    // Inspect only the source after 'from', never an arbitrary string
+    // elsewhere in the clause. Recognize malformed reserved bare paths
+    // too, so they cannot fall through to a file loader.
+    let source_at = body.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "from"))
+        .map(|at| at + 1);
+    let mut selector = None;
+    let mut requested = None;
+    let mut direct = false;
+    let mut explicit_alias = false;
+    let mut legacy_module = false;
+    if let Some(at) = source_at {
+        let explicit_package = ident(body.get(at)) == Some("pkg");
+        let source = if explicit_package { &body[at + 1..] } else { &body[at..] };
+        let quoted = match source.first().map(|t| &t.tok) {
+            Some(Tok::Str(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let bare_reserved = matches!(ident(source.first()), Some("core" | "alloc" | "std"));
+        if explicit_package {
+            if quoted.as_deref().is_some_and(is_reserved) || bare_reserved {
+                return Err(err(pos, "E_UNSUPPORTED", "explicit package selector cannot use compiler-owned library resolution"));
+            }
+        } else if quoted.as_deref().is_some_and(is_reserved) {
+            if source.len() != 1 {
+                return Err(err(pos, "E_IMPORT", "malformed builtin selector"));
+            }
+            selector = quoted;
+        } else if bare_reserved {
+            if source.len() != 3 || source[1].tok != Tok::Dot || ident(source.get(2)).is_none() {
+                return Err(err(pos, "E_IMPORT", "builtin selector must be a flat dotted identity"));
+            }
+            selector = Some(format!("{}.{}", ident(source.first()).unwrap(), ident(source.get(2)).unwrap()));
+        }
+        if selector.is_some() {
+            let mut left = &body[1..at - 1];
+            legacy_module = ident(left.first()) == Some("module");
+            if legacy_module || ident(left.first()) == Some("namespace") { left = &left[1..]; }
+            requested = Some(binding_path(left, pos)?);
+        }
+    } else {
+        let mut left = &body[1..];
+        if ident(left.first()) == Some("namespace") { left = &left[1..]; }
+        if matches!(ident(left.first()), Some("core" | "alloc" | "std")) {
+            direct = true;
+            let as_at = left.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "as"));
+            let source = &left[..as_at.unwrap_or(left.len())];
+            selector = Some(binding_path(source, pos)?);
+            if let Some(at) = as_at {
+                explicit_alias = true;
+                requested = Some(binding_path(&left[at + 1..], pos)?);
+            } else if ident(body.get(1)) == Some("namespace") {
+                requested = selector.clone();
+            }
+        }
+    }
+    if let Some(selector) = selector {
+        let (layer, unit) = normalize(&selector).ok_or_else(|| err(pos, "E_IMPORT",
+            format!("unknown compiler-owned {} module '{}'", reserved_layer_name(&selector), selector)))?;
+        let canonical = format!("{}.{}", layer.name().trim_start_matches("atto."), unit);
+        let v2 = !legacy_module;
+        let mut aliases = Vec::new();
+        if legacy_module {
+            if requested.as_deref() != Some(unit) {
+                return Err(err(pos, "E_IMPORT", "legacy module binding must match library unit"));
+            }
+            aliases.push(unit.to_string());
+        } else if explicit_alias {
+            aliases.push(requested.ok_or_else(|| err(pos, "E_IMPORT", "missing alias"))?);
+        } else if requested.as_deref() == Some(canonical.as_str()) {
+            aliases.push(canonical);
+        } else if (direct && requested.is_none()) || requested.as_deref() == Some(unit) {
+            aliases.push(unit.to_string());
+            aliases.push(canonical);
+        } else {
+            return Err(err(pos, "E_IMPORT", "use a natural or canonical binding, or direct import with an explicit as alias"));
+        }
+        return Ok(Some(LibImport {
+            binding: unit.to_string(),
+            aliases,
+            v2,
+            selector,
+            pos,
+            start: 0,
+            end: 0,
+        }));
+    }
+
+    Ok(None)
+}
+
+/// Syntax tooling uses the same classifier as the executable builtin lane.
+/// The return value includes only lexical bindings, never runtime objects.
+pub(crate) fn builtin_bindings(tokens: &[Token], start: usize) -> R<Option<(Vec<String>, usize)>> {
+    let mut end = start;
+    while tokens.get(end).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { end += 1; }
+    let Some(body) = tokens.get(start..end) else { return Ok(None); };
+    let Some(imp) = parse_builtin_clause(body)? else { return Ok(None); };
+    if tokens.get(end).is_none_or(|t| t.tok != Tok::Semi) {
+        return Err(err(imp.pos, "E_SYNTAX", "expected semicolon after builtin import"));
+    }
+    Ok(Some((imp.aliases, end + 1)))
+}
+
 /// Header-position library imports of the form
 /// `import module <name> from "<selector>";` with a reserved selector.
 fn library_imports(source: &str) -> R<Vec<LibImport>> {
     let toks = lexer::lex(source)?;
     let mut out = Vec::new();
+    // Reject late/duplicate file headers before erasing any imports. The
+    // normalizer will still validate the actual header and logical path.
+    for (i, window) in toks.windows(2).enumerate() {
+        if i != 0 && ident(window.first()) == Some("use")
+            && (ident(window.get(1)) == Some("namespace")
+                || (ident(window.get(1)) == Some("default")
+                    && ident(toks.get(i + 2)) == Some("namespace"))) {
+            return Err(err(window[0].pos, "E_SYNTAX", "namespace header must precede imports"));
+        }
+    }
     let mut i = 0;
     // Optional `use [default] namespace ...;` header.
     if ident(toks.get(i)) == Some("use") {
@@ -197,93 +315,13 @@ fn library_imports(source: &str) -> R<Vec<LibImport>> {
         if toks.get(j).map(|t| &t.tok) != Some(&Tok::Semi) {
             return Ok(out);
         }
-        let body = &toks[start_tok..j];
-        // Inspect only the source after 'from', never an arbitrary string
-        // elsewhere in the clause. Recognize malformed reserved bare paths
-        // too, so they cannot fall through to a file loader.
-        let source_at = body.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "from"))
-            .map(|at| at + 1);
-        let pos = toks[start_tok].pos;
-        let mut selector = None;
-        let mut requested = None;
-        let mut direct = false;
-        let mut explicit_alias = false;
-        let mut legacy_module = false;
-        if let Some(at) = source_at {
-            let explicit_package = ident(body.get(at)) == Some("pkg");
-            let source = if explicit_package { &body[at + 1..] } else { &body[at..] };
-            let quoted = match source.first().map(|t| &t.tok) {
-                Some(Tok::Str(s)) => Some(s.clone()),
-                _ => None,
-            };
-            let bare_reserved = matches!(ident(source.first()), Some("core" | "alloc" | "std"));
-            if explicit_package {
-                if quoted.as_deref().is_some_and(is_reserved) || bare_reserved {
-                    return Err(err(pos, "E_UNSUPPORTED", "explicit package selector cannot use compiler-owned library resolution"));
-                }
-            } else if quoted.as_deref().is_some_and(is_reserved) {
-                if source.len() != 1 {
-                    return Err(err(pos, "E_IMPORT", "malformed builtin selector"));
-                }
-                selector = quoted;
-            } else if bare_reserved {
-                if source.len() != 3 || source[1].tok != Tok::Dot || ident(source.get(2)).is_none() {
-                    return Err(err(pos, "E_IMPORT", "builtin selector must be a flat dotted identity"));
-                }
-                selector = Some(format!("{}.{}", ident(source.first()).unwrap(), ident(source.get(2)).unwrap()));
+        if let Some(mut imp) = parse_builtin_clause(&toks[start_tok..j])? {
+            imp.start = byte_offset(source, imp.pos);
+            imp.end = byte_offset(source, toks[j].pos) + 1;
+            out.push(imp);
+            if out.len() > crate::import_v2::MAX_ITEMS {
+                return Err(err(toks[start_tok].pos, "E_SOURCE_LIMIT", "too many builtin import declarations"));
             }
-            if selector.is_some() {
-                let mut left = &body[1..at - 1];
-                legacy_module = ident(left.first()) == Some("module");
-                if legacy_module || ident(left.first()) == Some("namespace") { left = &left[1..]; }
-                requested = Some(binding_path(left, pos)?);
-            }
-        } else {
-            let mut left = &body[1..];
-            if ident(left.first()) == Some("namespace") { left = &left[1..]; }
-            if matches!(ident(left.first()), Some("core" | "alloc" | "std")) {
-                direct = true;
-                let as_at = left.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "as"));
-                let source = &left[..as_at.unwrap_or(left.len())];
-                selector = Some(binding_path(source, pos)?);
-                if let Some(at) = as_at {
-                    explicit_alias = true;
-                    requested = Some(binding_path(&left[at + 1..], pos)?);
-                } else if ident(body.get(1)) == Some("namespace") {
-                    requested = selector.clone();
-                }
-            }
-        }
-        if let Some(selector) = selector {
-            let (layer, unit) = normalize(&selector).ok_or_else(|| err(pos, "E_IMPORT",
-                format!("unknown compiler-owned {} module '{}'", reserved_layer_name(&selector), selector)))?;
-            let canonical = format!("{}.{}", layer.name().trim_start_matches("atto."), unit);
-            let v2 = !legacy_module;
-            let mut aliases = Vec::new();
-            if legacy_module {
-                if requested.as_deref() != Some(unit) {
-                    return Err(err(pos, "E_IMPORT", "legacy module binding must match library unit"));
-                }
-                aliases.push(unit.to_string());
-            } else if explicit_alias {
-                aliases.push(requested.ok_or_else(|| err(pos, "E_IMPORT", "missing alias"))?);
-            } else if requested.as_deref() == Some(canonical.as_str()) {
-                aliases.push(canonical);
-            } else if (direct && requested.is_none()) || requested.as_deref() == Some(unit) {
-                aliases.push(unit.to_string());
-                aliases.push(canonical);
-            } else {
-                return Err(err(pos, "E_IMPORT", "use a natural or canonical binding, or direct import with an explicit as alias"));
-            }
-            out.push(LibImport {
-                binding: unit.to_string(),
-                aliases,
-                v2,
-                selector,
-                pos,
-                start: byte_offset(source, pos),
-                end: byte_offset(source, toks[j].pos) + 1,
-            });
         }
         i = j + 1;
     }
@@ -416,7 +454,18 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
         let last = &tokens[i + (n-1)*2];
         let start = offsets[&(token.pos.line, token.pos.col)];
         let end = offsets[&(last.pos.line, last.pos.col)] + ident(Some(last)).unwrap().len();
-        edits.push((start, end, unit.clone()));
+        // Preserve original line count and, when the alias span is long
+        // enough, byte columns. The replacement is placed at the first
+        // token; comments/whitespace in the span become whitespace.
+        let mut replacement = unit.clone();
+        let span = &source[start..end];
+        let mut skipped = 0usize;
+        for ch in span.chars() {
+            if ch == '\n' { replacement.push('\n'); }
+            else if skipped < unit.len() { skipped += ch.len_utf8(); }
+            else { replacement.extend(std::iter::repeat_n(' ', ch.len_utf8())); }
+        }
+        edits.push((start, end, replacement));
         i += n*2 + 1;
     }
     let mut result = source.to_string();
