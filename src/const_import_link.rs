@@ -244,17 +244,17 @@ fn is_disallowed_reference_context(tokens: &[Token], i: usize) -> Option<&'stati
             if matches!(s.as_str(), "mut" | "borrow" | "take" | "drop"))) {
         return Some("E_ASSIGN_CONST");
     }
+    if before.is_some_and(|t| matches!(&t.tok, Tok::Ident(s)
+        if matches!(s.as_str(), "fnc" | "routine" | "val" | "let" | "const"
+            | "class" | "actor" | "enum" | "int" | "bool" | "string"))) {
+        return Some("E_DUPLICATE");
+    }
     if after.is_some_and(|t| t.tok == Tok::LParen) {
         return Some("E_IMPORT_KIND");
     }
     if before.is_some_and(|t| t.tok == Tok::Dot)
         || after.is_some_and(|t| t.tok == Tok::Dot) {
         return Some("E_UNSUPPORTED");
-    }
-    if before.is_some_and(|t| matches!(&t.tok, Tok::Ident(s)
-        if matches!(s.as_str(), "fnc" | "routine" | "val" | "let" | "const"
-            | "class" | "actor" | "enum" | "int" | "bool" | "string"))) {
-        return Some("E_DUPLICATE");
     }
     None
 }
@@ -273,6 +273,9 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         return Ok(None);
     }
     reject_reserved(&tokens)?;
+    // Validate the original source ordering before extracting the imports.
+    // This prevents late namespace headers becoming first after rewriting.
+    let tokens = crate::namespace::normalize(&tokens, Some(logical))?;
     // A namespace header is legal before import declarations. Preserve its
     // original tokens for namespace::normalize and the production checker:
     // this bounded literal linker must not silently discard source identity.
