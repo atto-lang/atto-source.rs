@@ -300,3 +300,57 @@ fn malformed_later_clause_prevents_partial_import_loading() {
         assert_eq!(loads, 0, "{src}");
     }
 }
+
+#[test]
+fn six_builtin_namespace_spellings_compile_and_bind_only_admitted_names() {
+    let cases: [(&str, &[&str], &[&str]); 6] = [
+        ("import namespace num from core.num;", &["num", "core.num"], &["other"]),
+        ("import num from core.num;", &["num", "core.num"], &["other"]),
+        ("import core.num from core.num;", &["core.num"], &["num"]),
+        ("import core.num as num;", &["num"], &["core.num"]),
+        ("import core.num as core.num;", &["core.num"], &["num"]),
+        ("import core.num;", &["num", "core.num"], &["other"]),
+    ];
+    let baseline = compile("import module num from 'core/num'; pub fnc main(): int { return num.clamp(42, 0, 100); }").unwrap();
+    for (import, allowed, denied) in cases {
+        for binding in allowed {
+            let source = format!("{import} pub fnc main(): int {{ return {binding}.clamp(42, 0, 100); }}");
+            assert_eq!(compile(&source).unwrap(), baseline, "{source}");
+        }
+        for binding in denied {
+            let source = format!("{import} pub fnc main(): int {{ return {binding}.clamp(42, 0, 100); }}");
+            assert!(compile(&source).is_err(), "{source}");
+        }
+    }
+}
+
+#[test]
+fn builtin_aliases_are_static_and_cannot_capture_runtime_bindings() {
+    for source in [
+        "import core.num as arithmetic; pub fnc main(): int { return arithmetic.clamp(42, 0, 100); }",
+        "import core.num as custom.arithmetic; pub fnc main(): int { return custom.arithmetic.clamp(42, 0, 100); }",
+        "import core.num; pub fnc main(): int { return core /* comment */ . num.clamp(42, 0, 100); }",
+        "import core.num; pub fnc main(): int { return core.num.clamp(42, 0, 100); }",
+    ] {
+        assert!(compile(source).is_ok(), "{source}");
+    }
+    for source in [
+        "import core.num as math; pub fnc main(): int { return num.clamp(42, 0, 100); }",
+        "import core.num as math; pub fnc main(): int { let int math = 2; return math.clamp(42, 0, 100); }",
+        "import core.num; pub fnc main(): int { let int core = 2; return core.num.clamp(42, 0, 100); }",
+        "import core.num; pub fnc main(): int { return core.num; }",
+        "import core.num; pub fnc main(): int { return object.core.num.clamp(42, 0, 100); }",
+        "import core.num; import core.num as num; pub fnc main(): int { return 42; }",
+        "import core.num as root; import core.cmp as root.cmp; pub fnc main(): int { return 42; }",
+        "import core.num; import pkg '@acme/math/num'; pub fnc main(): int { return 42; }",
+        "import core.num as __atto_internal_module_num; pub fnc main(): int { return 42; }",
+        "import core.missing; pub fnc main(): int { return 42; }",
+        "import core.num as math; pub fnc main(): int { return math.not_exported(42); }",
+    ] {
+        let mut loads = 0;
+        assert!(compile_with_imports(source, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).is_err(), "{source}");
+        assert_eq!(loads, 0, "{source}");
+    }
+}
