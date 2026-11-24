@@ -87,8 +87,8 @@ pub fn is_reserved(selector: &str) -> bool {
             || (matches!(*root, "core" | "alloc" | "std") && selector.starts_with(&format!("{root}."))))
 }
 
-/// Canonical `"atto.<layer>/<unit>"`, shorthand `"<layer>/<unit>"`, optional
-/// `.atto` suffix. Units are one flat lowercase identifier. No `ores.*`.
+/// Canonical `<layer>.<unit>` and legacy quoted `atto.<layer>/<unit>` /
+/// `<layer>/<unit>` (optional legacy `.atto` suffix). Units are flat. No `ores.*`.
 pub fn normalize(selector: &str) -> Option<(Layer, &str)> {
     // AttoLang names only: ores.* is reserved (fails closed) but never a selector.
     const PREFIXES: &[(&str, Layer)] = &[
@@ -176,22 +176,36 @@ fn library_imports(source: &str) -> R<Vec<LibImport>> {
             return Ok(out);
         }
         let body = &toks[start_tok..j];
-        // Distinguish explicit external dependency selectors before the builtin
-        // registry sees their string, and accept only exact bare dotted shape.
-        let bare = if body.len() == 7 && body[5].tok == Tok::Dot {
-            match (ident(body.get(4)), ident(body.get(6))) {
-                (Some(layer @ ("core" | "alloc" | "std")), Some(unit)) => Some(format!("{layer}.{unit}")),
+        // Inspect only the source after 'from', never an arbitrary string
+        // elsewhere in the clause. Recognize malformed reserved bare paths
+        // too, so they cannot fall through to a file loader.
+        let source_at = body.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "from"))
+            .map(|at| at + 1);
+        let mut selector = None;
+        if let Some(at) = source_at {
+            let explicit_package = ident(body.get(at)) == Some("pkg");
+            let source = if explicit_package { &body[at + 1..] } else { &body[at..] };
+            let quoted = match source.first().map(|t| &t.tok) {
+                Some(Tok::Str(s)) => Some(s.clone()),
                 _ => None,
+            };
+            let bare_reserved = matches!(ident(source.first()), Some("core" | "alloc" | "std"));
+            if explicit_package {
+                if quoted.as_deref().is_some_and(is_reserved) || bare_reserved {
+                    return Err(err(toks[start_tok].pos, "E_UNSUPPORTED",
+                        "explicit package selector cannot use compiler-owned library resolution"));
+                }
+            } else if quoted.as_deref().is_some_and(is_reserved) {
+                if source.len() != 1 {
+                    return Err(err(toks[start_tok].pos, "E_IMPORT", "malformed builtin selector"));
+                }
+                selector = quoted;
+            } else if bare_reserved {
+                if source.len() != 3 || source[1].tok != Tok::Dot || ident(source.get(2)).is_none() {
+                    return Err(err(toks[start_tok].pos, "E_IMPORT", "builtin selector must be a flat dotted identity"));
+                }
+                selector = Some(format!("{}.{}", ident(source.first()).unwrap(), ident(source.get(2)).unwrap()));
             }
-        } else { None };
-        let selector = bare.or_else(|| body.iter().rev().find_map(|t| match &t.tok {
-            Tok::Str(s) => Some(s.clone()),
-            _ => None,
-        }));
-        if body.iter().any(|t| matches!(&t.tok, Tok::Ident(s) if s == "pkg"))
-            && selector.as_deref().is_some_and(is_reserved) {
-            return Err(err(toks[start_tok].pos, "E_UNSUPPORTED",
-                "explicit package selector cannot use compiler-owned library resolution"));
         }
         if let Some(selector) = selector.filter(|s| is_reserved(s)) {
             let pos = toks[start_tok].pos;
@@ -203,7 +217,7 @@ fn library_imports(source: &str) -> R<Vec<LibImport>> {
                 && matches!(ident(toks.get(start_tok + 1)), Some("module" | "namespace"))
                 && ident(toks.get(start_tok + 3)) == Some("from");
             let binding = match (shape_ok, ident(toks.get(start_tok + 2))) {
-                (true, Some(name)) => name.to_string(),
+                (true, Some(name)) if !crate::parser::is_reserved(name) => name.to_string(),
                 _ => {
                     return Err(err(pos, "E_IMPORT",
                         "library units currently require natural-name module or namespace import; legacy 'import module <unit> from \"<layer>/<unit>\";' in this compiler"))
