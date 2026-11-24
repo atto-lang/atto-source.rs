@@ -167,3 +167,136 @@ fn brackets_and_parentheses_are_interchangeable_at_each_group_position() {
         assert!(parse_target_declarations(&lex(src).unwrap()).is_err(), "{src}");
     }
 }
+
+fn parse_v2(src: &str) -> atto_compiler::target_syntax::TargetHeaders {
+    parse_target_declarations(&lex(src).unwrap()).unwrap()
+}
+fn reject_v2(src: &str, expected: &str) {
+    let d = parse_target_declarations(&lex(src).unwrap()).unwrap_err();
+    assert_eq!(d.code, expected, "{src}: {d}");
+}
+
+#[test]
+fn fallback_keeps_precise_duplicate_and_limit_diagnostics() {
+    for src in [
+        "import (class C, D as C) from pkg '@a/b/c';",
+        "import [class C, D as C] from pkg '@a/b/c';",
+        "import class [C, D as C] from pkg '@a/b/c';",
+        "import (class C, fnc f as C) from pkg '@a/b/c';",
+    ] {
+        reject_v2(src, "E_DUPLICATE");
+    }
+    for path in ["a.b.c.d.e.f.g.h.i", "a.b.c.d.e.f.g.h.i as z"] {
+        reject_v2(&format!("import [class {path}] from pkg '@a/b/c';"), "E_SOURCE_LIMIT");
+    }
+}
+
+#[test]
+fn explicit_non_namespace_prefixes_conflict_in_both_orders() {
+    for src in [
+        "import fnc [f], namespace [x as f.child] from pkg '@a/b/c';",
+        "import namespace [x as f.child], fnc [f] from pkg '@a/b/c';",
+        "import fnc [f] from pkg '@a/b/c'; import namespace [x as f.child] from pkg '@a/b/d';",
+        "import namespace [x as f.child] from pkg '@a/b/d'; import fnc [f] from pkg '@a/b/c';",
+        "import namespace [x as f.child] from pkg '@a/b/c'; pub fnc f(): int { return 1; }",
+        "import namespace [x as f.child] from pkg '@a/b/c'; define const int f = 1;",
+        "import namespace [x as C.child] from pkg '@a/b/c'; declare class C;",
+    ] {
+        reject_v2(src, "E_DUPLICATE");
+    }
+    let headers = parse_v2("import namespace [x as org.a, y as org.b], fnc [orphan] from pkg '@a/b/c';");
+    assert_eq!(headers.imports, ["org.a", "org.b", "orphan"]);
+    let headers = parse_v2("import namespace [x as foobar.child], fnc [foo] from pkg '@a/b/c';");
+    assert_eq!(headers.imports, ["foobar.child", "foo"]);
+}
+
+#[test]
+fn per_file_binding_budget_cannot_be_evaded_by_splitting_lists() {
+    let group = |start: usize, end: usize| {
+        let names = (start..end).map(|i| format!("C{i}")).collect::<Vec<_>>().join(", ");
+        format!("import class [{names}] from pkg '@a/b/c';")
+    };
+    let exact = format!("{} {}", group(0, 128), group(128, 256));
+    assert_eq!(parse_v2(&exact).imports.len(), 256);
+    reject_v2(&format!("{exact} {}", group(256, 257)), "E_SOURCE_LIMIT");
+    reject_v2(&group(0, 257), "E_SOURCE_LIMIT");
+    reject_v2(&format!("{exact} import z from './lib.atto';"), "E_SOURCE_LIMIT");
+}
+
+#[test]
+fn decoded_source_controls_and_package_path_spoofs_fail_before_loading() {
+    for src in [
+        r"import fnc [f] from './lib\u{0}.atto';",
+        r"import fnc [f] from pkg '@a/b/c\n';",
+        r"import fnc [f] from pkg '@a/b/c\t';",
+        r"import fnc [f] from pkg '@a/b/c\\d';",
+    ] {
+        reject_v2(src, "E_IMPORT_PATH");
+        let mut loads = 0;
+        assert_eq!(compile_with_imports(src, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err().code, "E_IMPORT_PATH");
+        assert_eq!(loads, 0);
+    }
+    reject_v2("import fnc [f] from pkg '/tmp/lib.atto';", "E_SYNTAX");
+    for selector in ["core.num", "'core.num'", "\"core.num\"", "'core/num'", "'atto.core/num.atto'"] {
+        let headers = parse_v2(&format!("import fnc [clamp] from {selector};"));
+        assert_eq!(headers.mixed_imports[0].source, Source::Builtin("core.num".into()));
+    }
+    let external = parse_v2("import fnc [clamp] from pkg 'core.num';");
+    assert_eq!(external.mixed_imports[0].source, Source::Package("core.num".into()));
+}
+
+#[test]
+fn all_delimiter_combinations_produce_same_typed_ir() {
+    let expected = parse_v2("import class [C, D as Data], fnc [f, g], namespace [z] from pkg '@a/b/c';");
+    let delimiters = [("(", ")"), ("[", "]")];
+    for (outer_l, outer_r) in [("", ""), ("(", ")"), ("[", "]")] {
+        for (cl, cr) in delimiters {
+            for (fl, fr) in delimiters {
+                for (nl, nr) in delimiters {
+                    for kind_inside in [false, true] {
+                        let group = |kind: &str, names: &str, left: &str, right: &str| {
+                            if kind_inside { format!("{left}{kind} {names}{right}") }
+                            else { format!("{kind} {left}{names}{right}") }
+                        };
+                        let src = format!("import {outer_l}{}, {}, {}{outer_r} from pkg '@a/b/c';",
+                            group("class", "C, D as Data", cl, cr),
+                            group("fnc", "f, g", fl, fr),
+                            group("namespace", "z", nl, nr));
+                        let actual = parse_v2(&src);
+                        assert_eq!(actual.mixed_imports, expected.mixed_imports, "{src}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn malformed_bare_builtins_never_fall_back_to_local_loader() {
+    for selector in ["core", "core.num.extra", "core.num.", "core.num.atto", "core..num", "core/num", "'core.num.extra'"] {
+        let src = format!("import namespace num from {selector}; pub fnc main(): int {{ return 0; }}");
+        let mut loads = 0;
+        assert!(compile_with_imports(&src, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).is_err(), "{src}");
+        assert_eq!(loads, 0, "{src}");
+    }
+}
+
+#[test]
+fn malformed_later_clause_prevents_partial_import_loading() {
+    for second in [
+        "import class [C, D) from pkg '@a/b/c';",
+        "import (fnc f, class C as f) from pkg '@a/b/c';",
+        "import namespace [z] from pkg '@a/b/c';",
+    ] {
+        let src = format!("import f from './lib.atto'; {second} pub fnc main(): int {{ return 42; }}");
+        let mut loads = 0;
+        assert!(compile_with_imports(&src, Path::new("main.atto"), |_| {
+            loads += 1; Ok("pub fnc f(): int { return 0; }".into())
+        }).is_err());
+        assert_eq!(loads, 0, "{src}");
+    }
+}
