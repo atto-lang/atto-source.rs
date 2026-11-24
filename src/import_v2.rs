@@ -75,6 +75,20 @@ impl Cursor<'_> {
         out.push(Selection { kind, path: parts.join("."), binding });
         Ok(())
     }
+    fn group(&mut self, kind: Kind, out: &mut Vec<Selection>) -> R<()> {
+        self.selector(kind, out)?;
+        while self.take(&Tok::Comma) { self.selector(kind, out)?; }
+        self.need(&Tok::RParen)
+    }
+    fn item(&mut self, out: &mut Vec<Selection>) -> R<()> {
+        if self.take(&Tok::LParen) {
+            let kind = self.kind()?;
+            return self.group(kind, out);
+        }
+        let kind = self.kind()?;
+        if self.take(&Tok::LParen) { self.group(kind, out) }
+        else { self.selector(kind, out) }
+    }
     fn source(&mut self) -> R<Source> {
         let package = self.word("pkg");
         let text = match self.tok() {
@@ -98,34 +112,74 @@ impl Cursor<'_> {
     }
 }
 
-/// Parse after the import keyword, returning the offset just after ';'.
-/// No mutation or binding is published until the entire list is valid.
-pub fn parse_mixed(tokens: &[Token], start: usize) -> R<(MixedImport, usize)> {
-    let mut c = Cursor { tokens, i: start };
-    let close = if c.take(&Tok::LParen) { Tok::RParen } else {
-        c.need(&Tok::LBracket)?; Tok::RBracket
-    };
-    let mut selectors = Vec::new();
-    loop {
-        if c.take(&Tok::LParen) {
-            let kind = c.kind()?;
-            c.selector(kind, &mut selectors)?;
-            c.need(&Tok::Comma)?;
-            c.selector(kind, &mut selectors)?;
-            while c.take(&Tok::Comma) { c.selector(kind, &mut selectors)?; }
-            c.need(&Tok::RParen)?;
-        } else {
-            let kind = c.kind()?;
-            c.selector(kind, &mut selectors)?;
-        }
-        if c.take(&close) { break; }
-        c.need(&Tok::Comma)?;
-        if c.take(&close) { break; }
+fn kind_token(t: Option<&Token>) -> bool {
+    matches!(t.map(|t| &t.tok), Some(Tok::Ident(s)) if matches!(s.as_str(),
+        "class" | "fnc" | "module" | "const" | "namespace" | "actor" |
+        "enum" | "type" | "trait" | "interface"))
+}
+
+/// Distinguish new mixed syntax from the existing ungrouped homogeneous
+/// and direct-path forms. No source lookup is performed during classification.
+pub fn is_mixed(tokens: &[Token], start: usize) -> bool {
+    if matches!(tokens.get(start).map(|t| &t.tok), Some(Tok::LParen | Tok::LBracket)) {
+        return true;
     }
+    if !kind_token(tokens.get(start)) { return false; }
+    for i in start + 1..tokens.len() {
+        match &tokens[i].tok {
+            Tok::Ident(s) if s == "from" => break,
+            Tok::Semi | Tok::Eof => break,
+            Tok::LParen => return true,
+            Tok::Comma if kind_token(tokens.get(i + 1)) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn finish(c: &mut Cursor<'_>, selectors: Vec<Selection>) -> R<(MixedImport, usize)> {
     if !c.word("from") { return Err(c.err("E_SYNTAX", "mixed import requires from")); }
     let source = c.source()?;
     c.need(&Tok::Semi)?;
     Ok((MixedImport { selectors, source }, c.i))
+}
+
+fn parse_list(tokens: &[Token], start: usize, delimited: bool) -> R<(MixedImport, usize)> {
+    let mut c = Cursor { tokens, i: start };
+    let close = if !delimited { None } else if c.take(&Tok::LParen) {
+        Some(Tok::RParen)
+    } else { c.need(&Tok::LBracket)?; Some(Tok::RBracket) };
+    let mut selectors = Vec::new();
+    loop {
+        c.item(&mut selectors)?;
+        if let Some(close) = &close {
+            if c.take(close) { break; }
+            c.need(&Tok::Comma)?;
+            if c.take(close) { break; }
+        } else if !c.take(&Tok::Comma) { break; }
+    }
+    finish(&mut c, selectors)
+}
+
+/// Parse after the import keyword, returning the offset just after ';'.
+/// No mutation or binding is published until the entire list is valid.
+pub fn parse_mixed(tokens: &[Token], start: usize) -> R<(MixedImport, usize)> {
+    match tokens.get(start).map(|t| &t.tok) {
+        Some(Tok::LBracket) => parse_list(tokens, start, true),
+        Some(Tok::LParen) => {
+            // A leading '(' can be an outer list or the first kind-inside
+            // group of an undelimited list. Both alternatives are bounded.
+            // Never use successful parsing of a partial clause as admission.
+            match parse_list(tokens, start, true) {
+                Ok(result) => Ok(result),
+                Err(first) => match parse_list(tokens, start, false) {
+                    Ok(result) => Ok(result),
+                    Err(_) => Err(first),
+                },
+            }
+        }
+        _ => parse_list(tokens, start, false),
+    }
 }
 
 /// Refuse new forms before legacy library expansion or caller-supplied loading.
@@ -141,7 +195,7 @@ pub fn preflight(source: &str) -> R<()> {
     while i < tokens.len() {
         if !matches!(&tokens[i].tok, Tok::Ident(s) if s == "import") { i += 1; continue; }
         let start = i + 1;
-        if matches!(tokens.get(start).map(|t| &t.tok), Some(Tok::LParen | Tok::LBracket)) {
+        if is_mixed(&tokens, start) {
             parse_mixed(&tokens, start)?;
             return Err(Diagnostic::new(tokens[i].pos, "E_UNSUPPORTED", "mixed import syntax parsed; typed linking is not implemented"));
         }
