@@ -33,7 +33,7 @@ fn malformed_lists_and_duplicate_bindings_fail() {
         "import (class C, fnc f, module x, y) from pkg '@foo/bar/baz';",
         "import [class C, fnc f, module x, y] from pkg '@foo/bar/baz';",
         "import (class C, (module x, fnc y)) from pkg '@foo/bar/baz';",
-        "import ((module x)) from pkg '@foo/bar/baz';",
+        "import ((module)) from pkg '@foo/bar/baz';",
         "import (class C, (module x, y,)) from pkg '@foo/bar/baz';",
         "import (class C] from pkg '@foo/bar/baz';",
         "import () from pkg '@foo/bar/baz';",
@@ -86,5 +86,45 @@ fn builtin_domain_never_delegates_to_file_loader() {
             Ok(String::new())
         }).is_err());
         assert_eq!(calls, 0, "{src}");
+    }
+}
+
+#[test]
+fn kind_first_groups_and_singletons_bind_equivalently() {
+    let forms = [
+        "import class (C, D), fnc (f, g), module m, namespace (z) from pkg '@a/b/c';",
+        "import (class (C, D), fnc (f, g), module m, namespace (z)) from pkg '@a/b/c';",
+        "import [(class C, D), (fnc f, g), module m, (namespace z)] from pkg '@a/b/c';",
+        "import (class C, D), (fnc f, g), module m, (namespace z) from pkg '@a/b/c';",
+        "import class C, class D, fnc f, fnc g, module m, namespace z from pkg '@a/b/c';",
+    ];
+    let first = parse_target_declarations(&lex(forms[0]).unwrap()).unwrap();
+    assert_eq!(first.imports, ["C", "D", "f", "g", "m", "z"]);
+    for src in forms {
+        let actual = parse_target_declarations(&lex(src).unwrap()).unwrap();
+        assert_eq!(actual.mixed_imports, first.mixed_imports, "{src}");
+        let mut calls = 0;
+        assert_eq!(compile_with_imports(src, Path::new("main.atto"), |_| {
+            calls += 1; Ok(String::new())
+        }).unwrap_err().code, "E_UNSUPPORTED");
+        assert_eq!(calls, 0);
+    }
+    for src in ["import namespace (z) from pkg '@a/b/c';",
+                "import ((namespace z)) from pkg '@a/b/c';"] {
+        let actual = parse_target_declarations(&lex(src).unwrap()).unwrap();
+        assert_eq!(actual.imports, ["z"]);
+        assert_eq!(actual.mixed_imports[0].selectors[0].kind, Kind::Namespace);
+    }
+    for src in [
+        "import class (), fnc f from pkg '@a/b/c';",
+        "import class (C, fnc f) from pkg '@a/b/c';",
+        "import class (C, D), f from pkg '@a/b/c';",
+        "import class C, fnc f, g from pkg '@a/b/c';",
+        "import class (C, D), namespace (z), from pkg '@a/b/c';",
+        "import namespace (z), fnc (f as z) from pkg '@a/b/c';",
+        "import class (C, D,) from pkg '@a/b/c';",
+        "import class ((C)) from pkg '@a/b/c';",
+    ] {
+        assert!(parse_target_declarations(&lex(src).unwrap()).is_err(), "{src}");
     }
 }
