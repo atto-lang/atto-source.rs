@@ -83,7 +83,8 @@ fn err(pos: Pos, code: &'static str, msg: impl Into<String>) -> Diagnostic {
 pub fn is_reserved(selector: &str) -> bool {
     ["core", "alloc", "std", "atto.core", "atto.alloc", "atto.std", "ores.core", "ores.std"]
         .iter()
-        .any(|root| selector == *root || selector.starts_with(&format!("{root}/")))
+        .any(|root| selector == *root || selector.starts_with(&format!("{root}/"))
+            || (matches!(*root, "core" | "alloc" | "std") && selector.starts_with(&format!("{root}."))))
 }
 
 /// Canonical `"atto.<layer>/<unit>"`, shorthand `"<layer>/<unit>"`, optional
@@ -94,10 +95,11 @@ pub fn normalize(selector: &str) -> Option<(Layer, &str)> {
         ("atto.core/", Layer::Core), ("core/", Layer::Core),
         ("atto.alloc/", Layer::Alloc), ("alloc/", Layer::Alloc),
         ("atto.std/", Layer::Std), ("std/", Layer::Std),
+        ("core.", Layer::Core), ("alloc.", Layer::Alloc), ("std.", Layer::Std),
     ];
     for (prefix, layer) in PREFIXES {
         if let Some(rest) = selector.strip_prefix(prefix) {
-            let unit = rest.strip_suffix(".atto").unwrap_or(rest);
+            let unit = if prefix.ends_with('.') { rest } else { rest.strip_suffix(".atto").unwrap_or(rest) };
             let ok = !unit.is_empty()
                 && unit.len() <= 64
                 && unit.as_bytes()[0].is_ascii_lowercase()
@@ -173,20 +175,38 @@ fn library_imports(source: &str) -> R<Vec<LibImport>> {
         if toks.get(j).map(|t| &t.tok) != Some(&Tok::Semi) {
             return Ok(out);
         }
-        let selector = toks[start_tok..j].iter().rev().find_map(|t| match &t.tok {
+        let body = &toks[start_tok..j];
+        // Distinguish explicit external dependency selectors before the builtin
+        // registry sees their string, and accept only exact bare dotted shape.
+        let bare = if body.len() == 7 && body[5].tok == Tok::Dot {
+            match (ident(body.get(4)), ident(body.get(6))) {
+                (Some(layer @ ("core" | "alloc" | "std")), Some(unit)) => Some(format!("{layer}.{unit}")),
+                _ => None,
+            }
+        } else { None };
+        let selector = bare.or_else(|| body.iter().rev().find_map(|t| match &t.tok {
             Tok::Str(s) => Some(s.clone()),
             _ => None,
-        });
+        }));
+        if body.iter().any(|t| matches!(&t.tok, Tok::Ident(s) if s == "pkg"))
+            && selector.as_deref().is_some_and(is_reserved) {
+            return Err(err(toks[start_tok].pos, "E_UNSUPPORTED",
+                "explicit package selector cannot use compiler-owned library resolution"));
+        }
         if let Some(selector) = selector.filter(|s| is_reserved(s)) {
             let pos = toks[start_tok].pos;
-            let shape_ok = j == start_tok + 5
-                && ident(toks.get(start_tok + 1)) == Some("module")
+            let source_shape = (j == start_tok + 5 && matches!(&toks[start_tok + 4].tok, Tok::Str(_)))
+                || (j == start_tok + 7 && toks[start_tok + 5].tok == Tok::Dot
+                    && ident(toks.get(start_tok + 4)).is_some()
+                    && ident(toks.get(start_tok + 6)).is_some());
+            let shape_ok = source_shape
+                && matches!(ident(toks.get(start_tok + 1)), Some("module" | "namespace"))
                 && ident(toks.get(start_tok + 3)) == Some("from");
             let binding = match (shape_ok, ident(toks.get(start_tok + 2))) {
                 (true, Some(name)) => name.to_string(),
                 _ => {
                     return Err(err(pos, "E_IMPORT",
-                        "library units are imported with 'import module <unit> from \"<layer>/<unit>\";' in this compiler"))
+                        "library units currently require natural-name module or namespace import; legacy 'import module <unit> from \"<layer>/<unit>\";' in this compiler"))
                 }
             };
             out.push(LibImport {
@@ -274,6 +294,7 @@ pub fn expand(source: &str) -> R<String> {
     if !source.contains("import") {
         return Ok(source.to_string());
     }
+    crate::import_v2::preflight(source)?;
     let imports = library_imports(source)?;
     if imports.is_empty() {
         return Ok(source.to_string());
