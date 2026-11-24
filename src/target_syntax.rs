@@ -550,6 +550,23 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 decls += 1;
                 continue;
             }
+            if let Some((bindings, end)) = crate::library::builtin_bindings(toks, c.i - 1)? {
+                if out.imports.len().saturating_add(bindings.len()) > crate::import_v2::MAX_ITEMS {
+                    return Err(c.err("E_SOURCE_LIMIT", "too many file import bindings"));
+                }
+                for alias in bindings {
+                    if out.imports.iter().any(|prior| prior == &alias
+                        || crate::import_v2::strict_prefix(prior, &alias)
+                        || crate::import_v2::strict_prefix(&alias, prior)) {
+                        return Err(c.err("E_DUPLICATE", format!("overlapping builtin import binding '{alias}'")));
+                    }
+                    import_sites.push((alias.clone(), pos));
+                    out.imports.push(alias);
+                }
+                c.i = end;
+                decls += 1;
+                continue;
+            }
             let mut bindings = Vec::new();
             let const_only = c.take_word("const");
             let legacy_pkg = if const_only {
@@ -795,8 +812,7 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     for (import_name, import_pos) in &import_sites {
         // A declared file-local value/callable/nominal cannot also serve
         // as the root of an explicitly qualified mixed namespace alias.
-        let blocked_prefix = out.mixed_imports.iter().any(|m| m.selectors.iter()
-            .any(|s| &s.binding == import_name && s.binding.contains('.')))
+        let blocked_prefix = import_name.contains('.')
             && function_names.iter().chain(out.constants.iter())
                 .chain(out.actors.iter()).chain(out.classes.iter())
                 .chain(out.class_forwards.iter()).chain(out.struct_forwards.iter())
