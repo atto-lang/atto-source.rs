@@ -213,6 +213,129 @@
           true
         ]
       ]
+    },
+    "frozen-literal-root": {
+      "identity": "@org/project/package",
+      "exports": [
+        [
+          "limits",
+          "namespace",
+          true
+        ],
+        [
+          "limits.MAX",
+          "const",
+          true
+        ],
+        [
+          "limits.READY",
+          "const",
+          true
+        ],
+        [
+          "limits.LOW",
+          "const",
+          true
+        ],
+        [
+          "limits.LABEL",
+          "const",
+          true
+        ],
+        [
+          "limits.SECRET",
+          "const",
+          false
+        ],
+        [
+          "http",
+          "namespace",
+          true
+        ],
+        [
+          "http.get",
+          "fnc",
+          true
+        ]
+      ],
+      "literalValues": {
+        "limits.MAX": {
+          "type": "int",
+          "value": 41
+        },
+        "limits.READY": {
+          "type": "bool",
+          "value": true
+        },
+        "limits.LOW": {
+          "type": "int",
+          "value": "-9223372036854775808"
+        },
+        "limits.LABEL": {
+          "type": "string",
+          "value": "ready"
+        },
+        "limits.SECRET": {
+          "type": "int",
+          "value": 99
+        }
+      }
+    },
+    "contextual-public-guest-root": {
+      "identity": "@org/project/package",
+      "namespace": "network.http",
+      "exports": [
+        [
+          "network",
+          "namespace",
+          true
+        ],
+        [
+          "network.http",
+          "namespace",
+          true
+        ],
+        [
+          "network.http.get",
+          "fnc",
+          true
+        ],
+        [
+          "network.http.secret",
+          "fnc",
+          false
+        ],
+        [
+          "network.http.utils",
+          "namespace",
+          true
+        ],
+        [
+          "network.http.utils.get",
+          "fnc",
+          true
+        ],
+        [
+          "network.config",
+          "namespace",
+          true
+        ],
+        [
+          "network.config.get",
+          "fnc",
+          true
+        ],
+        [
+          "common",
+          "namespace",
+          true
+        ],
+        [
+          "common.get",
+          "fnc",
+          true
+        ]
+      ]
     }
   },
   "cases": [
@@ -3670,6 +3793,327 @@
         "outcome": "reject",
         "reason": "runtime-value"
       }
+    },
+    {
+      "id": "registry-literal-qualified",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.limits.MAX",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.MAX"
+      }
+    },
+    {
+      "id": "registry-literal-typed",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import const limits.MAX as cap from pkg '@org/project/package';",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.MAX"
+      }
+    },
+    {
+      "id": "registry-literal-mixed",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import [const limits.MAX as cap, fnc http.get as inc] from pkg '@org/project/package';",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.MAX"
+      }
+    },
+    {
+      "id": "registry-literal-tree",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{const MAX as cap, const READY};",
+      "reference": "READY",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.READY"
+      }
+    },
+    {
+      "id": "registry-literal-alias",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\ndefine alias p.limits as l;",
+      "reference": "l.LOW",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.LOW"
+      }
+    },
+    {
+      "id": "registry-literal-string",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport const p.limits.LABEL as label;",
+      "reference": "label",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.LABEL"
+      }
+    },
+    {
+      "id": "registry-literal-function-mixed",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import [const limits.MAX as cap, fnc http.get as inc] from pkg '@org/project/package';",
+      "reference": "inc",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.get"
+      }
+    },
+    {
+      "id": "registry-literal-inferred-tree",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{MAX as cap};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.MAX"
+      }
+    },
+    {
+      "id": "registry-literal-negative-private",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.limits.SECRET",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private constant",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport fnc p.limits.MAX;",
+      "reference": "MAX",
+      "expect": {
+        "outcome": "reject",
+        "reason": "constant is not a function",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-function-as-const",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport const p.http.get;",
+      "reference": "get",
+      "expect": {
+        "outcome": "reject",
+        "reason": "function is not a constant",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-namespace-as-const",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport const p.limits;",
+      "reference": "limits",
+      "expect": {
+        "outcome": "reject",
+        "reason": "namespace is not a constant",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-const-alias",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\ndefine alias p.limits.MAX as a;",
+      "reference": "a",
+      "expect": {
+        "outcome": "reject",
+        "reason": "constant is not a namespace",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-atomic",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{MAX as cap, SECRET as secret};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-missing",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{MAX as cap, ABSENT};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "unknown leaf",
+        "code": "E_UNBOUND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-dup",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{MAX as cap, LOW as cap};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate leaf",
+        "code": "E_DUPLICATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "context-public-pkg",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "import pkg.network.http;",
+      "reference": "http.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "network.http.get"
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "context-public-self",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport self.utils;",
+      "reference": "utils.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "network.http.utils.get"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-parent",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport super.config as cfg;",
+      "reference": "cfg.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "network.config.get"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-grandparent",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport super.super.common;",
+      "reference": "common.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "common.get"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-group",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport self.{utils as u, get as answer};",
+      "reference": "answer",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "network.http.get"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-negative-private",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport self.secret;",
+      "reference": "secret",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private authority not established by header",
+        "code": "E_PRIVATE",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-negative-private-atomic",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport self.{get as answer, secret};",
+      "reference": "answer",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-negative-escape",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport super.super.super.common;",
+      "reference": "common",
+      "expect": {
+        "outcome": "reject",
+        "reason": "package root escape",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-negative-headerless",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "import self.utils;",
+      "reference": "utils",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing source namespace",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": null
     }
   ]
 }
