@@ -57,10 +57,10 @@ fn contextual_roots_are_namespace_paths_not_filesystem_traversal(){
         ("pkg.network.http",None,"network.http"),
         ("self.utils",Some("network.http"),"network.http.utils"),
         ("super.config",Some("network.http"),"network.config"),
-        ("super.super.shared",Some("network.http"),"shared"),
+        ("super.super.common",Some("network.http"),"common"),
     ]{assert_eq!(contextual_path(src,current).unwrap(),expected);assert_eq!(leaves(&format!("import {src};"))[0].path,src);}
     for (src,current) in [
-        ("self.utils",None),("super.config",None),("super.super.super.shared",Some("network.http")),
-        ("pkg..hidden",None),("pkg.__atto_hidden",None),("self.super.config",Some("network.http")),
+        ("self.utils",None),("super.config",None),("super.super.super.common",Some("network.http")),
+        ("pkg.shared",None),("pkg..hidden",None),("pkg.__atto_hidden",None),("self.super.config",Some("network.http")),
     ]{assert!(contextual_path(src,current).is_err(),"{src}");}
 }
