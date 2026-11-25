@@ -3,7 +3,7 @@
 //! source graph. This module performs no acquisition, I/O or capability grant.
 //! No public parser input may be treated as proof of builtin provenance.
 use crate::{Diagnostic, Pos};
-use crate::import_v2::{Kind, Selection};
+use crate::import_v2::{Kind, MixedImport, Source};
 use std::collections::{BTreeMap, BTreeSet};
 type R<T> = Result<T, Diagnostic>;
 const LIMIT: usize = 256;
@@ -140,7 +140,18 @@ impl Scope {
 
     /// Resolve the entire typed selector list against a verified export view
     /// before publishing any bindings. No source fallback or kind inference.
-    pub fn bind_mixed(&mut self, exports: &ExportView, selectors: &[Selection]) -> R<()> {
+    pub fn bind_mixed(&mut self, exports: &ExportView, import: &MixedImport) -> R<()> {
+        // This slice only binds exact already-verified root views. Manifest
+        // subpath and URL resolution must supply a verified view mapping
+        // before they can be admitted; never guess from a lexical selector.
+        let same_source = match (&import.source, &exports.origin) {
+            (Source::Package(name), Origin::External(id)) => name == &id.name,
+            (Source::Builtin(name), Origin::Builtin(id)) => name == id,
+            (Source::Local(name), Origin::Local(id)) => name == id,
+            _ => false,
+        };
+        if !same_source { return Err(err("E_IMPORT_PATH", "export view does not match requested source domain and identity")); }
+        let selectors = &import.selectors;
         if selectors.is_empty() || selectors.len() > LIMIT {
             return Err(err("E_SOURCE_LIMIT", "invalid typed selection count"));
         }
