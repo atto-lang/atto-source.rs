@@ -767,6 +767,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // can borrow classes. Lifetime-bearing returns/receivers/actors must not
     // silently lower as ordinary owned handles.
     for f in &p.funcs {
+        // Mutable Borrow<T> syntax currently has no exclusive reference ABI.
+        // Silently clearing the parsed mutability bit in body_check would
+        // misrepresent the public signature and mask a future lifetime bug.
+        // Reject both source parameter spellings before signature erasure.
+        if let Some(param) = f.params.iter().find(|param|
+            param.mutable && matches!(param.ty, Type::BorrowNamed(_) | Type::BorrowClass(_))) {
+            return Err(Diagnostic::new(param.pos, "E_UNSUPPORTED_TYPE",
+                "mutable Borrow<T> parameters require verified exclusive loan and lifetime lowering; use a read-only Borrow<T> formal for now"));
+        }
         if matches!(f.ret, Type::BorrowNamed(_))
             || f.is_generator && f.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_))) {
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
@@ -2587,6 +2596,14 @@ impl<'a> FnCx<'a> {
                     let class = &self.g.classes[c as usize];
                     let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
                         Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
+                    // A lexical mutable class loan is NOT a protected state
+                    // capability. Only the exact self receiver inside the
+                    // compiler-admitted critical-write scope may touch this
+                    // storage. Do not lower a borrowed alias to FieldSet.
+                    if class.state_container && f.mode == FieldMode::ActorState {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "borrow! mut cannot write protected state; use handle_state(critical-write ...) on the exact receiver"));
+                    }
                     if !f.public && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
@@ -3756,6 +3773,20 @@ impl<'a> FnCx<'a> {
         }
         match recv.ty {
             Type::Class(c) => {
+                // A state method can enter critical-write even if it returns
+                // only int/void. Read-only class loans do not imply permission
+                // to perform such an effect, including via a second argument
+                // evaluated while an earlier shared call loan is live.
+                // Until transitive method effects are proven, fail closed for
+                // *all* state-container methods through such receivers.
+                let receiver_is_loaned = matches!(&recv.e, TExpr::Local(slot)
+                    if self.borrowed_slots.contains(slot)
+                        || self.loans.contains_key(slot)
+                        || self.loans.values().any(|loan| loan.owner == *slot));
+                if self.g.classes[c as usize].state_container && receiver_is_loaned {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "state-container method on a borrowed or shared-loaned receiver requires verified read-only effects"));
+                }
                 // Calls on a loan may only return copyable, lifetime-independent
                 // values. Owned object returns need result-lifetime provenance.
                 if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot) || self.borrowed_slots.contains(slot)) {

@@ -1,0 +1,16 @@
+// Read-only Borrow<T> may not call a method that enters critical-write.
+// expect-error: E_STATE_BORROW
+define state Counter as
+  state { let int count: 0; }
+  pub increment(int amount): void {
+    handle_state(critical-write |s| -> { s.count = s.count + amount; });
+  }
+end
+fnc inspect(p: Borrow<Counter>): int {
+  p.increment(1);
+  return 1;
+}
+pub fnc main(): int {
+  let counter = new Counter();
+  return inspect(counter);
+}

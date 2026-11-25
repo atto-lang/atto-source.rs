@@ -1,0 +1,14 @@
+// State writes remain legal through an exact owned receiver and critical-write.
+// expect-exit: 2
+define state Counter as
+  state { let int count: 0; }
+  pub bump(): int {
+    handle_state(critical-write |s| -> { s.count = s.count + 1; });
+    return handle_state(critical-read |s| -> s.count);
+  }
+end
+pub fnc main(): int {
+  let counter = new Counter();
+  counter.bump();
+  return counter.bump();
+}
