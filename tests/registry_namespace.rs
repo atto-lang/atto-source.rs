@@ -826,3 +826,40 @@ fn external_class_mutating_receiver_requires_real_checker_authority() {
         "use namespace model; pub define class Item as private int value: 20; pub adjust(int y): int { self.value = self.value+y; return self.value; } end"});
     assert_eq!(verify(&manifest,&inputs).err().expect("ordinary readonly receiver must reject writes").code,"E_OWNERSHIP");
 }
+
+#[test]
+fn authenticated_external_enum_matches_nominal_variants_exhaustively() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\nsecret = \"src/secret/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; define pub enum State as Pending Ready end"),
+        ("src/other/types.atto","use namespace other; pub define enum State as Pending Ready end"),
+        ("src/secret/types.atto","use namespace secret; define enum State as Pending Ready end"),
+    ]{inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let cases=[
+        "import pkg '@org/project/package' as p; pub fnc main(): int { return match p.model.State.Ready over on p.model.State.Pending -> 0, on p.model.State.Ready -> 42, end }",
+        "import pkg '@org/project/package' as p; import enum p.model.State as Status; pub fnc main(): int { return match Status.Ready over on Status.Pending -> 0, on Status.Ready -> 42, end }",
+        "import [enum model.State as Status] from pkg '@org/project/package'; pub fnc main(): int { return match Status.Ready over on Status.Pending -> 0, on Status.Ready -> 42, end }",
+    ];
+    let mut expected=None;
+    for (i,source) in cases.iter().enumerate(){
+        let wasm=compile_registry_guest(source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        if let Some(bytes)=&expected{assert_eq!(&wasm,bytes);}else{expected=Some(wasm.clone());}
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-enum-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    let prefix="import pkg '@org/project/package' as p; ";
+    for (body,code) in [
+        ("return match p.model.State.Ready over on p.model.State.Ready -> 42, end","E_MATCH"),
+        ("return match p.model.State.Ready over on p.other.State.Pending -> 0, on p.model.State.Ready -> 42, end","E_TYPE"),
+        ("return match p.model.State.Missing over on p.model.State.Pending -> 0, on p.model.State.Ready -> 42, end","E_UNBOUND"),
+        ("return match p.secret.State.Ready over on p.secret.State.Pending -> 0, on p.secret.State.Ready -> 42, end","E_PRIVATE"),
+        ("return match p.model.State.Ready over on p.model.State.Pending -> 0, on p.model.State.Ready -> 42+0, end","E_UNSUPPORTED"),
+    ]{
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+}

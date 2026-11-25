@@ -99,6 +99,8 @@ pub struct FrozenRegistry {
     sources: BTreeMap<String,(String,String)>,
     // Class-only namespaces admitted for static identity, not executable ABI.
     class_metadata: BTreeMap<String,String>,
+    // Source-authenticated payload-free enum variants by canonical declaration.
+    enum_metadata: BTreeMap<String,Vec<String>>,
     // Physical owner of each admitted declaration, from pinned bytes.
     declaration_sources: BTreeMap<String,String>,
     literals: BTreeMap<String,Vec<crate::lexer::Tok>>,
@@ -119,6 +121,7 @@ impl FrozenRegistry {
         let mut verified_sources = BTreeMap::new();
         let mut declaration_sources = BTreeMap::new();
         let mut class_metadata = BTreeMap::new();
+        let mut enum_metadata = BTreeMap::new();
         let mut literals = BTreeMap::new();
         let mut mixed_functions = BTreeMap::new();
         // Nested namespace parents must be declared independently. For now
@@ -193,6 +196,29 @@ impl FrozenRegistry {
             // no state containers, and no external ABI or executable claim.
             let is_word = |i:usize,w:&str| matches!(normalized.get(i).map(|t|&t.tok),Some(Tok::Ident(s)) if s==w);
             let at = end + usize::from(is_word(end,"pub"));
+            // Enum visibility is retained from the authenticated declaration.
+            // The current local parser has no public enum AST flag; strip
+            // only the exact visibility token for its isolated enum parse.
+            let pub_before=is_word(end,"pub")&&is_word(end+1,"define")&&is_word(end+2,"enum");
+            let pub_after=is_word(end,"define")&&is_word(end+1,"pub")&&is_word(end+2,"enum");
+            let private_enum=is_word(end,"define")&&is_word(end+1,"enum");
+            if matching.len()==1 && (pub_before||pub_after||private_enum){
+                let mut body=normalized[end..].to_vec();
+                if pub_before{body.remove(0);}else if pub_after{body.remove(1);}
+                let ast=crate::parser::Parser::new(body).parse_program()?;
+                if ast.enums.len()!=1 || !ast.classes.is_empty() || !ast.funcs.is_empty()
+                    || !ast.actors.is_empty() || ast.actor_interface.is_some(){
+                    return Err(err("E_UNSUPPORTED","registry enum metadata requires exactly one payload-free enum per source file"));
+                }
+                let en=&ast.enums[0];
+                let path=format!("{ns}.{}",en.name);
+                view.add(&path,&path,Kind::Enum,pub_before||pub_after)?;
+                declaration_sources.insert(path.clone(),file.to_string());
+                enum_metadata.insert(path,en.variants.iter().map(|(v,_)|v.clone()).collect());
+                namespaces.insert(ns.clone());
+                directories.insert(dir.clone(),ns.clone());
+                continue;
+            }
             if matching.len()==1 && is_word(at,"define") && is_word(at+1,"class") {
                 let mut body=normalized[end..].to_vec();
                 if body.iter().any(|t|matches!(&t.tok,Tok::Ident(s) if s=="main")){
@@ -266,7 +292,7 @@ impl FrozenRegistry {
                 .ok_or_else(|| err("E_MANIFEST", "subpath targets undeclared namespace directory"))?;
             subpaths.insert(sub,target.clone());
         }
-        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, class_metadata, declaration_sources, literals, mixed_functions })
+        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, class_metadata, enum_metadata, declaration_sources, literals, mixed_functions })
     }
 
     pub fn view(&self) -> &ExportView { &self.view }
@@ -457,7 +483,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             p.bind_package(&mut scope,alias.as_deref()).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
         } else if import_v2::is_mixed(&tokens,start)
-            || ((word(tokens.get(start),"const") || word(tokens.get(start),"fnc") || word(tokens.get(start),"class"))
+            || ((word(tokens.get(start),"const") || word(tokens.get(start),"fnc") || word(tokens.get(start),"class") || word(tokens.get(start),"enum"))
                 && (start+1..end).any(|j|word(tokens.get(j),"from"))) {
             let (parsed,next)=import_v2::parse_mixed(&tokens,start)?;
             if next!=end+1 { return Err(Diagnostic::new(pos,"E_SYNTAX","invalid import extent")); }
@@ -465,8 +491,8 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest requires explicit pkg domain"));
             };
             let p=*available.get(name.as_str()).ok_or_else(||Diagnostic::new(pos,"E_UNBOUND","package is not in authenticated snapshot set"))?;
-            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace|Kind::Const|Kind::Class)) {
-                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function, namespace, literal constant and class selectors only"));
+            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace|Kind::Const|Kind::Class|Kind::Enum)) {
+                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function, namespace, literal constant, class and enum selectors only"));
             }
             scope.bind_mixed(p.view(),&parsed).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
@@ -515,6 +541,76 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
     let pairs:Vec<_>=declarations.iter().map(|(n,r)|(n.as_str(),r.as_str())).collect();
     let views:Vec<_>=admitted.values().map(|p|p.view()).collect();
     scope.namespace_aliases(&pairs,&views).map_err(|d|at(d,Pos{line:1,col:1}))?;
+
+    // Authenticated enum guest: direct, exhaustive scalar return-match
+    // over a qualified or aliased payload-free enum. Only exact nominal
+    // variants are rewritten; the production match checker owns coverage.
+    let enum_root=&tokens[i..];
+    let ep=lexer::lex("pub fnc main(): int { return match")?;
+    let ea=lexer::lex("pub fnc main() -> int { return match")?;
+    let en=ep.len()-1;
+    if admitted.values().any(|p| !p.enum_metadata.is_empty()) && enum_root.len()>en
+        && (enum_root[..en].iter().map(|t|&t.tok).eq(ep[..en].iter().map(|t|&t.tok))
+            || enum_root[..en].iter().map(|t|&t.tok).eq(ea[..en].iter().map(|t|&t.tok))) {
+        if current.is_some(){return Err(err("E_UNSUPPORTED","external enum match cannot claim current package authority"));}
+        let denied=||err("E_UNSUPPORTED","external enum guest requires direct nominal variant match and scalar literal arms");
+        let variant=|part:&[Token]|->R<(Target,String,Vec<String>,String)>{
+            let reference=path_tokens(part)?;
+            let (ty,v)=reference.rsplit_once('.').ok_or_else(denied)?;
+            let resolved=scope.resolve(ty)?;
+            let p=admitted.values().find(|p|resolved.target.origin==Origin::External(p.id.clone())).copied()
+                .ok_or_else(||err("E_IMPORT_PATH","external enum origin is not admitted"))?;
+            let target=scope.resolve_export(ty,p.view())?;
+            if target.kind!=Kind::Enum{return Err(err("E_IMPORT_KIND","expected authenticated enum"));}
+            scope.resolve_nominal(ty,p.view())?;
+            p.declaration_source(&target)?;
+            let variants=p.enum_metadata.get(&target.declaration).ok_or_else(denied)?;
+            if !variants.iter().any(|name|name==v){return Err(err("E_UNBOUND","unknown authenticated enum variant"));}
+            let hash=crate::sha256::hex_digest(format!("{}/{}/{}",p.name,p.id.digest(),target.declaration).as_bytes());
+            Ok((target,v.to_string(),variants.clone(),format!("__atto_registry_enum_{}",&hash[..24])))
+        };
+        let over=enum_root[en..].iter().position(|t|word(Some(t),"over")).map(|j|en+j).ok_or_else(denied)?;
+        let (subject,selected,variants,generated)=variant(&enum_root[en..over])?;
+        let declaration=format!("define enum {generated} as {} end",variants.join(" "));
+        let mut linked=lexer::lex(&declaration)?;
+        linked.pop();
+        linked.extend_from_slice(&enum_root[..en]);
+        let emit_variant=|out:&mut Vec<Token>,name:&str,pos:Pos|{
+            out.extend([id(&generated,pos),token(Tok::Dot,pos),id(name,pos)]);
+        };
+        emit_variant(&mut linked,&selected,enum_root[en].pos);
+        linked.push(enum_root[over].clone());
+        let mut j=over+1;
+        let mut arms=0usize;
+        while word(enum_root.get(j),"on"){
+            arms+=1;
+            if arms>256{return Err(err("E_SOURCE_LIMIT","external enum match arm budget exceeded"));}
+            linked.push(enum_root[j].clone());
+            let arrow=enum_root[j+1..].iter().position(|t|t.tok==Tok::Arrow).map(|k|j+1+k).ok_or_else(denied)?;
+            let (target,member,_,_)=variant(&enum_root[j+1..arrow])?;
+            if target!=subject{return Err(err("E_TYPE","external enum arm has different nominal identity"));}
+            emit_variant(&mut linked,&member,enum_root[j+1].pos);
+            linked.push(enum_root[arrow].clone());
+            j=arrow+1;
+            if enum_root.get(j).map(|t|&t.tok)==Some(&Tok::Minus){linked.push(enum_root[j].clone());j+=1;}
+            if !matches!(enum_root.get(j).map(|t|&t.tok),Some(Tok::Int(_))){return Err(denied());}
+            linked.push(enum_root[j].clone());j+=1;
+            if enum_root.get(j).map(|t|&t.tok)==Some(&Tok::Comma){linked.push(enum_root[j].clone());j+=1;}
+            else if !word(enum_root.get(j),"end"){return Err(denied());}
+        }
+        if arms==0||!word(enum_root.get(j),"end"){return Err(denied());}
+        let end=j+1+usize::from(enum_root.get(j+1).map(|t|&t.tok)==Some(&Tok::Semi));
+        if !enum_root[end..].iter().map(|t|&t.tok).eq([Tok::RBrace,Tok::Eof].iter()){return Err(denied());}
+        linked.extend_from_slice(&enum_root[j..]);
+        if linked.len()>lexer::MAX_TOKENS{return Err(err("E_SOURCE_LIMIT","external enum token budget exceeded"));}
+        let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
+        let checked=crate::check::check(&parsed)?;
+        if !checked.imports.is_empty(){return Err(err("E_UNSUPPORTED","external enum guest cannot request host imports"));}
+        return crate::compile_prelexed(linked,None);
+    }
+    if admitted.values().any(|p| !p.enum_metadata.is_empty()) && !admitted.values().any(|p| !p.class_metadata.is_empty()){
+        return Err(err("E_UNSUPPORTED","external enum execution requires bounded nominal match"));
+    }
 
     // Bounded external class lane. Each authenticated declaration gets a
     // hygienic internal class name; identical source names never coalesce.
