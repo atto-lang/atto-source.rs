@@ -133,5 +133,67 @@ rejects('declare actor A; mtd (A self) good(): bool { return true; } mtd (A self
 rejects('declare actor A; mtd (A self) bad(): int { return 9223372036854775808; }','E_INTEGER_RANGE');
 rejects('declare actor A; mtd (A self) valid(): int {return 10;}','E_UNSUPPORTED');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (63)');
+
+// Conservative structured CFG and nominal receiver call argument checks.
+rejects('declare actor A; mtd (A self) choose(bool flag): int { if flag {return 1;} else {} }','E_MISSING_RETURN');
+rejects('declare actor A; mtd (A self) choose(bool flag): int { if flag {return 1;} }','E_MISSING_RETURN');
+rejects('declare actor A; mtd (A self) choose(int count): int { if count {return 1;} else {return 2;} }','E_TYPE');
+rejects('declare actor A; mtd (A self) consume(int n): void {} mtd (A self) run(): void {self.consume(true);}','E_TYPE');
+rejects('declare actor A; mtd (A self) consume(bool flag): void {} mtd (A self) run(int n): void {self.consume(n);}','E_TYPE');
+rejects('declare actor A; declare actor B; mtd (A self) consume(ActorRef<A> a): void {} mtd (A self) run(ActorRef<B> b): void {self.consume(b);}','E_TYPE');
+rejects('declare actor A; mtd (A self) choose(bool flag): int { if flag {return 1;} else {return 2;} }','E_UNSUPPORTED');
+rejects('declare actor A; mtd (A self) consume(int n): void {} mtd (A self) run(int n): void {self.consume(n);}','E_UNSUPPORTED');
+
+
+// Path-sensitive ownership preflight executes inside the actual Wasm compiler.
+// Rejection must leave no emitted guest bytes (enforced by rejects()).
+const movePrelude = 'declare actor M; mtd (M self) consume(ActorRef<M> peer): void {} mtd (M self) run(ActorRef<M> peer): void {';
+rejects(movePrelude+' rt take peer; rt take peer; }','E_MOVE');
+rejects(movePrelude+' rt take peer; self.consume(peer); }','E_MOVE');
+rejects(movePrelude+' val a = rt borrow peer; rt take peer; }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; await pending(); }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; self.consume(a); }','E_ESCAPE');
+rejects(movePrelude+' val a = rt borrow peer; return a; }','E_ESCAPE');
+rejects(movePrelude+' let value = 1; val a = rt borrow mut value; val b = rt borrow value; }','E_BORROW');
+rejects(movePrelude+' if true { rt take peer; } else {} self.consume(peer); }','E_MOVE');
+rejects(movePrelude+' { val a = rt borrow peer; } rt take peer; }','E_UNSUPPORTED');
+
+
+// Ownership preflight soundness regressions: shared-loan mutation and
+// effectful conditions must not emit runnable actor code.
+rejects(movePrelude+' val a = rt borrow peer; peer = spawn M(); }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; peer += 1; }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; peer++; }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; ++peer; }','E_BORROW');
+rejects(movePrelude+' if rt take peer { } else { } }','E_BORROW');
+rejects(movePrelude+' if rt borrow peer { } else { } }','E_BORROW');
+rejects(movePrelude+' if rt borrow mut peer { } else { } }','E_BORROW');
+rejects(movePrelude+' if compute(peer) { } else { } }','E_UNSUPPORTED');
+rejects(movePrelude+' { val a = rt borrow peer; val b = rt borrow peer; } rt take peer; }','E_UNSUPPORTED');
+
+
+// Exit-edge obligations: checked arithmetic may panic and must not run while
+// a lexical loan is live. No receiver lowering is enabled by the exit facts.
+rejects(movePrelude+' val borrowed = rt borrow peer; 1+2; }','E_BORROW');
+rejects(movePrelude+' val borrowed = rt borrow peer; 10-3; }','E_BORROW');
+rejects(movePrelude+' val borrowed = rt borrow peer; 10*3; }','E_BORROW');
+rejects(movePrelude+' val borrowed = rt borrow peer; 10/3; }','E_BORROW');
+rejects(movePrelude+' { val borrowed = rt borrow peer; } 1+2; }','E_UNSUPPORTED');
+rejects(movePrelude+' { val borrowed = rt borrow peer; } return; }','E_UNSUPPORTED');
+rejects('declare actor M; mtd (M self) choose(bool flag): int { if flag { return 1; } else { return 2; } }','E_UNSUPPORTED');
+rejects('declare actor M; mtd (M self) read(): int { return risky(); }','E_UNSUPPORTED');
+
+
+// Lease cleanup contracts: reject unlowered callback control flow and keep
+// read-only/checked-panic lease callbacks gated before guest Wasm emission.
+const stateCounter='declare actor Counter; define actor Counter as let int count = 0; end';
+rejects(stateCounter+' mtd (mut self: Counter) update(): void { self.handle_state(critical-write |s| -> { if true { s.count = 1; } else { s.count = 2; } }); }','E_BORROW');
+rejects(stateCounter+' mtd (mut self: Counter) update(): void { self.handle_state(critical-write |s| -> { while true { s.count = 1; } }); }','E_BORROW');
+rejects(stateCounter+' mtd (mut self: Counter) update(): void { self.handle_state(critical-write |s| -> { loop { s.count = 1; } }); }','E_BORROW');
+rejects(stateCounter+' mtd (mut self: Counter) update(): void { self.handle_state(critical-write |s| -> { for i in values { s.count = 1; } }); }','E_BORROW');
+rejects(stateCounter+' mtd (Counter self) read_count(): int { return self.handle_state(critical-read |s| -> s.count); }','E_UNSUPPORTED');
+rejects(stateCounter+' mtd (mut self: Counter) update(): void { self.handle_state(critical-write |s| -> { s.count = s.count + 1; }); }','E_UNSUPPORTED');
+rejects(stateCounter+' mtd (mut self: Counter) update(): void { self.handle_state(critical-read |s| -> s.count); self.handle_state(critical-write |t| -> { t.count = 1; }); }','E_UNSUPPORTED');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (104)');
 
