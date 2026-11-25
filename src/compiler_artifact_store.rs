@@ -388,4 +388,63 @@ end"#;
         // Smoke measurements only: debug build, tiny fixture, hot OS page cache,
         // excludes process launch, publisher fsync and guest runtime. No threshold.
     }
+
+    #[test]
+    fn explicit_session_pinned_ledger_restart_and_corruption(){
+        use crate::{compiler_cache_session::{Session,Mode,Outcome},compiler_cache_ledger as ledger,
+            library::TargetOs,sha256::{hex_digest,sha256}};
+        let t=Temp::new();
+        let cache=t.0.join("cache");fs::DirBuilder::new().mode(0o700).create(&cache).unwrap();
+        let host=t.0.join("host");fs::DirBuilder::new().mode(0o700).create(&host).unwrap();
+        let store=ArtifactStore::open(&cache).unwrap();
+        let record=ledger::record("tenant/a",1,SECRET).unwrap();
+        let pin=sha256(&record);
+        // Fixture record lives outside cache; its expected digest comes from
+        // independent test authority, never re-derived from the read file.
+        fs::write(host.join("active"),&record).unwrap();
+        let compiler=hex_digest(b"fixture compiler attestation");
+        let toolchain=hex_digest(b"fixture toolchain attestation");
+        let session=Session{store:&store,scope:"tenant/a",compiler_digest:&compiler,toolchain_digest:&toolchain,target:TargetOs::Posix};
+        let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let source_pin=hex_digest(lock.as_bytes());
+        let build=|mode,record:&[u8],pin:&[u8;32],master,inputs:&[crate::package_resolver::SnapshotSource<'_>]|
+            session.build(mode,record,pin,master,"src/main.atto",MANIFEST,&lock,&source_pin,inputs);
+        let cold=build(Mode::Cold,&record,&pin,SECRET,&inputs).unwrap();
+        assert_eq!(cold.outcome,Outcome::Compiled);
+        let warm=build(Mode::Incremental,&fs::read(host.join("active")).unwrap(),&pin,SECRET,&inputs).unwrap();
+        assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(cold.bytes,warm.bytes);
+        fs::write(host.join("guest.wasm"),&warm.bytes).unwrap();execute_wasm(&host.join("guest.wasm"));
+        let status=Command::new(std::env::current_exe().unwrap()).args(["--exact","compiler_artifact_store::tests::explicit_session_child","--nocapture"])
+            .env("ATTO_SESSION_ROOT",&t.0).status().unwrap();assert!(status.success());
+        let changed=MATH.replace("x * 2","x * 3");
+        assert_eq!(build(Mode::Incremental,&record,&pin,SECRET,&package_inputs(&changed)).unwrap_err().code,"E_LOCK_HASH");
+        let rotated=ledger::record("tenant/a",2,[7;32]).unwrap();let new_pin=sha256(&rotated);
+        assert_eq!(build(Mode::Incremental,&record,&new_pin,SECRET,&inputs).unwrap_err().code,"E_CACHE_LEDGER");
+        // Existing slot was signed by the old key: diagnostic, no implicit fallback.
+        assert_eq!(build(Mode::Incremental,&rotated,&new_pin,[7;32],&inputs).unwrap_err().code,"E_CACHE_READ");
+        let fresh=build(Mode::Cold,&rotated,&new_pin,[7;32],&inputs).unwrap();
+        assert_eq!(fresh.outcome,Outcome::Compiled);assert_eq!(fresh.bytes,cold.bytes);
+        assert_eq!(build(Mode::Incremental,&rotated,&new_pin,[7;32],&inputs).unwrap().outcome,Outcome::Reused);
+        let prepared=crate::compiler_cache_witness::prepare("src/main.atto",MANIFEST,&lock,&source_pin,&inputs,TargetOs::Posix,&compiler,&toolchain).unwrap();
+        let path=cache.join(slot(&prepared.key));let mut corrupted=fs::read(&path).unwrap();corrupted[112]^=1;
+        fs::write(&path,&corrupted).unwrap();
+        assert_eq!(build(Mode::Incremental,&rotated,&new_pin,[7;32],&inputs).unwrap_err().code,"E_CACHE_READ");
+        assert_eq!(fs::read(&path).unwrap(),corrupted);
+        println!("CACHE_SESSION|explicit-cold-warm|second-process|rotation|corruption-fail-closed");
+    }
+    #[test]
+    fn explicit_session_child(){
+        if let Some(root)=std::env::var_os("ATTO_SESSION_ROOT"){
+            use crate::{compiler_cache_session::{Session,Mode,Outcome},compiler_cache_ledger as ledger,
+                library::TargetOs,sha256::{hex_digest,sha256}};
+            let root=Path::new(&root);let store=ArtifactStore::open(&root.join("cache")).unwrap();
+            let expected=ledger::record("tenant/a",1,SECRET).unwrap();let pin=sha256(&expected);
+            let compiler=hex_digest(b"fixture compiler attestation");let toolchain=hex_digest(b"fixture toolchain attestation");
+            let session=Session{store:&store,scope:"tenant/a",compiler_digest:&compiler,toolchain_digest:&toolchain,target:TargetOs::Posix};
+            let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let source_pin=hex_digest(lock.as_bytes());
+            let warm=session.build(Mode::Incremental,&fs::read(root.join("host/active")).unwrap(),&pin,SECRET,"src/main.atto",MANIFEST,&lock,&source_pin,&inputs).unwrap();
+            assert_eq!(warm.outcome,Outcome::Reused);
+            assert_eq!(warm.bytes,fs::read(root.join("host/guest.wasm")).unwrap());
+            println!("CACHE_SESSION_CHILD|ledger-admitted|reused");
+        }
+    }
 }
