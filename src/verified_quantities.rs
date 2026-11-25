@@ -161,7 +161,7 @@ impl Parser<'_> {
         let dimension = self.word("dimension");
         if !dimension { self.expect_word("unit")?; }
         let name = self.name()?;
-        if crate::parser::is_reserved(&name) || matches!(name.as_str(), "int" | "i32" | "bool" | "void" | "float" | "string") {
+        if crate::parser::is_reserved(&name) || matches!(name.as_str(), "int" | "i64" | "i32" | "bool" | "void" | "float" | "string") {
             return Err(self.err("E_RESERVED", "quantity declaration cannot shadow a reserved type or keyword"));
         }
         if self.dimensions.contains(&name) || self.units.contains_key(&name) {
