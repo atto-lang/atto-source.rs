@@ -3,7 +3,7 @@
 //! Guest contract `atto.browser.guest.v2` (v1 plus classes and actors):
 //! * export `main: () -> i64` (a void `main` returns 0)
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
-//!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
+//!   1 = integer overflow; 2 = integer division by zero (provisional fault ABI);
 //!   3 = object heap exhausted; 4 = invalid generator handle/state;
 //!   5 = generator per-pull dispatch budget exhausted;
 //!   6 = logical stack exhausted: a recursive call exceeded [`MAX_CALL_DEPTH`]
@@ -32,7 +32,7 @@ mod generator_runtime;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
-/// Reserved ABI value; current admitted expressions cannot generate this panic.
+/// Provisional terminal integer division-by-zero fault; not the final typed Error ABI.
 pub const PANIC_DIV_ZERO: i32 = 2;
 pub const PANIC_HEAP: i32 = 3;
 pub const PANIC_GENERATOR: i32 = 4;
@@ -123,10 +123,12 @@ const H_MUL: u32 = 2;
 const H_NEG: u32 = 3;
 /// Always present: checked runtime shift count -> unchanged shift count.
 const H_SHIFT_COUNT: u32 = 4;
+/// Always present: checked signed integer quotient.
+const H_DIV: u32 = 5;
 /// present only when the program has classes
-const H_ALLOC: u32 = 5;
+const H_ALLOC: u32 = 6;
 // string helpers, present only when the program has string values; they
-// follow H_ALLOC (or H_NEG) at `Layout::str_base + offset`
+// follow H_ALLOC (or H_DIV) at `Layout::str_base + offset`
 const S_BYTES_EQ: u32 = 0;
 const S_EQ: u32 = 1;
 const S_STARTS: u32 = 2;
@@ -792,7 +794,7 @@ impl Emit<'_> {
                     BinOp::Ge => self.op(0x59),
                     BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
                     BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                    BinOp::Div => unreachable!("division not admitted by checker"),
+                    BinOp::Div => self.call(self.l.helper(H_DIV)),
                 }
             }
             TExpr::Ternary(c, a, b) => {
@@ -1195,6 +1197,17 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     panic(&mut c, PANIC_SHIFT_DISTANCE);
     c.extend_from_slice(&[0x0B, 0x20, 0, 0x0B]); // return original count
     v.push((Sig(vec![I64], vec![I64]), no_locals.clone(), c));
+
+    // Checked signed quotient: operands are evaluated once by the caller.
+    // Guard both Wasm trap conditions so the guest records a distinct fault.
+    let mut c = vec![0x20, 1, 0x50, 0x04, 0x40]; // if b == 0
+    panic(&mut c, PANIC_DIV_ZERO);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x42]);
+    sleb(&mut c, i64::MIN);
+    c.extend_from_slice(&[0x51, 0x20, 1, 0x42, 0x7F, 0x51, 0x71, 0x04, 0x40]);
+    panic(&mut c, PANIC_OVERFLOW);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x20, 1, 0x7F, 0x0B]);
+    v.push((bin, no_locals, c));
 
     v
 }
