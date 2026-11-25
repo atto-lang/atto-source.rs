@@ -35,6 +35,8 @@ pub enum Type {
     /// First executable ADT profiles; their payloads use the checked module heap.
     /// Other generic instantiations reject without emitting an artifact.
     OptionInt,
+    OptionBool,
+    OptionStr,
     ResultIntStr,
     /// Result<int,int>: integer error codes (core/result v1).
     ResultIntInt,
@@ -56,6 +58,8 @@ impl Type {
             Type::Float => "float",
             Type::Str => "string",
             Type::OptionInt => "Option<int>",
+            Type::OptionBool => "Option<bool>",
+            Type::OptionStr => "Option<string>",
             Type::ResultIntStr => "Result<int,string>",
             Type::ResultIntInt => "Result<int,int>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",

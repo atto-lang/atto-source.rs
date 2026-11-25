@@ -1049,6 +1049,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             let ok = match ty {
                 Type::Int | Type::Bool => true,
                 Type::Float | Type::Str | Type::Enum(_) => !actor,
+                Type::OptionInt | Type::OptionBool | Type::OptionStr => !actor && f.binding==FieldBinding::Val
+                    && f.init.as_ref().is_some_and(|v| matches!(&v.kind, ExprKind::Var(n) if n=="None")),
                 _ => false,
             };
             if !ok {
@@ -1264,8 +1266,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let info = &g.classes[ci];
         let me = Type::Class(ci as u32);
         let mut field_inits = Vec::new();
+        let mut allocation_locals=vec![me];
         for (f, fi) in c.fields.iter().zip(&info.fields) {
-            if let Some(v) = field_init(&g, f, fi.ty, &c.name, false, &mut imports, &mut data)? {
+            if matches!(fi.ty, Type::OptionInt | Type::OptionBool | Type::OptionStr) {
+                // fields_of has admitted only explicit immutable None. Each
+                // initialized field gets a freshly allocated tagged record;
+                // no null pointer, shared mutable cell or synthetic default.
+                let tmp=info.ctor_params.len() as u32+allocation_locals.len() as u32;
+                allocation_locals.push(fi.ty);
+                field_inits.push((fi.slot,fi.ty,TE{e:TExpr::AdtNew{tag:0,payload:None,tmp},ty:fi.ty}));
+            } else if let Some(v) = field_init(&g, f, fi.ty, &c.name, false, &mut imports, &mut data)? {
                 field_inits.push((fi.slot, fi.ty, v));
             }
         }
@@ -1345,7 +1355,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             name: format!("{}.new", c.name),
             params: info.ctor_params.clone(),
             ret: me,
-            locals: vec![me],
+            locals: allocation_locals,
             body,
         });
         // Generated source-independent whole-concrete-type copy plan. The
@@ -3080,7 +3090,7 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
+        if matches!(sty, Type::OptionInt | Type::OptionBool | Type::OptionStr | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -3308,6 +3318,10 @@ impl<'a> FnCx<'a> {
                         (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+                        (Type::OptionBool, "None") => (0, None),
+                        (Type::OptionBool, "Some") => (1, Some(Type::Bool)),
+                        (Type::OptionStr, "None") => (0, None),
+                        (Type::OptionStr, "Some") => (1, Some(Type::Str)),
                         (Type::OptionResultIntStr, "None") => (0, None),
                         (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
                         _ => return Err(type_err(arm.pos,
@@ -3572,6 +3586,10 @@ impl<'a> FnCx<'a> {
             (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+            (Type::OptionBool, "None") => (0, None),
+            (Type::OptionBool, "Some") => (1, Some(Type::Bool)),
+            (Type::OptionStr, "None") => (0, None),
+            (Type::OptionStr, "Some") => (1, Some(Type::Str)),
             (Type::OptionResultIntStr, "None") => (0, None),
             (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
             _ => return Err(type_err(e.pos,
@@ -4125,7 +4143,7 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::OptionBool | Type::OptionStr | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
@@ -5170,5 +5188,5 @@ fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
 /// Identity-free admitted scalars: value copies, never ownership roots.
 fn is_copy_scalar(t: Type) -> bool {
     matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)
-        | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr)
+        | Type::OptionInt | Type::OptionBool | Type::OptionStr | Type::ResultIntStr | Type::OptionResultIntStr)
 }

@@ -526,9 +526,11 @@ impl Parser {
                 self.expect(Tok::Gt, "'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
+                    Type::Bool => Type::OptionBool,
+                    Type::Str => Type::OptionStr,
                     Type::ResultIntStr => Type::OptionResultIntStr,
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
+                        "browser ADT admits only scalar int/bool/string Option and Option<Result<int,string>>")),
                 }
             }
             "Generator" => {

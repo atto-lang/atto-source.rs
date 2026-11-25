@@ -792,3 +792,48 @@ fn frozen_generic_instances_preserve_checked_scalar_object_storage() {
         assert!(FrozenGenericClass::verify("@org/project/package",manifest,&cl,&hex_digest(cl.as_bytes()),&changed).is_err());
     }
 }
+
+
+#[test]
+fn generic_optional_fields_require_explicit_none_and_checked_payload_identity() {
+    use atto_compiler::registry_namespace::FrozenGenericClass;
+    let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } val Option<T> value = None; pub fnc get(): Option<T> { return self.value; } end";
+    let inputs=[SnapshotSource{path:"src/models/container.atto",source:body}];
+    let l=lock(manifest,&inputs);
+    let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+    let prefix="import [class models.Container] from pkg '@org/project/package'; ";
+    let guest=format!("{prefix}pub fnc main(): int {{ val a = Container[int].new(); val b = Container[bool].new(); val c = Container[string].new(); match a.get() over on Some(n) -> {{ return n; }} on None -> {{ match b.get() over on Some(v) -> {{ return 0; }} on None -> {{ match c.get() over on Some(s) -> {{ return 0; }} on None -> {{ return 42; }} end }} end }} end }}");
+    let wasm=p.compile_guest_instances(&guest).unwrap();
+    assert!(wasm.starts_with(b"\0asm"));
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-generic-option-0.wasm"),wasm).unwrap();
+    }
+    let some=format!("{prefix}pub fnc main(): int {{ val a = Container[int].new(); val Option<bool> b = Some(true); val Option<string> c = Some(\"ok\"); match b over on Some(v) -> {{ if v then match c over on Some(s) -> {{ if s == \"ok\" then return 42; fi return 0; }} on None -> {{ return 0; }} end fi return 0; }} on None -> {{ return 0; }} end }}");
+    let wasm=p.compile_guest_instances(&some).unwrap();
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-generic-option-1.wasm"),wasm).unwrap();
+    }
+    for root in [
+        "val a = Container[int].new(); val Option<bool> b = a.get(); return 42;",
+        "val a = Container[bool].new(); val Option<string> b = a.get(); return 42;",
+        "val a = Container[int].new(); return a.value;",
+        "val a = Container[int].new(); a.value = None; return 42;",
+        "val a = Container[int].new(); val Option<bool> b = Some(42); return 42;",
+        "val a = Container[int].new(); val Option<string> b = Some(false); return 42;",
+    ]{
+        let bad=format!("{prefix}pub fnc main(): int {{ {root} }}");
+        assert!(p.compile_guest_instances(&bad).is_err(),"{bad}");
+    }
+    for changed in [
+        body.replace("val Option<T> value = None;","let Option<T> value = None;"),
+        body.replace("val Option<T> value = None;","val Option<T> value = Some(42);"),
+        body.replace("val Option<T> value = None;","val Option<T> value;"),
+        body.replace("val Option<T> value = None;","val T value = 0;"),
+        body.replace("return self.value;","return Some(42);"),
+    ]{
+        let changed=[SnapshotSource{path:inputs[0].path,source:&changed}];
+        let cl=lock(manifest,&changed);
+        assert!(FrozenGenericClass::verify("@org/project/package",manifest,&cl,&hex_digest(cl.as_bytes()),&changed).is_err());
+    }
+}

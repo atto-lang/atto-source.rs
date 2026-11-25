@@ -1026,8 +1026,20 @@ impl FrozenGenericClass {
                         && before.is_some_and(|v|matches!(v.tok,Tok::Colon|Tok::Arrow))
                         && before2.is_some_and(|v|v.tok==Tok::RParen)
                         && after.is_some_and(|v|v.tok==Tok::LBrace);
-                    if !(parameter_type || result_type) {
-                        return Err(err("E_UNSUPPORTED","generic parameter permitted only in top-level scalar fnc signature; no implicit generic field default"));
+                    let optional_prefix=i>=2 && matches!(&members[i-2].tok,Tok::Ident(v) if v=="Option")
+                        && members[i-1].tok==Tok::Lt && after.is_some_and(|v|v.tok==Tok::Gt);
+                    let optional_field=braces==0 && parens==0 && !signature && optional_prefix && i>=3
+                        && matches!(&members[i-3].tok,Tok::Ident(v) if v=="val")
+                        && matches!(members.get(i+2).map(|t|&t.tok),Some(Tok::Ident(_)))
+                        && members.get(i+3).is_some_and(|v|v.tok==Tok::Assign)
+                        && matches!(members.get(i+4).map(|t|&t.tok),Some(Tok::Ident(v)) if v=="None")
+                        && members.get(i+5).is_some_and(|v|v.tok==Tok::Semi);
+                    let optional_result=braces==0 && parens==0 && signature && optional_prefix && i>=4
+                        && matches!(members[i-3].tok,Tok::Colon|Tok::Arrow)
+                        && members[i-4].tok==Tok::RParen
+                        && members.get(i+2).is_some_and(|v|v.tok==Tok::LBrace);
+                    if !(parameter_type || result_type || optional_field || optional_result) {
+                        return Err(err("E_UNSUPPORTED","generic parameter requires checked scalar signature or explicit immutable Option<T> None field; no implicit generic default"));
                     }
                 }
             }
