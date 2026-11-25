@@ -133,6 +133,21 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(chars[i]);
                 bump!();
             }
+            // Mandatory separator for complete Atto keyword suffixes.
+            // Keep != and exact !eq comparison token boundaries unchanged.
+            if matches!(s.as_str(), "trap" | "throw" | "raise" | "panic" | "copy"
+                | "take" | "borrow" | "share" | "pin" | "drop" | "pipe" | "rpipe" | "stop" | "expand")
+                && chars.get(i) == Some(&'!')
+                && chars.get(i + 1) != Some(&'=')
+                && !(chars.get(i + 1) == Some(&'e') && chars.get(i + 2) == Some(&'q')
+                    && chars.get(i + 3).map_or(true, |c| !c.is_alphanumeric() && *c != '_'))
+            {
+                let after = i + if s == "copy" && chars.get(i + 1) == Some(&'!') { 2 } else { 1 };
+                if !chars.get(after).is_some_and(|c| matches!(*c, ' ' | '\t' | '\r' | '\n' | '\u{b}' | '\u{c}')) {
+                    return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
+                        "whitespace required after bang keyword"));
+                }
+            }
             // Exception-control bangs are contiguous contextual spellings.
             // Keep !eq and != intact; do not consume whitespace or alter
             // unrelated ownership-bang / boolean-not syntax.
@@ -416,16 +431,14 @@ mod bang_exception_keyword_tests {
     use super::*;
 
     #[test]
-    fn all_eighteen_canonical_exception_bang_lexical_boundaries() {
+    fn canonical_exception_bang_lexical_boundaries() {
         // Mirrors atto-spec PR #146; this checks lexer identity, never
         // compiled Error/Result guest execution or actor supervision.
         let cases: &[(&str, &str)] = &[
             ("trap! parse_id(\"42\")", "trap!"),
-            ("trap!parse_id(\"42\")", "trap!"),
             ("throw! Error(\"bad\")", "throw!"),
             ("raise! Error(\"bad\")", "raise!"),
             ("panic! Error(\"bad\")", "panic!"),
-            ("throw!Error(\"bad\")", "throw!"),
             ("trap parse_id(\"42\")", ""),
             ("throw Error(\"bad\")", ""),
             ("raise Error(\"bad\")", ""),
@@ -439,7 +452,7 @@ mod bang_exception_keyword_tests {
             ("// trap! throw! raise! panic!\n42", ""),
             ("/* trap! throw! raise! panic! */ 42", ""),
         ];
-        assert_eq!(cases.len(), 18);
+        assert_eq!(cases.len(), 16);
         for (source, expected) in cases {
             let tokens = lex(source).unwrap();
             let got: Vec<&str> = tokens.iter().filter_map(|t| match &t.tok {
@@ -470,5 +483,18 @@ mod bang_exception_keyword_tests {
         assert_eq!(separate[8].tok, Tok::NotEq);
         assert!(matches!(&separate[9].tok, Tok::Ident(s) if s == "other_trap"));
         assert_eq!(separate[10].tok, Tok::Bang);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn mandatory_bang_keyword_separator_rejects_compact_forms() {
+    for keyword in ["trap!", "throw!", "raise!", "panic!", "copy!", "copy!!",
+        "take!", "borrow!", "share!", "pin!", "drop!", "pipe!", "rpipe!", "stop!", "expand!"] {
+        for tail in ["value", "(42)", "/*comment*/ value", "", "\u{a0}value"] {
+            let source = format!("{keyword}{tail}");
+            assert!(lex(&source).is_err(), "{source}");
+        }
+        assert!(lex(&format!("{keyword} value")).is_ok(), "{keyword}");
     }
 }
