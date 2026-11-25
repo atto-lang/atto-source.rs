@@ -47,6 +47,7 @@ pub mod module_lower;
 pub mod const_import_link;
 pub mod import_link;
 pub mod import_v2;
+pub mod import_tree;
 pub mod static_import_graph;
 /// Checked physical layout metadata; does not admit guest reference operations.
 pub mod ref_layout;
@@ -55,6 +56,8 @@ pub mod layout_plan;
 pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
+/// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
+pub mod registry_namespace;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;

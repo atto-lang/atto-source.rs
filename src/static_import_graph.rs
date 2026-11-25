@@ -13,6 +13,8 @@ fn err(code: &'static str, msg: &str) -> Diagnostic {
     Diagnostic::new(Pos::default(), code, msg)
 }
 
+pub(crate) fn valid_component(s: &str) -> bool { ident(s) }
+
 fn ident(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.is_ascii()
         && s.as_bytes().first().is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
@@ -27,6 +29,50 @@ fn prefix(a: &str, b: &str) -> bool {
     b.strip_prefix(a).is_some_and(|rest| rest.starts_with('.'))
 }
 fn namespace(kind: Kind) -> bool { matches!(kind, Kind::Namespace | Kind::Module) }
+
+/// Check a normalized complete alias dependency inventory without consulting
+/// any export table, so even source-less and not-yet-linked package aliases
+/// cannot hide cycles behind a loader or an unresolved reference.
+fn reject_alias_cycles(pending: &BTreeMap<&str, &str>) -> R<()> {
+    // Every alias depends on at most one other alias: the first component
+    // of its qualified RHS. Detect cycles in the entire declaration graph
+    // before attempting any export lookup. Iterative walks avoid recursive
+    // stack growth and give a deterministic cycle path even for unused
+    // declarations or qualified references such as a = b.child.
+    let mut checked = BTreeSet::new();
+    for &start in pending.keys() {
+        let mut walk = Vec::new();
+        let mut positions = BTreeMap::new();
+        let mut current = start;
+        while let Some(&reference) = pending.get(current) {
+            if checked.contains(current) { break; }
+            if let Some(&at) = positions.get(current) {
+                let mut cycle: Vec<&str> = walk[at..].to_vec();
+                cycle.push(current);
+                return Err(err("E_IMPORT_CYCLE", &format!("cyclic namespace aliases: {}", cycle.join(" -> "))));
+            }
+            positions.insert(current, walk.len());
+            walk.push(current);
+            current = reference.split('.').next().unwrap_or("");
+        }
+        checked.extend(walk);
+    }
+    Ok(())
+}
+
+pub(crate) fn precheck_alias_declarations(declarations: &[(&str, &str)]) -> R<()> {
+    if declarations.len() > LIMIT { return Err(err("E_SOURCE_LIMIT", "too many namespace aliases")); }
+    let mut pending = BTreeMap::new();
+    for &(name, reference) in declarations {
+        if !ident(name) || !path(reference) {
+            return Err(err("E_IMPORT_PATH", "invalid namespace alias declaration"));
+        }
+        if pending.insert(name, reference).is_some() {
+            return Err(err("E_DUPLICATE", "duplicate namespace alias"));
+        }
+    }
+    reject_alias_cycles(&pending)
+}
 
 /// Canonical registry identity plus authenticated content digest.
 /// Registry spelling is retained, never normalized into a trust decision.
@@ -45,6 +91,8 @@ impl PackageId {
         { return Err(err("E_IMPORT_PATH", "invalid pinned canonical package identity")); }
         Ok(Self { name: name.into(), version: version.into(), digest: digest.into() })
     }
+    pub(crate) fn digest(&self) -> &str { &self.digest }
+
     pub fn suffixes(&self) -> Vec<String> {
         let parts: Vec<_> = self.name[1..].split('/').map(|p| p.replace('-', "_")).collect();
         (0..parts.len()).rev().map(|i| parts[i..].join(".")).filter(|p| path(p)).collect()
@@ -78,6 +126,10 @@ pub struct Scope { bindings: Vec<Binding> }
 
 impl Scope {
     pub fn new() -> Self { Self::default() }
+
+    pub(crate) fn has_root(&self, name: &str) -> bool {
+        self.bindings.iter().any(|b| b.name.split('.').next() == Some(name))
+    }
 
     fn insert(&mut self, name: &str, tier: Tier, target: Target) -> R<()> {
         if !path(name) { return Err(err("E_IMPORT_PATH", "invalid static binding path")); }
@@ -159,6 +211,15 @@ impl Scope {
         view.lookup(&key)
     }
 
+    /// Resolve only in the uniquely selected origin's authenticated view.
+    pub fn resolve_in_views(&self, reference: &str, views: &[&ExportView]) -> R<Target> {
+        let resolved = self.resolve(reference)?;
+        let mut matching = views.iter().filter(|v| v.origin == resolved.target.origin);
+        let view = matching.next().ok_or_else(|| err("E_UNBOUND", "missing authenticated export view"))?;
+        if matching.next().is_some() { return Err(err("E_AMBIGUOUS", "duplicate authenticated export view")); }
+        self.resolve_export(reference, view)
+    }
+
     /// Resolve a nominal declaration identity, not its runtime layout or ABI.
     /// General type aliases are intentionally excluded until their expansion
     /// rules are checked. The authenticated package digest is part of identity.
@@ -170,7 +231,7 @@ impl Scope {
         Ok(NominalId(target))
     }
 
-    /// Create a namespace const after resolution of a checked namespace node.
+    /// Create a namespace alias after resolution of a checked namespace node.
     /// Chains of already resolved constants work; forward/cyclic references
     /// fail closed pending a separate graph-wide alias topological pass.
     pub fn namespace_alias(&mut self, alias: &str, target: Target) -> R<()> {
@@ -178,23 +239,27 @@ impl Scope {
         self.insert(alias, Tier::Explicit, target)
     }
 
-    /// Batch namespace constants, with forward references and atomic
+    /// Batch namespace aliases, with forward references and atomic
     /// publication. Pending explicit names shadow lower tiers from the
     /// start; never use a lower-tier binding to break an alias cycle.
     /// Interior namespace resolution is restricted to verified views.
     pub fn namespace_aliases(&mut self, declarations: &[(&str, &str)], views: &[&ExportView]) -> R<()> {
-        if declarations.len() > LIMIT { return Err(err("E_SOURCE_LIMIT", "too many namespace constants")); }
+        if declarations.len() > LIMIT { return Err(err("E_SOURCE_LIMIT", "too many namespace aliases")); }
         let mut staged = self.clone();
         let mut pending = BTreeMap::new();
         for &(name, reference) in declarations {
             if !ident(name) || !path(reference) {
-                return Err(err("E_IMPORT_PATH", "invalid namespace constant declaration"));
+                return Err(err("E_IMPORT_PATH", "invalid namespace alias declaration"));
             }
             if pending.insert(name, reference).is_some() || staged.bindings.iter()
                 .any(|b| b.name == name && b.tier == Tier::Explicit) {
-                return Err(err("E_DUPLICATE", "duplicate namespace constant"));
+                return Err(err("E_DUPLICATE", "duplicate namespace alias"));
             }
         }
+        if staged.bindings.len().saturating_add(pending.len()) > LIMIT {
+            return Err(err("E_SOURCE_LIMIT", "static binding budget exceeded"));
+        }
+        reject_alias_cycles(&pending)?;
         while !pending.is_empty() {
             let mut ready = Vec::new();
             for (&name, &reference) in &pending {
@@ -207,11 +272,11 @@ impl Scope {
                     staged.resolve_export(reference, view)?
                 };
                 if !namespace(target.kind) {
-                    return Err(err("E_IMPORT_KIND", "namespace constant requires namespace"));
+                    return Err(err("E_IMPORT_KIND", "namespace alias requires namespace"));
                 }
                 ready.push((name, target));
             }
-            if ready.is_empty() { return Err(err("E_IMPORT_CYCLE", "cyclic namespace constants")); }
+            if ready.is_empty() { return Err(err("E_IMPORT_CYCLE", "cyclic namespace aliases")); }
             for (name, target) in ready {
                 staged.namespace_alias(name, target)?;
                 pending.remove(name);

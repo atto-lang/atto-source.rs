@@ -612,3 +612,49 @@ pub fn compile_locked_snapshot(
         .collect();
     linker::compile_linked(entry, &units)
 }
+
+
+/// Verify immutable source bytes against the existing authenticated lock
+/// format before exposing any registry namespace metadata. The expected lock
+/// digest is caller-authenticated, not learned from the mutable snapshot.
+/// Unlike compile_locked_snapshot, registry exports need not all be reachable
+/// from a single entry; the registry manifest limits their visibility.
+pub(crate) fn verify_registry_snapshot<'a>(
+    manifest: &str, lockfile: &str, expected_lock_sha256: &str,
+    inputs: &[SnapshotSource<'a>],
+) -> R<BTreeMap<&'a str, &'a str>> {
+    if manifest.len() > MAX_MANIFEST || !valid_sha256(expected_lock_sha256) {
+        return Err(error("E_LOCK", "invalid bounded registry manifest or trusted digest"));
+    }
+    if lockfile.len() > MAX_MANIFEST * 4 {
+        return Err(error("E_LOCK", "registry lock exceeds budget"));
+    }
+    if crate::sha256::hex_digest(lockfile.as_bytes()) != expected_lock_sha256 {
+        return Err(error("E_LOCK_HASH", "registry lock digest mismatch"));
+    }
+    let pins = parse_source_lock(lockfile)?;
+    if crate::sha256::hex_digest(manifest.as_bytes()) != pins.manifest_sha256 {
+        return Err(error("E_LOCK_HASH", "registry manifest digest mismatch"));
+    }
+    if inputs.is_empty() || inputs.len() > MAX_FILES || inputs.len() != pins.files.len() {
+        return Err(error("E_LOCK_HASH", "registry snapshot file inventory mismatch"));
+    }
+    let mut sources = BTreeMap::new();
+    for input in inputs {
+        if !linker::path_ok(input.path) || input.path.starts_with("__atto_") {
+            return Err(error("E_IMPORT_PATH", "invalid registry source path"));
+        }
+        if input.source.len() > crate::SOURCE_CAP {
+            return Err(error("E_SOURCE_LIMIT", "registry source exceeds compiler limit"));
+        }
+        let want = pins.files.get(input.path)
+            .ok_or_else(|| error("E_LOCK_HASH", "registry source not pinned"))?;
+        if crate::sha256::hex_digest(input.source.as_bytes()) != *want {
+            return Err(error("E_LOCK_HASH", "registry source content mismatch"));
+        }
+        if sources.insert(input.path, input.source).is_some() {
+            return Err(error("E_DUPLICATE", "duplicate registry source"));
+        }
+    }
+    Ok(sources)
+}

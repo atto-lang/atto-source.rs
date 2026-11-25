@@ -469,3 +469,196 @@ fn reject_internal_names_and_unsafe_remote_selector_shapes() {
     }
     assert_eq!(parse_v2("import namespace [n] from pkg 'https://example.test/lib.atto';").imports, ["n"]);
 }
+
+#[test]
+fn namespace_aliases_lower_to_identical_builtin_guest_bytes() {
+    let baseline = compile("import core.num; pub fnc main(): int { return num.clamp(42, 0, 100); }").unwrap();
+    for src in [
+        "import core.num; define alias math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
+        "import core.num; define alias first = second; define alias second = core.num; pub fnc main(): int { return first.clamp(42, 0, 100); }",
+        "import core.num as vendor.math; define alias m = vendor.math; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+        "import core.num; define alias m = num; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+        "import core.num; define alias m = core /* comment */ . num; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+    ] {
+        assert_eq!(compile(src).unwrap(), baseline, "{src}");
+        let mut loads = 0;
+        assert_eq!(compile_with_imports(src, Path::new("app/main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap(), baseline);
+        assert_eq!(loads, 0);
+    }
+}
+
+#[test]
+fn namespace_aliases_do_not_remove_original_bindings() {
+    let src = "import core.num; define alias math = core.num; pub fnc main(): int { return math.clamp(40, 0, 100)+num.clamp(1, 0, 100)+core.num.clamp(1, 0, 100); }";
+    assert!(compile(src).is_ok());
+    let src = "import core.num as math; define alias m = math; pub fnc main(): int { return num.clamp(42, 0, 100); }";
+    assert!(compile(src).is_err());
+}
+
+#[test]
+fn namespace_alias_cycles_values_and_shadowing_fail_closed() {
+    for (src, expected) in [
+        ("import core.num; define alias a = a; pub fnc main(): int { return 42; }", Some("E_IMPORT_CYCLE")),
+        ("import core.num; define alias a = b; define alias b = a; pub fnc main(): int { return 42; }", Some("E_IMPORT_CYCLE")),
+        ("import core.num; define alias a = absent; pub fnc main(): int { return 42; }", Some("E_UNBOUND")),
+        ("import core.num; define alias a = core.num; define alias a = num; pub fnc main(): int { return 42; }", Some("E_DUPLICATE")),
+        ("import core.num; define alias num = core.num; pub fnc main(): int { return 42; }", Some("E_DUPLICATE")),
+        ("import core.num; define alias a = core.num; pub fnc main(): int { return a; }", None),
+        ("import core.num; define alias a = core.num; pub fnc main(): int { let int a = 1; return a; }", None),
+        ("import core.num; define alias a = core.num; pub fnc main(): int { return a.unknown(42); }", None),
+        ("import core.num; define alias a = num.clamp; pub fnc main(): int { return 42; }", None),
+        ("import core.num; define alias a = 42; pub fnc main(): int { return 42; }", None),
+        ("import core.num; define alias a = core.num; pub fnc main(): int { return object.a.clamp(42, 0, 100); }", None),
+        ("import core.num as hidden; define alias a = core.num; pub fnc main(): int { return 42; }", Some("E_UNBOUND")),
+    ] {
+        let mut loads = 0;
+        let d = compile_with_imports(src, Path::new("app/main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err();
+        if let Some(code) = expected { assert_eq!(d.code, code, "{src}: {d}"); }
+        assert_eq!(loads, 0, "{src}");
+    }
+}
+
+#[test]
+fn alias_is_distinct_from_value_constant_grammar() {
+    for src in [
+        "import core.num; define const math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
+        "import core.num; define namespace const math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
+        "import core.num; define alias math; pub fnc main(): int { return 42; }",
+        "import core.num; define alias math = ; pub fnc main(): int { return 42; }",
+        "import core.num; define alias math = core.num; define alias math = num; pub fnc main(): int { return 42; }",
+    ] { assert!(compile(src).is_err(), "{src}"); }
+}
+
+#[test]
+fn unused_indirect_and_qualified_alias_cycles_never_emit_guest() {
+    for declarations in [
+        "define alias a = b; define alias b = c; define alias c = a;",
+        "define alias c = a; define alias a = b.child; define alias b = c;",
+        "define alias unused = absent; define alias a = b; define alias b = c; define alias c = a;",
+    ] {
+        let source = format!("import core.num; {declarations} pub fnc main(): int {{ return 42; }}");
+        let mut loads = 0;
+        let d = compile_with_imports(&source, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err();
+        assert_eq!(d.code, "E_IMPORT_CYCLE");
+        assert!(d.to_string().contains("a -> b -> c -> a"), "{d}");
+        assert_eq!(loads, 0);
+    }
+}
+
+#[test]
+fn namespace_alias_as_spelling_has_source_to_binding_direction() {
+    let baseline = compile("import core.num; define alias math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }").unwrap();
+    for declarations in [
+        "define alias core.num as math;",
+        "define alias second as math; define alias core.num as second;",
+        "define alias math = second; define alias core.num as second;",
+        "define alias second as math; define alias second = core.num;",
+    ] {
+        let src = format!("import core.num; {declarations} pub fnc main(): int {{ return math.clamp(42, 0, 100); }}");
+        assert_eq!(compile(&src).unwrap(), baseline, "{src}");
+    }
+}
+#[test]
+fn namespace_alias_as_cycles_and_mixed_cycles_reject_before_io() {
+    for (declarations, cycle) in [
+        ("define alias a as a;", "a -> a"),
+        ("define alias a as b; define alias b as c; define alias c as a;", "a -> c -> b -> a"),
+        ("define alias b as a; define alias b = c; define alias a as c;", "a -> b -> c -> a"),
+        ("define alias b.child as a; define alias a as b;", "a -> b -> a"),
+    ] {
+        let src = format!("import core.num; {declarations} pub fnc main(): int {{ return 42; }}");
+        let mut loads = 0;
+        let d = compile_with_imports(&src, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err();
+        assert_eq!(d.code, "E_IMPORT_CYCLE", "{src}: {d}");
+        assert!(d.to_string().contains(cycle), "{d}");
+        assert_eq!(loads, 0);
+    }
+}
+#[test]
+fn namespace_alias_as_rejects_invalid_destinations_and_duplicate_bindings() {
+    for (declarations, expected) in [
+        ("define alias core.num as math; define alias math = num;", "E_DUPLICATE"),
+        ("define alias core.num as num;", "E_DUPLICATE"),
+        ("define alias core.num as a.b;", "E_SYNTAX"),
+        ("define alias core.num as;", "E_SYNTAX"),
+        ("define alias as math;", "E_IMPORT"),
+        ("define alias core.num as math = num;", "E_SYNTAX"),
+        ("define alias core.num as a as b;", "E_SYNTAX"),
+    ] {
+        let src = format!("import core.num; {declarations} pub fnc main(): int {{ return 42; }}");
+        assert_eq!(compile(&src).unwrap_err().code, expected, "{src}");
+    }
+}
+
+#[test]
+fn alias_cycles_without_builtin_import_are_diagnosed_before_loading() {
+    for header in ["", "import pkg '@a/b/c'; ", "import f from './math.atto'; ", "use namespace app; "] {
+        for declarations in [
+            "define alias a as b; define alias b as c; define alias c as a;",
+            "define alias a = b; define alias a as b;",
+        ] {
+            let source = format!("{header}{declarations} pub fnc main(): int {{ return 42; }}");
+            assert_eq!(compile(&source).unwrap_err().code, "E_IMPORT_CYCLE", "{source}");
+            let mut loads = 0;
+            assert_eq!(compile_with_imports(&source, Path::new("main.atto"), |_| {
+                loads += 1; Ok(String::new())
+            }).unwrap_err().code, "E_IMPORT_CYCLE", "{source}");
+            assert_eq!(loads, 0);
+        }
+    }
+}
+#[test]
+fn alias_header_failures_do_not_delegate_to_a_dependency_loader() {
+    for source in [
+        "import f from './math.atto'; define alias x = missing; pub fnc main(): int { return 42; }",
+        "import f from './math.atto'; pub fnc main(): int { return 42; } define alias a = b;",
+        "import f from './math.atto'; define alias core.num as a.b; pub fnc main(): int { return 42; }",
+    ] {
+        let mut loads = 0;
+        assert!(compile_with_imports(source, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).is_err(), "{source}");
+        assert_eq!(loads, 0);
+    }
+    assert_eq!(compile("define alias core.num as math; pub fnc main(): int { return 42; }").unwrap_err().code, "E_UNBOUND");
+    assert!(compile("import module num from 'core/num'; define alias num as math; pub fnc main(): int { return math.clamp(42,0,100); }").is_ok());
+}
+
+#[test]
+fn builtin_tree_namespace_and_direct_function_leaves_compile() {
+    let baseline=compile("import core.num; pub fnc main(): int {return num.clamp(42,0,100);}").unwrap();
+    for source in [
+        "import core.{num}; pub fnc main(): int {return num.clamp(42,0,100);}",
+        "import core.num.{self as math, fnc clamp as bound}; pub fnc main(): int {return bound(42,0,100);}",
+        "import fnc core.num.clamp as bound; pub fnc main(): int {return bound(42,0,100);}",
+        "import core.num.{clamp}; pub fnc main(): int {return clamp(42,0,100);}",
+        "import core.{num.{clamp as bound,},}; pub fnc main(): int {return bound(42,0,100);}",
+    ] {assert_eq!(compile(source).unwrap(),baseline,"{source}");}
+}
+#[test]
+fn builtin_tree_validates_every_leaf_and_does_not_leak_unit_bindings() {
+    for (source,code) in [
+        ("import core.num.{clamp, absent};","E_UNBOUND"),
+        ("import core.num.{class clamp};","E_IMPORT_KIND"),
+        ("import core.{absent};","E_IMPORT"),
+        ("import core.num.{clamp as a, min as a};","E_DUPLICATE"),
+        ("import core.num.{};","E_SYNTAX"),
+    ] {
+        let source=format!("{source} pub fnc main(): int {{return 42;}}");
+        assert_eq!(compile(&source).unwrap_err().code,code,"{source}");
+    }
+    for source in [
+        "import core.num.{clamp as bound}; pub fnc main(): int {return num.clamp(42,0,100);}",
+        "import core.num.{clamp as bound}; pub fnc main(): int {return clamp(42,0,100);}",
+        "import core.num.{clamp as bound}; define alias a = bound; pub fnc main(): int {return 42;}",
+        "import core.num.{clamp as bound}; pub fnc main(): int {return bound;}",
+    ] {assert!(compile(source).is_err(),"{source}");}
+}
