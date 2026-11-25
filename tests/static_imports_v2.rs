@@ -631,3 +631,34 @@ fn alias_header_failures_do_not_delegate_to_a_dependency_loader() {
     assert_eq!(compile("define alias core.num as math; pub fnc main(): int { return 42; }").unwrap_err().code, "E_UNBOUND");
     assert!(compile("import module num from 'core/num'; define alias num as math; pub fnc main(): int { return math.clamp(42,0,100); }").is_ok());
 }
+
+#[test]
+fn builtin_tree_namespace_and_direct_function_leaves_compile() {
+    let baseline=compile("import core.num; pub fnc main(): int {return num.clamp(42,0,100);}").unwrap();
+    for source in [
+        "import core.{num}; pub fnc main(): int {return num.clamp(42,0,100);}",
+        "import core.num.{self as math, fnc clamp as bound}; pub fnc main(): int {return bound(42,0,100);}",
+        "import fnc core.num.clamp as bound; pub fnc main(): int {return bound(42,0,100);}",
+        "import core.num.{clamp}; pub fnc main(): int {return clamp(42,0,100);}",
+        "import core.{num.{clamp as bound,},}; pub fnc main(): int {return bound(42,0,100);}",
+    ] {assert_eq!(compile(source).unwrap(),baseline,"{source}");}
+}
+#[test]
+fn builtin_tree_validates_every_leaf_and_does_not_leak_unit_bindings() {
+    for (source,code) in [
+        ("import core.num.{clamp, absent};","E_UNBOUND"),
+        ("import core.num.{class clamp};","E_IMPORT_KIND"),
+        ("import core.{absent};","E_IMPORT"),
+        ("import core.num.{clamp as a, min as a};","E_DUPLICATE"),
+        ("import core.num.{};","E_SYNTAX"),
+    ] {
+        let source=format!("{source} pub fnc main(): int {{return 42;}}");
+        assert_eq!(compile(&source).unwrap_err().code,code,"{source}");
+    }
+    for source in [
+        "import core.num.{clamp as bound}; pub fnc main(): int {return num.clamp(42,0,100);}",
+        "import core.num.{clamp as bound}; pub fnc main(): int {return clamp(42,0,100);}",
+        "import core.num.{clamp as bound}; define alias a = bound; pub fnc main(): int {return 42;}",
+        "import core.num.{clamp as bound}; pub fnc main(): int {return bound;}",
+    ] {assert!(compile(source).is_err(),"{source}");}
+}
