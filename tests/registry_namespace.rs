@@ -465,3 +465,44 @@ fn pinned_namespace_private_members_cross_files_but_not_boundaries() {
         assert_eq!(error(FrozenRegistry::verify("@org/project/package",MANIFEST,&l,&digest,&changed)),"E_LOCK_HASH");
     }
 }
+
+
+#[test]
+fn authenticated_single_class_guest_uses_constructor_and_method_checker() {
+    use atto_compiler::registry_namespace::FrozenClass;
+    let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let source="use namespace models; define pub class Counter as let int value = 0; pub constructor(int x) { self.value = x; } pub fnc get(): int { return self.value+1; } fnc hidden(): int { return 42; } end";
+    let inputs=[SnapshotSource{path:"src/models/counter.atto",source}];
+    let l=lock(manifest,&inputs);
+    let digest=hex_digest(l.as_bytes());
+    let p=FrozenClass::verify("@org/project/package",manifest,&l,&digest,&inputs).unwrap();
+    let prefix="import [class models.Counter] from pkg '@org/project/package'; ";
+    let guest=format!("{prefix}pub fnc main(): int {{ val c = new Counter(41); return c.get(); }}");
+    let wasm=p.compile_guest(&guest).unwrap();
+    assert!(wasm.starts_with(b"\0asm"));
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-class-0.wasm"),wasm).unwrap();
+    }
+    for bad in [
+        format!("{prefix}pub fnc main(): int {{ val c = new Counter(); return c.get(); }}"),
+        format!("{prefix}pub fnc main(): int {{ val c = new Counter(41); return c.hidden(); }}"),
+        format!("{prefix}pub fnc main(): int {{ val c = new Counter(41); return c.value; }}"),
+        "import [fnc models.Counter] from pkg '@org/project/package'; pub fnc main(): int { return 42; }".into(),
+        "import [class models.Counter as C] from pkg '@org/project/package'; pub fnc main(): int { return 42; }".into(),
+        "import [class models.Counter] from pkg '@other/project/package'; pub fnc main(): int { return 42; }".into(),
+    ]{
+        assert!(p.compile_guest(&bad).is_err(),"{bad}");
+    }
+    let tampered=[SnapshotSource{path:inputs[0].path,source:"use namespace models; define class Counter as end"}];
+    assert_eq!(FrozenClass::verify("@org/project/package",manifest,&l,&digest,&tampered).err().unwrap().code,"E_LOCK_HASH");
+    for replacement in [
+        source.replace("define pub class","define class"),
+        source.replace("pub constructor","constructor"),
+        source.replace("use namespace models","use namespace other"),
+        source.replace("self.value+1","main()"),
+    ]{
+        let changed=[SnapshotSource{path:inputs[0].path,source:&replacement}];
+        let cl=lock(manifest,&changed);
+        assert!(FrozenClass::verify("@org/project/package",manifest,&cl,&hex_digest(cl.as_bytes()),&changed).is_err());
+    }
+}
