@@ -137,6 +137,21 @@ try{
     ' sum = sum + 1; } return sum; }';
   assert.equal(await run(emptyArray, 'main() -> 0'), 'main() -> 0');
   console.log('PASS browser: zero-length Array<int> has no body evaluations');
+  const particleClass = 'define class Particle as ' +
+    'mut int n = 0; constructor(int v) { self.n = v; } ' +
+    'pub value(): int { return self.n; } end ';
+  const particleArray = particleClass +
+    'pub fnc main(): int { val particles: Array<Particle> = ' +
+    '[new Particle(1), new Particle(2), new Particle(3)]; ' +
+    'let sum = 0; for (Particle p : particles) { sum = sum + p.value(); } ' +
+    'return sum; }';
+  assert.equal(await run(particleArray, 'main() -> 6'), 'main() -> 6');
+  console.log('PASS browser: owned Array<Particle> with direct class-handle iteration');
+  const emptyParticles = particleClass +
+    'pub fnc main(): int { val particles: Array<Particle> = []; ' +
+    'let n = 0; for (Particle p : particles) { n = n + 1; } return n; }';
+  assert.equal(await run(emptyParticles, 'main() -> 0'), 'main() -> 0');
+  console.log('PASS browser: zero-owned-class array has no allocations/iterations');
   // Real Chromium: compiler-produced Wasm guest tag catches only ordinary
   // Error(message), preserving all successful Result values and fatal traps.
   const callerTrap =

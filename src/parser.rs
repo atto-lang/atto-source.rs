@@ -384,11 +384,12 @@ impl Parser {
                 self.expect(Tok::Lt, "'<' after Array")?;
                 let inner = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Array item type")?;
-                if inner != Type::Int {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "this compiler's first array iteration profile supports only immutable Array<int>"));
+                match inner {
+                    Type::Int => Type::ArrayInt,
+                    Type::Named(i) => Type::ArrayNamed(i),
+                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "array element must be int or a declared class (non-class arrays not yet admitted)")),
                 }
-                Type::ArrayInt
             }
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;

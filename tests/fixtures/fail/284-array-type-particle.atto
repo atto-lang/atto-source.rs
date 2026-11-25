@@ -1,3 +1,10 @@
-// expect-error: E_UNSUPPORTED_TYPE
+// expect-error: E_TYPE
 // java: target-only
-define class Particle as end pub fnc main(): int { val xs: Array<Particle> = []; return 0; }
+// Array<Particle> is now admitted, but integer elements cannot masquerade
+// as owned class handles. Keep the original negative fixture ID as a
+// regression for explicit element-type mismatch.
+define class Particle as end
+pub fnc main(): int {
+  val xs: Array<Particle> = [1];
+  return 0;
+}
