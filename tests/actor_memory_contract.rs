@@ -69,3 +69,26 @@ fn scalar_program_without_actors_does_not_gain_an_unneeded_memory() {
     assert!(!exported_memory(&wasm));
     assert!(section(&wasm, 5).is_none());
 }
+
+#[test]
+fn empty_array_iteration_still_exports_memory_for_unreachable_load_instruction() {
+    // The typed array loop contains an i64.load in its body even when a
+    // statically empty descriptor prevents the loop from entering that body.
+    // An empty data segment must not silently suppress the Wasm memory.
+    let wasm = compile(
+        "pub fnc main(): int { val xs: Array<int> = [];          for (int n : xs) { return n; } return 7; }",
+    ).expect("empty array guest must compile");
+    assert!(exported_memory(&wasm), "empty array loop requires memory");
+    assert!(section(&wasm, 5).is_some(), "Wasm memory section must exist");
+    assert!(section(&wasm, 11).is_some(), "empty array sentinel data must exist");
+}
+
+#[test]
+fn nonempty_readonly_array_exports_bounded_module_memory() {
+    let wasm = compile(
+        "pub fnc main(): int { val xs: Array<int> = [1,2,3];          let sum = 0; for (int n : xs) { sum = sum + n; } return sum; }",
+    ).expect("array range-for must compile");
+    assert!(exported_memory(&wasm));
+    let memory = section(&wasm, 5).expect("array needs one Wasm memory");
+    assert_eq!(memory, &[1, 1, 1, 1], "one bounded Wasm page");
+}

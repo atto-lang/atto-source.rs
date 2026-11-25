@@ -76,6 +76,7 @@ const RESERVED: &[&str] = &[
     "block",
     "break",
     "continue",
+    "recur",
     "switch",
     "match",
     "matches",
@@ -175,7 +176,6 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Symbol",
     "Option",
     "Result",
-    "Array",
     "List",
     "Vector",
     "Slice",
@@ -378,6 +378,17 @@ impl Parser {
                     Type::ResultIntStr => Type::OptionResultIntStr,
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
+                }
+            }
+            "Array" => {
+                self.expect(Tok::Lt, "'<' after Array")?;
+                let inner = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Array item type")?;
+                match inner {
+                    Type::Int => Type::ArrayInt,
+                    Type::Named(i) => Type::ArrayNamed(i),
+                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "array element must be int or a declared class (non-class arrays not yet admitted)")),
                 }
             }
             "Generator" => {
@@ -1190,6 +1201,11 @@ impl Parser {
                 let body = self.parse_loop_body()?;
                 Ok(Stmt::While { cond, body, pos, post_test: false })
             }
+            Some("loop") if *self.peek_at(1) == Tok::LParen => {
+                let expr = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(expr))
+            }
             Some("loop") => {
                 self.advance();
                 let body = self.parse_loop_body()?;
@@ -1212,8 +1228,20 @@ impl Parser {
             }
             Some("break") => {
                 self.advance();
+                let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Eof)
+                    || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
+                let value = if at_end { None } else { Some(self.parse_expr()?) };
                 self.terminator()?;
-                Ok(Stmt::Break(pos))
+                Ok(match value {
+                    Some(value) => Stmt::BreakValue(value, pos),
+                    None => Stmt::Break(pos),
+                })
+            }
+            Some("recur") => {
+                self.advance();
+                let values = self.parse_args()?;
+                self.terminator()?;
+                Ok(Stmt::Recur(values, pos))
             }
             Some("continue") => {
                 self.advance();
@@ -1375,7 +1403,8 @@ impl Parser {
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        let braced = *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
                 if self.eat_word("elif")
@@ -1427,7 +1456,10 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        // Braces close a braced if; 'fi' is optional for compatibility.
+        // Unbraced 'then/do' arms still require their explicit 'fi'.
+        let closed = self.eat_word("fi");
+        if !braced && !closed {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
@@ -1619,12 +1651,11 @@ impl Parser {
             let body = self.parse_loop_body()?;
             return Ok(Stmt::Loop { body, pos });
         }
-        if matches!(self.peek(), Tok::Ident(_)) && self.word_at(1) == Some("in") {
-            let (name, _) = self.ident("an iteration variable")?;
-            self.expect_word("in")?;
-            let source = self.parse_expr()?;
-            let body = self.parse_loop_body()?;
-            return Ok(Stmt::ForIn { name, source, body, pos });
+        // Bare Rust/Atto-style for item in/of source.
+        if matches!(self.peek(), Tok::Ident(_))
+            && matches!(self.word_at(1), Some("in" | "of"))
+        {
+            return self.parse_for_iterator(pos, false);
         }
         let paren = self.eat(&Tok::LParen);
         // Commas are allowed only for the entirely empty '(,,)' alias.
@@ -1635,8 +1666,11 @@ impl Parser {
             let body = self.parse_loop_body()?;
             return Ok(Stmt::Loop { body, pos });
         }
-        if matches!(self.word_at(0), Some("const" | "let")) && self.word_at(2) == Some("of") {
-            return Err(unsupported(self.pos(), "'for ... of' loops"));
+        // A parenthesized iterator header is not a counted for-init. Choose
+        // structurally, before parse_type() or parse_binding() can change the
+        // cursor or the user-type table. Counted for (...;...;...) is untouched.
+        if paren && self.looks_like_for_iterator() {
+            return self.parse_for_iterator(pos, true);
         }
         let init = if *self.peek() == Tok::Semi {
             None
@@ -1693,6 +1727,83 @@ impl Parser {
             body,
             pos,
         })
+    }
+
+    /// Disambiguate C-style counted headers from parenthesized iterator
+    /// headers without consuming tokens, registering type names, or scanning
+    /// arbitrary expressions. Invalid raw-pointer headers still route into
+    /// parse_for_iterator for a targeted fail-closed diagnostic.
+    fn looks_like_for_iterator(&self) -> bool {
+        if matches!(self.word_at(0), Some("val" | "let" | "const")) {
+            return matches!(self.word_at(2), Some("in" | "of"))
+                || (*self.peek_at(2) == Tok::Colon
+                    && (matches!(self.word_at(4), Some("in" | "of"))
+                        || (matches!(self.peek_at(4), Tok::Star | Tok::Amp)
+                            && matches!(self.word_at(5), Some("in" | "of")))));
+        }
+        matches!(self.word_at(1), Some("in" | "of"))
+            || (matches!(self.peek_at(1), Tok::Ident(_))
+                && (matches!(self.word_at(2), Some("in" | "of"))
+                    || *self.peek_at(2) == Tok::Colon))
+            || (matches!(self.peek_at(1), Tok::Star | Tok::Amp)
+                && matches!(self.peek_at(2), Tok::Ident(_))
+                && (matches!(self.word_at(3), Some("in" | "of"))
+                    || *self.peek_at(3) == Tok::Colon))
+    }
+
+    /// All three spellings iterate *values*, never property names:
+    ///   for item in source
+    ///   for (val item: Type of source)
+    ///   for (Type item : source)
+    /// The compiler's current executable iterator protocol is Generator<int>
+    /// only. Future arrays and object iterators must use the same typed AST
+    /// and cannot silently bypass ownership or element-type validation.
+    fn parse_for_iterator(&mut self, pos: Pos, parenthesized: bool) -> R<Stmt> {
+        let (name, item_type, mutable, type_first) = if self.is_word("val")
+            || self.is_word("let") || self.is_word("const")
+        {
+            if self.eat_word("const") {
+                // Preserve the existing E_UNSUPPORTED contract for
+                // `for (const x of xs)` rather than reclassifying legacy
+                // negative fixtures merely because `of` is now admitted.
+                return Err(unsupported(self.pos(), "const iterator bindings"));
+            }
+            let mutable = self.eat_word("let");
+            if !mutable { self.expect_word("val")?; }
+            let (name, _) = self.ident("an iterator value binding")?;
+            let item_type = if self.eat(&Tok::Colon) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            (name, item_type, mutable, false)
+        } else if matches!(self.word_at(1), Some("in" | "of")) {
+            let (name, _) = self.ident("an iterator value binding")?;
+            (name, None, false, false)
+        } else {
+            let item_type = self.parse_type()?;
+            if matches!(self.peek(), Tok::Star | Tok::Amp) {
+                return Err(Diagnostic::new(self.pos(), "E_UNSUPPORTED_TYPE",
+                    "raw pointer/reference iterator binding is not safe here; use an explicitly checked borrow with lifetime and alias rules"));
+            }
+            let (name, _) = self.ident("an iterator value binding")?;
+            (name, Some(item_type), false, true)
+        };
+        if self.eat_word("in") || self.eat_word("of") {
+            // Both are aliases for value iteration; there are no JS-style
+            // enumerable-property semantics for 'in' in AttoLang.
+        } else if type_first && self.eat(&Tok::Colon) {
+            // C++/Java enhanced-for separator; only after a typed binding.
+        } else {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "iterator header needs 'in' or 'of' (or ':' after a type-first binding)"));
+        }
+        let source = self.parse_expr()?;
+        if parenthesized {
+            self.expect(Tok::RParen, "')' after iterator source")?;
+        }
+        let body = self.parse_loop_body()?;
+        Ok(Stmt::ForIn { name, item_type, mutable, source, body, pos })
     }
 
     fn parse_simple_assign(&mut self) -> R<Stmt> {
@@ -2126,6 +2237,30 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "loop" => {
+                    self.advance();
+                    self.expect(Tok::LParen, "'(' for immutable loop state")?;
+                    let mut bindings = Vec::new();
+                    if *self.peek() == Tok::RParen {
+                        return Err(Diagnostic::new(pos, "E_RECUR_ARITY",
+                            "immutable loop requires at least one val binding"));
+                    }
+                    loop {
+                        if !self.is_word("val") {
+                            return Err(Diagnostic::new(self.pos(), "E_RECUR_BINDING",
+                                "immutable loop state must use explicit 'val' bindings"));
+                        }
+                        bindings.push(self.parse_binding()?);
+                        if bindings.len() > MAX_PARAMS {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                "too many immutable loop state bindings"));
+                        }
+                        if !self.eat(&Tok::Comma) { break; }
+                    }
+                    self.expect(Tok::RParen, "')' after immutable loop bindings")?;
+                    let body = self.parse_loop_body()?;
+                    ExprKind::StateLoop { bindings, body }
+                }
                 "true" => {
                     self.advance();
                     ExprKind::Bool(true)
@@ -2186,7 +2321,21 @@ impl Parser {
                 }
             },
             Tok::Pipe => return Err(unsupported(pos, "lambdas")),
-            Tok::LBracket => return Err(unsupported(pos, "sequence literals")),
+            Tok::LBracket => {
+                self.advance();
+                let mut items = Vec::new();
+                while *self.peek() != Tok::RBracket {
+                    if items.len() >= 1024 {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                            "an array literal may contain at most 1024 elements"));
+                    }
+                    items.push(self.parse_expr()?);
+                    if !self.eat(&Tok::Comma) { break; }
+                    if *self.peek() == Tok::RBracket { break; }
+                }
+                self.expect(Tok::RBracket, "']' after array elements")?;
+                ExprKind::ArrayLit(items)
+            },
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
             _ => return Err(self.expected("an expression")),
         };

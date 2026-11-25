@@ -1,0 +1,3 @@
+// expect-exit: 6
+// java: target-only
+pub fnc main(): int { val xs: Array<int> = [1,2,3]; let sum = 0; for (int n : xs) { sum = sum + n; } return sum; }

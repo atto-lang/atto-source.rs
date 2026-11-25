@@ -1,0 +1,3 @@
+// expect-error: E_IMMUTABLE
+// java: target-only
+pub fnc main(): int { val xs = [1,2]; xs = [3,4]; return 0; }

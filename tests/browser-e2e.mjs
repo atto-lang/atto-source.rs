@@ -97,6 +97,61 @@ try{
   console.log('PASS browser: for-braces loop exits normally');
   assert.equal(await run('pub fnc main(): int { let n = 0; do { n = n + 1; continue; } while (n < 3); return n; }', 'main() -> 3'), 'main() -> 3');
   console.log('PASS browser: post-test continue reaches trailing guard');
+  const recurSum =
+    'pub fnc main(): int { val result: int = loop (val i: int = 0, val sum: int = 0) { ' +
+    'if i >= 10 { break sum; } recur(i + 1, sum + i); }; return result; }';
+  assert.equal(await run(recurSum, 'main() -> 45'), 'main() -> 45');
+  console.log('PASS browser: immutable state-loop/recur produces sum 45 without recursive frames');
+  // The source-free browser host must remain responsive even when a compiled
+  // state loop runs forever. Its Worker is terminated, not the whole tab.
+  // This intentionally exercises a dynamically unbounded recur, so the static
+  // checker must admit a result break in another unreachable branch instead.
+  const infiniteWithBreak =
+    'pub fnc main(): int { return loop (val i: int = 0) { if i < 0 { break i; } recur(i + 1); }; }';
+  assert.equal(await run(infiniteWithBreak, 'E_TIMEOUT'), 'E_TIMEOUT');
+  assert.equal(await run(recurSum, 'main() -> 45'), 'main() -> 45');
+  console.log('PASS browser: unbounded recur contained and a fresh Worker recovers');
+  const iterableHeader = 'fnc *gen nums(): Generator<int> { yield 1; yield 2; yield 3; }';
+  const colonFor = iterableHeader +
+    'pub fnc main(): int { let total = 0; for (int n : nums()) {' +
+    'total = total + n; } return total; }';
+  assert.equal(await run(colonFor, 'main() -> 6'), 'main() -> 6');
+  console.log('PASS browser: typed colon iterator header consumes generator values');
+  const ofFor = iterableHeader +
+    'pub fnc main(): int { let total = 0; for (let n: int of nums()) {' +
+    'n = n + 1; total = total + n; } return total; }';
+  assert.equal(await run(ofFor, 'main() -> 9'), 'main() -> 9');
+  console.log('PASS browser: of alias and let-per-iteration binding work');
+  const arrayFor =
+    'pub fnc main(): int { val particles: Array<int> = [1,2,3]; ' +
+    'let sum = 0; for (int n : particles) { sum = sum + n; } return sum; }';
+  assert.equal(await run(arrayFor, 'main() -> 6'), 'main() -> 6');
+  console.log('PASS browser: immutable contiguous Array<int> iterates by typed colon');
+  const arraySnapshot =
+    'pub fnc main(): int { let xs: Array<int> = [1,2,3]; let sum = 0; ' +
+    'for (int n of xs) { xs = [9,9,9]; sum = sum + n; } return sum; }';
+  assert.equal(await run(arraySnapshot, 'main() -> 6'), 'main() -> 6');
+  console.log('PASS browser: Array<int> source evaluated only once before iteration');
+  const emptyArray =
+    'pub fnc main(): int { let sum = 0; for (val n: int in []) {' +
+    ' sum = sum + 1; } return sum; }';
+  assert.equal(await run(emptyArray, 'main() -> 0'), 'main() -> 0');
+  console.log('PASS browser: zero-length Array<int> has no body evaluations');
+  const particleClass = 'define class Particle as ' +
+    'mut int n = 0; constructor(int v) { self.n = v; } ' +
+    'pub value(): int { return self.n; } end ';
+  const particleArray = particleClass +
+    'pub fnc main(): int { val particles: Array<Particle> = ' +
+    '[new Particle(1), new Particle(2), new Particle(3)]; ' +
+    'let sum = 0; for (Particle p : particles) { sum = sum + p.value(); } ' +
+    'return sum; }';
+  assert.equal(await run(particleArray, 'main() -> 6'), 'main() -> 6');
+  console.log('PASS browser: owned Array<Particle> with direct class-handle iteration');
+  const emptyParticles = particleClass +
+    'pub fnc main(): int { val particles: Array<Particle> = []; ' +
+    'let n = 0; for (Particle p : particles) { n = n + 1; } return n; }';
+  assert.equal(await run(emptyParticles, 'main() -> 0'), 'main() -> 0');
+  console.log('PASS browser: zero-owned-class array has no allocations/iterations');
   // Real Chromium: compiler-produced Wasm guest tag catches only ordinary
   // Error(message), preserving all successful Result values and fatal traps.
   const callerTrap =

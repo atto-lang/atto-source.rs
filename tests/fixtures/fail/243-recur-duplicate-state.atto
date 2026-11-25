@@ -1,0 +1,5 @@
+// expect-error: E_DUPLICATE
+// java: target-only
+pub fnc main(): int {
+  return loop (val a: int = 0, val a: int = 1) { break a; };
+}

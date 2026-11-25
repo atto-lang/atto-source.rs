@@ -1,0 +1,12 @@
+// expect-exit: 3
+// java: target-only
+pub fnc main(): int {
+  val result = loop (val i: int = 0) {
+    if i >= 3 {
+      break i;
+    } else {
+      recur(i + 1);
+    }
+  };
+  return result;
+}

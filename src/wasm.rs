@@ -86,8 +86,9 @@ fn vt(t: Type) -> Option<u8> {
         Type::Float => Some(F64),
         Type::Str => Some(I64),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
-        Type::GeneratorInt => Some(I64),
-        Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
+        Type::GeneratorInt | Type::ArrayInt | Type::ArrayClass(_) => Some(I64),
+        Type::Named(_) | Type::NamedRef(_) | Type::ArrayNamed(_) =>
+            unreachable!("types are resolved by the checker"),
     }
 }
 
@@ -156,8 +157,8 @@ impl Layout {
 /// Load (`store = false`) or store a field slot of type `t` at `offset`.
 fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
     let (op, align) = match (t, store) {
-        (Type::Int | Type::Str, false) => (0x29, 3),
-        (Type::Int | Type::Str, true) => (0x37, 3),
+        (Type::Int | Type::Str | Type::ArrayInt, false) => (0x29, 3),
+        (Type::Int | Type::Str | Type::ArrayInt, true) => (0x37, 3),
         (Type::Float, false) => (0x2B, 3),
         (Type::Float, true) => (0x39, 3),
         (_, false) => (0x28, 2),
@@ -309,6 +310,49 @@ impl Emit<'_> {
                 }
                 self.op(0x0F);
             }
+            TStmt::ForArray { source, array_slot, index_slot, value_slot, item_type, body } => {
+                // A readonly packed Array<int> view: i64 = data_offset:32 |
+                // element_count:32. The source is evaluated once, arrays live
+                // in 8-byte aligned module data, so no iterator heap object
+                // or virtual next() call is required.
+                self.expr(source);
+                self.set(*array_slot);
+                self.i32c(0);
+                self.set(*index_slot);
+                self.open(0x02, 0x40, Frame::Break);
+                self.open(0x03, 0x40, Frame::Top);
+                self.get(*index_slot);
+                self.get(*array_slot);
+                self.op(0xA7); // i32.wrap_i64 -> count
+                self.op(0x4F); // i32.ge_u -> exhausted
+                self.op(0x0D); // br_if break
+                uleb(&mut self.code, 1);
+                self.get(*array_slot);
+                self.i64c(32);
+                self.op(0x88); // i64.shr_u -> static data address
+                self.op(0xA7); // i32.wrap_i64
+                self.get(*index_slot);
+                self.i32c(8);
+                self.op(0x6C); // i32.mul: index * sizeof(int)
+                self.op(0x6A); // i32.add: base + offset
+                self.load_i64(0);
+                if matches!(item_type, Type::Class(_)) {
+                    // A class handle is an arena-relative i32, stored as a
+                    // zero-extended i64 in each contiguous eight-byte slot.
+                    self.op(0xA7); // i32.wrap_i64
+                }
+                self.set(*value_slot);
+                self.open(0x02, 0x40, Frame::Continue);
+                self.stmts(body);
+                self.close();
+                self.get(*index_slot);
+                self.i32c(1);
+                self.op(0x6A); // i32.add, bounded by count <= 1024
+                self.set(*index_slot);
+                self.br_to(Frame::Top);
+                self.close();
+                self.close();
+            }
             TStmt::ForIn { source, handle_slot, value_slot, body } => {
                 self.expr(source);
                 self.set(*handle_slot);
@@ -354,6 +398,19 @@ impl Emit<'_> {
             }
             TStmt::Break => self.br_to(Frame::Break),
             TStmt::Continue => self.br_to(Frame::Continue),
+            TStmt::Recur(values) => {
+                // Clojure recur semantics: evaluate every next-state value
+                // before changing any current carried binding (safe swap).
+                for (_, tmp, value) in values {
+                    self.expr(value);
+                    self.set(*tmp);
+                }
+                for (slot, tmp, _) in values {
+                    self.get(*tmp);
+                    self.set(*slot);
+                }
+                self.br_to(Frame::Top);
+            },
             TStmt::Block(b) => self.stmts(b),
             TStmt::Unreachable => self.op(0x00),
         }
@@ -381,7 +438,37 @@ impl Emit<'_> {
                 self.op(0x44);
                 self.code.extend_from_slice(&x.to_le_bytes());
             }
-            TExpr::StrConst(offset, len) => self.i64c(((*offset as i64) << 32) | *len as i64),
+            TExpr::StrConst(offset, len) | TExpr::ArrayConst(offset, len) =>
+                self.i64c(((*offset as i64) << 32) | *len as i64),
+            TExpr::ArrayNew { elements, tmp } => {
+                if elements.is_empty() {
+                    // Contextually typed empty arrays never allocate; the
+                    // zero descriptor has length zero, so no load is reachable.
+                    self.i64c(0);
+                    return;
+                }
+                // Allocate a single bounded array of arena-relative object
+                // handles. Constructors execute once left-to-right after
+                // allocation. An interrupted construction is reclaimable
+                // with its owning arena, never by a shared GC.
+                self.i32c((elements.len() as i32).saturating_mul(8));
+                self.call(self.l.helper(H_ALLOC));
+                self.set(*tmp);
+                for (i, value) in elements.iter().enumerate() {
+                    self.get(*tmp);
+                    self.expr(value);
+                    self.op(0xAD); // i64.extend_i32_u
+                    self.store_i64(i as u32 * 8);
+                }
+                // Pack (arena_offset << 32) | len; the for-loop moves
+                // the array descriptor, so raw handles do not alias.
+                self.get(*tmp);
+                self.op(0xAD); // i64.extend_i32_u
+                self.i64c(32);
+                self.op(0x86); // i64.shl
+                self.i64c(elements.len() as i64);
+                self.op(0x84); // i64.or
+            },
             TExpr::IntToFloat(a) => {
                 self.expr(a);
                 self.op(0xB9); // f64.convert_i64_s
@@ -419,6 +506,18 @@ impl Emit<'_> {
             TExpr::Local(slot) => {
                 self.op(0x20);
                 uleb(&mut self.code, *slot as u64);
+            }
+            TExpr::StateLoop { init, body, result_slot } => {
+                self.stmts(init);
+                self.open(0x02, 0x40, Frame::Break);
+                self.open(0x03, 0x40, Frame::Top);
+                self.stmts(body);
+                // No implicit state-loop fallthrough is valid. Validation
+                // requires break value / recur / return / throw on all paths.
+                self.op(0x00); // unreachable (defensive trap)
+                self.close(); // loop
+                self.close(); // break target
+                self.get(*result_slot);
             }
             TExpr::Neg(a) => {
                 self.expr(a);
