@@ -41,6 +41,8 @@ pub enum Builtin {
     And,
     Or,
     Xor,
+    IntRem,
+    IntMod,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2273,7 +2275,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Builtin(op, a, b) => {
             // Fail closed when the builtin catalog adds a new operation.
             let read_only = match op {
-                Builtin::And | Builtin::Or | Builtin::Xor => true,
+                Builtin::And | Builtin::Or | Builtin::Xor | Builtin::IntRem | Builtin::IntMod => true,
             };
             read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
         }
@@ -4518,6 +4520,23 @@ impl<'a> FnCx<'a> {
                 }
                 if self.g.enum_(n).is_some() || self.g.actor(n).is_some() {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED", format!("'{n}' has no callable members")));
+                }
+                // Resolve named integer intrinsics only when a real lexical or type
+                // declaration does not own the qualifier. No raw percent syntax.
+                if n == "Integer" && !self.g.names.contains_key(n) {
+                    let op = match name {
+                        "rem" => Some(Builtin::IntRem),
+                        "mod" => Some(Builtin::IntMod),
+                        _ => None,
+                    };
+                    if let Some(op) = op {
+                        let label = format!("Integer.{name}");
+                        self.arity(&label, 2, args.len(), pos)?;
+                        let mut operands = self.args(&label, args, &[Type::Int, Type::Int])?.into_iter();
+                        let left = operands.next().expect("checked arity");
+                        let right = operands.next().expect("checked arity");
+                        return Ok(TE { e: TExpr::Builtin(op, Box::new(left), Box::new(right)), ty: Type::Int });
+                    }
                 }
             }
         }
