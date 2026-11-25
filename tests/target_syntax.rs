@@ -413,3 +413,17 @@ fn critical_callback_delimiters_and_chained_projections_fail_closed() {
         reject(&src, "E_UNSUPPORTED");
     }
 }
+
+#[test]
+fn immutable_receiver_cannot_dispatch_to_mutable_receiver() {
+    let source = "use namespace workers;
+        declare actor Foo;
+        mtd (mut self: Foo) write(): void {
+            self.handle_state(critical-write |s| -> { s.count = 1; });
+        }
+        mtd (Foo self) read(): void { self.write(); }";
+    reject(source, "E_MUTABILITY");
+    let valid=source.replace("mtd (Foo self) read()", "mtd (mut self: Foo) read()");
+    parse(&valid);
+    assert_eq!(atto_compiler::compile(&valid).unwrap_err().code, "E_UNSUPPORTED");
+}
