@@ -118,3 +118,17 @@ fn arithmetic_failure_is_emitted_only_after_whole_source_type_check() {
     assert_eq!(compile(&source("(1<Second> / 0<Second>) + (1<Second> / 1<Millis>)")).unwrap_err().code, "E_UNIT_SCALE");
     assert!(compile(&source("1<Second> / 0<Second> trailing")).is_err());
 }
+
+#[test]
+fn imported_dimension_declarations_cannot_be_flattened_into_scalar_code() {
+    let entry = "import answer from \"./quantities.atto\"; pub fnc main() -> int { return answer(); }";
+    let path = std::path::Path::new("main.atto");
+    let mut loaded = false;
+    let result = compile_with_imports(entry, path, |name| {
+        assert_eq!(name, std::path::Path::new("quantities.atto"));
+        loaded = true;
+        Ok("define dimension Time; define unit Second: Time; pub fnc answer() -> int { return 42; }".into())
+    });
+    assert!(loaded, "must exercise imported declarations rather than reject before load");
+    assert_eq!(result.unwrap_err().code, "E_UNSUPPORTED");
+}
