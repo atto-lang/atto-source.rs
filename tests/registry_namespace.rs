@@ -343,3 +343,46 @@ fn mixed_registry_provider_uses_private_literals_without_exporting_them() {
         assert!(verify(MANIFEST,&inputs).is_err(),"{bad}");
     }
 }
+
+#[test]
+fn pinned_multifile_namespace_links_public_members_and_preserves_private_ownership() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let mut inputs=INPUTS.to_vec();
+    inputs[0].source="use namespace http; pub fnc get(int x): int { return inc(x); } pub fnc answer(): int { return get(LIMIT); }";
+    inputs.push(SnapshotSource{path:"src/http/extra.atto",source:"use namespace http; define pub const int LIMIT = 41; define const int OFFSET = 1; pub fnc inc(int x): int { return x+OFFSET; }"});
+    let l=lock(MANIFEST,&inputs);
+    let digest=hex_digest(l.as_bytes());
+    let p=FrozenRegistry::verify("@org/project/package",MANIFEST,&l,&digest,&inputs).unwrap();
+    let mut reversed=inputs.clone();
+    reversed.reverse();
+    let q=FrozenRegistry::verify("@org/project/package",MANIFEST,&l,&digest,&reversed).unwrap();
+    for (i,source) in [
+        "import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.answer(); }",
+        "import [const http.LIMIT as cap, fnc http.get as inc] from pkg '@org/project/package'; pub fnc main(): int { return inc(cap); }",
+        "import namespace http from pkg '@org/project/package'; define alias http as h; pub fnc main(): int { return h.get(h.LIMIT); }",
+    ].iter().enumerate(){
+        let wasm=compile_registry_guest(source,&[&p]).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        assert_eq!(wasm,compile_registry_guest(source,&[&q]).unwrap());
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-multifile-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    assert_eq!(compile_registry_guest("import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.OFFSET; }",&[&p]).unwrap_err().code,"E_PRIVATE");
+    assert_eq!(error(FrozenRegistry::verify("@org/project/package",MANIFEST,&l,&digest,&inputs[..3])),"E_LOCK_HASH");
+    for (bad,code) in [
+        ("use namespace http; pub fnc get(int x): int { return x+OFFSET; }","E_PRIVATE"),
+        ("use namespace http; pub fnc inc(int x): int { return x; }","E_DUPLICATE"),
+        ("use namespace wrong; pub fnc get(int x): int { return x; }","E_MANIFEST"),
+    ]{
+        let mut changed=inputs.clone();
+        changed[0].source=bad;
+        assert_eq!(error(verify(MANIFEST,&changed)),code,"{bad}");
+    }
+    let mut changed=inputs.clone();
+    changed[0].source="use namespace http; pub fnc get(int x): int { return x;";
+    assert!(verify(MANIFEST,&changed).is_err());
+    changed=inputs.clone();
+    changed.last_mut().unwrap().path="src/http/nested/extra.atto";
+    assert_eq!(error(verify(MANIFEST,&changed)),"E_UNSUPPORTED");
+}
