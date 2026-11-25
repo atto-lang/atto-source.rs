@@ -9,6 +9,8 @@
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+/// Opt-in source-level durable Counter actor profile for the scalar broker.
+pub mod durable_counter_actor;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
 pub mod collection_layout;
 /// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
