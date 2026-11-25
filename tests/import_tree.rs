@@ -66,6 +66,34 @@ fn contextual_roots_are_namespace_paths_not_filesystem_traversal(){
 }
 
 #[test]
+fn contextual_parent_cannot_erase_invalid_source_namespace() {
+    for current in ["network.", "network.__atto_hidden", "network.super", "network.shared", "network.bad-name",
+                    "a.b.c.d.e.f.g.h.i", "network..http"] {
+        let e=contextual_path("super.config",Some(current)).unwrap_err();
+        assert_eq!(e.code,"E_IMPORT_PATH","{current}");
+    }
+    for src in ["pkg", "self", "super", "super.super", "super.super.shared", "pkg.a.b.c.d.e.f.g.h"] {
+        assert_eq!(contextual_path(src,Some("network.http")).unwrap_err().code,"E_IMPORT_PATH","{src}");
+    }
+    assert_eq!(contextual_path("super.super.common",Some("network.http")).unwrap(),"common");
+    assert_eq!(contextual_path("pkg.a.b.c.d.e.f.g",None).unwrap(),"a.b.c.d.e.f.g");
+}
+#[test]
+fn direct_tree_binding_api_checks_budget_before_resolution() {
+    let (mut scope,view)=graph();
+    assert_eq!(bind(&mut scope,&[],&[&view]).unwrap_err().code,"E_SYNTAX");
+    let mut oversized=Vec::new();
+    for i in 0..257 {
+        oversized.push(atto_compiler::import_tree::Leaf {
+            path:"p.net.http.get".into(),binding:format!("f{i}"),kind:Some(Kind::Fnc),
+            explicit_alias:true,group_self:false
+        });
+    }
+    assert_eq!(bind(&mut scope,&oversized,&[&view]).unwrap_err().code,"E_SOURCE_LIMIT");
+    assert_eq!(scope.resolve("f0").unwrap_err().code,"E_UNBOUND");
+}
+
+#[test]
 fn contextual_binding_uses_only_current_package_and_preserves_atomicity(){
     use atto_compiler::import_tree::bind_contextual;
     let (mut scope,view)=graph();
@@ -77,4 +105,15 @@ fn contextual_binding_uses_only_current_package_and_preserves_atomicity(){
     assert_eq!(bind_contextual(&mut scope,&l,None,&view).unwrap_err().code,"E_PRIVATE");
     assert_eq!(scope.resolve("good").unwrap_err().code,"E_UNBOUND");
     assert!(bind_contextual(&mut scope,&leaves("import super.super.super.net;"),Some("net.http"),&view).is_err());
+}
+
+#[test]
+fn contextual_binding_checks_budget_before_resolution() {
+    use atto_compiler::import_tree::bind_contextual;
+    let (mut scope,view)=graph();
+    assert_eq!(bind_contextual(&mut scope,&[],None,&view).unwrap_err().code,"E_SYNTAX");
+    let leaf=leaves("import pkg.net.http.get as fetch;").remove(0);
+    let oversized:Vec<_>=(0..257).map(|i| atto_compiler::import_tree::Leaf {path:leaf.path.clone(),binding:format!("f{i}"),kind:Some(Kind::Fnc),explicit_alias:true,group_self:false}).collect();
+    assert_eq!(bind_contextual(&mut scope,&oversized,None,&view).unwrap_err().code,"E_SOURCE_LIMIT");
+    assert_eq!(scope.resolve("f0").unwrap_err().code,"E_UNBOUND");
 }

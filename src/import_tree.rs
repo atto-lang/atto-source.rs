@@ -97,6 +97,8 @@ pub fn parse(tokens:&[Token], start:usize)->R<(Vec<Leaf>,usize)>{
 /// Resolve all leaves against the pre-tree scope, then publish atomically.
 /// No member existence can disambiguate a source root.
 pub fn bind(scope:&mut Scope, leaves:&[Leaf], views:&[&ExportView])->R<()> {
+    if leaves.len()>MAX {return Err(Diagnostic::new(Pos::default(),"E_SOURCE_LIMIT","import tree budget exceeded"));}
+    if leaves.is_empty() {return Err(Diagnostic::new(Pos::default(),"E_SYNTAX","empty import tree"));}
     let mut staged=scope.clone();
     let mut seen=BTreeSet::new();
     for leaf in leaves {
@@ -114,26 +116,32 @@ pub fn bind(scope:&mut Scope, leaves:&[Leaf], views:&[&ExportView])->R<()> {
 /// Resolve contextual roots into the current package's canonical namespace
 /// path, without touching the filesystem. A headerless self/super is invalid.
 pub fn contextual_path(path:&str,current:Option<&str>)->R<String>{
+    let invalid = || Diagnostic::new(Pos::default(),"E_IMPORT_PATH","invalid contextual namespace path");
+    let component = |p: &str| !matches!(p,"pkg"|"self"|"super") && crate::static_import_graph::valid_component(p);
+    // Validate the source namespace before parent traversal can erase bad components.
+    if path.len() > DEPTH * 65 { return Err(invalid()); }
     let mut parts=path.split('.');
     let root=parts.next().unwrap_or("");
     let mut base:Vec<&str>=match root{
         "pkg"=>Vec::new(),
-        "self"|"super"=>current.filter(|s|!s.is_empty()).ok_or_else(||Diagnostic::new(Pos::default(),"E_IMPORT_PATH","contextual root requires a source namespace"))?.split('.').collect(),
+        "self"|"super"=>current.filter(|s|!s.is_empty() && s.len()<=DEPTH*65).ok_or_else(||Diagnostic::new(Pos::default(),"E_IMPORT_PATH","contextual root requires a source namespace"))?.split('.').collect(),
         _=>return Err(Diagnostic::new(Pos::default(),"E_IMPORT_PATH","not a contextual import root")),
     };
-    let mut tail:Vec<_>=parts.collect();
+    if base.len()>DEPTH || base.iter().any(|p| !component(p)) { return Err(invalid()); }
+    let mut tail:Vec<_>=parts.take(DEPTH).collect();
+    if tail.is_empty() || tail.len()>=DEPTH { return Err(invalid()); }
     if root=="super" {
         let count=1+tail.iter().take_while(|p|**p=="super").count();
         if count>base.len(){return Err(Diagnostic::new(Pos::default(),"E_IMPORT_PATH","import escapes package root"));}
         base.truncate(base.len()-count);tail.drain(..count-1);
+        if tail.is_empty() { return Err(invalid()); }
     }
     base.extend(tail);
-    if base.is_empty() || base.len()>DEPTH || base.iter().any(|p| matches!(*p,"pkg"|"self"|"super") || !crate::static_import_graph::valid_component(p)){
+    if base.is_empty() || base.len()>DEPTH || base.iter().any(|p| !component(p)){
         return Err(Diagnostic::new(Pos::default(),"E_IMPORT_PATH","invalid contextual namespace path"));
     }
     Ok(base.join("."))
 }
-
 
 /// Bind contextual roots against exactly one current-package export view.
 /// The caller must supply the authenticated current-package identity and
@@ -142,6 +150,8 @@ pub fn contextual_path(path:&str,current:Option<&str>)->R<String>{
 /// A tree cannot fall back to an external view or to filesystem traversal.
 pub fn bind_contextual(scope:&mut Scope, leaves:&[Leaf], current:Option<&str>,
     current_package:&ExportView)->R<()> {
+    if leaves.len()>MAX {return Err(Diagnostic::new(Pos::default(),"E_SOURCE_LIMIT","import tree budget exceeded"));}
+    if leaves.is_empty() {return Err(Diagnostic::new(Pos::default(),"E_SYNTAX","empty import tree"));}
     let mut staged=scope.clone();
     let mut seen=BTreeSet::new();
     for leaf in leaves {
