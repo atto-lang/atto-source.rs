@@ -275,3 +275,41 @@ common = "src/common/"
     ]{assert_eq!(compile_contextual_guest(source,&p,&[],None).unwrap_err().code,code,"{source}");}
     assert!(compile_contextual_guest("import pkg.network.http; pub fnc main(): int { return http.get(); }",&p,&[&p],None).is_err());
 }
+
+#[test]
+fn frozen_registry_literals_link_with_functions_and_aliases(){
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","limits = \"src/limits/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/limits/main.atto",source:"use namespace limits; define pub const int MAX = 41; define pub const bool READY = true; define pub const int LOW = -9223372036854775808; define const int SECRET = 99;"});
+    let p=verify(&manifest,&inputs).unwrap();
+    for (i,source) in [
+        "import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.get(p.limits.MAX); }",
+        "import const limits.MAX as cap from pkg '@org/project/package'; pub fnc main(): int { return cap+1; }",
+        "import [const limits.MAX as cap, fnc http.get as inc] from pkg '@org/project/package'; pub fnc main(): int { return inc(cap); }",
+        "import pkg '@org/project/package' as p; import p.limits.{const MAX as cap, const READY}; pub fnc main(): int { if READY then return cap+1; fi return 0; }",
+        "import pkg '@org/project/package' as p; define alias p.limits as l; pub fnc main(): int { if l.LOW < 0 then return l.MAX+1; fi return 0; }",
+    ].iter().enumerate(){
+        let wasm=compile_registry_guest(source,&[&p]).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-const-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (source,code) in [
+        ("import pkg '@org/project/package' as p; pub fnc main(): int { return p.limits.SECRET; }","E_PRIVATE"),
+        ("import const limits.MAX as cap from pkg '@org/project/package'; pub fnc main(): int { cap = 42; return cap; }","E_ASSIGN_CONST"),
+        ("import const limits.MAX as cap from pkg '@org/project/package'; pub fnc main(): int { return cap(); }","E_IMPORT_KIND"),
+        ("import const limits.MAX as cap from pkg '@org/project/package'; pub fnc main(): int { let int cap = 42; return cap; }","E_ASSIGN_CONST"),
+        ("import pkg '@org/project/package' as p; define alias p.limits.MAX as a; pub fnc main(): int { return 42; }","E_IMPORT_KIND"),
+    ]{assert_eq!(compile_registry_guest(source,&[&p]).unwrap_err().code,code,"{source}");}
+    for bad in [
+        "use namespace limits; define pub const int MAX = true;",
+        "use namespace limits; define pub const int MAX = 9223372036854775808;",
+        "use namespace limits; define pub const int MAX = std.env.read_env('X');",
+        "use namespace limits; define pub const int MAX = 41; pub fnc f(): int { return 1; }",
+    ]{
+        inputs.last_mut().unwrap().source=bad;
+        assert!(verify(&manifest,&inputs).is_err(),"{bad}");
+    }
+}
