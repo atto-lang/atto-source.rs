@@ -1,25 +1,63 @@
 //! Typed source slice for immutable i64 quantity bindings and earlier private helpers.
 //! Units are checked structurally before erasure into the scalar Wasm IR.
-//! No refinement predicates, dynamic conversion, FFI, imports or exported quantity ABI.
-use super::{Parser, Unit, Value, error, convert, R};
+//! Inclusive signed-i64 refinement ranges; no contracts, i32 arithmetic, dynamic conversion, FFI or exported quantity ABI.
+use super::{Parser, Unit, Value, error, convert, attach, R};
 use crate::ast::{BinOp, Type};
 use crate::check::{TE, TExpr, TFunc, TProgram, TStmt};
 use crate::diag::Pos;
 use crate::lexer::Tok;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Range { lo: i64, hi: i64 }
+impl Range {
+    const FULL: Self = Self { lo: i64::MIN, hi: i64::MAX };
+    fn exact(v: i64) -> Self { Self { lo: v, hi: v } }
+    fn contains(self, other: Self) -> bool { self.lo <= other.lo && other.hi <= self.hi }
+    fn intersect(self, other: Self) -> Option<Self> {
+        let r = Self { lo: self.lo.max(other.lo), hi: self.hi.min(other.hi) };
+        (r.lo <= r.hi).then_some(r)
+    }
+    fn normal_bounds(lo: i128, hi: i128) -> Self {
+        let lo = lo.max(i64::MIN as i128);
+        let hi = hi.min(i64::MAX as i128);
+        if lo > hi { Self::FULL } else { Self { lo: lo as i64, hi: hi as i64 } }
+    }
+    fn binary(self, other: Self, op: BinOp) -> Self {
+        let (a,b,c,d) = (self.lo as i128, self.hi as i128, other.lo as i128, other.hi as i128);
+        match op {
+            BinOp::Add => Self::normal_bounds(a+c,b+d),
+            BinOp::Sub => Self::normal_bounds(a-d,b-c),
+            BinOp::Mul => {
+                let v = [a*c,a*d,b*c,b*d];
+                Self::normal_bounds(*v.iter().min().unwrap(),*v.iter().max().unwrap())
+            }
+            BinOp::Div if c > 0 || d < 0 => {
+                let v = [a/c,a/d,b/c,b/d];
+                Self::normal_bounds(*v.iter().min().unwrap(),*v.iter().max().unwrap())
+            }
+            _ => Self::FULL,
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Refined { unit: Unit, range: Range }
+impl Refined {
+    fn scalar() -> Self { Self { unit: Unit::scalar(), range: Range::FULL } }
+}
 struct Checked {
     unit: Unit,
+    range: Range,
     ir: TE,
 }
 #[derive(Clone)]
 struct Signature {
     index: u32,
-    params: Vec<Unit>,
-    result: Unit,
+    params: Vec<Refined>,
+    result: Refined,
 }
-type Locals = BTreeMap<String, (u32, Unit)>;
-type Aliases = BTreeMap<String, Unit>;
+type Locals = BTreeMap<String, (u32, Refined)>;
+type Aliases = BTreeMap<String, Refined>;
 type Functions = BTreeMap<String, Signature>;
 
 fn int(e: TExpr) -> TE { TE { e, ty: Type::Int } }
@@ -35,16 +73,67 @@ fn compatible(want: &Unit, got: &Unit, pos: Pos) -> R<()> {
 fn identifier(p: &mut Parser<'_>) -> R<String> {
     let pos = p.token().pos;
     let n = p.name()?;
-    if crate::parser::is_reserved(&n) || matches!(n.as_str(), "int" | "i32" | "bool" | "void" | "float" | "string") {
+    if crate::parser::is_reserved(&n) || matches!(n.as_str(), "int" | "i64" | "i32" | "bool" | "void" | "float" | "string") {
         return Err(error(pos, "E_RESERVED", "reserved quantity declaration or binding name"));
     }
     Ok(n)
 }
-fn annotation(p: &mut Parser<'_>, aliases: &Aliases) -> R<Unit> {
+fn annotation(p: &mut Parser<'_>, aliases: &Aliases) -> R<Refined> {
     let pos = p.token().pos;
     let n = p.name()?;
-    if n == "int" { return Ok(Unit::scalar()); }
+    if n == "int" || n == "i64" { return Ok(Refined::scalar()); }
     aliases.get(&n).cloned().ok_or_else(|| error(pos, "E_UNIT_NAME", "unknown quantity type alias"))
+}
+fn boundary(want: &Refined, got: &Checked, pos: Pos, code: &'static str) -> R<()> {
+    compatible(&want.unit, &got.unit, pos)?;
+    if !want.range.contains(got.range) {
+        return Err(error(pos, code, "refinement is not proved on the normal result"));
+    }
+    Ok(())
+}
+fn signed_bound(p: &mut Parser<'_>) -> R<i64> {
+    let neg = p.take(Tok::Minus);
+    let n = match p.token().tok {
+        Tok::Int(Some(v)) => if neg { -(v as i64) } else { v as i64 },
+        Tok::Int(None) if neg => i64::MIN,
+        _ => return Err(p.err("E_REFINEMENT_BOUND", "expected signed decimal i64 bound")),
+    };
+    if p.decimal_end(p.token().pos).is_none() {
+        return Err(p.err("E_REFINEMENT_BOUND", "expected decimal bound"));
+    }
+    p.at += 1;
+    Ok(n)
+}
+fn read_predicate(p: &mut Parser<'_>) -> R<Range> {
+    p.expect_word("self")?;
+    let op = p.token().tok.clone();
+    if !matches!(op, Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge | Tok::EqEq)
+        && !matches!(&op, Tok::Ident(n) if n == "eq" || n == "gte" || n == "lte") {
+        return Err(p.err("E_REFINEMENT_BOUND", "expected inclusive interval predicate"));
+    }
+    p.at += 1;
+    let n = signed_bound(p)?;
+    let r = match op {
+        Tok::Lt => n.checked_sub(1).map(|hi| Range { lo: i64::MIN, hi }),
+        Tok::Gt => n.checked_add(1).map(|lo| Range { lo, hi: i64::MAX }),
+        Tok::Le => Some(Range { lo: i64::MIN, hi: n }),
+        Tok::Ge => Some(Range { lo: n, hi: i64::MAX }),
+        Tok::Ident(nm) if nm == "lte" => Some(Range { lo: i64::MIN, hi: n }),
+        Tok::Ident(nm) if nm == "gte" => Some(Range { lo: n, hi: i64::MAX }),
+        _ => Some(Range::exact(n)),
+    };
+    r.ok_or_else(|| p.err("E_REFINEMENT_EMPTY", "empty refinement"))
+}
+fn cast(p: &Parser<'_>, aliases: &Aliases, mut value: Checked, target: &str, pos: Pos, legacy: bool) -> R<Checked> {
+    if let Some(want) = aliases.get(target) {
+        compatible(&want.unit, &value.unit, pos)?;
+        value.range = value.range.intersect(want.range).unwrap_or(want.range);
+        value.ir = int(TExpr::RefinementCheck(Box::new(value.ir),want.range.lo,want.range.hi));
+    } else {
+        value.unit = if legacy { p.cast_or_legacy_unit(&value.unit,target,pos)? }
+                     else { p.checked_scalar_cast(&value.unit,target,pos)? };
+    }
+    Ok(value)
 }
 
 pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
@@ -58,12 +147,22 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         p.expect(Tok::Assign)?;
         p.expect_word("int")?;
         p.expect_word("where")?;
-        p.expect_word("units")?;
-        p.expect_word("in")?;
-        let unit = p.name()?;
-        let unit = p.lookup(&unit)?;
+        let mut unit = None;
+        let mut range = Range::FULL;
+        loop {
+            if p.word("units") {
+                if unit.is_some() { return Err(p.err("E_UNIT_DUPLICATE", "duplicate units clause")); }
+                p.expect_word("in")?;
+                let n = p.name()?;
+                unit = Some(p.lookup(&n)?);
+            } else {
+                range = range.intersect(read_predicate(p)?)
+                    .ok_or_else(|| p.err("E_REFINEMENT_EMPTY", "contradictory refinement"))?;
+            }
+            if !p.word("and") { break; }
+        }
         p.expect(Tok::Semi)?;
-        aliases.insert(name, unit);
+        aliases.insert(name, Refined { unit: unit.unwrap_or_else(Unit::scalar), range });
     }
 
     let mut funcs = Vec::new();
@@ -95,7 +194,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         }
         p.expect(Tok::Arrow)?;
         let result = annotation(p, &aliases)?;
-        if public && (!params.is_empty() || result != Unit::scalar()) {
+        if public && (!params.is_empty() || result != Refined::scalar()) {
             return Err(p.err("E_UNIT_ERASURE", "main must be zero-argument plain int"));
         }
         p.expect(Tok::LBrace)?;
@@ -115,21 +214,21 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
             };
             if locals.contains_key(&binding) { return Err(p.err("E_UNIT_DUPLICATE", "duplicate immutable binding")); }
             p.expect(Tok::Assign)?;
-            let value = expr(p, &locals, &signatures, 0, 0)?;
-            compatible(&wanted, &value.unit, first)?;
+            let value = expr(p, &aliases, &locals, &signatures, 0, 0)?;
+            boundary(&wanted, &value, first, "E_REFINEMENT_BINDING")?;
             p.expect(Tok::Semi)?;
             let slot = (params.len() + slots.len()) as u32;
             slots.push(Type::Int);
-            locals.insert(binding, (slot, wanted));
+            locals.insert(binding, (slot, Refined { range: value.range, ..wanted }));
             body.push(TStmt::Set(slot, value.ir));
         }
         p.expect_word("return")?;
         let pos = p.token().pos;
-        let value = expr(p, &locals, &signatures, 0, 0)?;
+        let value = expr(p, &aliases, &locals, &signatures, 0, 0)?;
         if public && value.unit != Unit::scalar() {
             return Err(error(pos, "E_UNIT_ERASURE", "plain main result requires scale-one scalar"));
         }
-        compatible(&result, &value.unit, pos)?;
+        boundary(&result, &value, pos, "E_REFINEMENT_RETURN")?;
         p.expect(Tok::Semi)?;
         p.expect(Tok::RBrace)?;
         body.push(TStmt::Return(Some(value.ir)));
@@ -147,8 +246,16 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
 fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
     let pos = p.token().pos;
     let mut value: Value = p.literal(min)?;
-    value = p.attach_postfix(value, pos)?;
-    if p.take(Tok::Dot) {
+    // Literal conversion retains its original restricted profile. Symbolic
+    // casts are consumed after literal construction by the typed atom wrapper.
+    // A literal unit attachment may precede exact conversion.
+    while (p.token().tok == Tok::Dot || p.token().tok == Tok::ColonColon)
+        && p.tokens.get(p.at+1).is_some_and(|t| t.tok == Tok::Lt)
+        && p.tokens.get(p.at+2).is_some_and(|t| matches!(&t.tok, Tok::Ident(n) if p.units.contains_key(n))) {
+        value.unit = p.postfix_unit(&value.unit, pos)?.expect("unit suffix");
+    }
+    if p.token().tok == Tok::Dot && !p.tokens.get(p.at+1).is_some_and(|t| t.tok == Tok::Lt) {
+        p.at += 1;
         if min || value.unit == Unit::scalar() {
             return Err(p.err("E_UNSUPPORTED", "conversion requires ordinary quantity literal"));
         }
@@ -161,34 +268,43 @@ fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
         value = convert(value, p.lookup(&target)?, pos)?;
     }
     let number = value.number.map_err(|_| error(pos, "E_UNIT_RANGE", "literal cannot be represented"))?;
-    Ok(Checked { unit: value.unit, ir: int(TExpr::I64(number)) })
+    Ok(Checked { unit: value.unit, range: Range::exact(number), ir: int(TExpr::I64(number)) })
 }
-fn atom(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
+fn atom(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
     let pos = p.token().pos;
-    let mut value = atom_base(p, locals, funcs, depth)?;
-    while let Some(unit) = p.postfix_unit(&value.unit, pos)? {
-        value.unit = unit;
+    let mut value = atom_base(p, aliases, locals, funcs, depth)?;
+    while p.token().tok == Tok::ColonColon ||
+        (p.token().tok == Tok::Dot && p.tokens.get(p.at+1).is_some_and(|t| t.tok == Tok::Lt)) {
+        if p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "typed postfix budget")); }
+        p.budget -= 1;
+        let unit_only = p.take(Tok::Dot);
+        if !unit_only { p.expect(Tok::ColonColon)?; }
+        p.expect(Tok::Lt)?;
+        let target = p.name()?;
+        p.expect(Tok::Gt)?;
+        if unit_only { value.unit = attach(&value.unit,p.lookup(&target)?,pos)?; }
+        else { value = cast(p,aliases,value,&target,pos,true)?; }
     }
     Ok(value)
 }
-fn atom_base(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
+fn atom_base(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
     if depth > 48 || p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "typed quantity expression budget")); }
     p.budget -= 1;
     if p.take(Tok::Lt) {
         let pos = p.token().pos;
         let target = p.name()?;
         p.expect(Tok::Gt)?;
-        let mut value = atom(p, locals, funcs, depth+1)?;
-        value.unit = p.checked_scalar_cast(&value.unit, &target, pos)?;
-        return Ok(value);
+        let value = atom(p, aliases, locals, funcs, depth+1)?;
+        return cast(p,aliases,value,&target,pos,false);
     }
     if p.take(Tok::Minus) {
         if p.token().tok == Tok::Int(None) { return literal(p, true); }
-        let value = atom(p, locals, funcs, depth+1)?;
-        return Ok(Checked { unit: value.unit, ir: int(TExpr::Neg(Box::new(value.ir))) });
+        let value = atom(p, aliases, locals, funcs, depth+1)?;
+        let range = Range::normal_bounds(-(value.range.hi as i128),-(value.range.lo as i128));
+        return Ok(Checked { unit: value.unit, range, ir: int(TExpr::Neg(Box::new(value.ir))) });
     }
     if p.take(Tok::LParen) {
-        let value = expr(p, locals, funcs, 0, depth+1)?;
+        let value = expr(p, aliases, locals, funcs, 0, depth+1)?;
         p.expect(Tok::RParen)?;
         return Ok(value);
     }
@@ -200,18 +316,18 @@ fn atom_base(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, depth: usiz
         let mut args = Vec::new();
         for (i, wanted) in sig.params.iter().enumerate() {
             if i != 0 { p.expect(Tok::Comma)?; }
-            let arg = expr(p,locals,funcs,0,depth+1)?;
-            compatible(wanted,&arg.unit,pos)?;
+            let arg = expr(p,aliases,locals,funcs,0,depth+1)?;
+            boundary(wanted,&arg,pos,"E_REFINEMENT_PRECONDITION")?;
             args.push(arg.ir);
         }
         p.expect(Tok::RParen)?;
-        return Ok(Checked { unit: sig.result.clone(), ir: int(TExpr::Call(sig.index,args)) });
+        return Ok(Checked { unit: sig.result.unit.clone(), range: sig.result.range, ir: int(TExpr::Call(sig.index,args)) });
     }
     let (slot,unit) = locals.get(&name).ok_or_else(|| error(pos,"E_UNIT_NAME","unknown immutable quantity binding"))?;
-    Ok(Checked { unit:unit.clone(), ir:int(TExpr::Local(*slot)) })
+    Ok(Checked { unit:unit.unit.clone(), range: unit.range, ir:int(TExpr::Local(*slot)) })
 }
-fn expr(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, precedence: u8, depth: usize) -> R<Checked> {
-    let mut left = atom(p,locals,funcs,depth)?;
+fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Functions, precedence: u8, depth: usize) -> R<Checked> {
+    let mut left = atom(p,aliases,locals,funcs,depth)?;
     loop {
         let pos = p.token().pos;
         let (op,level) = match p.token().tok {
@@ -220,7 +336,7 @@ fn expr(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, precedence: u8, 
         };
         if level <= precedence { break; }
         p.at += 1;
-        let right = expr(p,locals,funcs,level,depth+1)?;
+        let right = expr(p,aliases,locals,funcs,level,depth+1)?;
         let unit = match op {
             BinOp::Add | BinOp::Sub => { compatible(&left.unit,&right.unit,pos)?; left.unit.clone() }
             BinOp::Mul => left.unit.combine(&right.unit,false,pos)?,
@@ -232,12 +348,13 @@ fn expr(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, precedence: u8, 
             }
             _ => unreachable!(),
         };
-        left = Checked { unit, ir: int(TExpr::Bin(op,Box::new(left.ir),Box::new(right.ir))) };
+        let range = left.range.binary(right.range,op);
+        left = Checked { unit, range, ir: int(TExpr::Bin(op,Box::new(left.ir),Box::new(right.ir))) };
     }
     if precedence == 0 && p.word("as") {
         let pos = p.token().pos;
         let name = p.name()?;
-        left.unit = p.cast_or_legacy_unit(&left.unit, &name, pos)?;
+        left = cast(p,aliases,left,&name,pos,true)?;
     }
     Ok(left)
 }
