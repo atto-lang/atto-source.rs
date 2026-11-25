@@ -5,6 +5,9 @@ use crate::lexer::{Tok, Token};
 use crate::quantity_scale::{ConversionError, Scale};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "verified_quantity_bindings.rs"]
+mod bindings;
+
 type R<T> = Result<T, Diagnostic>;
 type Powers = BTreeMap<String, i32>;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +30,7 @@ impl Unit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArithmeticFailure { Overflow, DivisionByZero }
 pub(crate) type Outcome = Result<i64, ArithmeticFailure>;
+pub(crate) enum Lowered { Closed(Outcome), Typed(crate::check::TProgram) }
 #[derive(Clone)]
 struct Value { unit: Unit, number: Outcome }
 fn error(pos: Pos, code: &'static str, message: &str) -> Diagnostic { Diagnostic::new(pos, code, message) }
@@ -49,7 +53,7 @@ pub(crate) fn has_declarations(tokens: &[Token]) -> bool {
     tokens.windows(2).any(|w| matches!((&w[0].tok,&w[1].tok),
         (Tok::Ident(a),Tok::Ident(b)) if a == "define" && (b == "dimension" || b == "unit")))
 }
-pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Outcome>> {
+pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Lowered>> {
     if !has_declarations(tokens) { return Ok(None); }
     let mut p = Parser { tokens, at: 0, lines: source.lines().map(|l| l.chars().collect()).collect(),
         dimensions: BTreeSet::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256 };
@@ -59,6 +63,9 @@ pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Outcome>> {
         if declarations > 128 { return Err(p.err("E_UNIT_LIMIT", "too many quantity declarations")); }
         p.declaration()?;
     }
+    if matches!(&p.token().tok, Tok::Ident(name) if name == "type") {
+        return bindings::lower(&mut p).map(|program| Some(Lowered::Typed(program)));
+    }
     p.expect_word("pub")?; p.expect_word("fnc")?; p.expect_word("main")?;
     p.expect(Tok::LParen)?; p.expect(Tok::RParen)?; p.expect(Tok::Arrow)?;
     p.expect_word("int")?; p.expect(Tok::LBrace)?; p.expect_word("return")?;
@@ -67,7 +74,7 @@ pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Outcome>> {
     if result.unit != Unit::scalar() { return Err(p.err("E_UNIT_ERASURE", "int return requires scalar scale one")); }
     // Complete grammar and all arithmetic were checked before erasure. Ordinary
     // compiler emits the Wasm guest; there is no runtime solver or source eval.
-    Ok(Some(result.number))
+    Ok(Some(Lowered::Closed(result.number)))
 }
 
 struct Parser<'a> {

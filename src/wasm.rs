@@ -135,6 +135,7 @@ const STRING_HELPERS: u32 = 8;
 struct Layout {
     imports: Vec<Import>,
     helpers: u32,
+    quantity_div: Option<u32>,
     /// helper index of `S_BYTES_EQ`
     str_base: u32,
     /// global index of actor-state global 0
@@ -781,7 +782,7 @@ impl Emit<'_> {
                     BinOp::Ge => self.op(0x59),
                     BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
                     BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                    BinOp::Div => unreachable!("division not admitted by checker"),
+                    BinOp::Div => self.call(self.l.helper(self.l.quantity_div.expect("division not admitted by checker"))),
                 }
             }
             TExpr::Ternary(c, a, b) => {
@@ -1434,7 +1435,7 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
-    emit_inner(p, None)
+    emit_inner(p, None, false)
 }
 
 /// Only the checked closed quantity frontend can select this path. The
@@ -1445,15 +1446,34 @@ pub(crate) fn emit_quantity_failure(p: &TProgram, failure: crate::verified_quant
         ArithmeticFailure::Overflow => PANIC_OVERFLOW,
         ArithmeticFailure::DivisionByZero => PANIC_DIV_ZERO,
     };
-    emit_inner(p, Some(code))
+    emit_inner(p, Some(code), false)
 }
 
-fn emit_inner(p: &TProgram, quantity_panic: Option<i32>) -> Vec<u8> {
+/// Only the checked immutable quantity profile enables integer division.
+pub(crate) fn emit_quantity_program(p: &TProgram) -> Vec<u8> {
+    emit_inner(p, None, true)
+}
+
+fn quantity_div_body() -> (Sig, Vec<u8>, Vec<u8>) {
+    // Test zero before the signed MIN/-1 overflow case, then perform actual div_s.
+    let mut c = vec![0x20, 1, 0x50, 0x04, 0x40];
+    panic(&mut c, PANIC_DIV_ZERO);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x42]);
+    sleb(&mut c, i64::MIN);
+    c.extend_from_slice(&[0x51, 0x20, 1, 0x42, 0x7f, 0x51, 0x71, 0x04, 0x40]);
+    panic(&mut c, PANIC_OVERFLOW);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x20, 1, 0x7f, 0x0B]);
+    (Sig(vec![I64, I64], vec![I64]), vec![0], c)
+}
+
+fn emit_inner(p: &TProgram, quantity_panic: Option<i32>, quantity_division: bool) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
+    let base_helpers = str_base + if p.strings { STRING_HELPERS } else { 0 };
     let layout = Layout {
         imports: p.imports.clone(),
-        helpers: str_base + if p.strings { STRING_HELPERS } else { 0 },
+        helpers: base_helpers + u32::from(quantity_division),
+        quantity_div: quantity_division.then_some(base_helpers),
         str_base,
         state_base: 1 + u32::from(p.heap),
         gen_free_global: (!p.generators.is_empty()).then_some(
@@ -1498,6 +1518,7 @@ fn emit_inner(p: &TProgram, quantity_panic: Option<i32>) -> Vec<u8> {
         let alloc = p.heap.then(|| layout.helper(H_ALLOC));
         helpers.extend(string_helpers(layout.str_helper(S_BYTES_EQ), alloc));
     }
+    if quantity_division { helpers.push(quantity_div_body()); }
     for (sig, locals, code) in helpers {
         func_types.push(types.idx(sig));
         let mut b = locals;
