@@ -23,6 +23,23 @@ impl Range {
         let hi = hi.min(i64::MAX as i128);
         if lo > hi { Self::FULL } else { Self { lo: lo as i64, hi: hi as i64 } }
     }
+    // Unlike normal-result bounds, this proves every operand pair succeeds.
+    // i128 exactly represents products of two signed i64 values.
+    fn proves_binary(self, other: Self, op: BinOp) -> bool {
+        let (a,b,c,d) = (self.lo as i128, self.hi as i128, other.lo as i128, other.hi as i128);
+        let fits = |lo: i128, hi: i128| lo >= i64::MIN as i128 && hi <= i64::MAX as i128;
+        match op {
+            BinOp::Add => fits(a+c,b+d),
+            BinOp::Sub => fits(a-d,b-c),
+            BinOp::Mul => {
+                let v = [a*c,a*d,b*c,b*d];
+                fits(*v.iter().min().unwrap(),*v.iter().max().unwrap())
+            }
+            BinOp::Div => (c > 0 || d < 0) &&
+                !(self.lo == i64::MIN && c <= -1 && d >= -1),
+            _ => false,
+        }
+    }
     fn binary(self, other: Self, op: BinOp) -> Self {
         let (a,b,c,d) = (self.lo as i128, self.hi as i128, other.lo as i128, other.hi as i128);
         match op {
@@ -127,6 +144,9 @@ fn read_predicate(p: &mut Parser<'_>) -> R<Range> {
 fn cast(p: &Parser<'_>, aliases: &Aliases, mut value: Checked, target: &str, pos: Pos, legacy: bool) -> R<Checked> {
     if let Some(want) = aliases.get(target) {
         compatible(&want.unit, &value.unit, pos)?;
+        if p.strict && !want.range.contains(value.range) {
+            return Err(error(pos, "E_VERIFY_UNPROVEN", "refinement cast may fail"));
+        }
         value.range = value.range.intersect(want.range).unwrap_or(want.range);
         value.ir = int(TExpr::RefinementCheck(Box::new(value.ir),want.range.lo,want.range.hi));
     } else {
@@ -304,6 +324,9 @@ fn atom_base(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Fun
     if p.take(Tok::Minus) {
         if p.token().tok == Tok::Int(None) { return literal(p, true); }
         let value = atom(p, aliases, locals, funcs, depth+1)?;
+        if p.strict && value.range.lo == i64::MIN {
+            return Err(error(pos, "E_VERIFY_UNPROVEN", "signed negation may overflow"));
+        }
         let range = Range::normal_bounds(-(value.range.hi as i128),-(value.range.lo as i128));
         return Ok(Checked { unit: value.unit, range, ir: int(TExpr::Neg(Box::new(value.ir))) });
     }
@@ -352,6 +375,9 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
             }
             _ => unreachable!(),
         };
+        if p.strict && !left.range.proves_binary(right.range,op) {
+            return Err(error(pos,"E_VERIFY_UNPROVEN","signed arithmetic may overflow or divide by zero"));
+        }
         let range = left.range.binary(right.range,op);
         left = Checked { unit, range, ir: int(TExpr::Bin(op,Box::new(left.ir),Box::new(right.ir))) };
     }
@@ -361,4 +387,42 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
         left = cast(p,aliases,left,&name,pos,true)?;
     }
     Ok(left)
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use super::*;
+    #[test]
+    fn interval_admission_matches_exhaustive_small_domain() {
+        for a in -8i64..=7 { for b in a..=7 {
+            for c in -8i64..=7 { for d in c..=7 {
+                let l=Range { lo:a, hi:b }; let r=Range {lo:c,hi:d};
+                for op in [BinOp::Add,BinOp::Sub,BinOp::Mul,BinOp::Div] {
+                    let all=(a..=b).all(|x| (c..=d).all(|y| match op {
+                        BinOp::Add => x.checked_add(y).is_some(),
+                        BinOp::Sub => x.checked_sub(y).is_some(),
+                        BinOp::Mul => x.checked_mul(y).is_some(),
+                        BinOp::Div => x.checked_div(y).is_some(),
+                        _ => false,
+                    }));
+                    assert_eq!(l.proves_binary(r,op),all);
+                }
+            }}
+        }}
+    }
+    #[test]
+    fn extrema_do_not_use_clipped_normal_result_as_proof() {
+        let min=Range::exact(i64::MIN); let max=Range::exact(i64::MAX);
+        let neg=Range::exact(-1); let one=Range::exact(1);
+        let zero=Range::exact(0);
+        assert!(!max.proves_binary(one,BinOp::Add));
+        assert!(!min.proves_binary(one,BinOp::Sub));
+        assert!(!min.proves_binary(neg,BinOp::Mul));
+        assert!(!min.proves_binary(neg,BinOp::Div));
+        assert!(!Range::FULL.proves_binary(zero,BinOp::Div));
+        assert!(!Range::FULL.proves_binary(neg,BinOp::Div));
+        assert!(Range::FULL.proves_binary(one,BinOp::Div));
+        assert!(Range::FULL.proves_binary(zero,BinOp::Mul));
+        assert!(!Range{lo:i64::MAX-1,hi:i64::MAX}.proves_binary(one,BinOp::Add));
+    }
 }
