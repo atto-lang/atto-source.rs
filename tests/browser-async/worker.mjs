@@ -1,4 +1,5 @@
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
+import {validateGuestImportABI} from '/runtime/browser/guest_import_admission_v2.mjs';
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
   if(Number.isNaN(x))return 'NaN';
@@ -34,10 +35,7 @@ self.onmessage=async ({data})=>{
     const useAsync=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1&&new Uint8Array(asyncSections[0])[0]===2;
     if(asyncSections.length&&!useAsync)throw new Error('invalid async marker');
     if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await','cooperate']:[])]);
-    for(const imp of WebAssembly.Module.imports(guest)){
-      if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
-    }
+    validateGuestImportABI(out,guest,useAsync?'browser-async-v2':'browser-basic-v1');
     let stdout='',instance;
     const atto={
       print_i64:v=>{stdout+=String(v)},
