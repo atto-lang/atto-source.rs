@@ -1,0 +1,9 @@
+// expect-error: E_BORROW
+// java: rejects
+// Explicit borrower never silently satisfies an *owned* class parameter.
+define class Parcel as pub let int value = 42; end
+fnc consume(p: Parcel): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return consume(borrow! parcel);
+}

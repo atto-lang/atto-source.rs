@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// A returned writer scope releases exclusivity for ordinary read calls.
+define class Counter as pub mut int value = 0; end
+fnc inspect(c: Borrow<Counter>): int { return c.value; }
+pub fnc main(): int {
+  let counter = new Counter();
+  block {
+    val writer = borrow! mut counter;
+    writer.value = 42;
+  }
+  return inspect(borrow! counter);
+}

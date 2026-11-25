@@ -272,3 +272,71 @@ fn inferred_call_loans_never_create_phantom_owned_object_locals() {
     assert_eq!(borrowed, baseline,
         "non-owning call loans must not manufacture uninitialized owned class locals");
 }
+
+
+#[test]
+fn explicit_and_implicit_class_call_loans_have_identical_guest_bytes() {
+    // A successful shorthand must issue the same loan as the explicit
+    // borrow! spelling, with no new owned class slot or runtime clone.
+    // This proves only the narrow Borrow<Person> synchronous call profile,
+    // NOT the future "fnc inspect(Person p)" default.
+    let header = r#"
+        define class Person as pub let int age = 42; end
+        fnc inspect(p: Borrow<Person>): int { return p.age; }
+    "#;
+    let implicit = format!(r#"{header}
+        pub fnc main(): int {{
+            let person = new Person();
+            let n = inspect(person);
+            return n;
+        }}
+    "#);
+    let explicit = format!(r#"{header}
+        pub fnc main(): int {{
+            let person = new Person();
+            let n = inspect(borrow! person);
+            return n;
+        }}
+    "#);
+    let implicit_ir = checked(&implicit);
+    let explicit_ir = checked(&explicit);
+    assert_eq!(implicit_ir.funcs.len(), explicit_ir.funcs.len());
+    for (a, b) in implicit_ir.funcs.iter().zip(explicit_ir.funcs.iter()) {
+        assert_eq!(a.locals, b.locals, "borrow! must not invent owned locals");
+    }
+    let a = atto_compiler::compile(&implicit).expect("implicit class call loan");
+    let b = atto_compiler::compile(&explicit).expect("explicit class call loan");
+    assert_eq!(a, b, "call-site borrow! must not change the guest binary");
+}
+
+#[test]
+fn returned_class_loans_and_unproved_lifetime_signatures_still_fail_closed() {
+    // A scoped argument loan is NOT a returned-reference lifetime proof.
+    // The target v1 Borrow<Child> result contract cannot be lowered until
+    // owner-origin metadata survives the typed IR, cleanup and caller frame.
+    let result_cases = [
+        r#"
+            define class Person as pub let int age = 42; end
+            fnc view(p: Borrow<Person>): Borrow<Person> { return p; }
+            pub fnc main(): int { return 0; }
+        "#,
+        r#"
+            define class Person as pub let int age = 42; end
+            fnc view(p: Person): Borrow<Person> { return p; }
+            pub fnc main(): int { return 0; }
+        "#,
+        r#"
+            define class Person as pub let int age = 42; end
+            define class Reader as
+                pub view(p: Borrow<Person>): Borrow<Person> { return p; }
+            end
+            pub fnc main(): int { return 0; }
+        "#,
+    ];
+    for source in result_cases {
+        let err = atto_compiler::compile(source).expect_err(
+            "unsupported returned borrow must fail before guest output");
+        assert_eq!(err.code, "E_UNSUPPORTED_TYPE",
+            "a returned Borrow<T> must not be erased into an owned handle");
+    }
+}

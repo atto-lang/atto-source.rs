@@ -1,0 +1,10 @@
+// expect-error: E_BORROW
+// java: rejects
+// A named borrow is not a new owned root that can be reborrowed as owner.
+define class Parcel as pub let int value = 42; end
+fnc inspect(p: Borrow<Parcel>): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val view = borrow! parcel;
+  return inspect(borrow! view);
+}

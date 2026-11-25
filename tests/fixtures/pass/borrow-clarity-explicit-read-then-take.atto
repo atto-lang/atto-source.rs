@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// Borrowing did not create a shared owner or move the original.
+define class Counter as
+  pub let int value = 21;
+end
+fnc inspect(c: Borrow<Counter>): int { return c.value; }
+pub fnc main(): int {
+  let counter = new Counter();
+  val observed = inspect(borrow! counter);
+  val owned = take! counter;
+  return observed + owned.value;
+}
