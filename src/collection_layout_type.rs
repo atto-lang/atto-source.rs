@@ -48,8 +48,15 @@ fn layout(tokens: &[Token], i: &mut usize) -> Result<Storage, Diagnostic> {
         "aosoa" => {
             expect(tokens, i, Tok::LParen, "expected '(' after aosoa")?;
             let lanes = match tokens.get(*i).map(|t| &t.tok) {
-                Some(Tok::Int(Some(n))) if *n >= 1 && *n <= crate::collection_layout::MAX_AOSOA_LANES => *n,
-                _ => return Err(diag(tokens, *i, "E_LAYOUT_SIZE", "aosoa requires a constant lane count in 1..=1024")),
+                Some(Tok::Int(Some(n))) if *n >= 1 && *n <= crate::collection_layout::MAX_AOSOA_LANES && n.is_power_of_two() => *n,
+                _ => {
+                    return Err(diag(
+                        tokens,
+                        *i,
+                        "E_LAYOUT_SIZE",
+                        "aosoa requires a constant power-of-two lane count in 1..=1024",
+                    ))
+                }
             };
             *i += 1;
             expect(tokens, i, Tok::RParen, "expected ')' after aosoa lane count")?;
@@ -97,7 +104,12 @@ pub fn parse(tokens: &[Token], start: usize) -> Result<(ArrayType, usize), Diagn
             Some(_) => return Err(diag(tokens, here, "E_GENERIC_NAME", "unknown Array generic; expected T or layout")),
             None => {
                 if named_seen {
-                    return Err(diag(tokens, here, "E_GENERIC_ORDER", "positional Array argument after named arguments"));
+                    return Err(diag(
+                        tokens,
+                        here,
+                        "E_GENERIC_ORDER",
+                        "positional Array argument after named arguments",
+                    ));
                 }
                 if element.is_some() {
                     return Err(diag(tokens, here, "E_GENERIC_ARITY", "too many Array positional arguments"));
@@ -105,7 +117,9 @@ pub fn parse(tokens: &[Token], start: usize) -> Result<(ArrayType, usize), Diagn
                 element = Some(ident(tokens, &mut i, "Array requires a nominal element type")?);
             }
         }
-        if !is(tokens, i, Tok::Comma) { break; }
+        if !is(tokens, i, Tok::Comma) {
+            break;
+        }
         i += 1;
         if is(tokens, i, Tok::Gt) {
             return Err(diag(tokens, i, "E_LAYOUT_SYNTAX", "trailing generic comma"));
@@ -113,7 +127,14 @@ pub fn parse(tokens: &[Token], start: usize) -> Result<(ArrayType, usize), Diagn
     }
     expect(tokens, &mut i, Tok::Gt, "expected '>' after Array generics")?;
     let element = element.ok_or_else(|| diag(tokens, start, "E_GENERIC_ARITY", "Array requires element type T"))?;
-    Ok((ArrayType { element, layout: physical.unwrap_or(Storage::Aos), pos }, i))
+    Ok((
+        ArrayType {
+            element,
+            layout: physical.unwrap_or(Storage::Aos),
+            pos,
+        },
+        i,
+    ))
 }
 
 #[cfg(test)]
@@ -133,8 +154,10 @@ mod tests {
         assert_eq!(a.element, b.element);
         assert_eq!(a.layout, b.layout);
         assert_eq!(a.layout, c.layout);
-        assert_eq!(parse_source("Array<Particle>").unwrap().layout,
-                   parse_source("Array<Particle, layout=aos>").unwrap().layout);
+        assert_eq!(
+            parse_source("Array<Particle>").unwrap().layout,
+            parse_source("Array<Particle, layout=aos>").unwrap().layout
+        );
         assert_ne!(a.layout, parse_source("Array<Particle, layout=aosoa(16)>").unwrap().layout);
     }
     #[test]
@@ -146,6 +169,9 @@ mod tests {
             ("Array<Particle, bogus=soa>", "E_GENERIC_NAME"),
             ("Array<Particle, layout=aosoa(n)>", "E_LAYOUT_SIZE"),
             ("Array<Particle, layout=aosoa(0)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(3)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(7)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(1023)>", "E_LAYOUT_SIZE"),
             ("Array<Particle, layout=wat>", "E_LAYOUT_VALUE"),
             ("Array<>", "E_LAYOUT_SYNTAX"),
             ("Array<Particle,>", "E_LAYOUT_SYNTAX"),

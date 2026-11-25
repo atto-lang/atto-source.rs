@@ -47,14 +47,18 @@ fn aligned(x: u64, align: u64) -> Option<u64> {
 
 impl Plan {
     pub fn new(layout: Storage, fields: Vec<ScalarField>, len: u64) -> Result<Self, PlanError> {
-        if fields.is_empty() || fields.len() > MAX_FIELDS || fields.iter().any(|f|
-            f.size == 0 || f.align == 0 || !f.align.is_power_of_two() || f.align > 4096
-        ) {
+        if fields.is_empty()
+            || fields.len() > MAX_FIELDS
+            || fields
+                .iter()
+                .any(|f| f.size == 0 || f.align == 0 || !f.align.is_power_of_two() || f.align > 4096)
+        {
             return Err(PlanError::InvalidField);
         }
         let width = match layout {
-            Storage::Aosoa(n) if n == 0 || u64::from(n) > super::collection_layout::MAX_AOSOA_LANES =>
-                return Err(PlanError::InvalidBlock),
+            Storage::Aosoa(n) if n == 0 || u64::from(n) > super::collection_layout::MAX_AOSOA_LANES || !n.is_power_of_two() => {
+                return Err(PlanError::InvalidBlock)
+            }
             Storage::Aosoa(n) => u64::from(n),
             _ => 1,
         };
@@ -73,7 +77,8 @@ impl Plan {
                     Storage::Soa => len,
                     Storage::Aosoa(_) => width,
                 };
-                cursor = cursor.checked_add(stride.checked_mul(count).ok_or(PlanError::SizeOverflow)?)
+                cursor = cursor
+                    .checked_add(stride.checked_mul(count).ok_or(PlanError::SizeOverflow)?)
                     .ok_or(PlanError::SizeOverflow)?;
             }
             match layout {
@@ -96,7 +101,9 @@ impl Plan {
             return Err(PlanError::SizeOverflow);
         }
         Ok(Self {
-            layout, len, fields,
+            layout,
+            len,
+            fields,
             field_offsets: offsets,
             field_strides: strides,
             row_or_block_stride,
@@ -118,7 +125,8 @@ impl Plan {
                 ((index / lanes).checked_mul(self.row_or_block_stride)?, index % lanes)
             }
         };
-        let offset = base.checked_add(*self.field_offsets.get(field)?)?
+        let offset = base
+            .checked_add(*self.field_offsets.get(field)?)?
             .checked_add(lane.checked_mul(*self.field_strides.get(field)?)?)?;
         let end = offset.checked_add(self.fields[field].size)?;
         (end <= self.total_bytes).then_some(offset)
@@ -157,8 +165,20 @@ mod tests {
     fn rejects_invalid_layouts_bounds_and_overflow() {
         assert_eq!(Plan::new(Storage::Aosoa(0), fields(), 1), Err(PlanError::InvalidBlock));
         assert_eq!(Plan::new(Storage::Aosoa(1025), fields(), 1), Err(PlanError::InvalidBlock));
+        for lanes in [3, 7, 1023] {
+            assert_eq!(Plan::new(Storage::Aosoa(lanes), fields(), 5), Err(PlanError::InvalidBlock));
+        }
+        // Accepted edge widths come from the shared layout ABI contract.
+        for lanes in [1, 2, 512, 1024] {
+            let plan = Plan::new(Storage::Aosoa(lanes), fields(), u64::from(lanes) + 1).expect("power-of-two width must remain legal");
+            assert!(plan.offset(u64::from(lanes), 0).is_some());
+            assert_eq!(plan.offset(u64::from(lanes) + 1, 0), None);
+        }
         assert_eq!(Plan::new(Storage::Aos, vec![], 1), Err(PlanError::InvalidField));
-        assert_eq!(Plan::new(Storage::Aos, vec![ScalarField { size: 3, align: 3 }], 1), Err(PlanError::InvalidField));
+        assert_eq!(
+            Plan::new(Storage::Aos, vec![ScalarField { size: 3, align: 3 }], 1),
+            Err(PlanError::InvalidField)
+        );
         assert_eq!(Plan::new(Storage::Soa, fields(), u64::MAX), Err(PlanError::SizeOverflow));
         assert_eq!(Plan::new(Storage::Aosoa(16), fields(), u64::MAX), Err(PlanError::SizeOverflow));
         assert_eq!(Plan::new(Storage::Aos, fields(), 0).unwrap().offset(0, 0), None);
@@ -172,8 +192,12 @@ mod tests {
             ScalarField { size: 1, align: 1 },
         ];
         for layout in [
-            Storage::Aos, Storage::Soa, Storage::Aosoa(1),
-            Storage::Aosoa(2), Storage::Aosoa(4), Storage::Aosoa(7),
+            Storage::Aos,
+            Storage::Soa,
+            Storage::Aosoa(1),
+            Storage::Aosoa(2),
+            Storage::Aosoa(4),
+            Storage::Aosoa(8),
             Storage::Aosoa(16),
         ] {
             for len in 0..=33_u64 {
@@ -190,8 +214,10 @@ mod tests {
                 }
                 ranges.sort_unstable();
                 for adjacent in ranges.windows(2) {
-                    assert!(adjacent[0].1 <= adjacent[1].0,
-                            "overlapping active cells: {layout:?} len={len} {adjacent:?}");
+                    assert!(
+                        adjacent[0].1 <= adjacent[1].0,
+                        "overlapping active cells: {layout:?} len={len} {adjacent:?}"
+                    );
                 }
                 assert_eq!(plan.offset(len, 0), None);
                 assert_eq!(plan.offset(0, sizes.len()), None);
@@ -201,8 +227,12 @@ mod tests {
 
     #[test]
     fn protects_column_alignment_even_for_nonmultiple_sizes() {
-        let plan = Plan::new(Storage::Soa,
-            vec![ScalarField { size: 9, align: 8 }, ScalarField { size: 1, align: 1 }], 3).unwrap();
+        let plan = Plan::new(
+            Storage::Soa,
+            vec![ScalarField { size: 9, align: 8 }, ScalarField { size: 1, align: 1 }],
+            3,
+        )
+        .unwrap();
         assert_eq!(plan.offset(1, 0), Some(16));
         assert_eq!(plan.offset(2, 0), Some(32));
         assert_eq!(plan.offset(0, 1), Some(48));
