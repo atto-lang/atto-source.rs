@@ -154,7 +154,7 @@ impl FrozenRegistry {
     /// No filename, URL, alternate package or implicit fallback is consulted.
     pub fn bind_namespace(&self, scope: &mut Scope, source: &str,
         selector: &str, binding: &str, explicit_alias: bool) -> R<()> {
-        if !namespace(selector) || !namespace(binding) {
+        if !namespace(selector) || !namespace(binding) || (!explicit_alias && selector != binding) {
             return Err(err("E_IMPORT_PATH", "invalid namespace selector or binding"));
         }
         let selected = if source == self.name {
