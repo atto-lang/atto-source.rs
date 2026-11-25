@@ -469,3 +469,55 @@ fn reject_internal_names_and_unsafe_remote_selector_shapes() {
     }
     assert_eq!(parse_v2("import namespace [n] from pkg 'https://example.test/lib.atto';").imports, ["n"]);
 }
+
+#[test]
+fn namespace_constants_lower_to_identical_builtin_guest_bytes() {
+    let baseline = compile("import core.num; pub fnc main(): int { return num.clamp(42, 0, 100); }").unwrap();
+    for src in [
+        "import core.num; define const math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
+        "import core.num; define const first = second; define const second = core.num; pub fnc main(): int { return first.clamp(42, 0, 100); }",
+        "import core.num as vendor.math; define const m = vendor.math; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+        "import core.num; define const m = num; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+        "import core.num; define const m = core /* comment */ . num; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+    ] {
+        assert_eq!(compile(src).unwrap(), baseline, "{src}");
+        let mut loads = 0;
+        assert_eq!(compile_with_imports(src, Path::new("app/main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap(), baseline);
+        assert_eq!(loads, 0);
+    }
+}
+
+#[test]
+fn namespace_constants_do_not_remove_original_bindings() {
+    let src = "import core.num; define const math = core.num; pub fnc main(): int { return math.clamp(40, 0, 100)+num.clamp(1, 0, 100)+core.num.clamp(1, 0, 100); }";
+    assert!(compile(src).is_ok());
+    let src = "import core.num as math; define const m = math; pub fnc main(): int { return num.clamp(42, 0, 100); }";
+    assert!(compile(src).is_err());
+}
+
+#[test]
+fn namespace_constant_cycles_values_and_shadowing_fail_closed() {
+    for (src, expected) in [
+        ("import core.num; define const a = a; pub fnc main(): int { return 42; }", Some("E_IMPORT_CYCLE")),
+        ("import core.num; define const a = b; define const b = a; pub fnc main(): int { return 42; }", Some("E_IMPORT_CYCLE")),
+        ("import core.num; define const a = absent; pub fnc main(): int { return 42; }", Some("E_UNBOUND")),
+        ("import core.num; define const a = core.num; define const a = num; pub fnc main(): int { return 42; }", Some("E_DUPLICATE")),
+        ("import core.num; define const num = core.num; pub fnc main(): int { return 42; }", Some("E_DUPLICATE")),
+        ("import core.num; define const a = core.num; pub fnc main(): int { return a; }", None),
+        ("import core.num; define const a = core.num; pub fnc main(): int { let int a = 1; return a; }", None),
+        ("import core.num; define const a = core.num; pub fnc main(): int { return a.unknown(42); }", None),
+        ("import core.num; define const a = num.clamp; pub fnc main(): int { return 42; }", None),
+        ("import core.num; define const a = 42; pub fnc main(): int { return 42; }", None),
+        ("import core.num; define const a = core.num; pub fnc main(): int { return object.a.clamp(42, 0, 100); }", None),
+        ("import core.num as hidden; define const a = core.num; pub fnc main(): int { return 42; }", Some("E_UNBOUND")),
+    ] {
+        let mut loads = 0;
+        let d = compile_with_imports(src, Path::new("app/main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err();
+        if let Some(code) = expected { assert_eq!(d.code, code, "{src}: {d}"); }
+        assert_eq!(loads, 0, "{src}");
+    }
+}
