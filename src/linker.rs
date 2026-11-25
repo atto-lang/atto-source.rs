@@ -7,7 +7,7 @@
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{self, Tok, Token};
 use crate::{module_lower, parser, visibility_lower};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 type R<T> = Result<T, Diagnostic>;
 const MAX_UNITS: usize = 64;
