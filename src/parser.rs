@@ -549,9 +549,15 @@ impl Parser {
                 ));
             }
             decls += 1;
+            let annotations = self.parse_failure_annotations()?;
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
+            if annotations.explicit &&
+                matches!(self.word_at(at), Some("define" | "actor")) {
+                return Err(Diagnostic::new(start, "E_SYNTAX",
+                    "failure-effect annotations apply to callables, not class/actor/type declarations"));
+            }
             match (self.word_at(at), self.word_at(at + 1)) {
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
@@ -594,7 +600,7 @@ impl Parser {
                     };
                     return Err(unsupported(self.pos(), &what));
                 }
-                _ => prog.funcs.push(self.parse_func()?),
+                _ => prog.funcs.push(self.parse_func(annotations) ?),
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
@@ -1091,10 +1097,7 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_func(&mut self) -> R<Func> {
-        if *self.peek() == Tok::At {
-            return Err(unsupported(self.pos(), "annotations"));
-        }
+    fn parse_func(&mut self, annotations: FailureEffects) -> R<Func> {
         let start = self.pos();
         self.eat_word("pub");
         let is_pure = self.eat_word("pure");
@@ -1143,7 +1146,11 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
-        let declared_effects = self.parse_effect_clauses()?;
+        let failure_effects = self.parse_failure_effects(annotations, false)?;
+        if is_pure && failure_effects.mask() != 0 {
+            return Err(Diagnostic::new(pos, "E_PURE",
+                "pure functions cannot declare nonempty throw, raise or panic bounds"));
+        }
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1161,70 +1168,116 @@ impl Parser {
             pos,
             is_generator,
             is_pure,
-            declared_effects,
+            failure_effects,
             params,
             ret,
             body,
         })
     }
 
-    /// Explicit exceptional-effect clauses are a *checked upper bound*
-    /// for ordinary throw and raise. A completely unannotated function
-    /// keeps inferred legacy behavior. The panic channel is parsed and
-    /// retained, but fatal-trap analysis is not yet certified.
-    fn parse_effect_clauses(&mut self) -> R<Option<DeclaredEffects>> {
-        let mut declared = DeclaredEffects::default();
-        let mut any = false;
+    /// Annotations and signature clauses share one nominal effect row.
+    /// An annotation must have '@' and a parenthesized list; one '@' owns
+    /// exactly one effect kind. Empty lists are explicit prohibitions.
+    fn parse_failure_annotations(&mut self) -> R<FailureEffects> {
+        let mut effects = FailureEffects::default();
+        while *self.peek() == Tok::At {
+            let at = self.pos();
+            self.advance();
+            if !matches!(self.word_at(0), Some(
+                "Throws" | "Raises" | "Panics" | "throws" | "raises" | "panics"
+            )) {
+                return Err(unsupported(at, "non-failure annotations"));
+            }
+            effects = self.parse_failure_effects(effects, true)?;
+        }
+        Ok(effects)
+    }
+
+    /// Parse @Throws(Error), @Throws(), throws(Error), and throws Error.
+    /// Built-in Error is the only nominal Error subclass browser-admitted.
+    /// Unsupported names fail closed, rather than assuming subtype ancestry.
+    fn parse_failure_effects(&mut self, mut effects: FailureEffects,
+                             annotation_context: bool) -> R<FailureEffects> {
         loop {
-            let kind = match self.word_at(0) {
-                Some("throws") => "throws",
-                Some("raises") => "raises",
-                Some("panics") => "panics",
-                _ => return Ok(any.then_some(declared)),
+            let (kind, at) = match self.word_at(0) {
+                Some("throws") => (0usize, self.pos()),
+                Some("raises") => (1usize, self.pos()),
+                Some("panics") => (2usize, self.pos()),
+                Some("Throws") if annotation_context => (0usize, self.pos()),
+                Some("Raises") if annotation_context => (1usize, self.pos()),
+                Some("Panics") if annotation_context => (2usize, self.pos()),
+                Some("Throws" | "Raises" | "Panics") => {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "capitalized failure annotations require '@'"));
+                },
+                _ => break,
             };
-            if *self.peek_at(1) != Tok::LParen {
-                // Keep unsupported free-form Java-style headers in the
-                // existing parser error path rather than consuming body text.
-                return Ok(any.then_some(declared));
-            }
-            let pos = self.pos();
-            let seen = match kind {
-                "throws" => declared.throws,
-                "raises" => declared.raises,
-                "panics" => declared.panics,
-                _ => unreachable!(),
-            };
-            if seen {
-                return Err(Diagnostic::new(pos, "E_DUPLICATE",
-                    format!("duplicate '{kind}' effect clause")));
-            }
-            match kind {
-                "throws" => declared.throws = true,
-                "raises" => declared.raises = true,
-                "panics" => declared.panics = true,
-                _ => unreachable!(),
-            }
-            any = true;
             self.advance();
-            self.advance();
-            let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
-            if ty != "Error" {
-                return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                    format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+            let parens = self.eat(&Tok::LParen);
+            if annotation_context && !parens {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "failure annotations require a parenthesized Error type list"));
             }
-            if self.eat(&Tok::Comma) {
-                return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
-                    format!("duplicate Error type in '{kind}' effect clause")));
+            let mut types: Vec<String> = Vec::new();
+            if !(parens && self.eat(&Tok::RParen)) {
+                loop {
+                    let type_at = self.pos();
+                    let name = match self.peek().clone() {
+                        Tok::Ident(s) => s,
+                        _ => return Err(Diagnostic::new(type_at, "E_EFFECT_TYPE",
+                            "a failure effect requires an Error subtype")),
+                    };
+                    self.advance();
+                    if name != "Error" {
+                        let code = if matches!(name.as_str(),
+                            "int" | "bool" | "string" | "String" | "float" | "void") {
+                            "E_EFFECT_TYPE"
+                        } else { "E_UNSUPPORTED_TYPE" };
+                        return Err(Diagnostic::new(type_at, code,
+                            format!("failure type '{name}' requires Error ancestry; only built-in Error is browser-admitted")));
+                    }
+                    if types.iter().any(|old| old == &name) {
+                        return Err(Diagnostic::new(type_at, "E_DUPLICATE",
+                            "duplicate Error type in a failure effect list"));
+                    }
+                    types.push(name);
+                    if self.eat(&Tok::Comma) {
+                        if parens && *self.peek() == Tok::RParen {
+                            return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                                "trailing comma in a failure type list"));
+                        }
+                        if !parens && matches!(self.word_at(0), Some("throws" | "raises" | "panics")) {
+                            return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                                "expected an Error type after ',' in the failure type list"));
+                        }
+                        continue;
+                    }
+                    break;
+                }
+                if parens {
+                    self.expect(Tok::RParen, "')' after failure effects")?;
+                }
             }
-            self.expect(Tok::RParen, "')' to close the effect clause")?;
-            // `throws(Error), raises(Error)`: a comma may separate clauses.
-            if *self.peek() == Tok::Comma
-                && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
-                && *self.peek_at(2) == Tok::LParen
+            if effects.declared[kind] {
+                return Err(Diagnostic::new(at, "E_EFFECT_TYPE",
+                    "duplicate failure effect declaration"));
+            }
+            effects.declared[kind] = true;
+            *match kind {
+                0 => &mut effects.throws,
+                1 => &mut effects.raises,
+                _ => &mut effects.panics,
+            } = types;
+            effects.explicit = true;
+            if annotation_context { break; }
+            // Both separated and adjacent clauses are supported.
+            if *self.peek() == Tok::Comma &&
+                matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
             {
                 self.advance();
             }
         }
+        Ok(effects)
     }
 
     /// `try { } [catch (Error e) { }] [finally { }]`, at least one handler.
