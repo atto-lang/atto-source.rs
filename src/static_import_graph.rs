@@ -106,6 +106,18 @@ pub struct Target {
     pub declaration: String,
     pub kind: Kind,
 }
+/// Opaque nominal declaration key in the bounded static import graph.
+/// A pinned package snapshot is the identity domain for this initial lane.
+/// Cross-version/content ABI compatibility requires a separate policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NominalIdentity {
+    target: Target,
+}
+impl NominalIdentity {
+    pub fn kind(&self) -> Kind { self.target.kind }
+    pub fn declaration(&self) -> &str { &self.target.declaration }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier { Implicit, Deliberate, Explicit }
 
@@ -206,6 +218,26 @@ impl Scope {
         let view = matching.next().ok_or_else(|| err("E_UNBOUND", "missing authenticated export view"))?;
         if matching.next().is_some() { return Err(err("E_AMBIGUOUS", "duplicate authenticated export view")); }
         self.resolve_export(reference, view)
+    }
+
+    /// Resolve a nominal declaration against exactly one caller-verified
+    /// export view. Recheck even exact/direct bindings: bind_verified alone
+    /// is not authority to forge a type or bypass private visibility.
+    /// This API is resolver-only; no layouts, constructors or codegen.
+    pub fn resolve_nominal(&self, reference: &str, views: &[&ExportView]) -> R<NominalIdentity> {
+        let target = self.resolve_in_views(reference, views)?;
+        if !matches!(target.kind, Kind::Class | Kind::Enum | Kind::Type | Kind::Trait | Kind::Interface | Kind::Actor) {
+            return Err(err("E_IMPORT_KIND", "reference is not a nominal type declaration"));
+        }
+        let mut matches = views.iter().filter(|v| v.origin == target.origin);
+        let view = matches.next().ok_or_else(|| err("E_UNBOUND", "missing nominal export view"))?;
+        if matches.next().is_some() {
+            return Err(err("E_AMBIGUOUS", "duplicate nominal export view"));
+        }
+        if view.lookup(&target.declaration)? != target {
+            return Err(err("E_IMPORT_KIND", "nominal declaration differs from canonical export"));
+        }
+        Ok(NominalIdentity { target })
     }
 
     /// Create a namespace alias after resolution of a checked namespace node.
