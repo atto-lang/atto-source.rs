@@ -101,6 +101,11 @@ int main(void){
     unsigned char bad[36];memcpy(bad,one,sizeof(bad));bad[35]^=1;
     must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA,bad,sizeof(bad),&seq),ATTO_ACTOR_STORE_CORRUPT,"invalid checksum");
     must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA+1,one,sizeof(one),&seq),ATTO_ACTOR_STORE_SCHEMA,"invalid schema");
+    unsigned char alternate[36];snapshot(SCHEMA+1,43,alternate);
+    must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA+1,alternate,sizeof(alternate),&seq),
+         ATTO_ACTOR_STORE_SCHEMA,"implicit schema migration rejected");
+    assert(seq==0);
+    recover(db,"actor:1",42,1);
     atto_actor_db *other=NULL;must(atto_actor_db_open(path,&other),0,"second instance open");
     uint64_t new_epoch=0;must(atto_actor_activate(other,"actor:1",&new_epoch),0,"fence first");assert(new_epoch==epoch+1);
     must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA,one,sizeof(one),&seq),ATTO_ACTOR_STORE_STALE_EPOCH,"old epoch fenced");
@@ -114,6 +119,17 @@ int main(void){
     must(atto_actor_activate(db,"actor:1",&new_epoch),0,"new final epoch");assert(new_epoch>=4);
     must(atto_actor_commit(db,"actor:1",new_epoch,2,SCHEMA,two,sizeof(two),&seq),ATTO_ACTOR_STORE_STALE_SEQUENCE,"reject replay");
     must(atto_actor_commit(db,"actor:1",new_epoch,3,SCHEMA,two,sizeof(two),&seq),0,"final commit");assert(seq==4);
+    /* A valid new checkpoint must not silently erase corrupted durable history. */
+    sqlite3 *raw=NULL;
+    assert(sqlite3_open(path,&raw)==SQLITE_OK);
+    assert(sqlite3_exec(raw,"UPDATE atto_actor_snapshots SET snapshot=zeroblob(36) WHERE actor_id='actor:1';",NULL,NULL,NULL)==SQLITE_OK);
+    assert(sqlite3_close(raw)==SQLITE_OK);
+    must(atto_actor_commit(db,"actor:1",new_epoch,4,SCHEMA,two,sizeof(two),&seq),
+         ATTO_ACTOR_STORE_CORRUPT,"corrupt prior checkpoint cannot be overwritten");
+    assert(seq==0);
+    must(atto_actor_load(db,"actor:1",SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"corrupt row retained for recovery");
+    assert(missing==NULL && missing_len==0 && missing_seq==0);
     atto_actor_db_close(db);
     /* Delete test database and journal artifacts from trusted tempdir. */
     char wal[532],shm[532];snprintf(wal,sizeof(wal),"%s-wal",path);snprintf(shm,sizeof(shm),"%s-shm",path);
