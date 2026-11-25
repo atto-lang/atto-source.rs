@@ -68,6 +68,16 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         {
             continue;
         }
+        // A direct declaration-first capture has precisely the same checked
+        // AST/type/effect path as unary `<< c`. Permit it to reach the actual
+        // production parser and checker; never grant select or nb/try forms.
+        if io.direction == io_shorthand::Direction::Read
+            && io.context == io_shorthand::Context::Standalone
+            && io.mode == io_shorthand::Mode::Direct
+            && io.read_binder_on_left
+        {
+            continue;
+        }
         return Err(Diagnostic::new(io.pos, "E_UNSUPPORTED",
             "I/O direction shorthand recognized, but this capability is not supported by the browser compiler; only standalone stdio.out writes are executable"));
     }

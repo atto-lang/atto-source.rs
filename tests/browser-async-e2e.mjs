@@ -102,8 +102,9 @@ try{
     "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('source channel guest worker error'))};"+
     "w.postMessage({});})");
   assert.deepEqual(sourceProbe,{ok:true,sourceCompiled:true,pendingSome:41,
-    eof:true,invalidHandle:'Err',zeroSome:true,cooperativeYields:3});
-  console.log('PASS source compiler: real JSPI Channel<int> guest read Some/EOF/Err/zero in Worker');
+    eof:true,invalidHandle:'Err',zeroSome:true,cooperativeYields:3,
+    declarationFirstSome:42,declarationFirstYields:1});
+  console.log('PASS source compiler: prefix and declaration-first Channel<int> JSPI reads; Some/EOF/Err/zero in Worker');
 
 
 
