@@ -64,3 +64,17 @@ fn contextual_roots_are_namespace_paths_not_filesystem_traversal(){
         ("pkg.shared",None),("pkg..hidden",None),("pkg.__atto_hidden",None),("self.super.config",Some("network.http")),
     ]{assert!(contextual_path(src,current).is_err(),"{src}");}
 }
+
+#[test]
+fn contextual_binding_uses_only_current_package_and_preserves_atomicity(){
+    use atto_compiler::import_tree::bind_contextual;
+    let (mut scope,view)=graph();
+    bind_contextual(&mut scope,&leaves("import self.{get as fetch, Request};"),Some("net.http"),&view).unwrap();
+    assert_eq!(scope.resolve_export("fetch",&view).unwrap().declaration,"net.http.get");
+    bind_contextual(&mut scope,&leaves("import super.tcp as t;"),Some("net.http"),&view).unwrap();
+    assert_eq!(scope.resolve_export("t.connect",&view).unwrap().declaration,"net.tcp.connect");
+    let l=leaves("import pkg.net.http.{get as good, secret};");
+    assert_eq!(bind_contextual(&mut scope,&l,None,&view).unwrap_err().code,"E_PRIVATE");
+    assert_eq!(scope.resolve("good").unwrap_err().code,"E_UNBOUND");
+    assert!(bind_contextual(&mut scope,&leaves("import super.super.super.net;"),Some("net.http"),&view).is_err());
+}
