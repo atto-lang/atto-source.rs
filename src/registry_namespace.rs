@@ -454,7 +454,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             p.bind_package(&mut scope,alias.as_deref()).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
         } else if import_v2::is_mixed(&tokens,start)
-            || ((word(tokens.get(start),"const") || word(tokens.get(start),"fnc"))
+            || ((word(tokens.get(start),"const") || word(tokens.get(start),"fnc") || word(tokens.get(start),"class"))
                 && (start+1..end).any(|j|word(tokens.get(j),"from"))) {
             let (parsed,next)=import_v2::parse_mixed(&tokens,start)?;
             if next!=end+1 { return Err(Diagnostic::new(pos,"E_SYNTAX","invalid import extent")); }
@@ -462,8 +462,8 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest requires explicit pkg domain"));
             };
             let p=*available.get(name.as_str()).ok_or_else(||Diagnostic::new(pos,"E_UNBOUND","package is not in authenticated snapshot set"))?;
-            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace|Kind::Const)) {
-                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function, namespace and literal constant selectors only"));
+            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace|Kind::Const|Kind::Class)) {
+                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function, namespace, literal constant and class selectors only"));
             }
             scope.bind_mixed(p.view(),&parsed).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
@@ -513,15 +513,111 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
     let views:Vec<_>=admitted.values().map(|p|p.view()).collect();
     scope.namespace_aliases(&pairs,&views).map_err(|d|at(d,Pos{line:1,col:1}))?;
 
+    // First executable external class lane: exactly one authenticated package,
+    // one selected ordinary class, and a scalar-returning direct construction
+    // and public instance call. No root declarations, object escape, cross-
+    // package assignment or package-field authority can enter this lane.
+    if admitted.values().any(|p| !p.class_metadata.is_empty()) {
+        if admitted.len()!=1 || current.is_some() {
+            return Err(err("E_UNSUPPORTED","external class guest requires one external package"));
+        }
+        let p=*admitted.values().next().unwrap();
+        let root=&tokens[i..];
+        let denied=||err("E_UNSUPPORTED","external class guest requires direct new and public scalar method call");
+        let prefix=lexer::lex("pub fnc main(): int { return new")?;
+        let alternate=lexer::lex("pub fnc main() -> int { return new")?;
+        let n=prefix.len()-1;
+        if root.len()<=n || !(root[..n].iter().map(|t|&t.tok).eq(prefix[..n].iter().map(|t|&t.tok))
+            || root[..n].iter().map(|t|&t.tok).eq(alternate[..n].iter().map(|t|&t.tok))) {
+            return Err(denied());
+        }
+        // No arbitrary caller expressions in either argument list. The
+        // production checker still owns literal range, arity and type checks.
+        fn scalar_args(t:&[Token], start:usize)->R<(usize,usize)> {
+            let bad=||err("E_UNSUPPORTED","external class arguments must be bounded integer literals");
+            if t.get(start).map(|x|&x.tok)!=Some(&Tok::LParen){return Err(bad());}
+            let mut j=start+1;
+            let mut count=0usize;
+            if t.get(j).map(|x|&x.tok)==Some(&Tok::RParen){return Ok((j+1,0));}
+            loop {
+                if t.get(j).map(|x|&x.tok)==Some(&Tok::Minus){j+=1;}
+                if !matches!(t.get(j).map(|x|&x.tok),Some(Tok::Int(_))){return Err(bad());}
+                j+=1;count+=1;
+                if count>16{return Err(err("E_SOURCE_LIMIT","external class argument budget exceeded"));}
+                match t.get(j).map(|x|&x.tok) {
+                    Some(Tok::RParen)=>return Ok((j+1,count)),
+                    Some(Tok::Comma)=>j+=1,
+                    _=>return Err(bad()),
+                }
+            }
+        }
+        let open=root[n..].iter().position(|t|t.tok==Tok::LParen).map(|j|n+j).ok_or_else(denied)?;
+        let reference=path_tokens(&root[n..open])?;
+        let target=scope.resolve_export(&reference,p.view())?;
+        let _identity=scope.resolve_nominal(&reference,p.view())?;
+        if target.kind!=Kind::Class{return Err(err("E_IMPORT_KIND","new requires a checked external class"));}
+        let (ns,name)=target.declaration.rsplit_once('.').ok_or_else(denied)?;
+        let source=p.class_metadata.get(ns).ok_or_else(denied)?;
+        let owner=p.declaration_source(&target)?;
+        let provider=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(owner)))?;
+        let semi=provider.iter().position(|t|t.tok==Tok::Semi).ok_or_else(denied)?;
+        let body=&provider[semi+1..];
+        let ast=crate::parser::Parser::new(body.to_vec()).parse_program()?;
+        if ast.classes.len()!=1 {return Err(err("E_UNSUPPORTED","external class execution requires a single ordinary class in its source unit"));}
+        let class=&ast.classes[0];
+        if class.name!=name || !class.public || class.state_container{return Err(denied());}
+        let (after_ctor,argc)=scalar_args(root,open)?;
+        if let Some(ctor)=&class.ctor {
+            // Constructor AST currently erases visibility. Require the exact
+            // explicit public source modifier at the parsed constructor position.
+            if !body.windows(2).any(|w|w[0].pos==ctor.pos && word(w.first(),"pub") && word(w.get(1),"constructor")){
+                return Err(err("E_PRIVATE","external explicit constructor must be public"));
+            }
+            if ctor.params.len()!=argc || ctor.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
+                return Err(err("E_TYPE","external constructor requires matching scalar int arguments"));
+            }
+        } else if argc!=0 {return Err(err("E_TYPE","implicit constructor takes no arguments"));}
+        if root.get(after_ctor).map(|x|&x.tok)!=Some(&Tok::Dot){return Err(denied());}
+        let member=match root.get(after_ctor+1).map(|x|&x.tok){
+            Some(Tok::Ident(s))=>s.as_str(),_=>return Err(denied()),
+        };
+        if root.get(after_ctor+2).map(|x|&x.tok)!=Some(&Tok::LParen){
+            if class.fields.iter().any(|f|f.name==member && f.visibility!=crate::ast::FieldVisibility::Public){
+                return Err(err("E_PRIVATE","external class field is not public"));
+            }
+            return Err(denied());
+        }
+        let (after_method,method_argc)=scalar_args(root,after_ctor+2)?;
+        if !root[after_method..].iter().map(|t|&t.tok).eq([Tok::Semi,Tok::RBrace,Tok::Eof].iter()){
+            return Err(denied());
+        }
+        let mut candidates=class.methods.iter().filter(|m|m.name==member && !m.is_static && m.params.len()==method_argc);
+        let method=candidates.next().ok_or_else(||err("E_UNBOUND","external instance method not found"))?;
+        if candidates.next().is_some(){return Err(err("E_AMBIGUOUS","ambiguous external method"));}
+        if !method.public{return Err(err("E_PRIVATE","external method is not public"));}
+        if method.ret!=crate::ast::Type::Int || method.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
+            return Err(err("E_TYPE","external method must have scalar int signature"));
+        }
+        // Flatten only the one checked declaration into a closed guest.
+        // The exact root grammar prevents caller-side capture of any other
+        // provider identifiers, fields, constructors or private members.
+        let mut linked=body[..body.len()-1].to_vec();
+        linked.extend_from_slice(&root[..n]);
+        linked.push(id(name,root[n].pos));
+        linked.extend_from_slice(&root[open..]);
+        if linked.len()>lexer::MAX_TOKENS{return Err(err("E_SOURCE_LIMIT","external class guest token budget exceeded"));}
+        let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
+        let checked=crate::check::check(&parsed)?;
+        if !checked.imports.is_empty(){return Err(err("E_UNSUPPORTED","external class guest cannot request host imports"));}
+        return crate::compile_prelexed(linked,None);
+    }
+
     // Prepare deterministic private module owners for each verified source
     // namespace. Package name order, not caller or import order, determines
     // synthetic owner names. No synthesized names can occur in source.
     let mut modules=BTreeMap::new();
     let mut linked=Vec::new();
     for p in admitted.values() {
-        if !p.class_metadata.is_empty() {
-            return Err(err("E_UNSUPPORTED","external class metadata has no checked executable ABI yet"));
-        }
         for (ns,(file,body)) in &p.sources {
             if modules.len()>=64 { return Err(err("E_SOURCE_LIMIT","too many linked registry namespaces")); }
             let owner=format!("__atto_registry_{}",modules.len());

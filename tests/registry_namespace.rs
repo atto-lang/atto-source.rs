@@ -472,3 +472,45 @@ fn authenticated_class_metadata_rejects_invalid_and_mixed_units() {
         assert!(verify(&manifest,&inputs).is_err(),"{source}");
     }
 }
+
+#[test]
+fn authenticated_external_class_constructs_and_dispatches_public_method() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 0; pub constructor(int x) { self.value = x; } pub answer(int y): int { return self.value+y; } hidden(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let sources=[
+        "import pkg '@org/project/package' as p; pub fnc main(): int { return new p.model.Item(40).answer(2); }",
+        "import pkg '@org/project/package' as p; import class p.model.Item as Data; pub fnc main(): int { return new Data(40).answer(2); }",
+        "import class [model.Item as Data] from pkg '@org/project/package'; pub fnc main(): int { return new Data(40).answer(2); }",
+        "import pkg '@org/project/package' as p; define alias p.model as m; pub fnc main(): int { return new m.Item(40).answer(2); }",
+    ];
+    let mut expected=None;
+    for (i,source) in sources.iter().enumerate(){
+        let wasm=compile_registry_guest(source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Some(bytes)=&expected {assert_eq!(&wasm,bytes);}
+        else {expected=Some(wasm.clone());}
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (body,code) in [
+        ("return new p.model.Item(42).hidden();","E_PRIVATE"),
+        ("return new p.model.Item(42).value;","E_PRIVATE"),
+        ("return new p.model.Item().answer(2);","E_TYPE"),
+        ("return new p.model.Item(40).answer(2+0);","E_UNSUPPORTED"),
+        ("return new p.model.Item(40).answer(2)+1;","E_UNSUPPORTED"),
+        ("return new p.model.Missing(40).answer(2);","E_UNBOUND"),
+        ("return new p.http.get(40).answer(2);","E_IMPORT_KIND"),
+        ("val x = new p.model.Item(40); return x.answer(2);","E_UNSUPPORTED"),
+    ]{
+        let source=format!("import pkg '@org/project/package' as p; pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+    inputs.last_mut().unwrap().source="use namespace model; pub define class Item as private int value: 0; private constructor(int x) { self.value = x; } pub answer(int y): int { return self.value+y; } end";
+    let q=verify(&manifest,&inputs).unwrap();
+    assert_eq!(compile_registry_guest(sources[0],&[&q]).unwrap_err().code,"E_PRIVATE");
+}
