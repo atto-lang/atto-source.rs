@@ -336,6 +336,46 @@
           true
         ]
       ]
+    },
+    "mixed-literal-provider": {
+      "identity": "@org/project/package",
+      "exports": [
+        [
+          "http",
+          "namespace",
+          true
+        ],
+        [
+          "http.LIMIT",
+          "const",
+          true
+        ],
+        [
+          "http.OFFSET",
+          "const",
+          false
+        ],
+        [
+          "http.get",
+          "fnc",
+          true
+        ],
+        [
+          "http.answer",
+          "fnc",
+          true
+        ]
+      ],
+      "literalValues": {
+        "http.LIMIT": {
+          "type": "int",
+          "value": 41
+        },
+        "http.OFFSET": {
+          "type": "int",
+          "value": 1
+        }
+      }
     }
   },
   "cases": [
@@ -4114,6 +4154,131 @@
         "atomic": true
       },
       "currentNamespace": null
+    },
+    {
+      "id": "mixed-provider-limit",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.http.LIMIT",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.LIMIT"
+      }
+    },
+    {
+      "id": "mixed-provider-call",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.http.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.get"
+      }
+    },
+    {
+      "id": "mixed-provider-typed",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import [const http.LIMIT as cap, fnc http.get as inc] from pkg '@org/project/package';",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.LIMIT"
+      }
+    },
+    {
+      "id": "mixed-provider-alias",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\ndefine alias p.http as h;",
+      "reference": "h.LIMIT",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.LIMIT"
+      }
+    },
+    {
+      "id": "mixed-provider-tree",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\nimport p.http.{self as h, fnc answer};",
+      "reference": "answer",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.answer"
+      }
+    },
+    {
+      "id": "mixed-provider-negative-private",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.http.OFFSET",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private constant",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "mixed-provider-negative-atomic",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\nimport p.http.{LIMIT as cap, OFFSET as secret};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private constant",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "mixed-provider-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\nimport p.http.{fnc LIMIT};",
+      "reference": "LIMIT",
+      "expect": {
+        "outcome": "reject",
+        "reason": "literal is not a function",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "mixed-provider-negative-alias-value",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\ndefine alias p.http.LIMIT as l;",
+      "reference": "l",
+      "expect": {
+        "outcome": "reject",
+        "reason": "literal is not a namespace",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "mixed-provider-negative-collision",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\nimport p.http.{LIMIT as value, get as value};",
+      "reference": "value",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate binding",
+        "code": "E_DUPLICATE",
+        "atomic": true
+      }
     }
   ]
 }
