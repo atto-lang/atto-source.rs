@@ -67,9 +67,8 @@ fn unrelated_scalar_functions_remain_native_objects() {
 #[test]
 fn unused_reserved_declarations_are_rejected_before_object_emission() {
     for name in RESERVED {
-        let source = format!(
-            "fnc {name}(): int {{ return 0; }} pub fnc main(): int {{ return 42; }}"
-        );
+        let source =
+            format!("fnc {name}(): int {{ return 0; }} pub fnc main(): int {{ return 42; }}");
         let ast = oreslang_source_rs::frontend::parse(&source).unwrap();
         assert_eq!(
             oreslang_source_rs::mir::lower(ast).unwrap_err().class,
