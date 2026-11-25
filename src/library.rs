@@ -450,36 +450,38 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
         if tokens.get(i).is_some_and(|t| t.tok == Tok::Semi) { i += 1; }
     }
     let mut edits = Vec::new();
-    // This bounded lane admits only leading file-scope namespace constants,
+    // This bounded lane admits only leading file-scope namespace aliases,
     // after imports and an optional validated namespace header. Ordinary
     // typed constants and other declarations stay in the production parser.
     // Resolve all aliases before erasing any of their declarations.
     let mut constants = Vec::<(String, String, Pos)>::new();
     while ident(tokens.get(i)) == Some("define")
-        && ident(tokens.get(i + 1)) == Some("const")
-        && tokens.get(i + 3).is_some_and(|t| t.tok == Tok::Assign)
+        && ident(tokens.get(i + 1)) == Some("alias")
     {
         let pos = tokens[i].pos;
+        if tokens.get(i + 3).is_none_or(|t| t.tok != Tok::Assign) {
+            return Err(err(pos, "E_SYNTAX", "expected define alias NAME = qualified.namespace"));
+        }
         let name = binding_path(&tokens[i + 2..i + 3], pos)?;
         let start = i + 4;
         let mut end = start;
         while tokens.get(end).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { end += 1; }
         if tokens.get(end).is_none_or(|t| t.tok != Tok::Semi) {
-            return Err(err(pos, "E_SYNTAX", "unterminated namespace constant"));
+            return Err(err(pos, "E_SYNTAX", "unterminated namespace alias"));
         }
         let reference = binding_path(&tokens[start..end], pos)?;
         if constants.len() >= crate::import_v2::MAX_ITEMS {
-            return Err(err(pos, "E_SOURCE_LIMIT", "too many namespace constants"));
+            return Err(err(pos, "E_SOURCE_LIMIT", "too many namespace aliases"));
         }
         // Conservative subset: do not shadow existing imported aliases or
         // hidden natural module names until full lexical binding is wired.
         if protected.contains(&name) || constants.iter().any(|(prior, _, _)| prior == &name) {
-            return Err(err(pos, "E_DUPLICATE", "namespace constant collides with builtin binding"));
+            return Err(err(pos, "E_DUPLICATE", "namespace alias collides with builtin binding"));
         }
         let start_byte = byte_offset(source, pos);
         let end_byte = byte_offset(source, tokens[end].pos) + 1;
         let span = source.get(start_byte..end_byte)
-            .ok_or_else(|| err(pos, "E_INTERNAL", "invalid namespace constant source span"))?;
+            .ok_or_else(|| err(pos, "E_INTERNAL", "invalid namespace alias source span"))?;
         let replacement: String = span.bytes().map(|b| if b == b'\n' { '\n' } else { ' ' }).collect();
         edits.push((start_byte, end_byte, replacement));
         constants.push((name, reference, pos));
@@ -506,7 +508,7 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
         for (name, _, pos) in constants {
             let target = scope.resolve(&name)?.target;
             if !matches!(target.origin, Origin::Builtin(_)) {
-                return Err(err(pos, "E_IMPORT_KIND", "namespace constant must resolve to admitted builtin"));
+                return Err(err(pos, "E_IMPORT_KIND", "namespace alias must resolve to admitted builtin"));
             }
             protected.insert(name.clone());
             aliases.insert(vec![name], target.declaration);
