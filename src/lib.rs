@@ -17,6 +17,10 @@ pub mod target_syntax;
 pub mod target_flow;
 pub mod target_borrow;
 pub mod target_cleanup;
+pub mod target_cleanup_cfg;
+pub mod target_cleanup_wasm;
+pub mod target_scalar;
+mod target_scalar_cfg;
 pub mod target_typed;
 pub mod wasm;
 
@@ -135,9 +139,9 @@ mod abi {
         STATE.with(|s| s.borrow().col)
     }
 
-    /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
-    #[no_mangle]
-    pub extern "C" fn compile(length: i32) -> i32 {
+    /// All compiler endpoints share the same input/result buffers; the
+    /// scalar preview is opt-in and never changes the normal ABI behavior.
+    fn compile_inner(length: i32, preview: u8) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -176,7 +180,13 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            let built = match preview {
+                1 => super::target_scalar::compile_scalar_receiver_preview(source),
+                2 => super::target_scalar::compile_scalar_receiver_instance_preview(source),
+                3 => super::target_cleanup_wasm::compile_cleanup_wasm_witness(source),
+                _ => super::compile(source),
+            };
+            match built {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0
@@ -184,5 +194,27 @@ mod abi {
                 Err(d) => fail(&mut st, d),
             }
         })
+    }
+
+    /// Original browser compiler contract: unchanged and fail-closed for mtd.
+    #[no_mangle]
+    pub extern "C" fn compile(length: i32) -> i32 { compile_inner(length,0) }
+
+    /// Preview-only stateless scalar receiver compiler; not actor runtime ABI.
+    #[no_mangle]
+    pub extern "C" fn compile_scalar_preview(length: i32) -> i32 {
+        compile_inner(length,1)
+    }
+
+    /// Opt-in instance-bound scalar receiver preview; ordinary compile unchanged.
+    #[no_mangle]
+    pub extern "C" fn compile_receiver_instance_preview(length: i32) -> i32 {
+        compile_inner(length,2)
+    }
+
+    /// Experimental synthetic cleanup witness, not source callback execution.
+    #[no_mangle]
+    pub extern "C" fn compile_cleanup_wasm_witness(length: i32) -> i32 {
+        compile_inner(length,3)
     }
 }
