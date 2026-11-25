@@ -307,9 +307,39 @@ fn frozen_registry_literals_link_with_functions_and_aliases(){
         "use namespace limits; define pub const int MAX = true;",
         "use namespace limits; define pub const int MAX = 9223372036854775808;",
         "use namespace limits; define pub const int MAX = std.env.read_env('X');",
-        "use namespace limits; define pub const int MAX = 41; pub fnc f(): int { return 1; }",
+        "use namespace limits; define pub const int MAX = 41; pub fnc MAX(): int { return 1; }",
     ]{
         inputs.last_mut().unwrap().source=bad;
         assert!(verify(&manifest,&inputs).is_err(),"{bad}");
+    }
+}
+
+#[test]
+fn mixed_registry_provider_uses_private_literals_without_exporting_them() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let mut inputs=INPUTS;
+    inputs[0].source="use namespace http; pub fnc get(int x): int { return x+OFFSET; } define const int OFFSET = 1; define pub const int LIMIT = 41; pub fnc answer(): int { return get(LIMIT); }";
+    let p=verify(MANIFEST,&inputs).unwrap();
+    for (i,source) in [
+        "import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.get(p.http.LIMIT); }",
+        "import [const http.LIMIT as cap, fnc http.get as inc] from pkg '@org/project/package'; pub fnc main(): int { return inc(cap); }",
+        "import pkg '@org/project/package' as p; import p.http.{self as h, fnc answer}; pub fnc main(): int { return answer(); }",
+    ].iter().enumerate() {
+        let wasm=compile_registry_guest(source,&[&p]).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-mixed-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    assert_eq!(compile_registry_guest("import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.OFFSET; }",&[&p]).unwrap_err().code,"E_PRIVATE");
+    for bad in [
+        "use namespace http; define const int OFFSET = 1; pub fnc get(int OFFSET): int { return OFFSET; }",
+        "use namespace http; define const int OFFSET = 1; pub fnc get(int x): int { OFFSET = x; return OFFSET; }",
+        "use namespace http; define const int OFFSET = 1; pub fnc get(int x): int { return OFFSET(); }",
+        "use namespace http; define const int OFFSET = 1; pub fnc OFFSET(): int { return 42; }",
+        "use namespace http; pub fnc get(int x): int { return x; } define const int OFFSET = std.env.read_env('X');",
+    ]{
+        inputs[0].source=bad;
+        assert!(verify(MANIFEST,&inputs).is_err(),"{bad}");
     }
 }
