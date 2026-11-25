@@ -13,6 +13,7 @@ on:
       - 'src/library.rs'
       - 'src/lib.rs'
       - 'tests/static_imports_v2.rs'
+      - 'tests/shared-import-v2/**'
       - '.github/workflows/static-imports-v2.yml'
 permissions:
   contents: read
@@ -111,3 +112,11 @@ jobs:
           if target/debug/attoc "$work/cycle.atto" -o "$work/cycle.wasm" 2>"$work/cycle.log"; then exit 1; fi
           test ! -e "$work/cycle.wasm"
           grep -F E_IMPORT_CYCLE "$work/cycle.log"
+      - name: Execute pinned shared conformance guest corpus
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          test "$(git hash-object tests/shared-import-v2/fixtures/import-v2/cases.json)" = 8b9ecc135b1268628073b29f683ddafa2856e99d
+          test "$(git hash-object tests/shared-import-v2/tools/run-static-import-v2-rust-guests.mjs)" = fd291a0851a74c1793c9526b446d4604029c0cf6
+          cargo build --locked --bin attoc
+          node tests/shared-import-v2/tools/run-static-import-v2-rust-guests.mjs --compiler target/debug/attoc
