@@ -186,16 +186,17 @@ fn tuple_items(t: &[Token]) -> Option<Vec<&[Token]>> {
     if t.first()?.tok != Tok::LParen || t.last()?.tok != Tok::RParen { return None; }
     let mut start = 1usize;
     let mut items = Vec::new();
-    let mut depth = 0usize;
+    let mut closers = Vec::new();
     let mut saw_comma = false;
     for i in 1..t.len()-1 {
         match t[i].tok {
-            Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+            Tok::LParen => closers.push(Tok::RParen),
+            Tok::LBracket => closers.push(Tok::RBracket),
+            Tok::LBrace => closers.push(Tok::RBrace),
             Tok::RParen | Tok::RBracket | Tok::RBrace => {
-                if depth == 0 { return None; }
-                depth -= 1;
+                if closers.pop().as_ref() != Some(&t[i].tok) { return None; }
             }
-            Tok::Comma if depth == 0 => {
+            Tok::Comma if closers.is_empty() => {
                 saw_comma = true;
                 if i == start { return None; }
                 items.push(&t[start..i]);
@@ -204,9 +205,16 @@ fn tuple_items(t: &[Token]) -> Option<Vec<&[Token]>> {
             _ => {}
         }
     }
-    if depth != 0 { return None; }
+    if !closers.is_empty() { return None; }
     if start < t.len()-1 { items.push(&t[start..t.len()-1]); }
     if !saw_comma && !items.is_empty() { return None; }
+    // Identifier-equals is a Record field, not a positional tuple item.
+    // Leave records and mixed items to the production parser's admission gate.
+    // Equality (==) and nested calls are deliberately not field markers.
+    if items.iter().any(|item| {
+        matches!(item.first().map(|x| &x.tok), Some(Tok::Ident(_)))
+            && item.get(1).is_some_and(|x| x.tok == Tok::Assign)
+    }) { return None; }
     if items.len() > LIMIT { return None; }
     Some(items)
 }
@@ -515,5 +523,45 @@ mod return_first_token_regression {
         let again = lex(&reconstructed).expect("roundtrip must lex");
         assert!(again.iter().any(|t| matches!(t.tok, crate::lexer::Tok::LeftArrow)));
         assert!(!reconstructed.contains("< -"), "left arrow was split");
+    }
+}
+
+
+#[cfg(test)]
+mod parenthesis_boundary_regression {
+    use super::{eofless, tuple_items};
+    use crate::lexer::lex;
+
+    fn arity(source: &str) -> Option<usize> {
+        let tokens = eofless(lex(source).expect("lex fixture"));
+        tuple_items(&tokens).map(|items| items.len())
+    }
+
+    #[test]
+    fn grouping_and_tuple_commas_are_depth_sensitive() {
+        for (source, expected) in [
+            ("()", Some(0)),
+            ("(5)", None),
+            ("((5))", None),
+            ("(5,)", Some(1)),
+            ("(5,6,true)", Some(3)),
+            ("((5,6),true)", Some(2)),
+            ("(f(1,2),3,)", Some(2)),
+            ("(\"a,b\",5)", Some(2)),
+            ("(a==5,6)", Some(2)),
+        ] {
+            assert_eq!(arity(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn records_and_malformed_delimiters_never_enter_tuple_lowering() {
+        for source in [
+            "(a=5)", "(a=5,b=6)", "(a=5,6)", "(5,b=6)",
+            "(,5)", "(5,,6)", "(f([1),2],3)", "(f({1),2},3)",
+        ] {
+            assert_eq!(arity(source), None, "{source}");
+        }
+        assert_eq!(arity("((a=5),6)"), Some(2));
     }
 }
