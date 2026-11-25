@@ -224,6 +224,20 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
 /// namespace objects are possible. The ordinary compiler still handles
 /// type checking, private module lowering and Wasm emission.
 pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<u8>> {
+    compile_registry_guest_inner(source, packages, None, None)
+}
+
+/// Compile an application root using an explicitly supplied, verified current
+/// package. Public-only contextual access: claiming a namespace in source
+/// cannot establish ownership of private exports. The optional logical path
+/// is trusted package-relative metadata for default namespace normalization.
+pub fn compile_contextual_guest(source: &str, current: &FrozenRegistry,
+    packages: &[&FrozenRegistry], logical: Option<&Path>) -> R<Vec<u8>> {
+    compile_registry_guest_inner(source, packages, Some(current), logical)
+}
+
+fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry],
+    current: Option<&'a FrozenRegistry>, logical: Option<&Path>) -> R<Vec<u8>> {
     use crate::lexer::{self, Tok, Token};
     use crate::import_v2::{self, Source};
     fn word(t: Option<&Token>, value: &str) -> bool {
@@ -254,7 +268,7 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
         if !namespace(&path) { return Err(err("E_IMPORT_PATH","invalid registry binding path")); }
         Ok(path)
     }
-    if source.len()>crate::SOURCE_CAP || packages.is_empty() || packages.len()>16 {
+    if source.len()>crate::SOURCE_CAP || (packages.is_empty() && current.is_none()) || packages.len()+usize::from(current.is_some())>16 {
         return Err(err("E_SOURCE_LIMIT","registry guest source or package budget exceeded"));
     }
     let mut available=BTreeMap::new();
@@ -263,7 +277,10 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
             return Err(err("E_AMBIGUOUS","multiple pinned snapshots for one registry name"));
         }
     }
-    let tokens=lexer::lex(source)?;
+    if let Some(p)=current {
+        if available.insert(p.name.as_str(),p).is_some() {return Err(err("E_AMBIGUOUS","current package must not also be supplied as an external dependency"));}
+    }
+    let tokens=crate::namespace::normalize(&lexer::lex(source)?,logical)?;
     for t in &tokens {
         if matches!(&t.tok,Tok::Ident(s) if s.starts_with("__atto_")) {
             return Err(Diagnostic::new(t.pos,"E_RESERVED","reserved compiler-generated identifier"));
@@ -273,8 +290,16 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
     let mut admitted=BTreeMap::new();
     let mut i=0;
     let mut trees = Vec::new();
-    // This intentionally narrow guest API does not infer a package-relative
-    // file namespace; callers must use the single-file root profile.
+    let mut current_namespace=None;
+    if word(tokens.first(),"use") {
+        let pos=tokens[0].pos;
+        let p=current.ok_or_else(||Diagnostic::new(pos,"E_IMPORT_PATH","namespace header requires explicit current package context"))?;
+        let end=tokens.iter().position(|t|t.tok==Tok::Semi).ok_or_else(||Diagnostic::new(pos,"E_SYNTAX","unterminated namespace header"))?;
+        let ns=path_tokens(&tokens[2..end]).map_err(|d|at(d,pos))?;
+        if !p.namespaces.contains(&ns) {return Err(Diagnostic::new(pos,"E_IMPORT_PATH","source namespace is not declared in current package"));}
+        current_namespace=Some(ns);
+        i=end+1;
+    }
     while word(tokens.get(i),"import") {
         let pos=tokens[i].pos;
         let start=i+1;
@@ -327,11 +352,21 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
         }
         i=end+1;
     }
+    // All explicit package admissions precede dependent tree resolution.
+    // Contextual roots never use the external alias table as an authority.
+    for (leaves,pos) in trees {
+        let contextual=leaves.iter().filter(|l|matches!(l.path.split('.').next(),Some("pkg"|"self"|"super"))).count();
+        if contextual!=0 {
+            if contextual!=leaves.len(){return Err(Diagnostic::new(pos,"E_IMPORT_PATH","mixed contextual and external tree roots"));}
+            let p=current.ok_or_else(||Diagnostic::new(pos,"E_IMPORT_PATH","contextual import requires verified current package"))?;
+            crate::import_tree::bind_contextual(&mut scope,&leaves,current_namespace.as_deref(),p.view()).map_err(|d|at(d,pos))?;
+            admitted.insert(p.name.as_str(),p);
+        }else{
+            let views:Vec<_>=admitted.values().map(|p|p.view()).collect();
+            crate::import_tree::bind(&mut scope,&leaves,&views).map_err(|d|at(d,pos))?;
+        }
+    }
     if admitted.is_empty() { return Err(err("E_UNSUPPORTED","registry guest requires an authenticated package import")); }
-    // All explicit package admissions precede dependent tree resolution,
-    // even when a tree was written before the package import.
-    let views:Vec<_>=admitted.values().map(|p|p.view()).collect();
-    for (leaves,pos) in trees { crate::import_tree::bind(&mut scope,&leaves,&views).map_err(|d|at(d,pos))?; }
     let mut declarations=Vec::new();
     while word(tokens.get(i),"define") && word(tokens.get(i+1),"alias") {
         let (name,reference,pos,next)=crate::library::parse_alias_declaration(&tokens,i)?;
