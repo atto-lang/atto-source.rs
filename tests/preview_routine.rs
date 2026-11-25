@@ -20,25 +20,33 @@ fn routine_cannot_escape_into_first_class_parameter() {
 }
 #[test]
 fn end_bodied_routines_do_not_scan_into_the_following_main() {
-    pass(r#"
+    pass(
+        r#"
         routine r_end() -> int ::
             let int n = 3,
             n + 2
         end
         pub fnc main(): int { return r_end() + 37; }
-    "#);
-    fail(r#"
+    "#,
+    );
+    fail(
+        r#"
         routine r_recur() -> int :: r_recur() end
         pub fnc main(): int { return 0; }
-    "#, "E_ROUTINE_RECURSION");
+    "#,
+        "E_ROUTINE_RECURSION",
+    );
 }
 
 #[test]
 fn recursive_routines_are_rejected_before_guest_emission() {
-    fail(r#"
+    fail(
+        r#"
         routine recurse(int n): int { return recurse(n - 1); }
         pub fnc main(): int { return recurse(2); }
-    "#, "E_ROUTINE_RECURSION");
+    "#,
+        "E_ROUTINE_RECURSION",
+    );
 }
 #[test]
 fn only_statically_known_matching_callback_functions_are_lowered() {
@@ -48,19 +56,23 @@ fn only_statically_known_matching_callback_functions_are_lowered() {
 }
 #[test]
 fn generated_callback_names_cannot_be_forged() {
-    fail(r#"
+    fail(
+        r#"
         pub fnc main(): int {
             val __atto_internal_direct_cb_5_apply_5_twice = 0;
             return 42;
         }
         routine foo(): int { return 0; }
-    "#, "E_RESERVED");
+    "#,
+        "E_RESERVED",
+    );
     pass("pub fnc main(): int { return 42; }");
 }
 
 #[test]
 fn mutually_recursive_routines_fail_closed_even_without_direct_self_calls() {
-    fail(r#"
+    fail(
+        r#"
         routine even(int n): int {
             if n == 0 then return 1; fi
             return odd(n - 1);
@@ -70,24 +82,31 @@ fn mutually_recursive_routines_fail_closed_even_without_direct_self_calls() {
             return even(n - 1);
         }
         pub fnc main(): int { return even(4); }
-    "#, "E_ROUTINE_RECURSION");
+    "#,
+        "E_ROUTINE_RECURSION",
+    );
 }
 
 #[test]
 fn indirect_routine_recursion_through_ordinary_function_is_forbidden() {
-    fail(r#"
+    fail(
+        r#"
         routine start(int n): int { return bridge(n); }
         fnc bridge(int n): int { return start(n); }
         pub fnc main(): int { return start(2); }
-    "#, "E_ROUTINE_RECURSION");
+    "#,
+        "E_ROUTINE_RECURSION",
+    );
 }
 
 #[test]
 fn acyclic_routine_call_chain_still_compiles_without_false_recursion() {
-    pass(r#"
+    pass(
+        r#"
         routine increment(int n): int { return n + 1; }
         fnc bridge(int n): int { return increment(n); }
         routine double_bridge(int n): int { return bridge(n) * 2; }
         pub fnc main(): int { return double_bridge(20); }
-    "#);
+    "#,
+    );
 }

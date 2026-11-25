@@ -73,7 +73,6 @@ pub struct Program {
     pub type_names: Vec<(String, Pos)>,
 }
 
-
 /// Target-only nominal actor interface retained in the production Program AST.
 /// Indices in method ActorRef types refer to forwards, NOT executable actors.
 /// The backend must not emit this partial interface.
@@ -254,7 +253,10 @@ pub enum Stmt {
         pos: Pos,
     },
     /// `defer || -> { ... };` registers a LIFO cleanup without running it.
-    Defer { body: Vec<Stmt>, pos: Pos },
+    Defer {
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
     /// `recover (|T a, ..| -> |err, c| -> { ... })(args);` registers a
     /// recovery callback whose factory arguments are evaluated once, now.
     Recover {
@@ -385,7 +387,12 @@ pub enum LambdaBody {
 
 /// Explicit Atto ownership operators, not pointer address syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, Take, Share }
+pub enum OwnershipOp {
+    Borrow,
+    Copy,
+    Take,
+    Share,
+}
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
@@ -395,6 +402,8 @@ pub enum ExprKind {
     Float(u64),
     Bool(bool),
     Str(String),
+    /// Domain-scoped source Symbol literal; not a string or host pointer.
+    Symbol(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
     /// Unary call-site trap: evaluates its operand once and wraps only
@@ -429,6 +438,8 @@ pub enum ExprKind {
     Record(Vec<(String, Expr)>),
     /// Parsed map key/value pairs. Browser allocation is gated.
     Map(Vec<(Expr, Expr)>),
+    /// Nominal immutable Entry<K,V> parsed without granting Map guest storage.
+    Entry(Box<Expr>, Box<Expr>),
     /// Contextually typed record/map empty braces.
     EmptyBraces,
     /// Parsed bracket selection. Kept separate from dot-member syntax so

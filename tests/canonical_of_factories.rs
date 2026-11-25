@@ -10,9 +10,7 @@ use atto_compiler::{
 };
 
 fn parsed(source: &str) -> atto_compiler::ast::Program {
-    Parser::new(lexer::lex(source).expect("lex"))
-        .parse_program()
-        .expect("parse")
+    Parser::new(lexer::lex(source).expect("lex")).parse_program().expect("parse")
 }
 fn rejected(source: &str, code: &str) {
     let err = compile(source).expect_err("invalid factory cannot emit guest");
@@ -70,14 +68,8 @@ fn array_and_list_of_keep_distinct_inferred_types() {
     "#,
     );
     let t = collection_types::analyze(&p).expect("distinct factory type inference");
-    assert_eq!(
-        t[0].value.ty,
-        LiteralType::Array(Box::new(LiteralType::Int))
-    );
-    assert_eq!(
-        t[1].value.ty,
-        LiteralType::List(Box::new(LiteralType::String))
-    );
+    assert_eq!(t[0].value.ty, LiteralType::Array(Box::new(LiteralType::Int)));
+    assert_eq!(t[1].value.ty, LiteralType::List(Box::new(LiteralType::String)));
 }
 
 #[test]
@@ -91,14 +83,8 @@ fn all_nonempty_scalar_factories_execute_and_uninferred_empty_reject() {
     let list = compile(r#"pub fnc main(): int { val l = List.of("a","b"); stdio.println(l[0]); return 0; }"#)
         .expect("bounded immutable scalar List.of guest is implemented");
     assert!(list.starts_with(b"\0asm\x01\0\0\0"));
-    rejected(
-        r#"pub fnc main(): int { val x = Array.of(); return 0; }"#,
-        "E_TYPE_INFERENCE",
-    );
-    rejected(
-        r#"pub fnc main(): int { val x = List.of(); return 0; }"#,
-        "E_TYPE_INFERENCE",
-    );
+    rejected(r#"pub fnc main(): int { val x = Array.of(); return 0; }"#, "E_TYPE_INFERENCE");
+    rejected(r#"pub fnc main(): int { val x = List.of(); return 0; }"#, "E_TYPE_INFERENCE");
     rejected(
         r#"pub fnc main(): int { val x = Array.of(1,"two"); return 0; }"#,
         "E_TYPE_INFERENCE",
@@ -111,22 +97,13 @@ fn duplicate_fields_and_keys_and_bad_arity_reject() {
         r#"pub fnc main(): int { val r=Record.of(name=1,"name":2); return 0; }"#,
         "E_DUPLICATE",
     );
-    rejected(
-        r#"pub fnc main(): int { val m=Map.of("a",1,"a",2); return 0; }"#,
-        "E_DUPLICATE",
-    );
-    rejected(
-        r#"pub fnc main(): int { val m=Map.of("a",1,"b"); return 0; }"#,
-        "E_FACTORY_ARITY",
-    );
+    rejected(r#"pub fnc main(): int { val m=Map.of("a",1,"a",2); return 0; }"#, "E_DUPLICATE");
+    rejected(r#"pub fnc main(): int { val m=Map.of("a",1,"b"); return 0; }"#, "E_FACTORY_ARITY");
     rejected(
         r#"pub fnc main(): int { val m=Map.of("a" => 1, "b", 2); return 0; }"#,
         "E_FACTORY_ARITY",
     );
-    rejected(
-        r#"pub fnc main(): int { val r=Record.of(key => 1); return 0; }"#,
-        "E_UNSUPPORTED",
-    );
+    rejected(r#"pub fnc main(): int { val r=Record.of(key => 1); return 0; }"#, "E_UNSUPPORTED");
 }
 
 #[test]
@@ -148,10 +125,7 @@ fn empty_record_factory_is_static_but_not_a_guest_allocation_profile() {
     let p = parsed("pub fnc main(): int { val r = Record.of(); return 0; }");
     let checked = collection_types::analyze(&p).expect("empty closed row is statically typed");
     assert_eq!(checked[0].value.ty, LiteralType::Record(vec![]));
-    rejected(
-        "pub fnc main(): int { val r = Record.of(); return 0; }",
-        "E_UNSUPPORTED",
-    );
+    rejected("pub fnc main(): int { val r = Record.of(); return 0; }", "E_UNSUPPORTED");
 }
 
 #[test]
@@ -185,9 +159,7 @@ fn explicit_row_annotations_preserve_quoted_utf8_field_names() {
     let p = parsed(source);
     let checked = collection_types::analyze(&p).expect("quoted UTF-8 row type");
     assert_eq!(checked[0].value.source_to_record_slot, vec![2, 0, 1]);
-    assert!(compile(source)
-        .expect("quoted closed row guest")
-        .starts_with(b"\0asm"));
+    assert!(compile(source).expect("quoted closed row guest").starts_with(b"\0asm"));
 }
 
 #[test]
@@ -200,14 +172,10 @@ fn explicit_row_types_use_contextual_inference_but_nested_values_fail_closed() {
         }
     "#,
     );
-    let checked =
-        collection_types::analyze(&p).expect("array element inferred from row field type");
+    let checked = collection_types::analyze(&p).expect("array element inferred from row field type");
     assert_eq!(
         checked[0].value.ty,
-        LiteralType::Record(vec![(
-            "items".into(),
-            LiteralType::Array(Box::new(LiteralType::Int))
-        )])
+        LiteralType::Record(vec![("items".into(), LiteralType::Array(Box::new(LiteralType::Int)))])
     );
     // Nested arrays are not yet a verified guest Record ABI.
     rejected(

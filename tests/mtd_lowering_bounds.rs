@@ -1,15 +1,13 @@
 //! Adversarial source-span and complexity checks for the *single* merged
 //! class mtd lowerer. The token stream and checked AST must never be bypassed.
-use atto_compiler::{compile, lexer::lex, parser::Parser};
 use atto_compiler::target_syntax::{lower_class_receivers, parse_target_declarations};
+use atto_compiler::{compile, lexer::lex, parser::Parser};
 
 fn many_classes(n: usize) -> String {
     let mut src = String::new();
     for i in 0..n {
         src.push_str(&format!("define class C{i} as final int value: {i}; end\n"));
-        src.push_str(&format!(
-            "pub mtd (self: C{i}) answer() -> int :: self.value end\n"
-        ));
+        src.push_str(&format!("pub mtd (self: C{i}) answer() -> int :: self.value end\n"));
     }
     src
 }

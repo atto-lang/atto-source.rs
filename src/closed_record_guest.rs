@@ -13,9 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ast::{
-    BindKind, ClassDecl, Constructor, Expr, ExprKind, Field, FieldMode, Param, Program, Stmt, Type,
-};
+use crate::ast::{BindKind, ClassDecl, Constructor, Expr, ExprKind, Field, FieldMode, Param, Program, Stmt, Type};
 use crate::collection_types::{LiteralType, TypedBinding};
 use crate::diag::{Diagnostic, Pos};
 use crate::record_struct_layout::{FieldType, LayoutInterner};
@@ -131,10 +129,7 @@ fn rewrite_projection(expr: &mut Expr, record_locals: &BTreeSet<String>, depth: 
             rewrite_projection(yes, record_locals, depth + 1);
             rewrite_projection(no, record_locals, depth + 1);
         }
-        ExprKind::Call(_, args)
-        | ExprKind::New(_, args)
-        | ExprKind::Array(args)
-        | ExprKind::Tuple(args) => {
+        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) | ExprKind::Tuple(args) => {
             for arg in args {
                 rewrite_projection(arg, record_locals, depth + 1);
             }
@@ -154,6 +149,8 @@ fn rewrite_projection(expr: &mut Expr, record_locals: &BTreeSet<String>, depth: 
         | ExprKind::Float(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::Symbol(_)
+        | ExprKind::Entry(_, _)
         | ExprKind::Var(_)
         | ExprKind::SelfRef
         | ExprKind::StateRead(_)
@@ -162,10 +159,7 @@ fn rewrite_projection(expr: &mut Expr, record_locals: &BTreeSet<String>, depth: 
 }
 fn rewrite_statement(stmt: &mut Stmt, records: &BTreeSet<String>) {
     match stmt {
-        Stmt::Bind { init, .. }
-        | Stmt::Assign { value: init, .. }
-        | Stmt::Expr(init)
-        | Stmt::Return(Some(init), _) => {
+        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } | Stmt::Expr(init) | Stmt::Return(Some(init), _) => {
             rewrite_projection(init, records, 0);
         }
         // Nested statements aren't rewritten with an outer namespace
@@ -189,11 +183,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
         if let LiteralType::Record(_) = &b.value.ty {
             let p = (b.value.pos.line, b.value.pos.col, b.name.clone());
             if source_types.insert(p, b).is_some() {
-                return Err(diagnostic(
-                    b.value.pos,
-                    "E_SHAPE",
-                    "ambiguous compiler record type provenance",
-                ));
+                return Err(diagnostic(b.value.pos, "E_SHAPE", "ambiguous compiler record type provenance"));
             }
         }
     }
@@ -205,14 +195,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
         let mut body = Vec::with_capacity(func.body.len());
         let mut record_locals = BTreeSet::new();
         for statement in std::mem::take(&mut func.body) {
-            let Stmt::Bind {
-                kind,
-                name,
-                ty,
-                init,
-                pos,
-            } = statement
-            else {
+            let Stmt::Bind { kind, name, ty, init, pos } = statement else {
                 let mut other = statement;
                 rewrite_statement(&mut other, &record_locals);
                 body.push(other);
@@ -246,41 +229,25 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 ));
             }
             let key = (init.pos.line, init.pos.col, name.clone());
-            let binding = source_types.get(&key).ok_or_else(|| {
-                diagnostic(
-                    init.pos,
-                    "E_SHAPE",
-                    "missing compiler-derived closed Record type",
-                )
-            })?;
+            let binding = source_types
+                .get(&key)
+                .ok_or_else(|| diagnostic(init.pos, "E_SHAPE", "missing compiler-derived closed Record type"))?;
             let LiteralType::Record(canonical) = &binding.value.ty else {
                 return Err(diagnostic(init.pos, "E_SHAPE", "closed Record shape lost"));
             };
-            if binding.value.children.len() != fields.len()
-                || binding.value.source_to_record_slot.len() != fields.len()
-            {
-                return Err(diagnostic(
-                    init.pos,
-                    "E_SHAPE",
-                    "incomplete record effect inventory",
-                ));
+            if binding.value.children.len() != fields.len() || binding.value.source_to_record_slot.len() != fields.len() {
+                return Err(diagnostic(init.pos, "E_SHAPE", "incomplete record effect inventory"));
             }
             let mut source_fields = Vec::with_capacity(fields.len());
             for ((field, _), child) in fields.iter().zip(&binding.value.children) {
                 scalar_type(&child.ty, init.pos)?;
                 source_fields.push((field.clone(), child.ty.clone()));
             }
-            let planned = interner.closed_record(&source_fields).map_err(|e| {
-                Diagnostic::new(
-                    init.pos,
-                    "E_SHAPE",
-                    format!("invalid static record layout: {e:?}"),
-                )
-            })?;
+            let planned = interner
+                .closed_record(&source_fields)
+                .map_err(|e| Diagnostic::new(init.pos, "E_SHAPE", format!("invalid static record layout: {e:?}")))?;
             if planned.source_to_slot != binding.value.source_to_record_slot
-                || interner
-                    .shape(planned.shape_id)
-                    .is_none_or(|shape| shape.fields != *canonical)
+                || interner.shape(planned.shape_id).is_none_or(|shape| shape.fields != *canonical)
             {
                 return Err(diagnostic(
                     init.pos,
@@ -294,25 +261,20 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 program.type_names.push((class_name.clone(), pos));
                 classes.push(generated_class(
                     class_name,
-                    &interner
-                        .shape(planned.shape_id)
-                        .expect("interned shape")
-                        .fields,
+                    &interner.shape(planned.shape_id).expect("interned shape").fields,
                     pos,
                 )?);
                 class_type_indices.push(type_idx);
             }
-            let class_index = *class_type_indices.get(planned.shape_id).ok_or_else(|| {
-                diagnostic(pos, "E_SHAPE", "record shape identity was not interned")
-            })?;
+            let class_index = *class_type_indices
+                .get(planned.shape_id)
+                .ok_or_else(|| diagnostic(pos, "E_SHAPE", "record shape identity was not interned"))?;
             let class_name = program.type_names[class_index as usize].0.clone();
 
             // Compile all initializers in original source order. Even when
             // admitted fields become richer, never move effects by sorting.
             let mut args: Vec<Option<Expr>> = vec![None; fields.len()];
-            for (i, ((_field, value), dest)) in
-                fields.into_iter().zip(&planned.source_to_slot).enumerate()
-            {
+            for (i, ((_field, value), dest)) in fields.into_iter().zip(&planned.source_to_slot).enumerate() {
                 let temp_name = format!("{PRIVATE_PREFIX}tmp_{}", ordinal);
                 ordinal += 1;
                 let temp_ty = scalar_type(&source_fields[i].1, value.pos)?;
@@ -331,13 +293,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             }
             let mut checked_args = Vec::with_capacity(args.len());
             for arg in args {
-                checked_args.push(arg.ok_or_else(|| {
-                    diagnostic(
-                        pos,
-                        "E_SHAPE",
-                        "static record slot lacks its source initializer",
-                    )
-                })?);
+                checked_args.push(arg.ok_or_else(|| diagnostic(pos, "E_SHAPE", "static record slot lacks its source initializer"))?);
             }
             record_locals.insert(name.clone());
             body.push(Stmt::Bind {

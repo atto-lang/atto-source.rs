@@ -1,7 +1,7 @@
 //! Executable immutable class mtd uses the same checker and ABI as inline
 //! methods, while mutable class and actor receivers stay fail-closed.
+use atto_compiler::target_syntax::{lower_class_receivers, parse_target_declarations};
 use atto_compiler::{compile, lexer::lex, parser::Parser};
-use atto_compiler::target_syntax::{parse_target_declarations,lower_class_receivers};
 
 const SOURCE: &str = r#"
     define class Calculator as
@@ -35,7 +35,7 @@ fn all_class_receiver_aliases_lower_to_real_checked_methods() {
     assert_eq!(program.funcs.len(), 1);
     let guest = compile(SOURCE).unwrap();
     assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
-    assert_eq!(guest,compile(SOURCE).unwrap(),"deterministic checked guest");
+    assert_eq!(guest, compile(SOURCE).unwrap(), "deterministic checked guest");
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn namespace_and_actor_mtd_never_fall_back_to_unsafe_class_dispatch() {
       pub fnc main(): int { return 0; }
     "#;
     let d = compile(namespace).unwrap_err();
-    assert_eq!(d.code,"E_UNSUPPORTED","{d}");
+    assert_eq!(d.code, "E_UNSUPPORTED", "{d}");
     let actor = r#"
       declare actor Actor;
       define class C as end
@@ -68,20 +68,20 @@ fn namespace_and_actor_mtd_never_fall_back_to_unsafe_class_dispatch() {
       pub fnc main(): int { return 0; }
     "#;
     let d = compile(actor).unwrap_err();
-    assert_eq!(d.code,"E_UNSUPPORTED","{d}");
+    assert_eq!(d.code, "E_UNSUPPORTED", "{d}");
 }
 
 #[test]
 fn malformed_class_mtd_bodies_fail_under_real_parser() {
     for (body, code) in [
-      ("-> int :: 3, 5", "E_EOF"),
-      ("-> int :: 3, end", "E_SYNTAX"),
-      ("-> int :: 3 5 end", "E_SYNTAX"),
-      (": int -> 5 end", "E_SYNTAX"),
+        ("-> int :: 3, 5", "E_EOF"),
+        ("-> int :: 3, end", "E_SYNTAX"),
+        ("-> int :: 3 5 end", "E_SYNTAX"),
+        (": int -> 5 end", "E_SYNTAX"),
     ] {
-      let source = format!("define class C as end mtd (self: C) bad() {body} pub fnc main(): int {{ return 0; }}");
-      let d = compile(&source).unwrap_err();
-      assert_eq!(d.code,code,"{source}: {d}");
+        let source = format!("define class C as end mtd (self: C) bad() {body} pub fnc main(): int {{ return 0; }}");
+        let d = compile(&source).unwrap_err();
+        assert_eq!(d.code, code, "{source}: {d}");
     }
 }
 
@@ -96,7 +96,7 @@ fn non_public_receiver_stays_private_after_lowering() {
       }
     "#;
     let d = compile(source).unwrap_err();
-    assert_eq!(d.code,"E_PRIVATE","{d}");
+    assert_eq!(d.code, "E_PRIVATE", "{d}");
 }
 
 #[test]
@@ -109,5 +109,5 @@ fn class_mtd_duplicate_signature_is_a_semantic_error() {
       pub fnc main(): int { return 0; }
     "#;
     let d = compile(source).unwrap_err();
-    assert_eq!(d.code,"E_DUPLICATE","{d}");
+    assert_eq!(d.code, "E_DUPLICATE", "{d}");
 }

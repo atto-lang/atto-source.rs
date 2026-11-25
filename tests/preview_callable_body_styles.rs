@@ -25,7 +25,7 @@ fn without_explicit_public_inline_method_compilation_fails_closed() {
 fn without_explicit_public_receiver_method_compilation_fails_closed() {
     let private = SITE.replace(
         "pub mtd (self: Calculator) receiver_end() -> int",
-        "mtd (self: Calculator) receiver_end() -> int"
+        "mtd (self: Calculator) receiver_end() -> int",
     );
     assert_ne!(private, SITE, "fixture must contain public out-of-line receiver");
     let error = compile(&private).expect_err("main must not call private receiver_end");
@@ -37,7 +37,7 @@ fn without_explicit_public_receiver_method_compilation_fails_closed() {
 fn compiler_recovers_after_private_receiver_rejection() {
     let rejected = SITE.replace(
         "pub mtd (self: Calculator) receiver_end() -> int",
-        "mtd (self: Calculator) receiver_end() -> int"
+        "mtd (self: Calculator) receiver_end() -> int",
     );
     assert!(compile(&rejected).is_err());
     assert!(compile(SITE).is_ok(), "no stale class-symbol or receiver state across compilations");

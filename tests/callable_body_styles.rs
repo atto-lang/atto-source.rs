@@ -24,10 +24,10 @@ fn end_style_does_not_make_commas_valid_in_brace_blocks() {
 
 #[test]
 fn end_style_rejects_missing_end_and_ambiguous_delimiters() {
-    assert_eq!(compile("pub fnc main() -> int :: let int x = 3, x + 2")
-        .unwrap_err().code, "E_EOF");
-    assert_eq!(compile("pub fnc main() -> int :: { return 5; } end")
-        .unwrap_err().code, "E_SYNTAX");
-    assert_eq!(compile("pub fnc main() -> int :: let int x = 3, x + 2, end")
-        .unwrap_err().code, "E_SYNTAX");
+    assert_eq!(compile("pub fnc main() -> int :: let int x = 3, x + 2").unwrap_err().code, "E_EOF");
+    assert_eq!(compile("pub fnc main() -> int :: { return 5; } end").unwrap_err().code, "E_SYNTAX");
+    assert_eq!(
+        compile("pub fnc main() -> int :: let int x = 3, x + 2, end").unwrap_err().code,
+        "E_SYNTAX"
+    );
 }

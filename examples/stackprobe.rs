@@ -38,8 +38,14 @@ fn main() {
                 arms.join("\n")
             )
         }),
-        ("string concat chain", format!("pub fnc main(): int {{ val s = {}; return 0; }}", vec!["\"a\""; h - 3].join(" + "))),
-        ("float chain", format!("pub fnc main(): int {{ val f = {}; return 0; }}", vec!["1.5"; h - 3].join(" * "))),
+        (
+            "string concat chain",
+            format!("pub fnc main(): int {{ val s = {}; return 0; }}", vec!["\"a\""; h - 3].join(" + ")),
+        ),
+        (
+            "float chain",
+            format!("pub fnc main(): int {{ val f = {}; return 0; }}", vec!["1.5"; h - 3].join(" * ")),
+        ),
         (
             "member chain",
             format!("pub fnc main(): int {{ val a = 1; return a{}; }}", ".b".repeat(h - 4)),
