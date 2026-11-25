@@ -102,7 +102,7 @@ jobs:
           trap 'rm -rf "$work"' EXIT
           printf '%s\n' 'import core.num;' 'pub fnc main(): int { return num.clamp(42, 0, 100); }' > "$work/baseline.atto"
           target/debug/attoc "$work/baseline.atto" -o "$work/baseline.wasm"
-          for decl in 'define alias m = core.num;' 'define alias m = second; define alias second = core.num;' 'define alias m = num;'; do
+          for decl in 'define alias m = core.num;' 'define alias m = second; define alias second = core.num;' 'define alias m = num;' 'define alias core.num as m;' 'define alias second as m; define alias core.num as second;' 'define alias m = second; define alias core.num as second;'; do
             printf '%s\n' 'import core.num;' "$decl" 'pub fnc main(): int { return m.clamp(42, 0, 100); }' > "$work/alias.atto"
             target/debug/attoc "$work/alias.atto" -o "$work/alias.wasm"
             cmp "$work/baseline.wasm" "$work/alias.wasm"
@@ -112,6 +112,10 @@ jobs:
           if target/debug/attoc "$work/cycle.atto" -o "$work/cycle.wasm" 2>"$work/cycle.log"; then exit 1; fi
           test ! -e "$work/cycle.wasm"
           grep -F E_IMPORT_CYCLE "$work/cycle.log"
+          printf '%s\n' 'import core.num;' 'define alias a as b; define alias b as c; define alias c as a;' 'pub fnc main(): int { return 42; }' > "$work/cycle-as.atto"
+          if target/debug/attoc "$work/cycle-as.atto" -o "$work/cycle-as.wasm" 2>"$work/cycle-as.log"; then exit 1; fi
+          test ! -e "$work/cycle-as.wasm"
+          grep -F 'a -> c -> b -> a' "$work/cycle-as.log"
       - name: Execute pinned shared conformance guest corpus
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
