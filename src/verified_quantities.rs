@@ -162,7 +162,8 @@ impl Parser<'_> {
             v.number = checked(v.number.checked_neg(),pos)?;
             return Ok(v);
         }
-        let mut v = if self.take(Tok::LParen) {
+        let parenthesized = self.take(Tok::LParen);
+        let mut v = if parenthesized {
             let inner = self.expr(0,depth+1)?;
             self.expect(Tok::RParen)?;
             inner
@@ -170,6 +171,7 @@ impl Parser<'_> {
             self.literal(false)?
         };
         if self.take(Tok::Dot) {
+            if parenthesized || v.unit == Unit::scalar() { return Err(self.err("E_UNSUPPORTED", "conversion is restricted to quantity literals")); }
             self.expect_word("to_unit")?; self.expect(Tok::Lt)?;
             let name = self.name()?; self.expect(Tok::Gt)?;
             self.expect(Tok::LParen)?; self.expect(Tok::RParen)?;
@@ -185,6 +187,7 @@ impl Parser<'_> {
             _ => return Err(self.err("E_SYNTAX", "expected signed decimal integer")),
         };
         let end = self.decimal_end(pos);
+        if end.is_none() { return Err(self.err("E_SYNTAX", "expected decimal integer")); }
         self.at += 1;
         let unit = if self.token().tok == Tok::Lt {
             if self.token().pos.line != pos.line || end != Some(self.token().pos.col) {
