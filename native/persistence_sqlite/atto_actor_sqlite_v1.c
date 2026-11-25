@@ -154,25 +154,47 @@ int atto_actor_commit(atto_actor_db *store, const char *actor_id, uint64_t epoch
     int current=rc==SQLITE_ROW && sqlite3_column_int64(st,0)==(sqlite3_int64)epoch;
     sqlite3_finalize(st);
     if (!current) return abort_tx(db,rc==SQLITE_ROW||rc==SQLITE_DONE?ATTO_ACTOR_STORE_STALE_EPOCH:ATTO_ACTOR_STORE_IO);
-    if (!prep(db,"SELECT sequence FROM atto_actor_snapshots WHERE actor_id=?1;",&st)) return abort_tx(db,ATTO_ACTOR_STORE_IO);
-    (void)bind_id(st,actor_id);
+    /* A normal checkpoint is not a migration or corruption repair. Verify
+     * the existing durable row in the same fenced write transaction. */
+    unsigned char tag[8];schema_bytes(schema_id,tag);
+    if (!prep(db,"SELECT sequence,schema_tag,snapshot FROM atto_actor_snapshots WHERE actor_id=?1;",&st)) return abort_tx(db,ATTO_ACTOR_STORE_IO);
+    if (!bind_id(st,actor_id)) {sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_IO);}
     rc=sqlite3_step(st);
     uint64_t sequence=0;
     if (rc==SQLITE_ROW) {
         sqlite3_int64 old=sqlite3_column_int64(st,0);
-        if (old<1) {sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_CORRUPT);}
+        if (sqlite3_column_type(st,0)!=SQLITE_INTEGER || old<1 ||
+            sqlite3_column_type(st,1)!=SQLITE_BLOB ||
+            sqlite3_column_type(st,2)!=SQLITE_BLOB) {
+            sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_CORRUPT);
+        }
+        const void *old_tag=sqlite3_column_blob(st,1);
+        int tag_length=sqlite3_column_bytes(st,1);
+        if (!old_tag || tag_length!=8) {
+            sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_CORRUPT);
+        }
+        if (memcmp(old_tag,tag,8)!=0) {
+            sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_SCHEMA);
+        }
+        const void *old_data=sqlite3_column_blob(st,2);
+        int old_length=sqlite3_column_bytes(st,2);
+        if (!old_data || old_length<27 || old_length>(int)MAX_SNAPSHOT_BYTES ||
+            atto_actor_validate_snapshot(old_data,(size_t)old_length,schema_id)!=ATTO_ACTOR_STORE_OK) {
+            sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_CORRUPT);
+        }
         sequence=(uint64_t)old;
     } else if (rc!=SQLITE_DONE) {sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_IO);}
     sqlite3_finalize(st);
     if (expected_sequence!=sequence) return abort_tx(db,ATTO_ACTOR_STORE_STALE_SEQUENCE);
-    unsigned char tag[8];schema_bytes(schema_id,tag);
     if (!prep(db,"INSERT INTO atto_actor_snapshots(actor_id,sequence,schema_tag,snapshot) VALUES(?1,?2,?3,?4) "
                  "ON CONFLICT(actor_id) DO UPDATE SET sequence=excluded.sequence,schema_tag=excluded.schema_tag,snapshot=excluded.snapshot;",&st))
         return abort_tx(db,ATTO_ACTOR_STORE_IO);
-    (void)bind_id(st,actor_id);
-    (void)sqlite3_bind_int64(st,2,(sqlite3_int64)(sequence+1));
-    (void)sqlite3_bind_blob(st,3,tag,8,SQLITE_TRANSIENT);
-    (void)sqlite3_bind_blob(st,4,snapshot,(int)snapshot_length,SQLITE_TRANSIENT);
+    if (!bind_id(st,actor_id) ||
+        sqlite3_bind_int64(st,2,(sqlite3_int64)(sequence+1))!=SQLITE_OK ||
+        sqlite3_bind_blob(st,3,tag,8,SQLITE_TRANSIENT)!=SQLITE_OK ||
+        sqlite3_bind_blob(st,4,snapshot,(int)snapshot_length,SQLITE_TRANSIENT)!=SQLITE_OK) {
+        sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_IO);
+    }
     rc=sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc!=SQLITE_DONE) return abort_tx(db,ATTO_ACTOR_STORE_IO);
