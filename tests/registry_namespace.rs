@@ -230,3 +230,48 @@ fn registry_tree_guest_denies_private_missing_and_wrong_kind(){
         assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
     }
 }
+
+#[test]
+fn contextual_guest_resolves_current_parent_and_grandparent_without_ambient_authority(){
+    use atto_compiler::registry_namespace::compile_contextual_guest;
+    let manifest=r#"[package]
+name = "@org/project/package"
+version = "1.0.0"
+[namespaces]
+network = "src/network/"
+"network.http" = "src/http/"
+"network.http.utils" = "src/utils/"
+"network.config" = "src/config/"
+common = "src/common/"
+"#;
+    let inputs=[
+        SnapshotSource{path:"src/network/main.atto",source:"use namespace network; pub fnc get(): int { return 42; }"},
+        SnapshotSource{path:"src/http/main.atto",source:"use namespace network.http; pub fnc get(): int { return 42; } fnc secret(): int { return 42; }"},
+        SnapshotSource{path:"src/utils/main.atto",source:"use namespace network.http.utils; pub fnc get(): int { return 42; }"},
+        SnapshotSource{path:"src/config/main.atto",source:"use namespace network.config; pub fnc get(): int { return 42; }"},
+        SnapshotSource{path:"src/common/main.atto",source:"use namespace common; pub fnc get(): int { return 42; }"},
+    ];
+    let p=verify(manifest,&inputs).unwrap();
+    for (i,source) in [
+        "import pkg.network.http; pub fnc main(): int { return http.get(); }",
+        "use namespace network.http; import self.utils; pub fnc main(): int { return utils.get(); }",
+        "use namespace network.http; import super.config as cfg; pub fnc main(): int { return cfg.get(); }",
+        "use namespace network.http; import super.super.common; pub fnc main(): int { return common.get(); }",
+        "use namespace network.http; import self.{utils as u, get as answer}; pub fnc main(): int { return answer(); }",
+        "use default namespace(2); import self.utils; pub fnc main(): int { return utils.get(); }",
+    ].iter().enumerate(){
+        let wasm=compile_contextual_guest(source,&p,&[],Some(std::path::Path::new("network/http/app.atto"))).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-context-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (source,code) in [
+        ("import self.utils; pub fnc main(): int { return 42; }","E_IMPORT_PATH"),
+        ("use namespace network.http; import super.super.super.common; pub fnc main(): int { return 42; }","E_IMPORT_PATH"),
+        ("use namespace forged; import self.utils; pub fnc main(): int { return 42; }","E_IMPORT_PATH"),
+        ("use namespace network.http; import self.secret; pub fnc main(): int { return secret(); }","E_PRIVATE"),
+        ("use namespace network.http; import self.{get as answer, secret}; pub fnc main(): int { return answer(); }","E_PRIVATE"),
+    ]{assert_eq!(compile_contextual_guest(source,&p,&[],None).unwrap_err().code,code,"{source}");}
+    assert!(compile_contextual_guest("import pkg.network.http; pub fnc main(): int { return http.get(); }",&p,&[&p],None).is_err());
+}
