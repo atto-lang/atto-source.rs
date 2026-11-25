@@ -91,6 +91,8 @@ impl PackageId {
         { return Err(err("E_IMPORT_PATH", "invalid pinned canonical package identity")); }
         Ok(Self { name: name.into(), version: version.into(), digest: digest.into() })
     }
+    pub(crate) fn digest(&self) -> &str { &self.digest }
+
     pub fn suffixes(&self) -> Vec<String> {
         let parts: Vec<_> = self.name[1..].split('/').map(|p| p.replace('-', "_")).collect();
         (0..parts.len()).rev().map(|i| parts[i..].join(".")).filter(|p| path(p)).collect()

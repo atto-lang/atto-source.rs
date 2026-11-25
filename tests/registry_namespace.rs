@@ -646,3 +646,44 @@ fn same_named_classes_from_distinct_packages_compile_with_hygienic_identity() {
     let source=format!("{prefix}pub fnc main(): int {{ val a: p.model.Item = new p.model.Item(); val b: q.model.Item = new q.model.Item(); return a.value; }}");
     assert_eq!(compile_registry_guest(&source,&[&p,&q]).unwrap_err().code,"E_PRIVATE");
 }
+
+#[test]
+fn distinct_namespaces_and_package_scoped_fields_stay_isolated() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; pub define class Item as pub[pkg] int value: 10; pub answer(): int { return self.value; } end"),
+        ("src/other/types.atto","use namespace other; pub define class Item as pub[pkg] int value: 32; pub answer(): int { return self.value; } end"),
+    ]{inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; ";
+    let source=format!("{prefix}pub fnc main(): int {{ val a: p.model.Item = new p.model.Item(); val b: p.other.Item = new p.other.Item(); return a.answer()+b.answer(); }}");
+    let wasm=compile_registry_guest(&source,&[&p]).unwrap();
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-class-cross-1.wasm"),wasm).unwrap();
+    }
+    let bad=format!("{prefix}pub fnc main(): int {{ return new p.model.Item().value; }}");
+    assert_eq!(compile_registry_guest(&bad,&[&p]).unwrap_err().code,"E_PRIVATE");
+    let bad=format!("{prefix}pub fnc main(): int {{ val a: p.model.Item = new p.model.Item(); return a.value; }}");
+    assert_eq!(compile_registry_guest(&bad,&[&p]).unwrap_err().code,"E_PRIVATE");
+}
+
+#[test]
+fn generated_class_name_and_application_entry_cannot_be_captured() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as pub answer(): int { return main(); } end"});
+    let source="import pkg '@org/project/package' as p; pub fnc main(): int { return new p.model.Item().answer(); }";
+    // Whether the isolated checker rejects the reference or the linker
+    // rejects it, an application entry must not become provider authority.
+    if let Ok(p)=verify(&manifest,&inputs){
+        assert_eq!(compile_registry_guest(source,&[&p]).unwrap_err().code,"E_UNSUPPORTED");
+    }
+    inputs.last_mut().unwrap().source="use namespace model; pub define class Item as pub answer(): int { return 42; } end";
+    let p=verify(&manifest,&inputs).unwrap();
+    let forged="import pkg '@org/project/package' as p; pub fnc main(): int { return new __atto_registry_class_fake().answer(); }";
+    assert_eq!(compile_registry_guest(forged,&[&p]).unwrap_err().code,"E_RESERVED");
+}

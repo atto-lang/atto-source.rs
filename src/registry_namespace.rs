@@ -352,7 +352,7 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
 
 
 /// Compile bounded frozen-registry guests: direct functions and literal constants,
-/// or one closed external class construction and public scalar method call.
+/// or closed external class constructions and public scalar method calls.
 /// Whole-package imports, typed selections and source aliases use verified
 /// snapshots owning the source bytes. No filesystem/network lookup, implicit fallback, or runtime
 /// namespace objects are possible. The ordinary compiler still handles
@@ -591,7 +591,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             if positions.len()!=1 || positions[0]<2 || !word(body.get(positions[0]-1),"class"){
                 return Err(err("E_UNSUPPORTED","external self-named references require typed nominal remapping"));
             }
-            let hash=crate::sha256::hex_digest(format!("{}/{}",p.name,target.declaration).as_bytes());
+            let hash=crate::sha256::hex_digest(format!("{}/{}/{}",p.name,p.id.digest(),target.declaration).as_bytes());
             let generated=format!("__atto_registry_class_{}",&hash[..24]);
             if units.values().any(|u|u.generated==generated){return Err(err("E_DUPLICATE","internal nominal name collision"));}
             let public_ctor=class.ctor.as_ref().is_none_or(|ctor|
