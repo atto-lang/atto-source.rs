@@ -7,8 +7,19 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 const RESERVED_COLLECTION_NAMES: [&str; 13] = [
-    "Option", "Result", "Array", "FixedArray", "Vector", "List",
-    "FixedList", "Slice", "Tuple", "Map", "Set", "ReadLoan", "WriteLoan",
+    "Option",
+    "Result",
+    "Array",
+    "FixedArray",
+    "Vector",
+    "List",
+    "FixedList",
+    "Slice",
+    "Tuple",
+    "Map",
+    "Set",
+    "ReadLoan",
+    "WriteLoan",
 ];
 
 #[derive(Clone, Debug)]
