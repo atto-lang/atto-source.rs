@@ -2649,7 +2649,7 @@ impl<'a> FnCx<'a> {
     // Separated from recursive expression checking to prevent large
     // JSPI admission logic inflating every arithmetic/AST stack frame.
     #[inline(never)]
-    fn checked_channel_read(&mut self, args: &[Expr], pos: Pos) -> R<TE> {
+    fn checked_channel_read(&mut self, source: &Expr, pos: Pos) -> R<TE> {
             if !self.suspends {
                 return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
                     "channel read requires susp/suspends and the io/suspend effect contract"));
@@ -2662,13 +2662,10 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(pos, "E_BORROW",
                     "channel read cannot suspend with live ownership loans or protected actor state"));
             }
-            if args.len() != 1 {
-                return Err(Diagnostic::new(pos, "E_ARITY", "channel read requires one readable"));
-            }
-            let channel = self.value(&args[0])?;
+            let channel = self.value(source)?;
             if channel.ty != Type::ChannelInt {
-                return Err(type_err(args[0].pos,
-                    format!("readch/<< requires Channel<int>, got {}", self.tn(channel.ty))));
+                return Err(Diagnostic::new(pos, "E_IO_READABLE",
+                    format!("readch/<< requires a statically readable Channel<int>, got {}", self.tn(channel.ty))));
             }
             let scratch = self.temp(Type::ChannelInt, pos)?;
             let status = self.temp(Type::IoError, pos)?;
@@ -2687,8 +2684,8 @@ impl<'a> FnCx<'a> {
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
-            ExprKind::Call(name, args) if name == "\u{0}atto_channel_read" =>
-                self.checked_channel_read(args, e.pos),
+            ExprKind::PrefixRead(source) =>
+                self.checked_channel_read(source, e.pos),
             ExprKind::Await(inner) => {
                 if !self.suspends {
                     return Err(Diagnostic::new(e.pos, "E_EFFECT",
@@ -3072,7 +3069,7 @@ impl<'a> FnCx<'a> {
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
-            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
+            | ExprKind::Propagate(..) | ExprKind::PrefixRead(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
