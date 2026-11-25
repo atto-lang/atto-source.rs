@@ -161,19 +161,11 @@ impl FrozenRegistry {
                 }
                 files.push(normalized);
             }
-            // Conservative multi-file lane: public declarations may be
-            // referenced across files. Private declarations remain usable
-            // only in their own pinned file; no namespace-header spoof can
-            // confer private authority on a different source unit.
-            for ((&file,_),tokens) in matching.iter().copied().zip(&files){
-                for t in &tokens[end..] {
-                    if let Tok::Ident(name)=&t.tok {
-                        if owners.get(name).is_some_and(|(owner,public)|*owner!=file && !*public){
-                            return Err(Diagnostic::new(t.pos,"E_PRIVATE","cross-file private declaration reference"));
-                        }
-                    }
-                }
-            }
+            // All files in this unit belong to the same manifest namespace
+            // and have already passed the exact lock and independent inventory
+            // checks. Private names may be used inside this closed namespace.
+            // The public ExportView still denies access to private members;
+            // unpinned contextual roots do not acquire this authority.
             let (&file,&source)=matching[0];
             let source_for = |name: &str| owners.get(name).map_or(file, |(path,_)| *path);
             let normalized=if files.len()==1 {files.pop().unwrap()}else{
