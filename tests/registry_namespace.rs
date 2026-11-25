@@ -683,3 +683,37 @@ fn frozen_generic_class_source_arity_and_scalar_guests() {
     let tampered=[SnapshotSource{path:inputs[0].path,source:"use namespace models; define pub class Container as end"}];
     assert_eq!(FrozenGenericClass::verify("@org/project/package",manifest,&l,&digest,&tampered).err().unwrap().code,"E_LOCK_HASH");
 }
+
+
+#[test]
+fn frozen_generic_instances_share_executable_but_not_nominal_identity() {
+    use atto_compiler::registry_namespace::FrozenGenericClass;
+    let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } pub fnc echo(T value): T { return value; } end";
+    let inputs=[SnapshotSource{path:"src/models/container.atto",source:body}];
+    let l=lock(manifest,&inputs);
+    let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+    let prefix="import [class models.Container as C] from pkg '@org/project/package'; import [class models.Container as Again] from pkg '@org/project/package'; ";
+    let guest=format!("{prefix}pub fnc main(): int {{ val a: C[int] = Again[int].new(); val b = C[bool].new(); val c = C[string].new(); if b.echo(true) && c.echo(\"ok\") == \"ok\" then return a.echo(42); fi return 0; }}");
+    let wasm=p.compile_guest_instances(&guest).unwrap();
+    assert!(wasm.starts_with(b"\0asm"));
+    assert_eq!(wasm,p.compile_guest_instances(&guest).unwrap());
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-generic-multi-0.wasm"),wasm).unwrap();
+    }
+    for root in [
+        "val a: C[int] = Again[bool].new(); return 42;",
+        "val a: C[string] = Again[int].new(); return 42;",
+        "val a = C[int].new(); return a.echo(false);",
+        "val a = C[int, bool].new(); return 42;",
+        "val a = new C[int](); return 42;",
+        "val a = C[float].new(); return 42;",
+        "val a = C[int].new(1); return 42;",
+        "val a = Container[int].new(); return 42;",
+        "val a = __atto_generic_class_int.__atto_sealed_newable_factory(); return 42;",
+        "val C = 1; return C;",
+    ]{
+        let bad=format!("{prefix}pub fnc main(): int {{ {root} }}");
+        assert!(p.compile_guest_instances(&bad).is_err(),"{bad}");
+    }
+}

@@ -1133,3 +1133,126 @@ impl FrozenGenericClass {
         crate::compile_prelexed(linked,None)
     }
 }
+
+
+impl FrozenGenericClass {
+    /// Instantiate the same authenticated declaration at multiple scalar
+    /// arguments in one executable. Each canonical specialization receives
+    /// one private class slot, independent of encounter order or alias.
+    pub fn compile_guest_instances(&self, source: &str) -> R<Vec<u8>> {
+        use crate::lexer::{self,Tok};
+        use crate::import_v2::{self,Source};
+        use crate::static_import_graph::{ScalarIdentity as S,TypeIdentity,TypeTerm};
+        if source.len()>crate::SOURCE_CAP {return Err(err("E_SOURCE_LIMIT","generic guest source limit"));}
+        let tokens=lexer::lex(source)?;
+        let mut cursor=0;
+        let mut scope=Scope::new();
+        let mut bindings=BTreeSet::new();
+        while matches!(tokens.get(cursor).map(|t|&t.tok),Some(Tok::Ident(n)) if n=="import") {
+            let (import,end)=import_v2::parse_mixed(&tokens,cursor+1)?;
+            if import.source!=Source::Package(self.name.clone()) || import.selectors.len()!=1 {
+                return Err(err("E_IMPORT_PATH","generic guest requires pinned class selections"));
+            }
+            let sel=&import.selectors[0];
+            if sel.kind!=Kind::Class || sel.path!=self.declaration {
+                return Err(err("E_IMPORT_KIND","generic guest requires the verified class"));
+            }
+            if sel.binding=="main" || !bindings.insert(sel.binding.clone()) {
+                return Err(err("E_DUPLICATE","duplicate or reserved generic binding"));
+            }
+            if bindings.len()>16 {return Err(err("E_SOURCE_LIMIT","generic binding budget"));}
+            scope.bind_mixed(&self.view,&import)?;
+            cursor=end;
+        }
+        if bindings.is_empty() {return Err(err("E_SYNTAX","generic guest requires explicit import"));}
+        let root=&tokens[cursor..];
+        // Check all original tokens before adding any internal symbols.
+        if root.iter().any(|t|matches!(&t.tok,Tok::Ident(n) if n.starts_with("__atto_") || matches!(n.as_str(),"import"|"define"|"declare"|"use"|"external"|"Newable"))) {
+            return Err(err("E_UNSUPPORTED","generic root cannot introduce ambient declarations or internal names"));
+        }
+        let mut lowered=Vec::new();
+        let mut instances:BTreeMap<&str,(S,TypeIdentity)>=BTreeMap::new();
+        let mut i=0;
+        while i<root.len() {
+            let t=&root[i];
+            if let Tok::Ident(n)=&t.tok {
+                if n=="new" {return Err(err("E_NEWABLE","generic allocation requires an imported scalar factory"));}
+                if bindings.contains(n) {
+                    let (ty,scalar)=match root.get(i+2).map(|t|&t.tok) {
+                        Some(Tok::Ident(s)) if s=="int"=>("int",S::Int),
+                        Some(Tok::Ident(s)) if s=="bool"=>("bool",S::Bool),
+                        Some(Tok::Ident(s)) if s=="string"=>("string",S::String),
+                        _=>return Err(err("E_TYPE","unsupported generic scalar argument")),
+                    };
+                    if root.get(i+1).is_none_or(|t|t.tok!=Tok::LBracket)
+                        || root.get(i+3).is_none_or(|t|t.tok!=Tok::RBracket) {
+                        return Err(err("E_ARITY","generic reference requires one explicit scalar argument"));
+                    }
+                    let before=i.checked_sub(1).and_then(|j|root.get(j));
+                    let typed=before.is_some_and(|t|t.tok==Tok::Colon);
+                    let factory=!before.is_some_and(|t|t.tok==Tok::Dot)
+                        && root.get(i+4).is_some_and(|t|t.tok==Tok::Dot)
+                        && matches!(root.get(i+5).map(|t|&t.tok),Some(Tok::Ident(n)) if n=="new")
+                        && root.get(i+6).is_some_and(|t|t.tok==Tok::LParen)
+                        && root.get(i+7).is_some_and(|t|t.tok==Tok::RParen);
+                    if !typed && !factory {return Err(err("E_NEWABLE","generic reference requires type position or exact factory call"));}
+                    let identity=scope.resolve_type_identity(&[TypeTerm::Scalar(scalar),TypeTerm::Nominal{reference:n,arguments:1}],&[&self.view])?;
+                    if let Some((_,existing))=instances.get(ty) {
+                        if existing!=&identity {return Err(err("E_IMPORT_KIND","specialization identity mismatch"));}
+                    } else {instances.insert(ty,(scalar,identity));}
+                    let mut owner=t.clone();
+                    owner.tok=Tok::Ident(format!("__atto_generic_class_{ty}"));
+                    lowered.push(owner);
+                    i+=4;
+                    if factory {
+                        lowered.push(root[i].clone());
+                        let mut method=root[i+1].clone();
+                        method.tok=Tok::Ident(SEALED_FACTORY.into());
+                        lowered.push(method);
+                        lowered.extend_from_slice(&root[i+2..i+4]);
+                        i+=4;
+                    }
+                    continue;
+                }
+            }
+            lowered.push(t.clone());
+            i+=1;
+        }
+        if instances.is_empty() {return Err(err("E_UNSUPPORTED","no explicit generic instance selected"));}
+        let parsed=crate::parser::Parser::new(lowered.clone()).parse_program()?;
+        if parsed.funcs.len()!=1 || parsed.funcs[0].name!="main" || !parsed.classes.is_empty()
+            || !parsed.enums.is_empty() || !parsed.actors.is_empty() || parsed.actor_interface.is_some() {
+            return Err(err("E_UNSUPPORTED","generic guest requires only main"));
+        }
+        let mut linked=Vec::new();
+        for (ty,(scalar,_)) in instances {
+            let instance=self.specialize(scalar)?;
+            let owner=format!("__atto_generic_class_{ty}");
+            let pattern=lexer::lex(&format!("pub static fnc {SEALED_FACTORY}(): {} {{ return new {}(); }}",self.class_name,self.class_name))?;
+            let pattern=&pattern[..pattern.len()-1];
+            let matches:Vec<_>=instance.tokens.windows(pattern.len()).enumerate()
+                .filter(|(_,w)|w.iter().map(|t|&t.tok).eq(pattern.iter().map(|t|&t.tok)))
+                .map(|(i,_)|i).collect();
+            if matches.len()!=1 {return Err(err("E_NEWABLE","missing checked specialization factory"));}
+            let mut positions=BTreeSet::from([3usize]);
+            for (i,t) in pattern.iter().enumerate() {
+                if matches!(&t.tok,Tok::Ident(n) if n==&self.class_name) {positions.insert(matches[0]+i);}
+            }
+            for (i,t) in instance.tokens.iter().enumerate().take(instance.tokens.len()-1) {
+                let mut t=t.clone();
+                if matches!(&t.tok,Tok::Ident(n) if n==&self.class_name) {
+                    if !positions.contains(&i) {return Err(err("E_UNSUPPORTED","arbitrary generic self-type remapping unsupported"));}
+                    t.tok=Tok::Ident(owner.clone());
+                }
+                linked.push(t);
+            }
+            if linked.len()>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","generic instance token budget"));}
+        }
+        linked.extend(lowered);
+        if linked.len()>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","generic guest token budget"));}
+        let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
+        let checked=crate::check::check(&parsed)?;
+        if !checked.imports.is_empty() {return Err(err("E_UNSUPPORTED","generic guest cannot request ambient host imports"));}
+        crate::compile_prelexed(linked,None)
+    }
+}
