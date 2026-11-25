@@ -286,54 +286,51 @@ end"#;
         for i in inputs{lock.push_str(&format!("\"{}\"=\"{}\"\n",i.path,hex_digest(i.source.as_bytes())));}
         lock
     }
-    fn prepare_package(inputs:&[crate::package_resolver::SnapshotSource<'_>],lock:&str,pin:&str)
-        -> Result<([u8;32],String),crate::Diagnostic>{
-        use crate::{package_resolver::prepare_locked_snapshot,compiler_cache_key as k,sha256::hex_digest};
-        let prepared=prepare_locked_snapshot("src/main.atto",MANIFEST,lock,pin,inputs)?;
-        // Only the controlled fixture supplies these stage witnesses. Hash
-        // the whole host test binary (compiler, embedded libraries, emitter)
-        // rather than accepting a caller's claimed compiler version.
+    fn prepare_package_at(inputs:&[crate::package_resolver::SnapshotSource<'_>],lock:&str,pin:&str,
+        target:crate::library::TargetOs)->Result<crate::compiler_cache_witness::Prepared,crate::Diagnostic>{
+        use crate::sha256::hex_digest;
+        // The test process is the complete statically linked compiler fixture.
+        // Production hosts must separately attest their actual build closure.
         let mut binary=Vec::new();
         File::open("/proc/self/exe").unwrap().take(128*1024*1024+1).read_to_end(&mut binary).unwrap();
         assert!(binary.len()<=128*1024*1024);
         let compiler=hex_digest(&binary);
         let toolchain=hex_digest(b"fixture: same executable includes complete compiler");
-        let target=hex_digest(format!("fixture: wasm32/{}; {:?}",crate::ABI_VERSION,crate::library::target_os()).as_bytes());
-        let config=hex_digest(b"fixture: locked snapshot; no external host grants");
-        let bindings=hex_digest(prepared.linked.as_bytes());
-        let key=k::encode(&k::Input{stage:"wasm-module",owner:"shop@1.0.0",
-            unit_kind:"source-unit",unit:"src/main.atto",compiler:&compiler,toolchain:&toolchain,
-            target:&target,configuration:&config,sources:pin,bindings:&bindings,generated:None,
-            dependencies:&[]}).unwrap();
-        let mut result=[0u8;32];
-        for (i,byte) in result.iter_mut().enumerate(){*byte=u8::from_str_radix(&key[i*2..i*2+2],16).unwrap();}
-        Ok((result,prepared.linked))
+        crate::compiler_cache_witness::prepare("src/main.atto",MANIFEST,lock,pin,inputs,target,&compiler,&toolchain)
+    }
+    fn prepare_package(inputs:&[crate::package_resolver::SnapshotSource<'_>],lock:&str,pin:&str)
+        -> Result<crate::compiler_cache_witness::Prepared,crate::Diagnostic>{
+        prepare_package_at(inputs,lock,pin,crate::library::TargetOs::Posix)
     }
     #[test]
     fn locked_package_cache_fixture(){
         use crate::sha256::hex_digest;
         let t=Temp::new();let store=ArtifactStore::open(&t.0).unwrap();
         let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let pin=hex_digest(lock.as_bytes());
-        let (key,linked)=prepare_package(&inputs,&lock,&pin).unwrap();
+        let prepared=prepare_package(&inputs,&lock,&pin).unwrap();
+        let key=prepared.key;
+        let windows=prepare_package_at(&inputs,&lock,&pin,crate::library::TargetOs::Windows).unwrap();
+        assert_ne!(key,windows.key);
+        assert!(store.load(&windows.key,&SECRET).unwrap().is_none());
         assert!(store.load(&key,&SECRET).unwrap().is_none());
         // Publish only after real compiler semantic checks and emission.
-        let cold=crate::compile(&linked).unwrap();
+        let cold=prepared.compile().unwrap();
         assert_eq!(cold,crate::package_resolver::compile_locked_snapshot("src/main.atto",MANIFEST,&lock,&pin,&inputs).unwrap());
         store.publish(&key,&receipt::seal(&key,&cold,&SECRET).unwrap(),&SECRET).unwrap();
         fs::write(t.0.join("package-cold.wasm"),&cold).unwrap();
         execute_wasm(&t.0.join("package-cold.wasm"));
         let reordered=[inputs[2],inputs[0],inputs[1]];
-        assert_eq!(prepare_package(&reordered,&lock,&pin).unwrap().0,key);
+        assert_eq!(prepare_package(&reordered,&lock,&pin).unwrap().key,key);
         let edited=MATH.replace("x * 2","x * 3");
         let changed=package_inputs(&edited);
-        assert_eq!(prepare_package(&changed,&lock,&pin).unwrap_err().code,"E_LOCK_HASH");
-        assert_eq!(prepare_package(&inputs[..2],&lock,&pin).unwrap_err().code,"E_LOCK_HASH");
-        assert_eq!(prepare_package(&[inputs[0],inputs[0],inputs[2]],&lock,&pin).unwrap_err().code,"E_DUPLICATE");
-        assert_eq!(prepare_package(&inputs,&lock,&"0".repeat(64)).unwrap_err().code,"E_LOCK_HASH");
+        assert_eq!(prepare_package(&changed,&lock,&pin) .err().expect("expected diagnostic").code,"E_LOCK_HASH");
+        assert_eq!(prepare_package(&inputs[..2],&lock,&pin) .err().expect("expected diagnostic").code,"E_LOCK_HASH");
+        assert_eq!(prepare_package(&[inputs[0],inputs[0],inputs[2]],&lock,&pin) .err().expect("expected diagnostic").code,"E_DUPLICATE");
+        assert_eq!(prepare_package(&inputs,&lock,&"0".repeat(64)) .err().expect("expected diagnostic").code,"E_LOCK_HASH");
         let changed_lock=package_lock(&changed);let changed_pin=hex_digest(changed_lock.as_bytes());
-        let (new_key,new_linked)=prepare_package(&changed,&changed_lock,&changed_pin).unwrap();
-        assert_ne!(key,new_key);assert!(store.load(&new_key,&SECRET).unwrap().is_none());
-        assert_ne!(cold,crate::compile(&new_linked).unwrap());
+        let updated=prepare_package(&changed,&changed_lock,&changed_pin).unwrap();
+        assert_ne!(key,updated.key);assert!(store.load(&updated.key,&SECRET).unwrap().is_none());
+        assert_ne!(cold,updated.compile().unwrap());
         let private=MATH.replace("export pub[pkg] module Math;","");
         let denied=package_inputs(&private);let denied_lock=package_lock(&denied);
         assert!(prepare_package(&denied,&denied_lock,&hex_digest(denied_lock.as_bytes())).is_err());
@@ -349,7 +346,7 @@ end"#;
             use crate::sha256::hex_digest;
             let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let pin=hex_digest(lock.as_bytes());
             let root=Path::new(&root);
-            let (key,_)=prepare_package(&inputs,&lock,&pin).unwrap();
+            let key=prepare_package(&inputs,&lock,&pin).unwrap().key;
             let store=ArtifactStore::open(root).unwrap();
             let bytes=store.load(&key,&SECRET).unwrap().expect("authenticated hit after graph revalidation");
             let path=root.join("package-warm.wasm");

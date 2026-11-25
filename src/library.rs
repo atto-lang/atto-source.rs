@@ -66,6 +66,20 @@ const UNITS: &[Unit] = &[
 const MAX_UNITS: usize = 32;
 
 static TARGET_OS: AtomicU8 = AtomicU8::new(if cfg!(windows) { 2 } else { 1 });
+thread_local! {
+    static SCOPED_TARGET_OS: std::cell::Cell<Option<TargetOs>> = const { std::cell::Cell::new(None) };
+}
+
+/// Pin the target for a synchronous compilation, without mutating the
+/// process default. Restores the prior scope even during unwinding.
+pub(crate) fn with_target_os<T>(os: TargetOs, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<TargetOs>);
+    impl Drop for Restore {
+        fn drop(&mut self) { SCOPED_TARGET_OS.with(|slot| slot.set(self.0)); }
+    }
+    let _restore = Restore(SCOPED_TARGET_OS.with(|slot| slot.replace(Some(os))));
+    run()
+}
 
 /// Select the OS family for platform-variant units such as `std/path`.
 pub fn set_target_os(os: TargetOs) {
@@ -73,7 +87,8 @@ pub fn set_target_os(os: TargetOs) {
 }
 
 pub fn target_os() -> TargetOs {
-    if TARGET_OS.load(Ordering::Relaxed) == 2 { TargetOs::Windows } else { TargetOs::Posix }
+    SCOPED_TARGET_OS.with(|slot| slot.get()).unwrap_or_else(||
+        if TARGET_OS.load(Ordering::Relaxed) == 2 { TargetOs::Windows } else { TargetOs::Posix })
 }
 
 fn err(pos: Pos, code: &'static str, msg: impl Into<String>) -> Diagnostic {

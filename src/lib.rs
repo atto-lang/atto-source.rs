@@ -65,6 +65,11 @@ pub mod sha256;
 pub mod compiler_cache_key;
 /// Candidate trusted-ledger envelope only, no executable cache loading.
 pub mod compiler_artifact_receipt;
+// Internal candidate only; no production lookup or signing entrypoint.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod compiler_cache_witness;
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod compiler_cache_key_policy;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod compiler_artifact_store;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.

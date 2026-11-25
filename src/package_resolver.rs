@@ -535,14 +535,18 @@ pub fn compile_locked_snapshot(
     expected_lock_sha256: &str,
     inputs: &[SnapshotSource<'_>],
 ) -> R<Vec<u8>> {
-    let prepared = prepare_locked_snapshot(entry, manifest, lockfile, expected_lock_sha256, inputs)?;
-    crate::compile(&prepared.linked)
+    let target = crate::library::target_os();
+    crate::library::with_target_os(target, || {
+        let prepared = prepare_locked_snapshot(entry, manifest, lockfile, expected_lock_sha256, inputs)?;
+        crate::compile(&prepared.linked)
+    })
 }
 
 /// Internal authenticated graph and lowered source, never a verified artifact.
 /// Keep source closure checks on the same path for clean and cache-candidate builds.
 pub(crate) struct PreparedLockedSnapshot {
     pub(crate) linked: String,
+    pub(crate) identity: String,
 }
 pub(crate) fn prepare_locked_snapshot(
     entry: &str,
@@ -629,7 +633,7 @@ pub(crate) fn prepare_locked_snapshot(
             package: &identity,
         })
         .collect();
-    Ok(PreparedLockedSnapshot { linked: linker::prepare_linked(entry, &units)? })
+    Ok(PreparedLockedSnapshot { linked: linker::prepare_linked(entry, &units)?, identity })
 }
 
 

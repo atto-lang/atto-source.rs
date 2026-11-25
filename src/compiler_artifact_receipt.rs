@@ -7,7 +7,7 @@ pub const MAX_ARTIFACT: usize = 4 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"ATTOCAC1";
 const DOMAIN: &[u8] = b"atto.compiler.artifact-receipt.v1\0";
 const INVALID: &str = "E_CACHE_RECEIPT: invalid envelope";
-fn tag(secret: &[u8; 32], header: &[u8]) -> [u8; 32] {
+pub(crate) fn hmac(secret: &[u8; 32], message: &[u8]) -> [u8; 32] {
     // RFC 2104 HMAC with the existing SHA-256 primitive and fixed 32-byte key.
     // Candidate implementation; independent crypto review before activation.
     let mut inner = vec![0x36; 64];
@@ -16,12 +16,17 @@ fn tag(secret: &[u8; 32], header: &[u8]) -> [u8; 32] {
         inner[i] ^= byte;
         outer[i] ^= byte;
     }
-    inner.extend_from_slice(DOMAIN);
-    inner.extend_from_slice(&header[..80]);
+    inner.extend_from_slice(message);
     outer.extend_from_slice(&sha256(&inner));
     sha256(&outer)
 }
-fn equal(a: &[u8], b: &[u8]) -> bool {
+fn tag(secret: &[u8; 32], header: &[u8]) -> [u8; 32] {
+    let mut message=Vec::with_capacity(DOMAIN.len()+80);
+    message.extend_from_slice(DOMAIN);
+    message.extend_from_slice(&header[..80]);
+    hmac(secret,&message)
+}
+pub(crate) fn equal(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() { return false; }
     // Fixed-length comparison without data-dependent early return.
     // Not a claim of independently audited machine-code constant time.
