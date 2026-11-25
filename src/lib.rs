@@ -113,7 +113,7 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    let source = library::expand(source)?;
+    let source = library::expand_for_file_linker(source)?;
     // Bounded relative-file scalar `import const` can substitute only
     // verified literal values, before the existing checker and guest emitter.
     // Full package and environment-backed initialization still fail closed.
