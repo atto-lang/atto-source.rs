@@ -4,7 +4,7 @@
 
 use crate::ast::{ActorDecl, ActorInterface, ActorInterfaceMethod, FieldMode, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
-use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, StateAssignment, StateUse, TargetHeaders};
+use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, StateAssignment, StateUse, TargetHeaders, revalidate_receiver_facts};
 use crate::lexer::{Tok, Token};
 use crate::target_flow::{ReceiverFlow, analyze_receiver_body, check_receiver_arguments};
 use crate::target_borrow::{ReceiverBorrowFacts, check_receiver_borrows};
@@ -473,6 +473,9 @@ impl ScalarParser<'_> {
 /// result annotations, so forward references within one file are permitted.
 pub fn lower_target_signatures(headers: &TargetHeaders)
     -> Result<TypedActorModule, Diagnostic> {
+    // Imported headers can omit source-derived state writes, reads, returns,
+    // or calls; re-derive the complete facts before any typed proof is used.
+    revalidate_receiver_facts(headers)?;
     let mut module = TypedActorModule {
         namespace: headers.namespace.clone(),
         actors: headers.actors.iter().map(|name| TypedActor {
@@ -519,10 +522,35 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     for (receiver, unknown) in module.receivers.iter_mut().zip(unknown_args) {
         receiver.effects.unproved_call |= unknown;
     }
-    for body in &headers.receiver_bodies {
+    // Imported TargetHeaders may be forged or truncated. Every receiver
+    // method must have exactly one complete body, in nominal declaration
+    // order. A missing body is NOT evidence of a lease-free receiver.
+    if headers.receiver_bodies.len() != module.receivers.len() {
+        return Err(Diagnostic::new(Pos::default(),"E_SEALED",
+            "missing receiver body prevents validating state-lease cleanup"));
+    }
+    for (index, body) in headers.receiver_bodies.iter().enumerate() {
+        if body.receiver != index {
+            return Err(Diagnostic::new(
+                headers.receivers[index].pos,"E_SEALED",
+                "receiver body index mismatch prevents cleanup validation"));
+        }
         module.receiver_flows.push(analyze_receiver_body(headers, &module, body)?);
         module.receiver_borrows.push(check_receiver_borrows(&module, body)?);
-        module.receiver_cleanup.push(plan_receiver_cleanup(body)?);
+        let cleanup = plan_receiver_cleanup(body)?;
+        // Independently cross-check syntax effect facts against the actual
+        // source-located lease regions. Calls' *transitive* state effects
+        // are deliberately excluded: only direct callback acquisitions count.
+        let direct = &headers.receiver_effects[index];
+        let has_lease = !cleanup.leases.is_empty();
+        let has_write_lease = cleanup.leases.iter().any(|lease|
+            matches!(lease.mode,crate::target_cleanup::StateLeaseMode::ExclusiveWrite));
+        if direct.reads_state != has_lease || direct.writes_state != has_write_lease {
+            return Err(Diagnostic::new(
+                headers.receivers[index].pos,"E_SEALED",
+                "state-effect facts disagree with required lease cleanup regions"));
+        }
+        module.receiver_cleanup.push(cleanup);
     }
     // Bounded monotone fixed point: each effect bit can transition only from
     // false to true. Recursive calls are handled without unbounded DFS.
