@@ -5,12 +5,14 @@
 use atto_compiler::{
     ast::{ExprKind, Stmt},
     collection_types::{self, LiteralType},
-    compile, lexer, parser::Parser,
+    compile, lexer,
+    parser::Parser,
 };
 
 fn parsed(source: &str) -> atto_compiler::ast::Program {
     Parser::new(lexer::lex(source).expect("valid lexer"))
-        .parse_program().expect("valid grammar")
+        .parse_program()
+        .expect("valid grammar")
 }
 fn admitted(source: &str) {
     let wasm = compile(source).unwrap_or_else(|e| panic!("{source}\n{e}"));
@@ -38,99 +40,146 @@ fn explicit_entry_factory_has_a_real_typed_map_inventory() {
             if name == "@builtin/Map.of_entries<int,bool>" && items.len() == 6)));
     let typed = collection_types::analyze(&tree).expect("Map key/value static type witnesses");
     assert_eq!(typed.len(), 1);
-    assert_eq!(typed[0].value.ty, LiteralType::Map(
-        Box::new(LiteralType::Int), Box::new(LiteralType::Bool)));
+    assert_eq!(
+        typed[0].value.ty,
+        LiteralType::Map(Box::new(LiteralType::Int), Box::new(LiteralType::Bool))
+    );
     admitted(source);
 }
 
 #[test]
 fn map_entry_sources_are_not_pair_values() {
-    admitted(r#"pub fnc main(): int {
+    admitted(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>(
             Entry.of(5, true),
             Entry.of(8, false),
             9 => true
         );
         return m[8] ? 0 : 42;
-    }"#);
-    admitted(r#"pub fnc main(): int {
+    }"#,
+    );
+    admitted(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<string,int>(
             "a" => 40,
             "b" => 2
         );
         return m["a"] + m["b"];
-    }"#);
-    admitted(r#"pub fnc main(): int {
+    }"#,
+    );
+    admitted(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>();
         return 42;
-    }"#);
-    admitted(r#"pub fnc main(): int {
+    }"#,
+    );
+    admitted(
+        r#"pub fnc main(): int {
         val m = Map.of_entries<int,bool>(5 => true);
         return m[5] ? 42 : 0;
-    }"#);
+    }"#,
+    );
 }
 
 #[test]
 fn entry_arities_ambiguity_and_type_mismatches_fail_closed() {
-    rejected(r#"pub fnc main(): int {
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>(5, true);
         return 0;
-    }"#, "E_FACTORY_ARITY");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_FACTORY_ARITY",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>(Pair.of(5,true));
         return 0;
-    }"#, "E_TYPE");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_TYPE",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>(5 => true, 5 => false);
         return 0;
-    }"#, "E_DUPLICATE");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_DUPLICATE",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>("5" => true);
         return 0;
-    }"#, "E_TYPE");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_TYPE",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>(5 => 42);
         return 0;
-    }"#, "E_TYPE");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_TYPE",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<float,bool>(5.0 => true);
         return 0;
-    }"#, "E_MAP_KEY");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_MAP_KEY",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>(5 => true, 0 => true, -0 => false);
         return 0;
-    }"#, "E_DUPLICATE");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_DUPLICATE",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries(5 => true);
         return 0;
-    }"#, "E_SYNTAX");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_SYNTAX",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int>(5 => true);
         return 0;
-    }"#, "E_SYNTAX");
+    }"#,
+        "E_SYNTAX",
+    );
 }
 
 #[test]
 fn static_const_does_not_bless_unsafe_dynamic_values() {
-    rejected(r#"pub fnc main(): int {
+    rejected(
+        r#"pub fnc main(): int {
         val bool b = true;
         const m = Map.of_entries<int,bool>(5 => b);
         return 0;
-    }"#, "E_UNSUPPORTED");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_UNSUPPORTED",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>(5 => true);
         return m[6] ? 1 : 0;
-    }"#, "E_UNSUPPORTED");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_UNSUPPORTED",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         const m = Map.of_entries<int,bool>(5 => true,6 => false,7 => true,
                                            8 => false,9 => true);
         return 0;
-    }"#, "E_UNSUPPORTED");
+    }"#,
+        "E_UNSUPPORTED",
+    );
 }
 
 #[test]
 fn declared_structs_preserve_nominal_identity_and_member_layout() {
-    admitted(r#"define struct Point as
+    admitted(
+        r#"define struct Point as
         int x;
         int y;
     end
@@ -142,81 +191,117 @@ fn declared_structs_preserve_nominal_identity_and_member_layout() {
         val Point point = Point{y: 2,x: 40};
         val Offset offset = Offset{x: 10,y: 2};
         return point.x + offset.y;
-    }"#);
-    admitted(r#"define struct Point as int x; int y; end
+    }"#,
+    );
+    admitted(
+        r#"define struct Point as int x; int y; end
     pub fnc main(): int {
         val p = infer struct{y: 2,x: 40};
         return p.x + p.y;
-    }"#);
-    admitted(r#"define struct Data as int x; bool ready; end
+    }"#,
+    );
+    admitted(
+        r#"define struct Data as int x; bool ready; end
     pub fnc main(): int {
         val Data d = Data{ready: true,x: 42};
         return d.ready ? d.x : 0;
-    }"#);
+    }"#,
+    );
 }
 
 #[test]
 fn struct_conflicts_duplicates_and_unsafe_field_types_reject() {
-    rejected(r#"define struct First as int x; int y; end
+    rejected(
+        r#"define struct First as int x; int y; end
     define struct Second as int x; int y; end
     pub fnc main(): int {
         val x = infer struct{x: 40,y: 2};
         return 0;
-    }"#, "E_AMBIGUOUS_MEMBER");
-    rejected(r#"define struct Point as int x; int y; end
+    }"#,
+        "E_AMBIGUOUS_MEMBER",
+    );
+    rejected(
+        r#"define struct Point as int x; int y; end
     pub fnc main(): int {
         val p = Point{x: 40};
         return 0;
-    }"#, "E_SHAPE");
-    rejected(r#"define struct Point as int x; int y; end
+    }"#,
+        "E_SHAPE",
+    );
+    rejected(
+        r#"define struct Point as int x; int y; end
     pub fnc main(): int {
         val p = Point{x: 40,y: 2,z: 3};
         return 0;
-    }"#, "E_SHAPE");
-    rejected(r#"define struct Point as int x; int x; end
-    pub fnc main(): int {return 0;}"#, "E_DUPLICATE");
-    rejected(r#"define struct Point as List<int> data; end
-    pub fnc main(): int {return 0;}"#, "E_UNSUPPORTED_TYPE");
-    rejected(r#"define struct Empty as end
-    pub fnc main(): int {return 0;}"#, "E_UNSUPPORTED");
-    rejected(r#"define struct First as int x; end
+    }"#,
+        "E_SHAPE",
+    );
+    rejected(
+        r#"define struct Point as int x; int x; end
+    pub fnc main(): int {return 0;}"#,
+        "E_DUPLICATE",
+    );
+    rejected(
+        r#"define struct Point as List<int> data; end
+    pub fnc main(): int {return 0;}"#,
+        "E_UNSUPPORTED_TYPE",
+    );
+    rejected(
+        r#"define struct Empty as end
+    pub fnc main(): int {return 0;}"#,
+        "E_UNSUPPORTED",
+    );
+    rejected(
+        r#"define struct First as int x; end
     define struct Second as int x; end
     pub fnc main(): int {
         val Second s = First{x: 42};
         return 0;
-    }"#, "E_TYPE");
+    }"#,
+        "E_TYPE",
+    );
 }
-
 
 #[test]
 fn infer_struct_uses_field_types_as_well_as_names() {
-    admitted(r#"define struct Count as int value; end
+    admitted(
+        r#"define struct Count as int value; end
     define struct Toggle as bool value; end
     pub fnc main(): int {
         val c = infer struct{value: 42};
         val t = infer struct{value: true};
         return t.value ? c.value : 0;
-    }"#);
-    rejected(r#"define struct Count as int value; end
+    }"#,
+    );
+    rejected(
+        r#"define struct Count as int value; end
     define struct Toggle as bool value; end
     pub fnc main(): int {
         val x = infer struct{value: "wrong"};
         return 0;
-    }"#, "E_TYPE");
-    rejected(r#"define struct First as int value; end
+    }"#,
+        "E_TYPE",
+    );
+    rejected(
+        r#"define struct First as int value; end
     define struct Second as int value; end
     pub fnc main(): int {
         val x = infer struct{value: 42};
         return 0;
-    }"#, "E_AMBIGUOUS_MEMBER");
+    }"#,
+        "E_AMBIGUOUS_MEMBER",
+    );
 }
 
 #[test]
 fn structurally_equal_record_cannot_erase_nominal_struct_type() {
-    rejected(r#"define struct Point as int x; int y; end
+    rejected(
+        r#"define struct Point as int x; int y; end
     pub fnc main(): int {
         val Record r = (x=40,y=2);
         val Point p = r;
         return p.x;
-    }"#, "E_TYPE");
+    }"#,
+        "E_TYPE",
+    );
 }

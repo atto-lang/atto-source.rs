@@ -6,7 +6,10 @@
 //! Ticket identities MUST originate at a trusted scheduler boundary.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode { Read, Write }
+pub enum Mode {
+    Read,
+    Write,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ticket {
@@ -19,19 +22,35 @@ pub struct Ticket {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Admission { Granted(Ticket), Queued(Ticket) }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    Retired, Full, Exhausted, StaleTicket, NotGranted,
-    AlreadyActive, ReadToWriteUpgrade, RunningNeedsCompletion,
+pub enum Admission {
+    Granted(Ticket),
+    Queued(Ticket),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase { Queued, Granted, Running }
+pub enum Error {
+    Retired,
+    Full,
+    Exhausted,
+    StaleTicket,
+    NotGranted,
+    AlreadyActive,
+    ReadToWriteUpgrade,
+    RunningNeedsCompletion,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Queued,
+    Granted,
+    Running,
+}
 
 #[derive(Clone, Copy, Debug)]
-struct Entry { ticket: Ticket, phase: Phase }
+struct Entry {
+    ticket: Ticket,
+    phase: Phase,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
@@ -64,14 +83,24 @@ impl<const N: usize> Gate<N> {
     /// The host/scheduler owns these identities; never accept them from a
     /// guest or from a caller who can forge an actor's continuation.
     pub const fn with_identity(container: u64, actor_incarnation: u64, epoch: u64) -> Self {
-        Self { container, actor_incarnation, epoch, next: 0,
-               retired: false, slots: [None; N] }
+        Self {
+            container,
+            actor_incarnation,
+            epoch,
+            next: 0,
+            retired: false,
+            slots: [None; N],
+        }
     }
 
     pub fn snapshot(&self) -> Snapshot {
         let mut s = Snapshot {
-            queued: 0, granted: 0, running: 0,
-            readers: 0, writers: 0, retired: self.retired,
+            queued: 0,
+            granted: 0,
+            running: 0,
+            readers: 0,
+            writers: 0,
+            retired: self.retired,
         };
         for entry in self.slots.iter().flatten() {
             match entry.phase {
@@ -90,7 +119,9 @@ impl<const N: usize> Gate<N> {
     }
 
     pub fn request(&mut self, continuation: u64, mode: Mode) -> Result<Admission, Error> {
-        if self.retired { return Err(Error::Retired); }
+        if self.retired {
+            return Err(Error::Retired);
+        }
         for entry in self.slots.iter().flatten() {
             if entry.ticket.continuation == continuation {
                 return Err(if entry.ticket.mode == Mode::Read && mode == Mode::Write {
@@ -105,32 +136,45 @@ impl<const N: usize> Gate<N> {
         let idx = self.slots.iter().position(Option::is_none).ok_or(Error::Full)?;
         let next = self.next.checked_add(1).ok_or(Error::Exhausted)?;
         let active = self.snapshot();
-        let grant = active.queued == 0 && match mode {
-            Mode::Read => active.writers == 0,
-            Mode::Write => active.readers == 0 && active.writers == 0,
-        };
+        let grant = active.queued == 0
+            && match mode {
+                Mode::Read => active.writers == 0,
+                Mode::Write => active.readers == 0 && active.writers == 0,
+            };
         self.next = next;
         let ticket = Ticket {
-            container: self.container, actor_incarnation: self.actor_incarnation,
-            epoch: self.epoch, invocation: next, continuation, mode,
+            container: self.container,
+            actor_incarnation: self.actor_incarnation,
+            epoch: self.epoch,
+            invocation: next,
+            continuation,
+            mode,
         };
         self.slots[idx] = Some(Entry {
-            ticket, phase: if grant { Phase::Granted } else { Phase::Queued },
+            ticket,
+            phase: if grant { Phase::Granted } else { Phase::Queued },
         });
-        Ok(if grant { Admission::Granted(ticket) } else { Admission::Queued(ticket) })
+        Ok(if grant {
+            Admission::Granted(ticket)
+        } else {
+            Admission::Queued(ticket)
+        })
     }
 
     fn find(&self, ticket: Ticket) -> Result<usize, Error> {
         // A caller cannot substitute another continuation or incarnation.
-        self.slots.iter().position(|slot| slot.as_ref()
-            .is_some_and(|entry| entry.ticket == ticket))
+        self.slots
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|entry| entry.ticket == ticket))
             .ok_or(Error::StaleTicket)
     }
 
     /// A scheduler may start a granted ticket once; a queued request does
     /// not authorize execution. Retire wins any later start attempt.
     pub fn start(&mut self, ticket: Ticket) -> Result<(), Error> {
-        if self.retired { return Err(Error::Retired); }
+        if self.retired {
+            return Err(Error::Retired);
+        }
         let idx = self.find(ticket)?;
         if self.slots[idx].unwrap().phase != Phase::Granted {
             return Err(Error::NotGranted);
@@ -179,23 +223,32 @@ impl<const N: usize> Gate<N> {
     }
 
     fn promote(&mut self) {
-        if self.retired { return; }
+        if self.retired {
+            return;
+        }
         loop {
-            let first = self.slots.iter().enumerate()
-                .filter_map(|(i, e)| e.as_ref()
-                    .filter(|e| e.phase == Phase::Queued)
-                    .map(|e| (i, e.ticket.invocation)))
+            let first = self
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| e.as_ref().filter(|e| e.phase == Phase::Queued).map(|e| (i, e.ticket.invocation)))
                 .min_by_key(|(_, invocation)| *invocation);
-            let Some((idx, _)) = first else { return; };
+            let Some((idx, _)) = first else {
+                return;
+            };
             let status = self.snapshot();
             let mode = self.slots[idx].unwrap().ticket.mode;
             let eligible = match mode {
                 Mode::Read => status.writers == 0,
                 Mode::Write => status.writers == 0 && status.readers == 0,
             };
-            if !eligible { return; }
+            if !eligible {
+                return;
+            }
             self.slots[idx].as_mut().unwrap().phase = Phase::Granted;
-            if mode == Mode::Write { return; }
+            if mode == Mode::Write {
+                return;
+            }
             // A head reader cohort may enter before a queued writer, but
             // new readers behind that writer cannot bypass its barrier.
         }
@@ -207,7 +260,9 @@ mod tests {
     use super::*;
 
     fn ticket(a: Admission) -> Ticket {
-        match a { Admission::Granted(t) | Admission::Queued(t) => t }
+        match a {
+            Admission::Granted(t) | Admission::Queued(t) => t,
+        }
     }
 
     #[test]
@@ -217,7 +272,8 @@ mod tests {
         let b = g.request(2, Mode::Read).unwrap();
         assert!(matches!(a, Admission::Granted(_)));
         assert!(matches!(b, Admission::Granted(_)));
-        g.start(ticket(a)).unwrap(); g.start(ticket(b)).unwrap();
+        g.start(ticket(a)).unwrap();
+        g.start(ticket(b)).unwrap();
         let w = g.request(3, Mode::Write).unwrap();
         assert!(matches!(w, Admission::Queued(_)));
         assert_eq!(g.start(ticket(w)), Err(Error::NotGranted));
@@ -238,14 +294,18 @@ mod tests {
         let read_b = ticket(g.request(3, Mode::Read).unwrap());
         let read_c = ticket(g.request(4, Mode::Read).unwrap());
         assert_eq!(g.start(read_b), Err(Error::NotGranted));
-        g.start(read_a).unwrap(); g.finish(read_a).unwrap();
+        g.start(read_a).unwrap();
+        g.finish(read_a).unwrap();
         assert_eq!(g.snapshot().writers, 1);
         assert_eq!(g.snapshot().queued, 2);
         assert_eq!(g.start(read_b), Err(Error::NotGranted));
-        g.start(writer).unwrap(); g.finish(writer).unwrap();
+        g.start(writer).unwrap();
+        g.finish(writer).unwrap();
         assert_eq!(g.snapshot().readers, 2);
-        g.start(read_b).unwrap(); g.start(read_c).unwrap();
-        g.finish(read_b).unwrap(); g.finish(read_c).unwrap();
+        g.start(read_b).unwrap();
+        g.start(read_c).unwrap();
+        g.finish(read_b).unwrap();
+        g.finish(read_c).unwrap();
     }
 
     #[test]
@@ -321,7 +381,8 @@ mod tests {
         let b = ticket(g.request(2, Mode::Read).unwrap());
         assert_eq!(g.request(3, Mode::Read), Err(Error::Full));
         g.cancel(b).unwrap();
-        g.start(a).unwrap(); g.finish(a).unwrap();
+        g.start(a).unwrap();
+        g.finish(a).unwrap();
         assert_eq!(g.snapshot().queued, 0);
         assert_eq!(Gate::<0>::new(1).request(1, Mode::Read), Err(Error::Full));
     }
@@ -340,10 +401,12 @@ mod tests {
         }
         g.finish(first).unwrap();
         assert_eq!(g.snapshot().writers, 1);
-        g.start(writer).unwrap(); g.finish(writer).unwrap();
+        g.start(writer).unwrap();
+        g.finish(writer).unwrap();
         assert_eq!(g.snapshot().readers, readers.len());
         for reader in readers.into_iter().flatten() {
-            g.start(reader).unwrap(); g.finish(reader).unwrap();
+            g.start(reader).unwrap();
+            g.finish(reader).unwrap();
         }
         assert_eq!(g.snapshot().running, 0);
     }
