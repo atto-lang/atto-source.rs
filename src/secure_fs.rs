@@ -11,6 +11,8 @@ use std::fs::File;
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::raw::{c_char, c_int};
+#[cfg(target_arch = "x86_64")]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path};
 
 type R<T> = Result<T, Diagnostic>;
@@ -18,6 +20,8 @@ const O_RDONLY: c_int = 0;
 const O_DIRECTORY: c_int = 0o200000;
 const O_NOFOLLOW: c_int = 0o400000;
 const O_CLOEXEC: c_int = 0o2000000;
+#[cfg(target_arch = "x86_64")]
+const O_PATH: c_int = 0o10000000;
 
 extern "C" {
     fn openat(dirfd: c_int, pathname: *const c_char, flags: c_int, ...) -> c_int;
@@ -28,7 +32,11 @@ fn fail(code: &'static str, detail: impl Into<String>) -> Diagnostic {
 }
 fn open_child(directory: &File, name: &str, directory_only: bool, code: &'static str) -> R<File> {
     let c_name = CString::new(name).map_err(|_| fail(code, "NUL in package file component"))?;
+    // On Linux x86-64 pin the final inode without opening a device or
+    // blocking on a FIFO. Directory traversal retains O_DIRECTORY.
     let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | if directory_only { O_DIRECTORY } else { 0 };
+    #[cfg(target_arch = "x86_64")]
+    let flags = flags | if directory_only { 0 } else { O_PATH };
     // SAFETY: openat's name is a NUL-terminated CString, the directory FD is
     // alive for the duration of this call, and no mode is required for an
     // O_RDONLY open. Ownership of a successful raw FD transfers to File.
@@ -40,7 +48,24 @@ fn open_child(directory: &File, name: &str, directory_only: bool, code: &'static
         ));
     }
     // SAFETY: the successful openat result is a new, uniquely owned FD.
-    Ok(unsafe { File::from_raw_fd(fd) })
+    let pinned = unsafe { File::from_raw_fd(fd) };
+    #[cfg(target_arch = "x86_64")]
+    if !directory_only {
+        let before = pinned.metadata().map_err(|e| fail(code, format!("cannot stat pinned source: {e}")))?;
+        if !before.is_file() {
+            return Err(fail(code, "package source must be a regular file"));
+        }
+        // Trusted host procfs is required. Open the pinned inode rather than
+        // its replaceable name; the O_PATH handle stays alive until reopen.
+        let file = File::open(format!("/proc/self/fd/{}", pinned.as_raw_fd()))
+            .map_err(|e| fail(code, format!("cannot reopen pinned source: {e}")))?;
+        let after = file.metadata().map_err(|e| fail(code, format!("cannot stat reopened source: {e}")))?;
+        if !after.is_file() || before.dev() != after.dev() || before.ino() != after.ino() {
+            return Err(fail(code, "pinned source descriptor identity changed"));
+        }
+        return Ok(file);
+    }
+    Ok(pinned)
 }
 
 pub struct LockedRoot {
@@ -205,5 +230,21 @@ mod tests {
         assert_eq!(handle.read("foo.atto", 99, "E_IMPORT_PATH").unwrap_err().code, "E_SOURCE_LIMIT");
         assert_eq!(handle.read("foo.atto/", 100, "E_IMPORT_PATH").unwrap_err().code, "E_IMPORT_PATH");
         assert_eq!(handle.read("../foo.atto", 100, "E_IMPORT_PATH").unwrap_err().code, "E_IMPORT_PATH");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn fifo_and_symlink_are_rejected_before_data_open() {
+        let t = Temp::new();
+        let path = t.path.join("source.atto");
+        assert!(std::process::Command::new("mkfifo").arg(&path).status().unwrap().success());
+        let root = LockedRoot::open(&t.path).unwrap();
+        assert_eq!(root.read("source.atto", 100, "E_IMPORT_PATH").unwrap_err().code, "E_IMPORT_PATH");
+        fs::remove_file(&path).unwrap();
+        fs::write(t.path.join("real.atto"), "valid").unwrap();
+        symlink(t.path.join("real.atto"), &path).unwrap();
+        assert_eq!(root.read("source.atto", 100, "E_IMPORT_PATH").unwrap_err().code, "E_IMPORT_PATH");
+        assert_eq!(root.read("real.atto", 100, "E_IMPORT_PATH").unwrap(), "valid");
+        println!("SOURCE_FD|fifo-and-symlink-rejected-before-read");
     }
 }
