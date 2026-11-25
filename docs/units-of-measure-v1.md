@@ -24,15 +24,14 @@ unit layer that sits on top of both.
   A different dimension gives `E_UNIT_MISMATCH`.
 * `* /` compose dimensions and multiply scales exactly (`kg*m/s^2 == N`).
 * `conversion_factor(from, to)` is exact (`km/h -> m/s = 5/18`,
-  `MB -> MiB = 15625/16384`). `convert_int_exact` allows only integral
-  factors (`s -> ms`). Downscaling (`ms -> s`) gives `E_UNIT_LOSSY` until the
-  caller picks a rounding mode from the numeric contract. Overflow gives
+  `MB -> MiB = 15625/16384`). `convert_int_exact` requires the converted value to be integral, not the
+  conversion factor. 1000 ms converts to 1 s; 1500 ms gives `E_UNIT_LOSSY`. Overflow gives
   `E_UNIT_OVERFLOW`.
 * The unit expression grammar is `term (('*'|'/') term)*`, with
   `term = name('^' -?digits)? | 1`. Exponents are bounded to ±12. Parentheses
   are rejected in v1 rather than guessed.
 
-## Proposed surface syntax (for spec review; not parsed yet)
+## Superseded experimental surface (not parsed; do not implement as canonical)
 
 ```atto
 val int[ms] timeout = 250 of ms;
@@ -43,9 +42,8 @@ val int[B]  wrong = timeout;                          // E_UNIT_MISMATCH
 fnc speed(int[m] d, int[s] t): float[m/s] { return d / t; }
 ```
 
-Units are erased after checking: `int[ms]` lowers to a plain i64, so there is
-zero runtime cost and the same Wasm, LLVM and JVM layout. `convert` lowers to
-one checked multiply.
+The candidate canonical surface is [atto-spec #224](https://github.com/atto-lang/atto-spec/pull/224), with `define dimension`, `define unit`, contiguous `5000<Millis>` literals and `.to_unit<Second>()`. The syntax below/above is historical only. Units may be erased only after checking all boundaries: `int[ms]` lowers to a plain i64, so there is
+zero runtime cost and the same Wasm, LLVM and JVM layout. Exact conversion requires divisibility and checked range; a single multiply is not sufficient.
 
 ## Tests
 
@@ -56,8 +54,7 @@ malformed/unknown expressions.
 
 ## Next slices
 
-1. Parse `T[unit]` annotations and `of unit` literals into the typed AST,
-   then call `check_same`, `mul` and `div` from the checker. Erase before codegen.
+1. Align with the candidate spec #224 grammar and normalized limits before frontend admission; retain this closed algebra as a narrower internal profile until then.
 2. `define unit furlong = 201168/1000 m;` user units (bounded registry).
 3. Affine units (°C/°F) as a separate, explicitly offset-aware kind.
 4. Conformance fixtures shared with Java/LLVM through atto-platform-conformance.
