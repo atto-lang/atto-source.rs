@@ -191,3 +191,38 @@ fn mismatched_export_view_cannot_supply_another_package_or_builtin() {
         assert_eq!(s.resolve("C").unwrap_err().code, "E_UNBOUND");
     }
 }
+
+#[test]
+fn missing_members_do_not_fall_back_and_interior_visibility_is_checked() {
+    let mut s = Scope::new();
+    s.package(id("@foo/bar/baz"), Some("p")).unwrap();
+    let g = graph();
+    assert_eq!(s.resolve_export("p.z.open", &g).unwrap().declaration, "z.open");
+    assert_eq!(s.resolve_export("p.z.hidden", &g).unwrap_err().code, "E_PRIVATE");
+    assert_eq!(s.resolve_export("p.z.absent", &g).unwrap_err().code, "E_UNBOUND");
+    let other = ExportView::new(Origin::Builtin("std.http".into()));
+    assert_eq!(s.resolve_export("p.z.open", &other).unwrap_err().code, "E_IMPORT_PATH");
+}
+#[test]
+fn namespace_constant_forward_chains_and_interior_aliases_are_atomic() {
+    let mut s = Scope::new();
+    s.package(id("@foo/bar/baz"), Some("p")).unwrap();
+    let g = graph();
+    s.namespace_aliases(&[("first", "second"), ("second", "p.z")], &[&g]).unwrap();
+    assert_eq!(s.resolve("first").unwrap().target.declaration, "z");
+    assert_eq!(s.resolve_export("first.open", &g).unwrap().declaration, "z.open");
+    assert_eq!(s.resolve_export("first.hidden", &g).unwrap_err().code, "E_PRIVATE");
+    assert_eq!(s.namespace_aliases(&[("ok", "p"), ("bad", "p.z.hidden")], &[&g]).unwrap_err().code, "E_PRIVATE");
+    assert_eq!(s.resolve("ok").unwrap_err().code, "E_UNBOUND");
+    assert_eq!(s.namespace_aliases(&[("bad", "p.f")], &[&g]).unwrap_err().code, "E_IMPORT_KIND");
+}
+#[test]
+fn pending_aliases_cannot_break_cycles_by_falling_back_to_deliberate_names() {
+    let mut s = Scope::new();
+    s.package(id("@a/network/http"), None).unwrap();
+    assert_eq!(s.namespace_aliases(&[("http", "alias"), ("alias", "http")], &[]).unwrap_err().code, "E_IMPORT_CYCLE");
+    assert_eq!(s.resolve("alias").unwrap_err().code, "E_UNBOUND");
+    assert_eq!(s.resolve("http").unwrap().target.origin, external("@a/network/http"));
+    assert_eq!(s.namespace_aliases(&[("x", "x")], &[]).unwrap_err().code, "E_IMPORT_CYCLE");
+    assert_eq!(s.namespace_aliases(&[("x", "missing")], &[]).unwrap_err().code, "E_UNBOUND");
+}
