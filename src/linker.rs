@@ -256,10 +256,28 @@ pub(crate) fn declared_namespace(source: &str, file: &str) -> R<Option<String>> 
     Ok(header(source, file)?.namespace)
 }
 
+/// A bounded lexical path, never a runtime namespace object.
+fn manifest_binding(tokens: &[Token], at: &mut usize, limit: usize) -> R<Vec<String>> {
+    let mut parts = Vec::new();
+    loop {
+        if *at >= limit { return Err(err(tokens[limit].pos, "E_SYNTAX", "missing namespace binding")); }
+        parts.push(ident(tokens, *at)?);
+        *at += 1;
+        if *at >= limit || tokens[*at].tok != Tok::Dot { break; }
+        *at += 1;
+        if parts.len() >= 8 { return Err(err(tokens[*at - 1].pos, "E_SOURCE_LIMIT", "qualified binding depth exceeds budget")); }
+    }
+    if !crate::package_resolver::namespace_name_ok(&parts.join(".")) {
+        return Err(err(tokens[*at - 1].pos, "E_SYNTAX", "invalid or reserved manifest namespace binding"));
+    }
+    Ok(parts)
+}
+
 /// Resolve explicitly selected local manifest exports into canonical source
 /// edges. Raw bytes are authenticated by the caller before this rewrite.
-/// This bounded lane supports exact natural namespace bindings (including lists);
-/// external dependencies, other kinds and arbitrary aliasing remain fail-closed.
+/// Non-natural lexical bindings use a conservative direct-call bridge, not
+/// runtime objects or general lexical scope resolution. A hidden provider
+/// name cannot be used as an alternative binding in that file.
 pub(crate) fn resolve_manifest_imports(source: &str, file: &str,
     manifest: &crate::package_resolver::PackageManifest) -> R<String> {
     let raw = lexer::lex(source)?;
@@ -270,19 +288,21 @@ pub(crate) fn resolve_manifest_imports(source: &str, file: &str,
             .ok_or_else(|| err(raw[0].pos, "E_SYNTAX", "missing namespace semicolon"))? + 1;
     }
     let mut edits = Vec::new();
+    let mut bindings = BTreeMap::<Vec<String>, String>::new();
+    let mut providers = BTreeSet::new();
+    let mut protected = BTreeSet::new();
+    let mut nonnatural = false;
+    let mut other_import = false;
     while word(&raw, i, "import") {
         let end = raw[i..].iter().position(|t| matches!(t.tok, Tok::Semi | Tok::Eof))
             .map(|n| i + n).ok_or_else(|| err(raw[i].pos, "E_SYNTAX", "missing import terminator"))?;
         if raw[end].tok != Tok::Semi {
             return Err(err(raw[i].pos, "E_SYNTAX", "missing import semicolon"));
         }
-        // Only an exact namespace export can satisfy untyped shorthand.
-        // Never infer a namespace from the leaf of a physical file or URL.
         let from = (i + 1..end).find(|at| word(&raw, *at, "from"));
         if let Some(from) = from.filter(|at| word(&raw, *at + 1, "pkg")) {
             let explicit = word(&raw, i + 1, "namespace");
             let mut at = i + if explicit { 2 } else { 1 };
-            // Other typed kinds belong to the full typed package linker.
             if !explicit && matches!(raw.get(at).map(|t| &t.tok),
                 Some(Tok::Ident(kind)) if matches!(kind.as_str(),
                     "fnc" | "class" | "actor" | "enum" | "type" | "const" | "module" | "trait" | "interface" | "pkg")) {
@@ -292,37 +312,92 @@ pub(crate) fn resolve_manifest_imports(source: &str, file: &str,
                 Some(Tok::Str(s)) if end == from + 3 => s,
                 _ => return Err(err(raw[i].pos, "E_SYNTAX", "expected one quoted manifest package selector")),
             };
-            let mut names = BTreeSet::new();
             let mut replacement = String::new();
             loop {
-                if at >= from {
-                    return Err(err(raw[i].pos, "E_SYNTAX", "empty or trailing namespace selector"));
+                let selected = manifest_binding(&raw, &mut at, from)?;
+                let binding = if at < from && word(&raw, at, "as") {
+                    at += 1;
+                    manifest_binding(&raw, &mut at, from)?
+                } else { selected.clone() };
+                if bindings.keys().any(|prior| prior.starts_with(&binding) || binding.starts_with(prior)) {
+                    return Err(err(raw[i].pos, "E_DUPLICATE", "duplicate or overlapping manifest namespace binding"));
                 }
-                let name = ident(&raw, at)?;
-                at += 1;
-                if at < from && word(&raw, at, "as") {
-                    return Err(err(raw[at].pos, "E_UNSUPPORTED", "manifest namespace alias requires full lexical linker"));
-                }
-                if !names.insert(name.clone()) {
-                    return Err(err(raw[i].pos, "E_DUPLICATE", "duplicate manifest namespace selection"));
-                }
-                if names.len() > MAX_IMPORTS {
+                if bindings.len() >= MAX_IMPORTS {
                     return Err(err(raw[i].pos, "E_SOURCE_LIMIT", "too many manifest namespace selections"));
                 }
-                let target = manifest.select_local_namespace(selector, &name)?;
-                replacement.push_str(&format!("import namespace {name} from \"+{target}\";"));
+                let (canonical, target) = manifest.select_local_namespace(selector, &selected.join("."))?;
+                let leaf = canonical.rsplit('.').next().unwrap_or(canonical).to_string();
+                // The existing graph linker keys owners by leaf. Reject
+                // collisions rather than flatten distinct providers into one.
+                if !providers.insert(leaf.clone()) {
+                    return Err(err(raw[i].pos, "E_DUPLICATE", "provider leaf already imported in bounded namespace linker"));
+                }
+                nonnatural |= binding.len() != 1 || binding[0] != leaf;
+                protected.insert(binding[0].clone());
+                protected.insert(leaf.clone());
+                bindings.insert(binding, leaf.clone());
+                replacement.push_str(&format!("import namespace {leaf} from \"+{target}\";"));
                 if at == from { break; }
                 if raw.get(at).map(|t| &t.tok) != Some(&Tok::Comma) {
-                    return Err(err(raw[at].pos, "E_UNSUPPORTED", "manifest resolver requires simple natural namespace selectors"));
+                    return Err(err(raw[at].pos, "E_UNSUPPORTED", "manifest resolver requires natural or explicitly aliased namespace selectors"));
                 }
                 at += 1;
             }
             let (start, finish) = span(source, &raw, i, end)?;
-            let original = &source[start..finish];
-            for _ in original.bytes().filter(|b| *b == b'\n') { replacement.push('\n'); }
+            for _ in source[start..finish].bytes().filter(|b| *b == b'\n') { replacement.push('\n'); }
             edits.push((start, finish, replacement));
-        }
+        } else { other_import = true; }
         i = end + 1;
+    }
+    if nonnatural {
+        // This bridge cannot distinguish a shadowing local/object binding
+        // from a namespace at arbitrary expression sites. Reject those
+        // cases, including other import kinds, instead of silently changing
+        // authority or making the provider leaf visible.
+        if other_import {
+            return Err(err(Pos::default(), "E_UNSUPPORTED", "aliased manifest namespaces cannot mix with legacy import clauses in this profile"));
+        }
+        let mut offsets = BTreeMap::new();
+        let (mut line, mut col) = (1u32, 1u32);
+        for (offset, ch) in source.char_indices() {
+            offsets.insert((line, col), offset);
+            if ch == '\n' { line += 1; col = 1; } else { col += 1; }
+        }
+        while i < raw.len() {
+            let Tok::Ident(name) = &raw[i].tok else { i += 1; continue; };
+            if name == "import" {
+                return Err(err(raw[i].pos, "E_SYNTAX", "manifest import must precede declarations"));
+            }
+            if !protected.contains(name) { i += 1; continue; }
+            if i > 0 && raw[i - 1].tok == Tok::Dot {
+                return Err(err(raw[i].pos, "E_UNSUPPORTED", "namespace binding cannot be an object member"));
+            }
+            let matched = bindings.iter().find(|(parts, _)| {
+                let n = parts.len();
+                parts.iter().enumerate().all(|(j,p)| word(&raw, i+j*2, p)
+                    && (j == 0 || raw.get(i+j*2-1).is_some_and(|t| t.tok == Tok::Dot)))
+                    && raw.get(i+n*2-1).is_some_and(|t| t.tok == Tok::Dot)
+                    && matches!(raw.get(i+n*2).map(|t| &t.tok), Some(Tok::Ident(_)))
+                    && raw.get(i+n*2+1).is_some_and(|t| t.tok == Tok::LParen)
+            });
+            let (parts, leaf) = matched.ok_or_else(|| err(raw[i].pos, "E_UNSUPPORTED",
+                "unbound, shadowed or non-call manifest namespace reference"))?;
+            let n = parts.len();
+            let last = &raw[i+(n-1)*2];
+            let start = *offsets.get(&(raw[i].pos.line, raw[i].pos.col))
+                .ok_or_else(|| err(raw[i].pos, "E_INTERNAL", "invalid manifest binding source offset"))?;
+            let end = offsets.get(&(last.pos.line, last.pos.col)).copied()
+                .and_then(|offset| offset.checked_add(parts[n-1].len()))
+                .filter(|end| *end >= start && *end <= source.len() && source.is_char_boundary(*end))
+                .ok_or_else(|| err(last.pos, "E_INTERNAL", "invalid manifest binding source span"))?;
+            let mut replacement = leaf.clone();
+            for _ in source[start..end].bytes().filter(|b| *b == b'\n') { replacement.push('\n'); }
+            if edits.len() >= 2048 {
+                return Err(err(raw[i].pos, "E_SOURCE_LIMIT", "too many manifest namespace references"));
+            }
+            edits.push((start, end, replacement));
+            i += n*2+1;
+        }
     }
     let mut result = source.to_string();
     for (start, end, replacement) in edits.into_iter().rev() {
