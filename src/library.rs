@@ -459,17 +459,31 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
         && ident(tokens.get(i + 1)) == Some("alias")
     {
         let pos = tokens[i].pos;
-        if tokens.get(i + 3).is_none_or(|t| t.tok != Tok::Assign) {
-            return Err(err(pos, "E_SYNTAX", "expected define alias NAME = qualified.namespace"));
-        }
-        let name = binding_path(&tokens[i + 2..i + 3], pos)?;
-        let start = i + 4;
+        let start = i + 2;
         let mut end = start;
         while tokens.get(end).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { end += 1; }
         if tokens.get(end).is_none_or(|t| t.tok != Tok::Semi) {
             return Err(err(pos, "E_SYNTAX", "unterminated namespace alias"));
         }
-        let reference = binding_path(&tokens[start..end], pos)?;
+        // Normalize both spellings into (new name, existing reference):
+        // NAME = PATH, or PATH as NAME. Exactly one separator is allowed.
+        let body = &tokens[start..end];
+        let mut separators = body.iter().enumerate().filter(|(_, t)|
+            t.tok == Tok::Assign || ident(Some(t)) == Some("as"));
+        let (at, separator) = separators.next().ok_or_else(||
+            err(pos, "E_SYNTAX", "expected define alias NAME = PATH or PATH as NAME"))?;
+        if separators.next().is_some() {
+            return Err(err(pos, "E_SYNTAX", "namespace alias requires exactly one separator"));
+        }
+        let (left, right) = (&body[..at], &body[at + 1..]);
+        let (name_tokens, reference_tokens) = if separator.tok == Tok::Assign {
+            (left, right)
+        } else { (right, left) };
+        if name_tokens.len() != 1 {
+            return Err(err(pos, "E_SYNTAX", "namespace alias name must be a single identifier"));
+        }
+        let name = binding_path(name_tokens, pos)?;
+        let reference = binding_path(reference_tokens, pos)?;
         if constants.len() >= crate::import_v2::MAX_ITEMS {
             return Err(err(pos, "E_SOURCE_LIMIT", "too many namespace aliases"));
         }
