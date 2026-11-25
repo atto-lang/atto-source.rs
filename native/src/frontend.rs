@@ -194,28 +194,26 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
         if token.kind != Kind::Identifier {
             continue;
         }
-        let opens_block = tokens.get(index + 1).map(|next| next.kind) == Some(Kind::LBrace);
-        let opens_task_scope = token.text == "task"
-            && tokens.get(index + 1).map(|next| next.text.as_str()) == Some("scope")
-            && tokens.get(index + 2).map(|next| next.kind) == Some(Kind::LBrace);
-        // Suspension is a language construct, but this scalar backend
-        // cannot lower checked continuations. Reject before parsing/MIR.
-        if token.text == "await" || token.text == "suspends" {
+        if matches!(token.text.as_str(), "await" | "suspends") {
             return Err(ParseError {
                 offset: token.start,
                 class: "suspension_unsupported",
-                message: format!(
-                    "'{}' requires checked suspends/await continuation lowering",
-                    token.text
-                ),
+                message: "suspension requires continuation-aware lowering; no scalar fallback"
+                    .into(),
             });
         }
+        let opens_block = tokens.get(index + 1).map(|next| next.kind) == Some(Kind::LBrace);
+        let opens_task_scope = token.text == "task"
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| next.kind == Kind::Identifier && next.text == "scope")
+            && tokens.get(index + 2).map(|next| next.kind) == Some(Kind::LBrace);
         let message = if EXECUTION_DOMAIN_WORDS.contains(&token.text.as_str()) {
             format!(
                 "execution domain '{}' is reserved and not lowered by this backend; no implicit CPU fallback",
                 token.text
             )
-        } else if (opens_block && (token.text == "task" || token.text == "nb")) || opens_task_scope {
+        } else if opens_task_scope || (opens_block && (token.text == "task" || token.text == "nb")) {
             "execution task requires scheduler-aware Future lowering; no implicit inline execution"
                 .into()
         } else {
