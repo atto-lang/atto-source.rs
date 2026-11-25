@@ -371,7 +371,6 @@ fn pinned_multifile_namespace_links_public_members_and_preserves_private_ownersh
     assert_eq!(compile_registry_guest("import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.OFFSET; }",&[&p]).unwrap_err().code,"E_PRIVATE");
     assert_eq!(error(FrozenRegistry::verify("@org/project/package",MANIFEST,&l,&digest,&inputs[..3])),"E_LOCK_HASH");
     for (bad,code) in [
-        ("use namespace http; pub fnc get(int x): int { return x+OFFSET; }","E_PRIVATE"),
         ("use namespace http; pub fnc inc(int x): int { return x; }","E_DUPLICATE"),
         ("use namespace wrong; pub fnc get(int x): int { return x; }","E_MANIFEST"),
     ]{
@@ -415,9 +414,50 @@ fn physical_declaration_provenance_never_grants_private_authority() {
     assert_eq!(compile_contextual_guest(spoof,&p,&[],Some(std::path::Path::new("src/http/main.atto"))).unwrap_err().code,"E_PRIVATE");
     let mut changed=inputs.clone();
     changed.last_mut().unwrap().source="use namespace http; pub fnc answer(): int { return secret(41); }";
-    assert_eq!(error(verify(MANIFEST,&changed)),"E_PRIVATE");
+    let same_namespace=verify(MANIFEST,&changed).unwrap();
+    assert!(compile_registry_guest(source,&[&same_namespace]).is_ok());
     changed=inputs.clone();
     changed.last_mut().unwrap().source="use namespace http; define pub const int LIMIT = 40; pub fnc answer(): int { return get(LIMIT); }";
     let q=verify(MANIFEST,&changed).unwrap();
     assert_eq!(q.declaration_source(&get).unwrap_err().code,"E_IMPORT_PATH");
+}
+
+#[test]
+fn pinned_namespace_private_members_cross_files_but_not_boundaries() {
+    use atto_compiler::registry_namespace::{compile_registry_guest,compile_contextual_guest};
+    let root="import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.answer(); }";
+    for (i,provider) in [
+        "use namespace http; define const int OFFSET = 1; fnc secret(int x): int { return x+OFFSET; }",
+        "use namespace http; fnc secret(int x): int { return x+1; }",
+    ].iter().enumerate(){
+        let mut inputs=INPUTS.to_vec();
+        inputs[0].source="use namespace http; pub fnc answer(): int { return secret(41); }";
+        inputs.push(SnapshotSource{path:"src/http/private.atto",source:provider});
+        let l=lock(MANIFEST,&inputs);
+        let digest=hex_digest(l.as_bytes());
+        let p=FrozenRegistry::verify("@org/project/package",MANIFEST,&l,&digest,&inputs).unwrap();
+        let wasm=compile_registry_guest(root,&[&p]).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        let mut reversed=inputs.clone();
+        reversed.reverse();
+        let q=FrozenRegistry::verify("@org/project/package",MANIFEST,&l,&digest,&reversed).unwrap();
+        assert_eq!(wasm,compile_registry_guest(root,&[&q]).unwrap());
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-private-{i}.wasm")),wasm).unwrap();
+        }
+        for bad in [
+            "import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.secret(41); }",
+            "import pkg '@org/project/package' as p; define alias h = p.http; pub fnc main(): int { return h.secret(41); }",
+        ]{
+            assert_eq!(compile_registry_guest(bad,&[&p]).unwrap_err().code,"E_PRIVATE");
+        }
+        let spoof="use namespace http; import self.secret; pub fnc main(): int { return secret(41); }";
+        assert_eq!(compile_contextual_guest(spoof,&p,&[],Some(std::path::Path::new("src/http/private.atto"))).unwrap_err().code,"E_PRIVATE");
+        let mut changed=inputs.clone();
+        changed[1].source="use namespace http3; pub fnc get(int x): int { return secret(x); }";
+        assert!(compile_registry_guest(root,&[&verify(MANIFEST,&changed).unwrap()]).is_err());
+        changed=inputs.clone();
+        changed.last_mut().unwrap().source="use namespace http; fnc secret(int x): int { return 0; }";
+        assert_eq!(error(FrozenRegistry::verify("@org/project/package",MANIFEST,&l,&digest,&changed)),"E_LOCK_HASH");
+    }
 }
