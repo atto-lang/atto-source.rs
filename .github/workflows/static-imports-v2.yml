@@ -92,3 +92,22 @@ jobs:
           if target/debug/attoc "$work/negative.atto" -o "$work/negative.wasm" 2>"$work/negative.log"; then exit 1; fi
           test ! -e "$work/negative.wasm"
           grep -F E_PRIVATE "$work/negative.log"
+      - name: Execute namespace constant guests and reject cycles
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./import-v2-namespace-const.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s\n' 'import core.num;' 'pub fnc main(): int { return num.clamp(42, 0, 100); }' > "$work/baseline.atto"
+          target/debug/attoc "$work/baseline.atto" -o "$work/baseline.wasm"
+          for decl in 'define const m = core.num;' 'define const m = second; define const second = core.num;' 'define const m = num;'; do
+            printf '%s\n' 'import core.num;' "$decl" 'pub fnc main(): int { return m.clamp(42, 0, 100); }' > "$work/alias.atto"
+            target/debug/attoc "$work/alias.atto" -o "$work/alias.wasm"
+            cmp "$work/baseline.wasm" "$work/alias.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); if(!WebAssembly.validate(b)||new WebAssembly.Instance(new WebAssembly.Module(b),{}).exports.main()!==42n) throw Error("bad guest"); console.log("namespace const guest main=42 byte-identical")' "$work/alias.wasm"
+          done
+          printf '%s\n' 'import core.num;' 'define const a = b; define const b = a;' 'pub fnc main(): int { return 42; }' > "$work/cycle.atto"
+          if target/debug/attoc "$work/cycle.atto" -o "$work/cycle.wasm" 2>"$work/cycle.log"; then exit 1; fi
+          test ! -e "$work/cycle.wasm"
+          grep -F E_IMPORT_CYCLE "$work/cycle.log"
