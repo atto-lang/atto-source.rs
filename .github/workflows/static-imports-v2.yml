@@ -6,6 +6,9 @@ on:
       - 'src/target_syntax.rs'
       - 'src/library.rs'
       - 'src/lib.rs'
+      - 'src/package_resolver.rs'
+      - 'src/linker.rs'
+      - 'tests/package_resolver.rs'
       - 'tests/static_imports_v2.rs'
       - '.github/workflows/static-imports-v2.yml'
 permissions:
@@ -34,7 +37,7 @@ jobs:
           rustc --version
       - name: Run focused and compatibility compiler suites
         run: |
-          cargo test --locked --no-fail-fast --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
+          cargo test --locked --no-fail-fast --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link --test package_resolver --test package_cli --test namespace_storefront
       - name: Compile real builtin guests and run exported main
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
@@ -69,3 +72,27 @@ jobs:
       - name: Legacy core alloc std real guest regression suite
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: node tests/atto_libraries.mjs target/debug/attoc
+      - name: Compile manifest-selected namespace guest
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./manifest-guest.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          mkdir -p "$work/src/network/http"
+          cat > "$work/.atto.pkg.toml" <<'EOF'
+          [package]
+          name = "@org/project/package"
+          version = "1.0.0"
+          [namespaces]
+          http = "src/network/http/"
+          [exports]
+          "network/http" = "http"
+          EOF
+          printf '%s\n' 'use namespace http;' 'pub fnc answer(): int { return 42; }' > "$work/src/network/http/namespace.atto"
+          printf '%s\n' 'this unrelated source is intentionally invalid' > "$work/src/network/http/unrelated.atto"
+          for selector in '@org/project/package' '@org/project/package/network/http'; do
+            printf '%s\n' "import namespace http from pkg '$selector';" 'pub fnc main(): int { return http.answer(); }' > "$work/src/main.atto"
+            target/debug/attoc --package-root "$work" src/main.atto -o "$work/main.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); const i=new WebAssembly.Instance(new WebAssembly.Module(b),{}); if(i.exports.main()!==42n) throw Error("wrong manifest guest"); console.log("MANIFEST_NAMESPACE_GUEST_MAIN=42");' "$work/main.wasm"
+          done
