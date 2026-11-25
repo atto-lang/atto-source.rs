@@ -389,6 +389,17 @@ end"#;
         // excludes process launch, publisher fsync and guest runtime. No threshold.
     }
 
+    fn session_compiler_identity()->String{
+        // Read the actual host test image rather than a caller-selected version.
+        // Amortized once in each process. This is not a deployment attestation.
+        static ID:std::sync::OnceLock<String>=std::sync::OnceLock::new();
+        ID.get_or_init(||{
+            let mut binary=Vec::new();
+            File::open("/proc/self/exe").unwrap().take(128*1024*1024+1).read_to_end(&mut binary).unwrap();
+            assert!(binary.len()<=128*1024*1024);
+            crate::sha256::hex_digest(&binary)
+        }).clone()
+    }
     #[test]
     fn explicit_session_pinned_ledger_restart_and_corruption(){
         use crate::{compiler_cache_session::{Session,Mode,Outcome},compiler_cache_ledger as ledger,
@@ -402,7 +413,7 @@ end"#;
         // Fixture record lives outside cache; its expected digest comes from
         // independent test authority, never re-derived from the read file.
         fs::write(host.join("active"),&record).unwrap();
-        let compiler=hex_digest(b"fixture compiler attestation");
+        let compiler=session_compiler_identity();
         let toolchain=hex_digest(b"fixture toolchain attestation");
         let session=Session{store:&store,scope:"tenant/a",compiler_digest:&compiler,toolchain_digest:&toolchain,target:TargetOs::Posix};
         let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let source_pin=hex_digest(lock.as_bytes());
@@ -438,7 +449,7 @@ end"#;
                 library::TargetOs,sha256::{hex_digest,sha256}};
             let root=Path::new(&root);let store=ArtifactStore::open(&root.join("cache")).unwrap();
             let expected=ledger::record("tenant/a",1,SECRET).unwrap();let pin=sha256(&expected);
-            let compiler=hex_digest(b"fixture compiler attestation");let toolchain=hex_digest(b"fixture toolchain attestation");
+            let compiler=session_compiler_identity();let toolchain=hex_digest(b"fixture toolchain attestation");
             let session=Session{store:&store,scope:"tenant/a",compiler_digest:&compiler,toolchain_digest:&toolchain,target:TargetOs::Posix};
             let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let source_pin=hex_digest(lock.as_bytes());
             let warm=session.build(Mode::Incremental,&fs::read(root.join("host/active")).unwrap(),&pin,SECRET,"src/main.atto",MANIFEST,&lock,&source_pin,&inputs).unwrap();

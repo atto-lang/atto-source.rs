@@ -41,7 +41,13 @@ mod tests{
         let old=record("tenant/a",1,SECRET).unwrap();
         let current=record("tenant/a",2,[7;32]).unwrap();
         let pin=sha256(&current);
+        let hex=|bytes:&[u8]|bytes.iter().map(|b|format!("{b:02x}")).collect::<Vec<_>>().join("");
+        assert_eq!(hex(&current),"4154544f4c4544310000000874656e616e742f610000000000000002a63c8f18ca3245c9d319f61b2ca45a2a6605ea3293664ad236792133ce088462");
+        assert_eq!(hex(&pin),"95c69714073e8a9a4c845fa54d0f87706f718fed1f5879016723780618b83309");
         let a=admit("tenant/a",&current,&pin,[7;32]).unwrap();
+        assert_eq!(hex(&a.derived()),"d2153371616fc59b235d24aff7417a37fea38a6fdc5391503a54ea33f429a90e");
+        let high=record("tenant/a",u64::MAX,[7;32]).unwrap();
+        assert!(admit("tenant/a",&high,&sha256(&high),[7;32]).is_ok());
         let stale=admit("tenant/a",&old,&sha256(&old),SECRET).unwrap();
         let artifact=receipt::seal(&KEY,PAYLOAD,&stale.derived()).unwrap();
         assert!(receipt::verify(&KEY,&artifact,&a.derived()).is_err());
@@ -59,6 +65,6 @@ mod tests{
         }
         let mut extra=current.clone();extra.push(0);
         assert!(admit("tenant/a",&extra,&sha256(&extra),[7;32]).is_err());
-        println!("CACHE_LEDGER|external-current-pin|rollback-rejected|wrong-tenant-key-rejected|bounded");
+        println!("CACHE_LEDGER|pin={}|external-current-pin|rollback-rejected|wrong-tenant-key-rejected|bounded",hex(&pin));
     }
 }
