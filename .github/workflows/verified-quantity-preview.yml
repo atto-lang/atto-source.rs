@@ -1,0 +1,44 @@
+name: Verified quantities narrow Wasm guest
+on:
+  pull_request:
+    paths:
+      - 'src/verified_quantities.rs'
+      - 'src/units.rs'
+      - 'src/lib.rs'
+      - 'tests/verified_quantity_guests.rs'
+      - 'tests/units_of_measure.rs'
+      - '.github/workflows/verified-quantity-preview.yml'
+permissions:
+  contents: read
+jobs:
+  quantity-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify source identity
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git rev-parse HEAD HEAD^{tree}
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.85.1 --profile minimal
+      - name: Focused real compiler tests
+        run: cargo +1.85.1 test --locked --test units_of_measure --test verified_quantity_guests
+      - name: Build actual compiler and execute emitted guest
+        run: |
+          cargo +1.85.1 build --locked --bin attoc
+          work="$(mktemp -d -p .)"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s\n' 'define dimension Time; define unit Second: Time; define unit Millis: Time = Second / 1000; pub fnc main() -> int { return 84000<Millis>.to_unit<Second>() / 2<Second>; }' > "$work/good.atto"
+          target/debug/attoc "$work/good.atto" -o "$work/good.wasm"
+          node -e 'const fs=require("node:fs"); const m=new WebAssembly.Module(fs.readFileSync(process.argv[1])); const i=new WebAssembly.Instance(m,{}); if(i.exports.main()!==42n) process.exit(1); console.log("PASS real quantity guest 42");' "$work/good.wasm"
+          sha256sum "$work/good.atto" "$work/good.wasm" target/debug/attoc
+          printf '%s\n' 'define dimension Time; define unit Second: Time; define unit Millis: Time = Second / 1000; pub fnc main() -> int { return 1500<Millis>.to_unit<Second>() / 1<Second>; }' > "$work/bad.atto"
+          if target/debug/attoc "$work/bad.atto" -o "$work/bad.wasm" > "$work/log" 2>&1; then exit 1; fi
+          grep -F E_UNIT_INEXACT "$work/log"
+          test ! -e "$work/bad.wasm"
