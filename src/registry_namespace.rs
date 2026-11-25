@@ -439,7 +439,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                     let direct=funcs.get(j+1).is_some_and(|n|n.tok==Tok::LParen);
                     if (names.contains_key(s) && !direct)
                         || (direct && !names.contains_key(s)
-                            && !matches!(s.as_str(),"if"|"while"|"match"|"for")) {
+                            && !matches!(s.as_str(),"if"|"while"|"match"|"for"|"return")) {
                         return Err(Diagnostic::new(t.pos,"E_UNSUPPORTED","registry dependency has a free call or non-call routine reference"));
                     }
                 }
