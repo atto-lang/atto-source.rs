@@ -1,4 +1,4 @@
-//! Narrow file-local, closed, successful signed-i64 quantity guest profile.
+//! Narrow file-local, closed signed-i64 quantity guest profile.
 //! No imports, runtime conversions, affine values or general quantity ABI.
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
@@ -24,18 +24,24 @@ impl Unit {
         Ok(Self { powers, scale })
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArithmeticFailure { Overflow, DivisionByZero }
+pub(crate) type Outcome = Result<i64, ArithmeticFailure>;
 #[derive(Clone)]
-struct Value { unit: Unit, number: i64 }
+struct Value { unit: Unit, number: Outcome }
 fn error(pos: Pos, code: &'static str, message: &str) -> Diagnostic { Diagnostic::new(pos, code, message) }
-fn checked(value: Option<i64>, pos: Pos) -> R<i64> {
-    value.ok_or_else(|| error(pos, "E_UNSUPPORTED", "quantity arithmetic failure requires checked runtime lowering"))
+fn checked(value: Option<i64>) -> Outcome {
+    value.ok_or(ArithmeticFailure::Overflow)
 }
 fn convert(value: Value, unit: Unit, pos: Pos) -> R<Value> {
     if value.unit.powers != unit.powers { return Err(error(pos, "E_UNIT_DIMENSION", "conversion dimensions differ")); }
-    let number = value.unit.scale.convert(value.number, unit.scale).map_err(|failure| match failure {
+    let number = match value.number {
+        Ok(n) => Ok(value.unit.scale.convert(n, unit.scale).map_err(|failure| match failure {
         ConversionError::Inexact => error(pos, "E_UNIT_INEXACT", "conversion is not integral"),
         ConversionError::Range => error(pos, "E_UNIT_RANGE", "conversion exceeds signed i64"),
-    })?;
+        })?),
+        Err(failure) => Err(failure),
+    };
     Ok(Value { unit, number })
 }
 
@@ -43,7 +49,7 @@ pub(crate) fn has_declarations(tokens: &[Token]) -> bool {
     tokens.windows(2).any(|w| matches!((&w[0].tok,&w[1].tok),
         (Tok::Ident(a),Tok::Ident(b)) if a == "define" && (b == "dimension" || b == "unit")))
 }
-pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<String>> {
+pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Outcome>> {
     if !has_declarations(tokens) { return Ok(None); }
     let mut p = Parser { tokens, at: 0, lines: source.lines().map(|l| l.chars().collect()).collect(),
         dimensions: BTreeSet::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256 };
@@ -61,7 +67,7 @@ pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<String>> {
     if result.unit != Unit::scalar() { return Err(p.err("E_UNIT_ERASURE", "int return requires scalar scale one")); }
     // Complete grammar and all arithmetic were checked before erasure. Ordinary
     // compiler emits the Wasm guest; there is no runtime solver or source eval.
-    Ok(Some(format!("pub fnc main() -> int {{ return {}; }}", result.number)))
+    Ok(Some(result.number))
 }
 
 struct Parser<'a> {
@@ -158,11 +164,11 @@ impl Parser<'_> {
             if self.token().tok == Tok::Int(None) {
                 let mut v = self.literal(true)?;
                 if self.token().tok == Tok::Dot { return Err(self.err("E_UNSUPPORTED", "signed minimum postfix preview not supported")); }
-                v.number = i64::MIN;
+                v.number = Ok(i64::MIN);
                 return Ok(v);
             }
             let mut v = self.atom(depth + 1)?;
-            v.number = checked(v.number.checked_neg(),pos)?;
+            v.number = v.number.and_then(|n| checked(n.checked_neg()));
             return Ok(v);
         }
         let parenthesized = self.take(Tok::LParen);
@@ -201,7 +207,7 @@ impl Parser<'_> {
             self.expect(Tok::Gt)?;
             self.lookup(&name)?
         } else { Unit::scalar() };
-        Ok(Value { number, unit })
+        Ok(Value { number: Ok(number), unit })
     }
     fn expr(&mut self, precedence: u8, depth: usize) -> R<Value> {
         let mut left = self.atom(depth)?;
@@ -229,13 +235,16 @@ impl Parser<'_> {
                 }
                 _ => unreachable!(),
             };
-            let number = checked(match op {
-                Tok::Plus => left.number.checked_add(right.number),
-                Tok::Minus => left.number.checked_sub(right.number),
-                Tok::Star => left.number.checked_mul(right.number),
-                Tok::Slash => left.number.checked_div(right.number),
+            // Type-check both sides even when an earlier operation will trap.
+            // The first failure in eager left-to-right evaluation survives.
+            let number = left.number.and_then(|a| right.number.and_then(|b| match op {
+                Tok::Plus => checked(a.checked_add(b)),
+                Tok::Minus => checked(a.checked_sub(b)),
+                Tok::Star => checked(a.checked_mul(b)),
+                Tok::Slash if b == 0 => Err(ArithmeticFailure::DivisionByZero),
+                Tok::Slash => checked(a.checked_div(b)),
                 _ => unreachable!(),
-            },pos)?;
+            }));
             left = Value { unit, number };
         }
         Ok(left)
