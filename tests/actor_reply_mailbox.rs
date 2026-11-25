@@ -201,3 +201,74 @@ fn cancelled_queued_request_reclaims_backpressure_before_dispatch() {
     assert_eq!(m.collect(fresh),
         Ok(ReplyOutcome::Failure(ReplyFailure::Cancelled)));
 }
+
+#[test]
+fn identical_incarnations_in_distinct_mailboxes_do_not_share_authority() {
+    let mut a: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let mut b: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let ra = a.admit(11, 7, 100, 1).unwrap();
+    let rb = b.admit(22, 7, 100, 1).unwrap();
+    assert_ne!(ra, rb);
+    let da = a.next(1).unwrap();
+    let db = b.next(1).unwrap();
+    assert_eq!(b.poll(&ra), Err(SlotFault::Stale));
+    assert_eq!(b.cancel(&ra), Err(SlotFault::Stale));
+    assert_eq!(b.stage(&da, 999, 101), Err(SlotFault::Stale));
+    assert_eq!(b.poll(&rb), Ok(None));
+    a.stage(&da, 111, 2).unwrap();
+    b.stage(&db, 222, 2).unwrap();
+    a.complete(da, 3).unwrap();
+    b.complete(db, 3).unwrap();
+    assert_eq!(a.collect(ra), Ok(ReplyOutcome::Value(111)));
+    assert_eq!(b.collect(rb), Ok(ReplyOutcome::Value(222)));
+}
+
+#[test]
+fn dropped_mailbox_cannot_authorize_replacement_with_same_counters() {
+    let (old_receipt, old_delivery) = {
+        let mut old: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+        let receipt = old.admit(11, 7, 100, 1).unwrap();
+        (receipt, old.next(1).unwrap())
+    };
+    let mut fresh: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let r = fresh.admit(22, 7, 100, 1).unwrap();
+    let d = fresh.next(1).unwrap();
+    assert_eq!(fresh.complete(old_delivery, 2), Err(SlotFault::Stale));
+    assert_eq!(fresh.collect(old_receipt), Err(SlotFault::Stale));
+    assert_eq!(fresh.poll(&r), Ok(None));
+    fresh.stage(&d, 42, 3).unwrap();
+    fresh.complete(d, 4).unwrap();
+    assert_eq!(fresh.collect(r), Ok(ReplyOutcome::Value(42)));
+}
+
+#[test]
+fn foreign_failure_does_not_settle_local_request() {
+    let mut a: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let mut b: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let ra = a.admit(1, 7, 100, 1).unwrap();
+    let rb = b.admit(2, 7, 100, 1).unwrap();
+    assert_eq!(b.fail(a.next(1).unwrap()), Err(SlotFault::Stale));
+    assert_eq!(b.poll(&rb), Ok(None));
+    a.cancel(&ra).unwrap();
+    b.cancel(&rb).unwrap();
+    assert_eq!(a.collect(ra), Ok(ReplyOutcome::Failure(ReplyFailure::Cancelled)));
+    assert_eq!(b.collect(rb), Ok(ReplyOutcome::Failure(ReplyFailure::Cancelled)));
+}
+
+#[test]
+fn late_or_settled_delivery_cannot_expire_unrelated_slots() {
+    let mut m: UnaryMailbox<i64, i64> = UnaryMailbox::new(2, 2, 1);
+    let a = m.admit(1, 1, 10, 1).unwrap();
+    let b = m.admit(2, 1, 20, 1).unwrap();
+    let da = m.next(1).unwrap();
+    let db = m.next(1).unwrap();
+    assert_eq!(m.stage(&da, 99, 20), Err(SlotFault::AlreadySettled));
+    assert_eq!(m.poll(&a), Ok(Some(&ReplyOutcome::Failure(ReplyFailure::TimedOut))));
+    assert_eq!(m.poll(&b), Ok(None));
+    assert_eq!(m.stage(&da, 99, 21), Err(SlotFault::AlreadySettled));
+    assert_eq!(m.poll(&b), Ok(None));
+    assert_eq!(m.expire(21), 1);
+    assert_eq!(m.complete(db, 21), Err(SlotFault::AlreadySettled));
+    assert_eq!(m.collect(a), Ok(ReplyOutcome::Failure(ReplyFailure::TimedOut)));
+    assert_eq!(m.collect(b), Ok(ReplyOutcome::Failure(ReplyFailure::TimedOut)));
+}
