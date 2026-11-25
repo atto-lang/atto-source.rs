@@ -195,6 +195,9 @@ impl FrozenRegistry {
             let at = end + usize::from(is_word(end,"pub"));
             if matching.len()==1 && is_word(at,"define") && is_word(at+1,"class") {
                 let mut body=normalized[end..].to_vec();
+                if body.iter().any(|t|matches!(&t.tok,Tok::Ident(s) if s=="main")){
+                    return Err(err("E_UNSUPPORTED","registry class cannot capture synthetic entry"));
+                }
                 let ast=crate::parser::Parser::new(body.clone()).parse_program()?;
                 if ast.classes.is_empty() || !ast.funcs.is_empty() || !ast.enums.is_empty()
                     || !ast.actors.is_empty() || ast.actor_interface.is_some()
@@ -352,7 +355,7 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
 
 
 /// Compile bounded frozen-registry guests: direct functions and literal constants,
-/// or closed external class constructions and public scalar method calls.
+/// or closed external class construction, local typed helpers, and public scalar calls.
 /// Whole-package imports, typed selections and source aliases use verified
 /// snapshots owning the source bytes. No filesystem/network lookup, implicit fallback, or runtime
 /// namespace objects are possible. The ordinary compiler still handles
@@ -678,13 +681,19 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 if actual!=key{return Err(err("E_TYPE","different nominal factory return identity"));}
                 j=after;
             }else{
-                let param=match root.get(j).map(|t|&t.tok){
+                let close=root[j..].iter().position(|t|t.tok==Tok::RParen).map(|k|j+k).ok_or_else(denied)?;
+                let (param_at,type_start,type_end)=if root.get(j+1).map(|t|&t.tok)==Some(&Tok::Colon){
+                    (j,j+2,close)
+                }else{
+                    if close<j+2{return Err(denied());}
+                    (close-1,j,close-1)
+                };
+                if type_start>=type_end{return Err(denied());}
+                let param=match root.get(param_at).map(|t|&t.tok){
                     Some(Tok::Ident(s)) if crate::static_import_graph::valid_component(s) && !scope.has_root(s)=>s.clone(),
                     _=>return Err(denied()),
                 };
-                if root.get(j+1).map(|t|&t.tok)!=Some(&Tok::Colon){return Err(denied());}
-                let close=root[j+2..].iter().position(|t|t.tok==Tok::RParen).map(|k|j+2+k).ok_or_else(denied)?;
-                let reference=path_tokens(&root[j+2..close])?;
+                let reference=path_tokens(&root[type_start..type_end])?;
                 let (p,target)=resolve(&reference)?;
                 key=load(p,&target,&mut units)?;
                 j=close+1;
@@ -743,6 +752,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             j=call(after,&mut caller,&units[&key].class)?;
         }else{
             let mut count=0usize;
+            let mut moved=BTreeSet::new();
             loop {
                 let name=match root.get(j).map(|x|&x.tok){Some(Tok::Ident(s))=>s,_=>return Err(denied())};
                 if let Some(helper)=helpers.get(name).filter(|h|!h.factory){
@@ -750,9 +760,11 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                     let local=match root.get(j+2).map(|t|&t.tok){Some(Tok::Ident(s))=>s,_=>return Err(denied())};
                     let actual=locals.remove(local).ok_or_else(||err("E_OWNERSHIP","external object argument is unknown or already moved"))?;
                     if actual!=helper.key{return Err(err("E_TYPE","different nominal helper argument identity"));}
+                    moved.insert(local.clone());
                     caller.push(id(&helper.generated,root[j].pos));
                     caller.extend_from_slice(&root[j+1..j+4]);j+=4;
                 }else{
+                    if moved.contains(name){return Err(err("E_OWNERSHIP","external object already moved to helper"));}
                     let key=locals.get(name).ok_or_else(denied)?;
                     caller.push(id(name,root[j].pos));
                     j=call(j+1,&mut caller,&units[key].class)?;

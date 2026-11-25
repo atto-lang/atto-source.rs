@@ -705,6 +705,7 @@ fn external_class_application_helpers_pass_and_return_nominal_objects() {
         format!("{read} pub fnc main(): int {{ val a: Data = new Data(); return read(a); }}"),
         format!("{make} pub fnc main(): int {{ val a: Data = make(); return a.answer(2); }}"),
         format!("{read} {make} pub fnc main(): int {{ val a: Data = make(); return read(a); }}"),
+        format!("fnc read(p.model.Item item) -> int {{ return item.answer(2); }} {make} pub fnc main(): int {{ val a: Data = make(); return read(a); }}"),
     ].iter().enumerate(){
         let source=format!("{prefix}{body}");
         let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
@@ -716,6 +717,8 @@ fn external_class_application_helpers_pass_and_return_nominal_objects() {
         (format!("{read} pub fnc main(): int {{ val a: p.other.Item = new p.other.Item(); return read(a); }}"),"E_TYPE"),
         (format!("{make} pub fnc main(): int {{ val a: p.other.Item = make(); return a.answer(2); }}"),"E_TYPE"),
         (format!("{read} pub fnc main(): int {{ val a: Data = new Data(); return read(a)+read(a); }}"),"E_OWNERSHIP"),
+        (format!("{read} pub fnc main(): int {{ val a: Data = new Data(); return read(a)+a.answer(0); }}"),"E_OWNERSHIP"),
+        ("fnc read(item: Data): int { return item.answer(2); } fnc read(item: Data): int { return item.answer(2); } pub fnc main(): int { return 0; }".into(),"E_DUPLICATE"),
         ("fnc leak(item: Data): int { return item.hidden(); } pub fnc main(): int { val a: Data = new Data(); return leak(a); }".into(),"E_PRIVATE"),
         ("fnc make(): Data { return new p.other.Item(); } pub fnc main(): int { val a: Data = make(); return a.answer(2); }".into(),"E_TYPE"),
         ("pub fnc make(): Data { return new Data(); } pub fnc main(): int { return 0; }".into(),"E_UNSUPPORTED"),
