@@ -1,4 +1,4 @@
 // expect-error: E_UNSUPPORTED_TYPE
 // java: rejects
-fnc option(): Option<bool> { return Some(true); }
+fnc option(): Option<float> { return Some(1.0); }
 pub fnc main(): int { return 0; }
