@@ -196,6 +196,9 @@ export class ActorSession {
   // terminal ack. It is the *only* path that resolves get_done() successfully.
   drain_and_close(on_reply = () => {}) {
     if (this.drain_task) return this.drain_task;
+    // Source watch admission is irrevocably sealed before asynchronous
+    // execution begins, eliminating mid-drain parent reassignment.
+    if (this.supervisor) this.supervisor.seal_actor_watch(this.control_token);
     this.closed = true;
     this.drain_task = (async () => {
       await this.ready;

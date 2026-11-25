@@ -204,6 +204,7 @@ pub struct Parser {
     enum_types: BTreeMap<String, u16>,
     class_types: BTreeMap<String, u16>,
     actor_types: BTreeMap<String, u16>,
+    supervisor_types: BTreeMap<String, u16>,
     i: usize,
     depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
@@ -227,9 +228,11 @@ impl Parser {
         let mut enum_types = BTreeMap::new();
         let mut class_types = BTreeMap::new();
         let mut actor_types = BTreeMap::new();
+        let mut supervisor_types = BTreeMap::new();
         let mut next_id = 0u16;
         let mut next_class_id = 0u16;
         let mut next_actor_id = 0u16;
+        let mut next_supervisor_id = 0u16;
         for i in 0..toks.len() {
             if !matches!(toks[i].tok, Tok::Ident(ref w) if w == "define") {
                 continue;
@@ -259,6 +262,13 @@ impl Parser {
                         next_actor_id = next_actor_id.saturating_add(1);
                     }
                 }
+            } else if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "supervisor") {
+                if let Some(Token { tok: Tok::Ident(name), .. }) = toks.get(j + 1) {
+                    if !supervisor_types.contains_key(name) {
+                        supervisor_types.insert(name.clone(), next_supervisor_id);
+                        next_supervisor_id = next_supervisor_id.saturating_add(1);
+                    }
+                }
             }
         }
         Parser {
@@ -266,6 +276,7 @@ impl Parser {
             enum_types,
             class_types,
             actor_types,
+            supervisor_types,
             i: 0,
             depth: 0,
             height: 0,
@@ -387,7 +398,7 @@ impl Parser {
 
     fn is_type_word(&self, n: usize) -> bool {
         matches!(self.word_at(n), Some("int" | "bool" | "boolean" | "void"))
-            || self.word_at(n).is_some_and(|w| w == "Result" || UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w) || self.class_types.contains_key(w) || self.actor_types.contains_key(w))
+            || self.word_at(n).is_some_and(|w| w == "Result" || UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w) || self.class_types.contains_key(w) || self.actor_types.contains_key(w) || self.supervisor_types.contains_key(w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -397,15 +408,19 @@ impl Parser {
             _ => return Err(self.expected("a type")),
         };
         self.advance();
-        // The first actor slice admits only this concrete Result specialization.
-        // All other generic Results remain unsupported until full generic typing.
+        // Only admission Result variants are executable in the browser
+        // source profile; arbitrary generics remain fail-closed.
         if name == "Result" {
-            self.expect(Tok::Lt, "'<' for Result<void, SendError>")?;
+            self.expect(Tok::Lt, "'<' for Result<void, E>")?;
             self.expect_word("void")?;
-            self.expect(Tok::Comma, "',' in Result<void, SendError>")?;
-            self.expect_word("SendError")?;
-            self.expect(Tok::Gt, "'>' to finish Result<void, SendError>")?;
-            return Ok(Type::SendResult);
+            self.expect(Tok::Comma, "',' in Result<void, E>")?;
+            let err = self.word_at(0).ok_or_else(|| self.expected("SendError or SupervisionError"))?.to_string();
+            if !matches!(err.as_str(), "SendError" | "SupervisionError") {
+                return Err(unsupported(self.pos(), "Result error types other than SendError or SupervisionError"));
+            }
+            self.advance();
+            self.expect(Tok::Gt, "'>' to finish Result<void, E>")?;
+            return Ok(if err == "SendError" { Type::SendResult } else { Type::SupervisionResult });
         }
         let ty = match name.as_str() {
             "int" => Type::Int,
@@ -421,6 +436,7 @@ impl Parser {
             n if self.enum_types.contains_key(n) => Type::Enum(self.enum_types[n]),
             n if self.class_types.contains_key(n) => Type::Class(self.class_types[n]),
             n if self.actor_types.contains_key(n) => Type::Actor(self.actor_types[n]),
+            n if self.supervisor_types.contains_key(n) => Type::Supervisor(self.supervisor_types[n]),
             n => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
         };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {

@@ -818,6 +818,189 @@ check('actor/unsupported-await-shapes-fail-closed-even-when-unreachable', () => 
   }
 });
 
+
+check('actor/supervisor-source-nominal-create-and-typed-watch-abi',()=>{
+  const source=[
+    'define supervisor Monitor as end',
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): int {',
+    '  val monitor: Monitor = spawn Monitor();',
+    '  val child: Worker = spawn Worker();',
+    '  val receipt: Result<void, SupervisionError> = monitor.watch(child);',
+    '  if receipt.is_ok() then return 42; else return 0; fi',
+    '}',
+  ].join('\n');
+  const r=compile(source);
+  assert.ok(r.ok,r.message);
+  const module=new WebAssembly.Module(r.wasm);
+  assert.deepEqual(WebAssembly.Module.imports(module).map(i=>i.name),[
+    'actor_spawn','supervisor_create','supervisor_watch',
+  ]);
+  let created=null, watched=null, spawned=null;
+  const guest=new WebAssembly.Instance(module,{atto:{
+    actor_spawn:id=>(spawned=id,1),
+    supervisor_create:id=>(created=id,1),
+    supervisor_watch:(supervisor,actor)=>(watched=[supervisor,actor],0),
+  }});
+  assert.equal(guest.exports.main(),42n);
+  assert.equal(created,0,'nominal supervisor type id is compiler-supplied');
+  assert.equal(spawned,0,'actor type id is compiler-supplied');
+  assert.deepEqual(watched,[1,1],'source watch registers runtime handles');
+});
+
+check('actor/supervisor-watch-result-is-distinct-from-send-result',()=>{
+  const head=[
+    'define supervisor Monitor as end',
+    'define actor Worker as receive(msg: int) -> int { return msg; } end',
+  ].join('\n')+'\n';
+  for(const [method,status,want] of [
+    ['is_ok',0,42n],['is_ok',2,0n],['is_err',2,42n],['is_err',0,0n],
+  ]){
+    const source=head+
+      'pub fnc main(): int { val m=spawn Monitor(); val w=spawn Worker(); '+
+      'val r: Result<void, SupervisionError> = m.watch(w); '+
+      'if r.'+method+'() then return 42; else return 0; fi }';
+    const compiled=compile(source);
+    assert.ok(compiled.ok,compiled.message);
+    const guest=new WebAssembly.Instance(new WebAssembly.Module(compiled.wasm),{atto:{
+      actor_spawn:()=>1,
+      supervisor_create:()=>1,
+      supervisor_watch:()=>status,
+    }});
+    assert.equal(guest.exports.main(),want,
+      method+' status='+status);
+  }
+  const mistyped=compile(head+
+    'pub fnc main(): int { val m=spawn Monitor(); val w=spawn Worker(); '+
+    'val r: Result<void, SendError> = m.watch(w); return 0; }');
+  assert.equal(mistyped.code,'E_TYPE');
+  assert.equal('wasm' in mistyped,false);
+});
+
+check('actor/supervisor-typed-terminal-join-abi-order',()=>{
+  const source=[
+    'define supervisor Monitor as end',
+    'define actor Worker as receive(msg: int) -> int { return msg; } end',
+    'pub fnc main(): void {',
+    '  val monitor=spawn Monitor();',
+    '  val child=spawn Worker();',
+    '  val watched=monitor.watch(child);',
+    '  val admitted=child.send(41);',
+    '  await child.get_done();',
+    '}',
+  ].join('\n');
+  const r=compile(source);
+  assert.ok(r.ok,r.message);
+  const module=new WebAssembly.Module(r.wasm);
+  assert.deepEqual(WebAssembly.Module.imports(module).map(x=>x.name),[
+    'actor_spawn','actor_send','actor_join',
+    'supervisor_create','supervisor_watch',
+  ]);
+  const calls=[];
+  const guest=new WebAssembly.Instance(module,{atto:{
+    actor_spawn:id=>(calls.push(['actor',id]),1),
+    actor_send:(handle,value)=>(calls.push(['send',handle,value]),0),
+    actor_join:handle=>{calls.push(['join',handle])},
+    supervisor_create:id=>(calls.push(['monitor',id]),1),
+    supervisor_watch:(parent,child)=>(calls.push(['watch',parent,child]),0),
+  }});
+  assert.equal(guest.exports.main(),0n);
+  assert.deepEqual(calls,[
+    ['monitor',0],['actor',0],['watch',1,1],['send',1,41n],['join',1],
+  ]);
+  // Wasm only registers the terminal join. Completion is proven by Chromium.
+});
+
+check('actor/supervisor-watch-malformed-targets-fail-without-guest',()=>{
+  const head=[
+    'define supervisor Monitor as end',
+    'define actor Worker as receive(msg: int) -> int { return msg; } end',
+  ].join('\n')+'\n';
+  for(const [body,error] of [
+    ['m.watch();','E_ARITY'],
+    ['m.watch(w,w);','E_ARITY'],
+    ['m.watch(42);','E_TYPE'],
+    ['m.watch(true);','E_TYPE'],
+    ['m.watch(m);','E_TYPE'],
+    ['w.watch(m);','E_UNSUPPORTED'],
+    ['m.send(42);','E_UNSUPPORTED'],
+    ['m.get_done();','E_UNSUPPORTED'],
+    ['w.send(m);','E_UNSUPPORTED'],
+    ['stdio.println(m);','E_UNSUPPORTED'],
+    ['val r=m.watch(w); return r;','E_TYPE'],
+    ['val r=m.watch(w); return r.is_ok(1);','E_ARITY'],
+    ['val r=m.watch(w); return r.unknown();','E_UNSUPPORTED'],
+  ]){
+    const source=head+
+      'pub fnc main(): int { val m=spawn Monitor(); val w=spawn Worker(); '+
+      body+' return 0; }';
+    const r=compile(source);
+    assert.equal(r.ok,false,body);
+    assert.equal(r.code,error,r.message);
+    assert.equal('wasm' in r,false,'no executable guest for invalid supervision');
+  }
+});
+
+check('actor/supervisor-nominal-identity-and-closed-declarations',()=>{
+  const r=compile([
+    'define supervisor First as end',
+    'define supervisor Second as end',
+    'define actor Worker as receive(msg: int) -> int { return msg; } end',
+    'pub fnc main(): int {',
+    '  val first: First=spawn First();',
+    '  val second: Second=spawn Second();',
+    '  val child=spawn Worker();',
+    '  val a=first.watch(child);',
+    '  val b=second.watch(child);',
+    '  if a.is_ok(), b.is_err() then return 42; else return 0; fi',
+    '}',
+  ].join('\n'));
+  assert.ok(r.ok,r.message);
+  const seen=[];
+  const guest=new WebAssembly.Instance(new WebAssembly.Module(r.wasm),{atto:{
+    actor_spawn:()=>1,
+    supervisor_create:id=>(seen.push(id),id+1),
+    supervisor_watch:(parent,child)=>parent===1?0:2,
+  }});
+  assert.equal(guest.exports.main(),42n);
+  assert.deepEqual(seen,[0,1]);
+  const bad=compile([
+    'define supervisor First as end',
+    'define supervisor Second as end',
+    'pub fnc main(): int { val first: First=spawn Second(); return 0; }',
+  ].join('\n'));
+  assert.equal(bad.code,'E_TYPE');
+  assert.equal('wasm' in bad,false);
+});
+
+check('actor/supervisor-unsupported-source-callbacks-fail-closed',()=>{
+  for(const [source,code] of [
+    ['define supervisor Monitor as on_child_terminated(e: int) -> int { return e; } end\npub fnc main(): int { return 0; }','E_UNSUPPORTED'],
+    ['define supervisor Monitor extends Supervisor as end\npub fnc main(): int { return 0; }','E_SYNTAX'],
+    ['define supervisor Monitor as end\ndefine supervisor Monitor as end\npub fnc main(): int { return 0; }','E_DUPLICATE'],
+    ['pub fnc main(): int { val m=spawn Undeclared(); return 0; }','E_SPAWN_TYPE'],
+    ['define supervisor Monitor as end\npub fnc main(): int { val m=spawn Monitor(42); return 0; }','E_ARITY'],
+  ]){
+    const r=compile(source);
+    assert.equal(r.ok,false,source);
+    assert.equal(r.code,code,r.message);
+    assert.equal('wasm' in r,false);
+  }
+});
+
+check('actor/supervisor-host-effects-forbidden-transitively-in-receive',()=>{
+  const source=[
+    'define supervisor Monitor as end',
+    'define actor Worker as receive(msg: int) -> int { return hidden(msg); } end',
+    'fnc hidden(int value): int { val m=spawn Monitor(); return value; }',
+    'pub fnc main(): int { val w=spawn Worker(); return 0; }',
+  ].join('\n');
+  const r=compile(source);
+  assert.equal(r.ok,false);
+  assert.equal(r.code,'E_UNSUPPORTED',r.message);
+  assert.equal('wasm' in r,false,'receive cannot acquire host supervisor capability');
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);

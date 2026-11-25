@@ -13,6 +13,10 @@ pub enum Type {
     Class(u16),
     /// Nominal browser actor handle; never a transferable object pointer.
     Actor(u16),
+    /// Nominal, host-owned supervisor handle; not an actor data pointer.
+    Supervisor(u16),
+    /// Specialised Result<void, SupervisionError> for watch admission only.
+    SupervisionResult,
     /// Specialised Result<void, SendError>. 0 = Ok admission, nonzero = Err.
     /// Does not imply the actor has completed processing the message.
     SendResult,
@@ -27,6 +31,8 @@ impl Type {
             Type::Enum(_) => "enum",
             Type::Class(_) => "class",
             Type::Actor(_) => "actor",
+            Type::Supervisor(_) => "supervisor",
+            Type::SupervisionResult => "Result<void, SupervisionError>",
             Type::SendResult => "Result<void, SendError>",
         }
     }

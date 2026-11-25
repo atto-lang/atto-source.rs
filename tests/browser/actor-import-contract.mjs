@@ -9,6 +9,8 @@ export const ACTOR_GUEST_IMPORT_SIGNATURES = Object.freeze({
   actor_spawn:  Object.freeze({params:Object.freeze([0x7f]),       results:Object.freeze([0x7f])}),
   actor_send:   Object.freeze({params:Object.freeze([0x7f,0x7e]),  results:Object.freeze([0x7f])}),
   actor_join:   Object.freeze({params:Object.freeze([0x7f]),       results:Object.freeze([])}),
+  supervisor_create:Object.freeze({params:Object.freeze([0x7f]),results:Object.freeze([0x7f])}),
+  supervisor_watch:Object.freeze({params:Object.freeze([0x7f,0x7f]),results:Object.freeze([0x7f])}),
 });
 export const ACTOR_GUEST_IMPORTS = Object.freeze(Object.keys(ACTOR_GUEST_IMPORT_SIGNATURES));
 const allowed = new Set(ACTOR_GUEST_IMPORTS);

@@ -280,3 +280,308 @@ test('seeded terminal-event races never duplicate or contradict CONTROL',async()
     assert.equal(actor.state,'cancelled','turn '+turn);
   }
 });
+
+
+test('source-level supervisor handles are bounded and never alias actor slots', () => {
+  const supervisor=new SupervisorControl({capacity:4});
+  for(const id of [-1,-2,NaN,1.5,Infinity,undefined]) {
+    assert.throws(()=>supervisor.create_supervisor(id),/E_CONTROL_SUPERVISOR_LIMIT/);
+  }
+  assert.deepEqual([0,1,2,3].map(t=>supervisor.create_supervisor(t)),[1,2,3,4]);
+  assert.throws(()=>supervisor.create_supervisor(4),/E_CONTROL_SUPERVISOR_LIMIT/);
+  assert.equal(supervisor.slots.size,0);
+  assert.equal(supervisor.supervisors.size,4);
+});
+
+test('typed watch admission requires both real parent and child handles', async()=>{
+  const {supervisor,actor}=make(42,{hold_ready:true});
+  assert.equal(supervisor.create_supervisor(0),1);
+  for(const [parent,child] of [
+    [-1,1],[0,1],[2,1],[99,1],[NaN,1],[1,0],[1,-1],
+    [1,2],[1,99],[1,NaN],[1,Infinity],[1,'1'],['1',1],
+  ]) {
+    assert.equal(supervisor.watch_actor(parent,child),1,
+      String(parent)+':'+String(child));
+  }
+  assert.equal(supervisor.watch_actor(1,1),0);
+  assert.equal(supervisor.watch_actor(1,1),2,'even same parent cannot rewatch');
+  assert.equal(supervisor.create_supervisor(1),2);
+  assert.equal(supervisor.watch_actor(2,1),2,
+    'second parent cannot steal an already watched actor');
+  actor.cancel();
+  const record=supervisor.take_control();
+  assert.equal(record.parent_id,1);
+  assert.equal(record.actor_id,42);
+  assert.equal(record.kind,'cancelled');
+  assert.equal(supervisor.watch_actor(2,1),3,
+    'no adoption is possible after terminal transition');
+});
+
+test('watched completion is attributed to selected source supervisor',async()=>{
+  const {supervisor,actor}=make(2);
+  const parent=supervisor.create_supervisor(11);
+  assert.equal(parent,1);
+  assert.equal(supervisor.watch_actor(parent,1),0);
+  assert.equal(actor.admit(41n),ACTOR_ADMISSION.OK);
+  const outcome=await actor.drain_and_close();
+  assert.equal(outcome.processed,1);
+  const notice=supervisor.take_control();
+  assert.equal(notice.kind,'terminated');
+  assert.equal(notice.parent_id,parent);
+  assert.equal(notice.actor_handle,1);
+  assert.equal(notice.actor_id,2);
+  assert.equal(notice.processed,1);
+  assert.ok(Object.isFrozen(notice));
+});
+
+test('unwatched child remains assigned to the run-scoped parent',async()=>{
+  const {supervisor,actor}=make(8);
+  supervisor.create_supervisor(99);
+  await actor.drain_and_close();
+  const record=supervisor.take_control();
+  assert.equal(record.parent_id,123,
+    'merely creating a source supervisor never implicitly adopts children');
+  assert.equal(record.actor_id,8);
+});
+
+test('a watched handler panic is routed to parent, never child code',async()=>{
+  const {supervisor,actor}=make(7,{panic:true});
+  const owner=supervisor.create_supervisor(0);
+  assert.equal(supervisor.watch_actor(owner,1),0);
+  actor.admit(41n);
+  await assert.rejects(actor.drain_and_close(),/E_ACTOR_PANIC_1/);
+  const event=supervisor.take_control();
+  assert.equal(event.kind,'panic');
+  assert.equal(event.parent_id,owner);
+  assert.equal(event.code,'E_ACTOR_PANIC_1');
+  assert.equal(event.processed,0);
+  assert.equal(supervisor.take_control(),null);
+});
+
+test('watching a child whose ordinary mailbox is full does not consume a message slot',async()=>{
+  const {supervisor,actor}=make(1,{hold_ready:true});
+  for(let i=0;i<32;i++)assert.equal(actor.admit(BigInt(i)),ACTOR_ADMISSION.OK);
+  assert.equal(actor.admit(32n),ACTOR_ADMISSION.FULL);
+  const owner=supervisor.create_supervisor(1);
+  assert.equal(supervisor.watch_actor(owner,1),0);
+  assert.equal(actor.queue.length,32,'supervisor operation does not drain or admit data');
+  actor.cancel();
+  const record=supervisor.take_control();
+  assert.equal(record.parent_id,owner);
+  assert.equal(record.kind,'cancelled');
+  assert.equal(actor.queue.length,0);
+});
+
+test('independent source supervisors cannot steal each others child notices',async()=>{
+  const control=new SupervisorControl({capacity:4,parent_id:77});
+  const first=control.create_supervisor(0),second=control.create_supervisor(1);
+  const workers=[new FakeWorker(),new FakeWorker()];
+  const actors=workers.map((worker,index)=>new ActorSession(worker,index,new Uint8Array(),{
+    supervisor:control,actor_handle:index+1,timeout_ms:500,
+  }));
+  assert.equal(control.watch_actor(first,1),0);
+  assert.equal(control.watch_actor(second,2),0);
+  assert.equal(control.watch_actor(first,2),2);
+  assert.equal(control.watch_actor(second,1),2);
+  actors[0].admit(41n);
+  actors[1].admit(42n);
+  await Promise.all(actors.map(a=>a.drain_and_close()));
+  const events=control.drain_control();
+  assert.equal(events.length,2);
+  assert.deepEqual(events.map(e=>e.parent_id),[first,second]);
+  assert.deepEqual(events.map(e=>e.actor_handle),[1,2]);
+  assert.ok(events.every(e=>e.kind==='terminated'));
+});
+
+test('terminal watch races preserve first committed parent attribution in 128 interleavings',async()=>{
+  let seed=0x482ac0de;
+  const rand=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed};
+  for(let turn=0;turn<128;turn++){
+    const {supervisor,actor}=make(turn,{hold_ready:true});
+    const parent=supervisor.create_supervisor(0);
+    const before=(rand()&1)===0;
+    if(before)assert.equal(supervisor.watch_actor(parent,1),0);
+    actor.cancel();
+    if(!before)assert.equal(supervisor.watch_actor(parent,1),3);
+    const event=supervisor.take_control();
+    assert.equal(event.parent_id,before?parent:123,'turn '+turn);
+    assert.equal(event.kind,'cancelled');
+    assert.equal(supervisor.take_control(),null);
+    assert.strictEqual(supervisor.get_terminal(1),event);
+  }
+});
+
+
+test('a forged seal token cannot close another actor watch admission',()=>{
+  const {supervisor,actor}=make(0,{hold_ready:true});
+  for(const token of [null,{},Object.freeze({}),[],1,'1',()=>{}]){
+    assert.throws(()=>supervisor.seal_actor_watch(token),/E_CONTROL_CAPABILITY/);
+  }
+  const parent=supervisor.create_supervisor(0);
+  assert.equal(supervisor.watch_actor(parent,1),0,
+    'forged seal must not change admission state');
+  actor.cancel();
+});
+
+test('a watched child cannot be reparented after drain is initiated',async()=>{
+  const {supervisor,actor,worker}=make(5,{hold_ready:true});
+  const first=supervisor.create_supervisor(0);
+  const second=supervisor.create_supervisor(1);
+  assert.equal(supervisor.watch_actor(first,1),0);
+  const task=actor.drain_and_close();
+  assert.equal(supervisor.watch_actor(second,1),4,
+    'sealed in-flight actor must not be reparented before terminal acknowledgment');
+  worker.emit({kind:'ready'});
+  actor.cancel();
+  await assert.rejects(task,/E_ACTOR_CANCELLED/);
+  assert.equal(supervisor.take_control().parent_id,first);
+});
+
+test('unwatched draining child cannot be adopted by a late supervisor',async()=>{
+  const {supervisor,actor,worker}=make(5,{hold_ready:true});
+  const parent=supervisor.create_supervisor(0);
+  const task=actor.drain_and_close();
+  assert.equal(supervisor.watch_actor(parent,1),4);
+  actor.cancel();
+  worker.emit({kind:'ready'});
+  await assert.rejects(task,/E_ACTOR_CANCELLED/);
+  const notice=supervisor.take_control();
+  assert.equal(notice.parent_id,123);
+  assert.equal(notice.kind,'cancelled');
+});
+
+test('repeat sealing is idempotent and cannot undo an admitted parent',async()=>{
+  const {supervisor,actor,worker}=make(7,{hold_ready:true});
+  const parent=supervisor.create_supervisor(1);
+  assert.equal(supervisor.watch_actor(parent,1),0);
+  supervisor.seal_actor_watch(actor.control_token);
+  supervisor.seal_actor_watch(actor.control_token);
+  assert.equal(supervisor.watch_actor(parent,1),4);
+  const task=actor.drain_and_close();
+  worker.emit({kind:'ready'});
+  actor.cancel();
+  await assert.rejects(task,/E_ACTOR_CANCELLED/);
+  assert.equal(supervisor.take_control().parent_id,parent);
+});
+
+test('watched in-flight worker failure retains the first parent attribution',async()=>{
+  const {supervisor,actor,worker}=make(1,{hold_reply:true});
+  const parent=supervisor.create_supervisor(3);
+  assert.equal(supervisor.watch_actor(parent,1),0);
+  actor.admit(41n);
+  const task=actor.drain_and_close();
+  await tick();
+  worker.emit({kind:'error',message:'E_ACTOR_WORKER'});
+  await assert.rejects(task,/E_ACTOR_WORKER/);
+  const event=supervisor.take_control();
+  assert.equal(event.parent_id,parent);
+  assert.equal(event.kind,'failure');
+  assert.equal(event.processed,0);
+  assert.equal(supervisor.watch_actor(parent,1),3);
+});
+
+test('watched readiness timeout preserves selected parent in CONTROL',async()=>{
+  const {supervisor,actor}=make(0,{hold_ready:true,timeout_ms:25});
+  const parent=supervisor.create_supervisor(0);
+  assert.equal(supervisor.watch_actor(parent,1),0);
+  await assert.rejects(actor.drain_and_close(),/E_ACTOR_READY_TIMEOUT/);
+  const event=supervisor.take_control();
+  assert.equal(event.parent_id,parent);
+  assert.equal(event.kind,'timeout');
+  assert.equal(event.code,'E_ACTOR_READY_TIMEOUT');
+});
+
+test('watched close timeout never turns into successful parent event',async()=>{
+  const {supervisor,actor}=make(0,{hold_done:true,timeout_ms:25});
+  const parent=supervisor.create_supervisor(0);
+  assert.equal(supervisor.watch_actor(parent,1),0);
+  await assert.rejects(actor.drain_and_close(),/E_ACTOR_DONE_TIMEOUT/);
+  const event=supervisor.take_control();
+  assert.equal(event.parent_id,parent);
+  assert.equal(event.kind,'timeout');
+  assert.equal(event.state,'failed');
+});
+
+test('watched malformed reply fails closed without reassigning parent',async()=>{
+  const {supervisor,actor,worker}=make(0,{hold_reply:true});
+  const parent=supervisor.create_supervisor(0);
+  assert.equal(supervisor.watch_actor(parent,1),0);
+  actor.admit(11n);
+  const task=actor.drain_and_close();
+  await tick();
+  worker.emit({kind:'reply',seq:99,value:12n});
+  await assert.rejects(task,/E_ACTOR_REPLY_PROTOCOL/);
+  const event=supervisor.take_control();
+  assert.equal(event.parent_id,parent);
+  assert.equal(event.kind,'failure');
+  assert.equal(event.processed,0);
+  assert.equal(supervisor.take_control(),null);
+});
+
+test('watched worker-level clone error preserves CONTROL parent and exactly-once delivery',async()=>{
+  const {supervisor,actor,worker}=make(5,{hold_ready:true});
+  const parent=supervisor.create_supervisor(2);
+  assert.equal(supervisor.watch_actor(parent,1),0);
+  worker.onmessageerror?.({});
+  worker.emit({kind:'ready'});
+  actor.cancel();
+  await assert.rejects(actor.get_done(),/E_ACTOR_MESSAGE_CLONE/);
+  const event=supervisor.take_control();
+  assert.equal(event.parent_id,parent);
+  assert.equal(event.code,'E_ACTOR_MESSAGE_CLONE');
+  assert.equal(supervisor.take_control(),null);
+  assert.strictEqual(supervisor.get_terminal(1),event);
+});
+
+test('four independently watched actors preserve one source supervisor each',async()=>{
+  const control=new SupervisorControl({capacity:4,parent_id:0});
+  const parents=Array.from({length:4},(_,i)=>control.create_supervisor(i));
+  const actors=Array.from({length:4},(_,i)=>{
+    const worker=new FakeWorker();
+    const actor=new ActorSession(worker,i,new Uint8Array(),{
+      supervisor:control,actor_handle:i+1,timeout_ms:1000,
+    });
+    assert.equal(control.watch_actor(parents[i],i+1),0);
+    actor.admit(BigInt(i));
+    return actor;
+  });
+  await Promise.all(actors.map(a=>a.drain_and_close()));
+  const records=control.drain_control();
+  assert.equal(records.length,4);
+  assert.deepEqual(records.map(r=>r.parent_id),parents);
+  assert.deepEqual(records.map(r=>r.actor_handle),[1,2,3,4]);
+  assert.ok(records.every(r=>r.kind==='terminated'&&r.processed===1));
+});
+
+test('fifth supervisor creation cannot corrupt four prior parent assignments',async()=>{
+  const control=new SupervisorControl({capacity:4,parent_id:0});
+  const parents=Array.from({length:4},(_,i)=>control.create_supervisor(i));
+  const worker=new FakeWorker();
+  const actor=new ActorSession(worker,0,new Uint8Array(),{
+    supervisor:control,actor_handle:1,
+  });
+  assert.equal(control.watch_actor(parents[3],1),0);
+  assert.throws(()=>control.create_supervisor(100),/E_CONTROL_SUPERVISOR_LIMIT/);
+  assert.equal(control.supervisors.size,4);
+  await actor.drain_and_close();
+  assert.equal(control.take_control().parent_id,parents[3]);
+});
+
+test('128 seeded watch versus structured-close interleavings never reparent terminal events',async()=>{
+  let seed=0x83fe47d1;
+  const rand=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed};
+  for(let i=0;i<128;i++){
+    const {actor,supervisor}=make(i,{hold_ready:true});
+    const parent=supervisor.create_supervisor(0);
+    const before=(rand()&1)===0;
+    if(before)assert.equal(supervisor.watch_actor(parent,1),0);
+    const task=actor.drain_and_close();
+    if(!before)assert.equal(supervisor.watch_actor(parent,1),4);
+    actor.cancel();
+    await assert.rejects(task,/E_ACTOR_CANCELLED/);
+    const record=supervisor.take_control();
+    assert.equal(record.parent_id,before?parent:123,'iteration '+i);
+    assert.equal(record.state,'cancelled');
+    assert.equal(supervisor.take_control(),null);
+  }
+});
