@@ -1,7 +1,6 @@
 # Compiler-verified units of measurement v1
 
-Status: **draft, first executable slice** (Rust compiler library: the unit
-algebra the checker will call). Feature 11 of the 15 proposals.
+Status: **draft, closed algebra plus candidate source frontend; execution pending**. Feature 11 of the 15 proposals.
 
 Related, not duplicated: atto-spec #209 owns numeric *value* semantics
 (checked ints, decimal rounding, compile-time dimensions in DOP kernels).
@@ -45,16 +44,32 @@ fnc speed(int[m] d, int[s] t): float[m/s] { return d / t; }
 The candidate canonical surface is [atto-spec #224](https://github.com/atto-lang/atto-spec/pull/224), with `define dimension`, `define unit`, contiguous `5000<Millis>` literals and `.to_unit<Second>()`. The syntax below/above is historical only. Units may be erased only after checking all boundaries: `int[ms]` lowers to a plain i64, so there is
 zero runtime cost and the same Wasm, LLVM and JVM layout. Exact conversion requires divisibility and checked range; a single multiply is not sufficient.
 
+## Candidate source preview
+
+```atto
+define dimension Time;
+define unit Second: Time;
+define unit Millis: Time = Second / 1000;
+pub fnc main() -> int {
+    return 84000<Millis>.to_unit<Second>() / 2<Second>;
+}
+```
+
+The new frontend consumes a complete standalone source file, resolves file-local nominal dimensions and exact rational scales, checks every closed arithmetic operation, and passes only a proved successful dimensionless result to the existing scalar Wasm compiler. It is deliberately narrower than spec #224: 128-bit scale components (not 256), no imports, no general quantity bindings/signatures, no affine values or polymorphism, no runtime failure lowering. Arithmetic that would trap is currently rejected before emission with E_UNSUPPORTED; this is not full conformance. The older nine-dimension algebra remains a separate internal API. The normal CLI path and direct compiler entry share this preview; imported quantities fail closed.
+
 ## Tests
 
-`tests/units_of_measure.rs` (7 cases): scale mismatch, cross-dimension
+`tests/units_of_measure.rs` (9 cases): scale mismatch, cross-dimension
 rejection, derived-unit identities, exact conversion factors, exact or lossy
 integer conversion with overflow, canonical dimension display, and
 malformed/unknown expressions.
 
 ## Next slices
 
-1. Align with the candidate spec #224 grammar and normalized limits before frontend admission; retain this closed algebra as a narrower internal profile until then.
-2. `define unit furlong = 201168/1000 m;` user units (bounded registry).
-3. Affine units (°C/°F) as a separate, explicitly offset-aware kind.
-4. Conformance fixtures shared with Java/LLVM through atto-platform-conformance.
+1. Run the focused exact-head quantity test workflow and actual Wasm guest; preserve all origin gates.
+2. Extend scale precision to 256 bits and separate typing from runtime arithmetic trap lowering.
+3. Use compiler-resolved package/module/declaration IDs for imported and compound dimensions.
+4. Integrate checked quantity bindings, signatures, FFI and serialization; add affine and polymorphic profiles only after separate specification review.
+5. Execute shared conformance #584 with comparable backend receipts.
+
+The legacy immutable-binding Cranelift tests are retained verbatim in `tests/legacy/immutable_binding_parity_cranelift.rs`; the browser crate now has its own real compiler regression in `tests/immutable_binding_parity.rs`. The original Cranelift/effect-IR suite is not claimed as executed by this change.
