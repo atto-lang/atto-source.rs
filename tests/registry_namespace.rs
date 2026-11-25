@@ -754,3 +754,41 @@ fn generic_packages_isolate_same_named_specializations_and_aliases() {
     assert_eq!(compile_frozen_generic_packages(&guest,&[&pa,&pa,&pb]).unwrap_err().code,"E_DUPLICATE");
     assert_eq!(compile_frozen_generic_packages(&guest,&[&pa]).unwrap_err().code,"E_UNBOUND");
 }
+
+
+#[test]
+fn frozen_generic_instances_preserve_checked_scalar_object_storage() {
+    use atto_compiler::registry_namespace::FrozenGenericClass;
+    let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } val int count = 21; val bool ready = true; val string label = \"ok\"; pub fnc echo(T value): T { return value; } pub fnc get_count(): int { return self.count; } pub fnc is_ready(): bool { return self.ready; } pub fnc get_label(): string { return self.label; } end";
+    let inputs=[SnapshotSource{path:"src/models/container.atto",source:body}];
+    let l=lock(manifest,&inputs);
+    let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+    let prefix="import [class models.Container] from pkg '@org/project/package'; ";
+    let guest=format!("{prefix}pub fnc main(): int {{ val a = Container[int].new(); val b = Container[bool].new(); val c = Container[string].new(); if b.echo(b.is_ready()) && c.echo(c.get_label()) == \"ok\" then return a.echo(a.get_count())+b.get_count(); fi return 0; }}");
+    let wasm=p.compile_guest_instances(&guest).unwrap();
+    assert!(wasm.starts_with(b"\0asm"));
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-generic-state-0.wasm"),wasm).unwrap();
+    }
+    for root in [
+        "val a = Container[int].new(); return a.count;",
+        "val a = Container[int].new(); a.count = 42; return a.get_count();",
+        "val a: Container[int] = Container[bool].new(); return a.get_count();",
+    ]{
+        let bad=format!("{prefix}pub fnc main(): int {{ {root} }}");
+        assert!(p.compile_guest_instances(&bad).is_err(),"{bad}");
+    }
+    for changed in [
+        body.replace("val int count = 21;","val T count = 21;"),
+        body.replace("val int count = 21;","final T count;"),
+        body.replace("val int count = 21;","val int count = false;"),
+        body.replace("return value;","return T;"),
+        body.replace("return value;","return echo(T value);"),
+        body.replace("pub fnc echo(T value): T","pub fnc echo(T value): T").replace("return value;","val T local = value; return local;"),
+    ]{
+        let changed=[SnapshotSource{path:inputs[0].path,source:&changed}];
+        let cl=lock(manifest,&changed);
+        assert!(FrozenGenericClass::verify("@org/project/package",manifest,&cl,&hex_digest(cl.as_bytes()),&changed).is_err());
+    }
+}
