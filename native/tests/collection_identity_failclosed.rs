@@ -1,8 +1,12 @@
 //! Compiler-backed fail-closed checks on the actual Cranelift scalar MIR.
 //! These DO NOT claim that Array, Option or collection borrowing is compiled.
 
-const RESERVED: [&str; 13] = [
+const RESERVED: [&str; 17] = [
     "Option",
+    "Some",
+    "None",
+    "Ok",
+    "Err",
     "Result",
     "Array",
     "FixedArray",
@@ -58,4 +62,28 @@ fn unrelated_scalar_functions_remain_native_objects() {
     )
     .expect("ordinary native scalar function");
     assert!(!bytes.is_empty());
+}
+
+#[test]
+fn unused_reserved_declarations_are_rejected_before_object_emission() {
+    for name in RESERVED {
+        let source = format!(
+            "fnc {name}(): int {{ return 0; }} pub fnc main(): int {{ return 42; }}"
+        );
+        let ast = oreslang_source_rs::frontend::parse(&source).unwrap();
+        assert_eq!(
+            oreslang_source_rs::mir::lower(ast).unwrap_err().class,
+            "reserved_collection_name"
+        );
+    }
+}
+
+#[test]
+fn unrelated_prelude_catalog_names_are_not_globally_reserved() {
+    for name in ["Pair", "Box", "Error", "Iterator", "option"] {
+        let source = format!(
+            "fnc {name}(): int {{ return 42; }} pub fnc main(): int {{ return {name}(); }}"
+        );
+        assert!(oreslang_source_rs::compile(&source).is_ok(), "{name}");
+    }
 }
