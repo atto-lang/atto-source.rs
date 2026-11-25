@@ -597,3 +597,37 @@ fn namespace_alias_as_rejects_invalid_destinations_and_duplicate_bindings() {
         assert_eq!(compile(&src).unwrap_err().code, expected, "{src}");
     }
 }
+
+#[test]
+fn alias_cycles_without_builtin_import_are_diagnosed_before_loading() {
+    for header in ["", "import pkg '@a/b/c'; ", "import f from './math.atto'; ", "use namespace app; "] {
+        for declarations in [
+            "define alias a as b; define alias b as c; define alias c as a;",
+            "define alias a = b; define alias a as b;",
+        ] {
+            let source = format!("{header}{declarations} pub fnc main(): int {{ return 42; }}");
+            assert_eq!(compile(&source).unwrap_err().code, "E_IMPORT_CYCLE", "{source}");
+            let mut loads = 0;
+            assert_eq!(compile_with_imports(&source, Path::new("main.atto"), |_| {
+                loads += 1; Ok(String::new())
+            }).unwrap_err().code, "E_IMPORT_CYCLE", "{source}");
+            assert_eq!(loads, 0);
+        }
+    }
+}
+#[test]
+fn alias_header_failures_do_not_delegate_to_a_dependency_loader() {
+    for source in [
+        "import f from './math.atto'; define alias x = missing; pub fnc main(): int { return 42; }",
+        "import f from './math.atto'; pub fnc main(): int { return 42; } define alias a = b;",
+        "import f from './math.atto'; define alias core.num as a.b; pub fnc main(): int { return 42; }",
+    ] {
+        let mut loads = 0;
+        assert!(compile_with_imports(source, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).is_err(), "{source}");
+        assert_eq!(loads, 0);
+    }
+    assert_eq!(compile("define alias core.num as math; pub fnc main(): int { return 42; }").unwrap_err().code, "E_UNBOUND");
+    assert!(compile("import module num from 'core/num'; define alias num as math; pub fnc main(): int { return math.clamp(42,0,100); }").is_ok());
+}
