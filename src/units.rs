@@ -68,7 +68,7 @@ impl Ratio {
         Ok(())
     }
 
-    fn mul(self, o: Ratio) -> R<Ratio> {
+    pub(crate) fn mul(self, o: Ratio) -> R<Ratio> {
         self.validate()?;
         o.validate()?;
         // Cross-reduce first so exact products stay small.
@@ -82,7 +82,7 @@ impl Ratio {
         }
     }
 
-    fn inv(self) -> Ratio {
+    pub(crate) fn inv(self) -> Ratio {
         Ratio {
             num: self.den,
             den: self.num,
