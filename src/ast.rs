@@ -32,6 +32,14 @@ pub enum Type {
     OptionResultIntStr,
     /// Bounded, owned guest-Wasm generator handle for the admitted subset.
     GeneratorInt,
+    /// Immutable Array<int> view backed by aligned module data: a packed
+    /// 32-bit offset and element count, with no per-iteration allocation.
+    ArrayInt,
+    /// Unresolved Array<Class> element name (index in Program.type_names).
+    ArrayNamed(u32),
+    /// Owned arena array of class handles; moving the descriptor transfers
+    /// ownership of all elements, never an implicit mutable borrow.
+    ArrayClass(u32),
 }
 
 impl Type {
@@ -48,6 +56,8 @@ impl Type {
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
+            Type::ArrayInt => "Array<int>",
+            Type::ArrayNamed(_) | Type::ArrayClass(_) => "Array<object>",
             _ => "object",
         }
     }
@@ -352,6 +362,9 @@ pub enum ExprKind {
     Float(u64),
     Bool(bool),
     Str(String),
+    /// First executable array profile: readonly integer array literals.
+    /// Values must be compile-time int constants; no implicit heap copying.
+    ArrayLit(Vec<Expr>),
     Var(String),
     /// Value-producing Clojure-style immutable loop/recur expression.
     StateLoop { bindings: Vec<Stmt>, body: Vec<Stmt> },

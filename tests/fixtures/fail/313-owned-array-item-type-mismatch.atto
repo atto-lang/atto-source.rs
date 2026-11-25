@@ -1,0 +1,13 @@
+// expect-error: E_TYPE
+// java: target-only
+define class Particle as
+    mut int n = 0;
+    constructor(int v) { self.n = v; }
+    pub value(): int { return self.n; }
+end
+define class Other as
+    mut int n = 0;
+    constructor(int v) { self.n = v; }
+    pub value(): int { return self.n; }
+end
+pub fnc main(): int { val xs = [new Particle(1)]; for (Other p in xs) { } return 0; }
