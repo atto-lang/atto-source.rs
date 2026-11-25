@@ -423,7 +423,7 @@ fn reserved_layer_name(selector: &str) -> &'static str {
 /// Reject shadowing, runtime namespace values, and mixed linker domains until
 /// the full lexical export graph can represent them.
 // Parse a complete contextual define alias declaration with no I/O.
-fn parse_alias_declaration(tokens: &[Token], i: usize) -> R<(String, String, Pos, usize)> {
+pub(crate) fn parse_alias_declaration(tokens: &[Token], i: usize) -> R<(String, String, Pos, usize)> {
     let pos = tokens[i].pos;
     let start = i + 2;
     let mut end = start;
