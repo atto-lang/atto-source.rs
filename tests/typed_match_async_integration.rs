@@ -106,8 +106,9 @@ fn switch_task_effects_and_scope_are_checked_not_coerced() {
     }
 }
 
+
 #[test]
-fn adt_payload_task_capture_is_rejected_until_owned_frames_exist() {
+fn adt_payload_scalar_task_capture_is_admitted_with_owned_copy() {
     let source = r#"
         fnc choice(): Result<int,string> { return Ok(41); }
         pub suspends fnc main(): int {
@@ -117,8 +118,9 @@ fn adt_payload_task_capture_is_rejected_until_owned_frames_exist() {
             end;
         }
     "#;
-    let diagnostic = compile(source).expect_err("task must not read a parent case-local without a captured owned frame");
-    assert_eq!(diagnostic.code, "E_UNBOUND", "{diagnostic}");
+    let guest = compile(source).unwrap_or_else(|e| panic!("captured ADT case: {e}"));
+    assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
+    assert_eq!(guest, compile(source).unwrap(), "deterministic captured AOT");
 }
 
 #[test]

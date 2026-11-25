@@ -382,7 +382,7 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         // require a compiler review of its lexical binding behaviour.
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
         ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
-        ExprKind::Spawn(_) | ExprKind::Task(_) => Ok(()),
+        ExprKind::Spawn(_) | ExprKind::Task(..) => Ok(()),
     }
 }
 
@@ -430,7 +430,7 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
             "explicit ownership inside a direct lambda requires verified capture lifetimes")),
         ExprKind::StateRead(_) => return Err(error(e.pos, "E_UNSUPPORTED",
             "protected state projection inside a direct lambda is not lifetime-verified")),
-        ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Task(_) | ExprKind::Lambda { .. } => {},
+        ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Task(..) | ExprKind::Lambda { .. } => {},
     }
     Ok(())
 }

@@ -49,6 +49,8 @@ pub enum Import {
     SleepMs,
     Barrier,
     TaskStart,
+    /// Versioned ABI: start an AOT task with one copied i64 capture.
+    TaskStartI64,
     TaskAwait,
     /// Mandatory cooperative scheduler turn for every source await.
     Cooperate,
@@ -59,7 +61,7 @@ pub enum Import {
 }
 
 impl Import {
-    pub const ALL: [Import; 15] = [
+    pub const ALL: [Import; 16] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -70,6 +72,7 @@ impl Import {
         Import::SleepMs,
         Import::Barrier,
         Import::TaskStart,
+        Import::TaskStartI64,
         Import::TaskAwait,
         Import::Cooperate,
         Import::StateRegister,
@@ -88,6 +91,7 @@ impl Import {
             Import::SleepMs => "sleep_ms",
             Import::Barrier => "barrier",
             Import::TaskStart => "task_start",
+            Import::TaskStartI64 => "task_start_i64",
             Import::TaskAwait => "task_await",
             Import::Cooperate => "cooperate",
             Import::StateRegister => "state_register",
@@ -205,6 +209,8 @@ pub enum TExpr {
     Barrier(Box<TE>),
     /// Capture-free task body index; the Wasm host schedules task_invoke(index).
     TaskStart(u32),
+    /// One immutable i64 snapshot; host schedules task_invoke_i64(index, value).
+    TaskStartI64(u32, Box<TE>),
     /// Consume one typed future handle and yield until the task finishes.
     TaskAwait(Box<TE>),
     /// Preserve evaluated value and release the worker carrier at least one event-loop turn.
@@ -1496,7 +1502,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } |
         TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
-        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
+        TExpr::TaskStartI64(..) | TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
     }
 }
 
@@ -1547,6 +1553,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
+        TExpr::TaskStartI64(_, capture) => any_in(capture, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
         | TExpr::SleepMs(a) | TExpr::Barrier(a) | TExpr::TaskAwait(a)
         | TExpr::AwaitYield(a) => any_in(a, f),
@@ -2197,6 +2204,10 @@ impl<'a> FnCx<'a> {
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
+        // A guard reads arm-local bindings before the selected arm body runs.
+        // Stage guarded values before dispatch, but only project a tagged
+        // payload when the scrutinee is confirmed to have that tag.
+        let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             // The current executable profile has only definite-return arm
@@ -2229,9 +2240,13 @@ impl<'a> FnCx<'a> {
                         _ => return Err(type_err(arm.pos,
                             format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
-                    if bind.is_some() != needed.is_some() {
+                    // A tagged variant can be tested without extracting its
+                    // payload: Ok() / Err() / Some() and their (_) spellings.
+                    // Only *binding* a non-existent payload is an arity error.
+                    // No implicit 'value' or 'error' local is manufactured.
+                    if needed.is_none() && bind.is_some() {
                         return Err(Diagnostic::new(arm.pos, "E_ARITY",
-                            format!("pattern '{name}' has incorrect payload arity")));
+                            format!("pattern '{name}' has no payload to bind")));
                     }
                     (Some(tag), bind.as_deref(), needed)
                 }
@@ -2257,7 +2272,20 @@ impl<'a> FnCx<'a> {
                     } else {
                         TE { e: TExpr::AdtPayload(Box::new(get())), ty }
                     };
-                    body.push(TStmt::Set(slot, value));
+                    let assignment = TStmt::Set(slot, value);
+                    if arm.guard.is_some() {
+                        if let Some(tag_test) = test.as_ref() {
+                            // Never inspect the inactive Result/Option variant.
+                            match_setup.push(TStmt::If(
+                                vec![(tag_test.clone(), vec![assignment])], None,
+                            ));
+                        } else {
+                            // A whole-scrutinee binder has no tag to check.
+                            match_setup.push(assignment);
+                        }
+                    } else {
+                        body.push(assignment);
+                    }
                 }
                 let guard = match &arm.guard {
                     Some(g) => Some(self.cond(g, "match guard")?),
@@ -2307,10 +2335,8 @@ impl<'a> FnCx<'a> {
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        Ok(TStmt::Block(vec![
-            TStmt::Set(tmp, subj),
-            TStmt::If(out, Some(vec![TStmt::Unreachable])),
-        ]))
+        match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
+        Ok(TStmt::Block(match_setup))
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
@@ -3031,13 +3057,31 @@ impl<'a> FnCx<'a> {
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
-            ExprKind::Task(name) => {
+            ExprKind::Task(name, capture) => {
                 if !self.suspends { return Err(Diagnostic::new(pos, "E_EFFECT", "task requires a suspends fnc")); }
-                let (idx, params, ret) = self.g.sigs.get(&(name.clone(), 0)).ok_or_else(||
-                    Diagnostic::new(pos, "E_TASK", "internal task body not registered"))?;
-                if !params.is_empty() || *ret != Type::Int { return Err(type_err(pos, "task body must return int")); }
-                self.imports.push(Import::TaskStart);
-                TE {e: TExpr::TaskStart(*idx), ty: Type::FutureInt}
+                let arity = usize::from(capture.is_some());
+                let (idx, params, ret) = self.g.sigs.get(&(name.clone(), arity)).ok_or_else(||
+                    Diagnostic::new(pos, "E_TASK", "internal task body not registered"))?.clone();
+                if params.len() != arity || params.iter().any(|t| *t != Type::Int) || ret != Type::Int {
+                    return Err(type_err(pos, "task body must return int and accept at most one int capture"));
+                }
+                if let Some(captured_name) = capture {
+                    // Resolve in the arm's lexical scope, after its ADT tag
+                    // and payload binding checks. Borrowed and heap-backed
+                    // values cannot enter this scalar-copy profile.
+                    let value = self.value(&Expr {
+                        kind: ExprKind::Var(captured_name.clone()), pos
+                    })?;
+                    if value.ty != Type::Int {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "task capture supports only a copied int arm binder; no reference/ADT capture"));
+                    }
+                    self.imports.push(Import::TaskStartI64);
+                    TE {e: TExpr::TaskStartI64(idx, Box::new(value)), ty: Type::FutureInt}
+                } else {
+                    self.imports.push(Import::TaskStart);
+                    TE {e: TExpr::TaskStart(idx), ty: Type::FutureInt}
+                }
             },
             ExprKind::Await(..) => unreachable!("handled by expr"),
             ExprKind::StateRead(field) => {

@@ -1,0 +1,10 @@
+// expect-error: E_MATCH
+// Ok() and Ok(_) cover the same tag and the second is unreachable.
+fnc checked(): Result<int,string> { return Ok(41); }
+pub fnc main(): int {
+    return switch<int> checked() over
+        case Ok() : int -> 42,
+        case Ok(_) : int -> 1,
+        case Err(_) : int -> 0,
+    end;
+}

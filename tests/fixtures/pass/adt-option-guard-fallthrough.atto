@@ -1,0 +1,11 @@
+// expect-exit: 42
+// Both guards must see -7; a guarded variant is not exhaustive.
+fnc option(): Option<int> { return Some(-7); }
+pub fnc main(): int {
+  match option() over
+    on Some(n) when n > 0 -> { return 1; }
+    on Some(n) when n < 0 -> { return 42; }
+    on Some(n) -> { return 2; }
+    on None -> { return 3; }
+  end
+}

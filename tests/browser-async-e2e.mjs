@@ -124,19 +124,62 @@ try{
   assert.match(await run(typedCase,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected switch case awaits once');
   console.log('PASS integration: typed switch<int> case executes awaited task with one scheduler handoff');
+  const discardedErr='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok(value) : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(discardedErr,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
+  console.log('PASS browser: Err() discards payload while Ok(value) binds and task captures it');
+  const discardedOk='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return switch<int> checked() over case Err(_) : int -> -1, case Ok() : int -> 42, end; }';
+  assert.match(await run(discardedOk,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS browser: Ok() and Err(_) discard tagged payloads');
+  const badDiscardReference='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok() : int -> value + 1, end; }';
+  assert.match(await run(badDiscardReference,'E_UNBOUND'),/E_UNBOUND/);
+  console.log('PASS browser: Ok() does not create an implicit value local');
+  const guardedDiscard='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return match<int> checked() over on Ok() when false : int -> 7, on Ok(n) when n > 40 : int -> n + 1, on Ok(_) : int -> 0, on Err() : int -> -1, end; }';
+  assert.match(await run(guardedDiscard,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS browser: guarded Ok() falls through and named Ok(n) guard observes the tagged payload');
+  const guardedErrDiscard='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return switch<int> checked() over case Err(message) when message == "wrong" : int -> 1, case Err() : int -> 0, case Ok(_) : int -> 42, end; }';
+  assert.match(await run(guardedErrDiscard,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS browser: unselected guarded Err does not read the active Ok payload');
+
+  // A named guard must observe its initialized Ok payload; the selected
+  // awaited task captures only the copied int, and no unselected task runs.
+  const guardedCapturedTask='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok(value) when value > 5 : int -> await task { return value + 1; }, on Ok(_) : int -> 10, end; }';
+  assert.match(await run(guardedCapturedTask,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'guarded named capture must suspend once');
+  console.log('PASS browser: guarded Ok(value) copies int into selected awaited task');
+  const guardedDiscardTask='fnc checked(): Result<int,string> { return Ok(2); } pub suspends fnc main(): int { return switch<int> checked() over case Err(_) : int -> 0, case Ok(value) when value > 5 : int -> await task { return value + 1; }, case Ok() : int -> await task { return 42; }, end; }';
+  assert.match(await run(guardedDiscardTask,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'failed guard must not schedule an unselected task');
+  console.log('PASS browser: guarded fallthrough to Ok() schedules only selected task');
+  const invalidDiscardTask='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok() : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(invalidDiscardTask,'E_UNBOUND'),/E_UNBOUND/);
+  console.log('PASS browser: Ok() does not create a capture for an awaited task');
+
+  const capturedMatch='fnc checked(): Option<int> { return Some(41); } pub suspends fnc main(): int { return match<int> checked() over on Some(n) : int -> await task { return n + 1; }, on None : int -> 0, end; }';
+  assert.match(await run(capturedMatch,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured match must yield once');
+  console.log('PASS JSPI v3: typed match arm copies i64 payload into scheduled task');
+  const capturedSwitch='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> checked() over case Err(message) : int -> 0, case Ok(value) : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(capturedSwitch,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured switch must yield once');
+  console.log('PASS JSPI v3: typed switch arm copies i64 payload into scheduled task');
+  const badCaptured='fnc checked(): Result<int,string> { return Err("no"); } pub suspends fnc main(): int { return match<int> checked() over on Err(error) : int -> await task { return error; }, on Ok(value) : int -> value, end; }';
+  assert.match(await run(badCaptured,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  console.log('PASS JSPI v3: string task capture is rejected without guest instantiation');
   const conflictingCase='pub suspends fnc main(): int { return switch<int> 1 over case 1 : bool -> true, default : int -> 0, end; }';
   assert.match(await run(conflictingCase,'E_TYPE'),/E_TYPE/);
   console.log('PASS integration: typed switch case mismatch fails closed without a guest');
-
-  // ADT case binder is visible to the selected arm but NOT automatically
-  // captured by a spawned task: that requires task-owned frames.
-  const adtCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return 42; }, end; }';
-  assert.match(await run(adtCase,'main() -> 42'),/^main\(\) -> 42$/);
-  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'ADT selected case awaits exactly once');
-  const captureCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return value + 1; }, end; }';
-  assert.match(await run(captureCase,'E_UNBOUND'),/E_UNBOUND/);
-  console.log('PASS integration: ADT case selection executes once; task payload captures fail closed');
-
+  // The latest switch integration must not regress scalar arm-local task captures.
+  const legacySwitch='pub fnc main(): int { switch 1 case 1 -> { return 42; } default -> { return 0; } end }';
+  assert.match(await run(legacySwitch,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS integration: Java-compatible untyped legacy switch remains supported');
+  const guardedCaptureCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(guardedCaptureCase,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'selected ADT case captures one int and awaits exactly once');
+  console.log('PASS integration: updated typed switch, scalar captured Result payload and JSPI handoff');
+  const unsupportedTaskCall='pub suspends fnc main(): int { return await task(); }';
+  assert.match(await run(unsupportedTaskCall,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  console.log('PASS integration: task() remains unsupported, not a task block');
   const combined='pub suspends fnc main(): int { val a=task { return 42; }; stdio.out << "direct"; return await a; }';
   assert.match(await run(combined,'main() -> 42'),/^directmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'combined stdout/Future guest must yield exactly once');
