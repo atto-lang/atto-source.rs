@@ -460,6 +460,44 @@
           true
         ]
       ]
+    },
+    "cross-class-roots": {
+      "identities": [
+        "@org/project/nominal",
+        "@other/project/nominal"
+      ],
+      "exports": [
+        [
+          "model",
+          "namespace",
+          true
+        ],
+        [
+          "model.Item",
+          "class",
+          true
+        ],
+        [
+          "model.Hidden",
+          "class",
+          false
+        ],
+        [
+          "model.read",
+          "fnc",
+          true
+        ],
+        [
+          "other",
+          "namespace",
+          true
+        ],
+        [
+          "other.Item",
+          "class",
+          true
+        ]
+      ]
     }
   },
   "cases": [
@@ -4610,6 +4648,130 @@
         "outcome": "reject",
         "reason": "type alias is not class",
         "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-first",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "p.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-second",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "q.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-namespace",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "p.other.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "other.Item"
+      }
+    },
+    {
+      "id": "cross-class-alias-first",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class p.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-alias-second",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class q.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-namespace-alias",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\ndefine alias q.model as m;",
+      "reference": "m.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-ambiguous",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal';\nimport pkg '@other/project/nominal';",
+      "reference": "nominal.model.Item",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_AMBIGUOUS",
+        "reason": "distinct packages share a natural suffix",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-private",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class q.model.Hidden as H;",
+      "reference": "H",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_PRIVATE",
+        "reason": "private external class",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-wrong-kind",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport fnc p.model.Item as F;",
+      "reference": "F",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_IMPORT_KIND",
+        "reason": "class is not function",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-duplicate",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class p.model.Item as Data;\nimport class q.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_DUPLICATE",
+        "reason": "two distinct explicit class bindings",
         "atomic": true
       }
     }
