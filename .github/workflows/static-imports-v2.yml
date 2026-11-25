@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'src/import_v2.rs'
+      - 'src/static_import_graph.rs'
+      - 'tests/static_import_graph.rs'
       - 'src/target_syntax.rs'
       - 'src/library.rs'
       - 'src/lib.rs'
@@ -34,7 +36,7 @@ jobs:
           rustc --version
       - name: Run focused and compatibility compiler suites
         run: |
-          cargo test --locked --no-fail-fast --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
+          cargo test --locked --no-fail-fast --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
       - name: Compile real builtin guests and run exported main
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
