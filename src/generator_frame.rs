@@ -51,18 +51,24 @@ impl GeneratorFrameLayout {
     /// temporaries); an AST-only estimate is a separate admission precheck.
     pub fn new(parameters: u32, locals: u32, delegates: u32, pos: Pos) -> Result<Self, Diagnostic> {
         let end = |base: u32, count: u32| -> Result<u32, Diagnostic> {
-            base.checked_add(count.checked_mul(8).ok_or_else(|| frame_error(pos,
-                "generator slot byte count overflow"))?).ok_or_else(|| frame_error(pos,
-                "generator slot offset overflow"))
+            base.checked_add(
+                count
+                    .checked_mul(8)
+                    .ok_or_else(|| frame_error(pos, "generator slot byte count overflow"))?,
+            )
+            .ok_or_else(|| frame_error(pos, "generator slot offset overflow"))
         };
         let locals_offset = end(FRAME_HEADER_BYTES, parameters)?;
         let delegates_offset = end(locals_offset, locals)?;
         let frame_bytes = end(delegates_offset, delegates)?;
         if frame_bytes > MAX_GENERATOR_FRAME_BYTES {
-            return Err(frame_error(pos, format!(
-                "generator frame {} bytes exceeds {}-byte limit",
-                frame_bytes, MAX_GENERATOR_FRAME_BYTES
-            )));
+            return Err(frame_error(
+                pos,
+                format!(
+                    "generator frame {} bytes exceeds {}-byte limit",
+                    frame_bytes, MAX_GENERATOR_FRAME_BYTES
+                ),
+            ));
         }
         Ok(Self {
             parameters_offset: FRAME_HEADER_BYTES,
@@ -99,10 +105,8 @@ impl GeneratorHandle {
     /// Zero is never a live handle. Reserve the first 8 arena bytes so a
     /// nonzero offset can never alias a null or uninitialized handle.
     pub fn new(offset: u32, generation: u32, pos: Pos) -> Result<Self, Diagnostic> {
-        if offset < FRAME_ALIGNMENT || offset % FRAME_ALIGNMENT != 0
-            || offset >= MAX_GUEST_ARENA_BYTES || generation == 0 {
-            return Err(frame_error(pos,
-                "invalid generator arena offset/alignment or zero generation"));
+        if offset < FRAME_ALIGNMENT || offset % FRAME_ALIGNMENT != 0 || offset >= MAX_GUEST_ARENA_BYTES || generation == 0 {
+            return Err(frame_error(pos, "invalid generator arena offset/alignment or zero generation"));
         }
         Ok(Self(((generation as u64) << 32) | offset as u64))
     }
@@ -113,13 +117,20 @@ impl GeneratorHandle {
         Self::new(offset, generation, pos)
     }
 
-    pub fn bits(self) -> u64 { self.0 }
-    pub fn arena_offset(self) -> u32 { self.0 as u32 }
-    pub fn generation(self) -> u32 { (self.0 >> 32) as u32 }
+    pub fn bits(self) -> u64 {
+        self.0
+    }
+    pub fn arena_offset(self) -> u32 {
+        self.0 as u32
+    }
+    pub fn generation(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
 
     pub fn next_generation(self, pos: Pos) -> Result<u32, Diagnostic> {
-        self.generation().checked_add(1).ok_or_else(|| frame_error(pos,
-            "generator handle generation exhausted; frame reuse prohibited"))
+        self.generation()
+            .checked_add(1)
+            .ok_or_else(|| frame_error(pos, "generator handle generation exhausted; frame reuse prohibited"))
     }
 }
 
@@ -136,8 +147,11 @@ pub enum GeneratorState {
 
 impl GeneratorState {
     fn state_error(self, operation: &str, pos: Pos) -> Diagnostic {
-        Diagnostic::new(pos, "E_GENERATOR_STATE",
-            format!("cannot {operation} a generator in state {self:?}"))
+        Diagnostic::new(
+            pos,
+            "E_GENERATOR_STATE",
+            format!("cannot {operation} a generator in state {self:?}"),
+        )
     }
 
     /// Successful pull grants exclusive resumption of the generator frame.
@@ -151,13 +165,19 @@ impl GeneratorState {
     }
 
     pub fn yield_item(self, pos: Pos) -> Result<Self, Diagnostic> {
-        if self == Self::Running { Ok(Self::Suspended) }
-        else { Err(self.state_error("yield from", pos)) }
+        if self == Self::Running {
+            Ok(Self::Suspended)
+        } else {
+            Err(self.state_error("yield from", pos))
+        }
     }
 
     pub fn finish(self, pos: Pos) -> Result<Self, Diagnostic> {
-        if self == Self::Running { Ok(Self::Done) }
-        else { Err(self.state_error("finish", pos)) }
+        if self == Self::Running {
+            Ok(Self::Done)
+        } else {
+            Err(self.state_error("finish", pos))
+        }
     }
 
     /// For a RUNNING generator, closure first requests cancellation and the
@@ -172,7 +192,10 @@ impl GeneratorState {
     }
 
     pub fn complete_unwind(self, pos: Pos) -> Result<Self, Diagnostic> {
-        if self == Self::Closing { Ok(Self::Closed) }
-        else { Err(self.state_error("complete cleanup of", pos)) }
+        if self == Self::Closing {
+            Ok(Self::Closed)
+        } else {
+            Err(self.state_error("complete cleanup of", pos))
+        }
     }
 }
