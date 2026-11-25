@@ -19,6 +19,8 @@ on:
       - 'src/target_syntax.rs'
       - 'src/library.rs'
       - 'src/lib.rs'
+      - 'tests/package_resolver.rs'
+      - 'src/linker.rs'
       - 'tests/static_imports_v2.rs'
       - 'tests/shared-import-v2/**'
       - '.github/workflows/static-imports-v2.yml'
@@ -48,7 +50,7 @@ jobs:
           rustc --version
       - name: Run focused and compatibility compiler suites
         run: |
-          cargo test --locked --no-fail-fast --test layout_plan --test import_tree --test registry_namespace --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
+          cargo test --locked --no-fail-fast --test layout_plan --test import_tree --test registry_namespace --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link --test package_resolver --test package_cli --test namespace_storefront
       - name: Compile real builtin guests and run exported main
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
@@ -161,3 +163,69 @@ jobs:
           if target/debug/attoc "$work/negative.atto" -o "$work/negative.wasm" 2>"$work/negative.log"; then exit 1; fi
           test ! -e "$work/negative.wasm"
           grep -F E_UNBOUND "$work/negative.log"
+      - name: Compile manifest-selected namespace guest
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./manifest-guest.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          mkdir -p "$work/src/network/http"
+          cat > "$work/.atto.pkg.toml" <<'EOF'
+          [package]
+          name = "@org/project/package"
+          version = "1.0.0"
+          [namespaces]
+          http = "src/network/http/"
+          [exports]
+          "network/http" = "http"
+          EOF
+          printf '%s\n' 'use namespace http;' 'pub fnc answer(): int { return 42; }' > "$work/src/network/http/namespace.atto"
+          printf '%s\n' 'this unrelated source is intentionally invalid' > "$work/src/network/http/unrelated.atto"
+          mkdir -p "$work/src/a/b"
+          printf '%s\n' 'use namespace c;' 'pub fnc answer(): int { return 22; }' > "$work/src/a/b/c.atto"
+          # Add the second namespace to the manifest before the exports table.
+          sed -i '/^\[exports\]/i c = "src/a/b/c.atto"' "$work/.atto.pkg.toml"
+          for variant in explicit-root shorthand-root explicit-subpath shorthand-subpath plural-explicit plural-shorthand plural-reversed alias qualified qualified-alias subpath-alias shared-prefix; do
+            case "$variant" in
+              explicit-root) clause="import namespace http from pkg '@org/project/package';" ;;
+              shorthand-root) clause="import http from pkg '@org/project/package';" ;;
+              explicit-subpath) clause="import namespace http from pkg '@org/project/package/network/http';" ;;
+              shorthand-subpath) clause="import http from pkg '@org/project/package/network/http';" ;;
+              plural-explicit) clause="import namespace http, c from pkg '@org/project/package';" ;;
+              plural-shorthand) clause="import http, c from pkg '@org/project/package';" ;;
+              plural-reversed) clause="import c, http from pkg '@org/project/package';" ;;
+            esac
+            body='pub fnc main(): int { return http.answer(); }'
+            case "$variant" in
+              plural-*) body='pub fnc main(): int { return http.answer() - c.answer() + 22; }' ;;
+              alias) clause="import http as web from pkg '@org/project/package';"; body='pub fnc main(): int { return web.answer(); }' ;;
+              qualified) clause="import network.http from pkg '@org/project/package';"; body='pub fnc main(): int { return network.http.answer(); }' ;;
+              qualified-alias) clause="import namespace http as api.v1 from pkg '@org/project/package/network/http';"; body='pub fnc main(): int { return api.v1.answer(); }' ;;
+              subpath-alias) clause="import web from pkg '@org/project/package/network/http';"; body='pub fnc main(): int { return web.answer(); }' ;;
+              shared-prefix) clause="import http as api.web, c as api.calc from pkg '@org/project/package';"; body='pub fnc main(): int { return api.web.answer() - api.calc.answer() + 22; }' ;;
+            esac
+            printf '%s\n' "$clause" "$body" > "$work/src/main.atto"
+            target/debug/attoc --package-root "$work" --entry src/main.atto -o "$work/$variant.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); if(!WebAssembly.validate(b)) throw Error("invalid guest"); const i=new WebAssembly.Instance(new WebAssembly.Module(b),{}); if(i.exports.main()!==42n) throw Error("wrong manifest guest"); console.log(process.argv[1]+": MANIFEST_NAMESPACE_GUEST_MAIN=42");' "$work/$variant.wasm"
+          done
+          cmp "$work/explicit-root.wasm" "$work/shorthand-root.wasm"
+          cmp "$work/explicit-subpath.wasm" "$work/shorthand-subpath.wasm"
+          cmp "$work/plural-explicit.wasm" "$work/plural-shorthand.wasm"
+          for variant in alias qualified qualified-alias subpath-alias; do
+            cmp "$work/explicit-root.wasm" "$work/$variant.wasm"
+          done
+          for clause in "import http as api, c as api.v1 from pkg '@org/project/package';" "import http as __atto_q_fake from pkg '@org/project/package';" "import http from pkg '@org/project/package/hidden';" "import http from pkg '@other/project/package';" "import fnc http from pkg '@org/project/package';" "import http, http from pkg '@org/project/package';"; do
+            printf '%s\n' "$clause" 'pub fnc main(): int { return 0; }' > "$work/src/main.atto"
+            if target/debug/attoc --package-root "$work" --entry src/main.atto -o "$work/denied.wasm" >"$work/denied.log" 2>&1; then
+              echo "invalid manifest import produced an artifact" >&2; exit 1
+            fi
+            test ! -e "$work/denied.wasm"
+            cat "$work/denied.log"
+          done
+          printf '%s\n' "import http as web from pkg '@org/project/package';" 'pub fnc main(): int { return http.answer(); }' > "$work/src/main.atto"
+          if target/debug/attoc --package-root "$work" --entry src/main.atto -o "$work/denied.wasm" >"$work/denied.log" 2>&1; then
+            echo "hidden natural provider name escaped alias" >&2; exit 1
+          fi
+          test ! -e "$work/denied.wasm"
+          cat "$work/denied.log"
