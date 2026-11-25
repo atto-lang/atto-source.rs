@@ -1,3 +1,4 @@
+import {MonotonicSleepProvider} from './monotonic-sleep.mjs';
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
@@ -54,22 +55,14 @@ self.onmessage=async ({data})=>{
         await new Promise(resolve=>setTimeout(resolve,0));
         cooperativeYields++;
       });
+      // One trusted Worker-owned registration budget for all guest tasks.
+      // setTimeout callbacks only settle readiness; JSPI resumes guest Wasm
+      // after the Promise settles on the owning Worker event loop.
+      const sleeper=new MonotonicSleepProvider({maxPending:64});
       atto.sleep_ms=new WebAssembly.Suspending(async ms=>{
         if(typeof ms!=='bigint'||ms<0n||ms>1000n)
           throw new Error('invalid or unsupported JSPI preview sleep duration');
-        // setTimeout is allowed to be late, but may fire early under some
-        // clock/rounding conditions: recheck a monotonic deadline every wake.
-        // A zero-duration sleep still crosses a Worker event-loop turn.
-        const duration=Number(ms);
-        const deadline=performance.now()+duration;
-        await new Promise(resolve=>{
-          const check=()=>{
-            const remaining=deadline-performance.now();
-            if(remaining<=0) resolve();
-            else setTimeout(check,Math.max(1,Math.ceil(remaining)));
-          };
-          setTimeout(check,Math.max(0,Math.ceil(duration)));
-        });
+        await sleeper.sleep(Number(ms));
         return 0n;
       });
       atto.barrier=new WebAssembly.Suspending(async n=>{

@@ -53,6 +53,8 @@ jobs:
       - name: Target-only actor receiver Wasm ABI rejects unsupported code
         run: node tests/target_syntax_wasm.mjs
 
+      - name: Deterministic bounded browser timer host-adapter tests
+        run: node --test tests/browser-async/monotonic-sleep.test.mjs
       - name: Real Chromium browser and worker E2E
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
