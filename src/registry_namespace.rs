@@ -596,12 +596,25 @@ pub struct FrozenClass {
     view: ExportView,
     declaration: String,
     class_name: String,
+    sealed_factory: bool,
     tokens: Vec<crate::lexer::Token>,
 }
 
 impl FrozenClass {
     pub fn verify(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
         inputs: &[SnapshotSource<'_>]) -> R<Self> {
+        Self::verify_inner(expected_name,manifest,lock,expected_lock,inputs,false)
+    }
+
+    /// Explicit canonical factory lane; unlike the older preview, requires
+    /// a compiler-owned, exact self-target Newable witness.
+    pub fn verify_newable(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
+        inputs: &[SnapshotSource<'_>]) -> R<Self> {
+        Self::verify_inner(expected_name,manifest,lock,expected_lock,inputs,true)
+    }
+
+    fn verify_inner(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
+        inputs: &[SnapshotSource<'_>], sealed_factory: bool) -> R<Self> {
         use crate::lexer::{self, Tok};
         let sources=verify_registry_snapshot(manifest,lock,expected_lock,inputs)?;
         let parsed=parse_manifest(manifest)?;
@@ -645,15 +658,32 @@ impl FrozenClass {
                 }
             }
         }
+        if sealed_factory {
+            tokens=lower_sealed_factory(tokens)?;
+        } else if tokens.iter().any(|t|matches!(&t.tok,Tok::Ident(n) if n=="Newable" || n=="new")) {
+            return Err(err("E_UNSUPPORTED","Newable factories require the sealed factory admission API"));
+        }
         let program=crate::parser::Parser::new(tokens.clone()).parse_program()?;
         if program.classes.len()!=1 || !program.funcs.is_empty() || !program.enums.is_empty()
             || !program.actors.is_empty() || program.actor_interface.is_some() {
             return Err(err("E_UNSUPPORTED","class provider must contain exactly one class"));
         }
         let class=&program.classes[0];
-        if !class.public || class.state_container || class.ctor.is_none()
+        if !class.public || class.state_container || (!sealed_factory && class.ctor.is_none())
             || class.fields.iter().any(|f|f.visibility==crate::ast::FieldVisibility::Package) {
             return Err(err("E_UNSUPPORTED","class provider requires a public ordinary class with explicit constructor"));
+        }
+        if sealed_factory {
+            let factory=class.methods.iter().find(|m|m.name==SEALED_FACTORY)
+                .ok_or_else(||err("E_NEWABLE","sealed factory is not a class member"))?;
+            let result=match factory.ret {
+                crate::ast::Type::Named(i)=>program.type_names.get(i as usize).map(|(n,_)|n.as_str()),
+                _=>None,
+            };
+            if !factory.public || !factory.is_static || !factory.params.is_empty()
+                || result!=Some(class.name.as_str()) || class.ctor.as_ref().is_some_and(|c|!c.params.is_empty()) {
+                return Err(err("E_NEWABLE","factory must be public static zero-arg and return its exact class"));
+            }
         }
         let mut isolated=tokens[..tokens.len()-1].to_vec();
         isolated.extend(lexer::lex("pub fnc main(): int { return 0; }")?);
@@ -667,7 +697,7 @@ impl FrozenClass {
         let mut view=ExportView::new(Origin::External(id));
         view.add(ns,ns,Kind::Namespace,true)?;
         view.add(&declaration,&declaration,Kind::Class,true)?;
-        Ok(Self{name:name.clone(),view,declaration,class_name,tokens})
+        Ok(Self{name:name.clone(),view,declaration,class_name,sealed_factory,tokens})
     }
 
     /// Explicit class selection only; aliases and multi-class layout
@@ -694,17 +724,18 @@ impl FrozenClass {
         let mut scope=Scope::new();
         scope.bind_mixed(&self.view,&import)?;
         let _identity=scope.resolve_nominal(&self.class_name,&[&self.view])?;
-        let root=&tokens[end..];
+        let mut root=tokens[end..].to_vec();
         if root.iter().any(|t|matches!(&t.tok,Tok::Ident(n) if n.starts_with("__atto_") || matches!(n.as_str(),"import"|"use"|"define"|"declare"|"external"))) {
             return Err(err("E_UNSUPPORTED","class guest root must be a closed entry function"));
         }
+        if self.sealed_factory { lower_factory_calls(&mut root,&self.class_name)?; }
         let parsed=crate::parser::Parser::new(root.to_vec()).parse_program()?;
         if parsed.funcs.len()!=1 || parsed.funcs[0].name!="main" || !parsed.classes.is_empty()
             || !parsed.enums.is_empty() || !parsed.actors.is_empty() || parsed.actor_interface.is_some() {
             return Err(err("E_UNSUPPORTED","class guest root must contain only main"));
         }
         let mut linked=self.tokens[..self.tokens.len()-1].to_vec();
-        linked.extend_from_slice(root);
+        linked.extend_from_slice(&root);
         if linked.len()>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","class guest token budget exceeded"));}
         // Parse and typecheck the combined declaration with the real checker.
         // In particular, constructor arity, private member access and field
@@ -763,6 +794,9 @@ pub fn compile_frozen_classes(source: &str, packages: &[&FrozenClass]) -> R<Vec<
     let mut owners=BTreeMap::new();
     let mut linked=Vec::new();
     for (name,p) in &selected {
+        if p.sealed_factory {
+            return Err(err("E_UNSUPPORTED","sealed factory multi-package remapping needs typed identity rewriting"));
+        }
         let owner=format!("__atto_frozen_class_{}",owners.len());
         // Provider isolation was checked before linking. Do not rewrite
         // arbitrary identifier occurrences (fields, locals, type parameters).
@@ -814,4 +848,62 @@ pub fn compile_frozen_classes(source: &str, packages: &[&FrozenClass]) -> R<Vec<
     let checked=crate::check::check(&parsed)?;
     if !checked.imports.is_empty() {return Err(err("E_UNSUPPORTED","class guest cannot request ambient host imports"));}
     crate::compile_prelexed(linked,None)
+}
+
+
+const SEALED_FACTORY: &str = "__atto_sealed_newable_factory";
+
+/// Recognize only the exact canonical self-allocation factory body in v1.
+/// No lexical Newable name supplied by another source can create a witness.
+/// All other uses of the reserved witness/factory words reject; the parser
+/// and checker subsequently validate the lowered method and class.
+fn lower_sealed_factory(mut tokens: Vec<crate::lexer::Token>) -> R<Vec<crate::lexer::Token>> {
+    use crate::lexer::{self, Tok};
+    let class=match tokens.get(3).map(|t|&t.tok) {
+        Some(Tok::Ident(n)) if n!="Newable" => n.clone(),
+        _=>return Err(err("E_NEWABLE","missing self class identity")),
+    };
+    let expected=lexer::lex(&format!("implements Newable[{class}] as"))?;
+    let header=&expected[..expected.len()-1];
+    if tokens.get(4..4+header.len()).is_none_or(|s|s.iter().map(|t|&t.tok).ne(header.iter().map(|t|&t.tok))) {
+        return Err(err("E_NEWABLE","requires exact implements Newable[SelfClass]"));
+    }
+    if tokens.iter().filter(|t|matches!(&t.tok,Tok::Ident(n) if n=="Newable")).count()!=1 {
+        return Err(err("E_NEWABLE","Newable witness cannot be redefined or referenced as a value"));
+    }
+    tokens.drain(4..4+header.len()-1);
+    let mut matches=Vec::new();
+    for spelling in ["pub fnc","pub static fnc"] {
+        for delimiter in [":","->"] {
+            let pattern=lexer::lex(&format!("{spelling} new() {delimiter} {class} {{ return new {class}(); }}"))?;
+            let pattern=&pattern[..pattern.len()-1];
+            for (i,window) in tokens.windows(pattern.len()).enumerate() {
+                if window.iter().map(|t|&t.tok).eq(pattern.iter().map(|t|&t.tok)) {
+                    matches.push((i,pattern.len()));
+                }
+            }
+        }
+    }
+    if matches.len()!=1 || tokens.iter().filter(|t|matches!(&t.tok,Tok::Ident(n) if n=="new")).count()!=2 {
+        return Err(err("E_NEWABLE","requires exactly one public zero-arg self-returning allocation factory"));
+    }
+    let (i,len)=matches[0];
+    let replacement=lexer::lex(&format!("pub static fnc {SEALED_FACTORY}(): {class} {{ return new {class}(); }}"))?;
+    tokens.splice(i..i+len,replacement.into_iter().filter(|t|t.tok!=Tok::Eof));
+    Ok(tokens)
+}
+
+fn lower_factory_calls(tokens: &mut [crate::lexer::Token], class: &str) -> R<()> {
+    use crate::lexer::Tok;
+    for i in 0..tokens.len() {
+        if !matches!(&tokens[i].tok,Tok::Ident(n) if n=="new") {continue;}
+        if i<2 || !matches!(&tokens[i-2].tok,Tok::Ident(n) if n==class)
+            || tokens[i-1].tok!=Tok::Dot
+            || tokens.get(i+1).is_none_or(|t|t.tok!=Tok::LParen)
+            || tokens.get(i+2).is_none_or(|t|t.tok!=Tok::RParen) {
+            return Err(err("E_NEWABLE","external allocation must use the sealed zero-arg class factory"));
+        }
+        tokens[i].tok=Tok::Ident(SEALED_FACTORY.into());
+    }
+    Ok(())
 }
