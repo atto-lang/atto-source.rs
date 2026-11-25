@@ -36,6 +36,8 @@ pub mod actor_reply_syntax;
 pub mod actor_reply_contract;
 /// Fixed-budget unary reply correlation core; not yet wired into Wasm actors.
 pub mod actor_reply_slot;
+/// Bounded mailbox/reply-slot atomic admission (host-only, guest ABI pending).
+pub mod actor_reply_mailbox;
 pub mod target_typed;
 pub mod wasm;
 
