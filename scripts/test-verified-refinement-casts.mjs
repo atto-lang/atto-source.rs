@@ -29,6 +29,11 @@ cases.push(["implicit-binding","pub fnc main() -> int { val Bounded n = 43; retu
  ["parameter-retag","fnc tag(Duration n) -> Duration { return n.<Second>; } "+main("42"),"E_UNIT_ATTACHMENT"],
  ["cast-before-overflow",main("(43 as Bounded) + 9223372036854775807"),7],
  ["overflow-before-cast",main("(9223372036854775807 + 1) as Bounded"),1]);
+cases.push(["inferred-positive","pub fnc main() -> int { val a = 42.<Second>::<Positive>; return a / 1<Second>; }",42n],
+ ["inferred-failure","pub fnc main() -> int { val a = 0.<Second>::<Positive>; return a / 1<Second>; }",7],
+ ["inferred-unit-erasure","pub fnc main() -> int { val a = 42.<Second>; return a; }","E_UNIT_ERASURE"],
+ ["inferred-parameter-proof","fnc f(Bounded x) -> int { return x; } pub fnc main() -> int { val a = (40 + 2); return f(a); }",42n],
+ ["inferred-parameter-denial","fnc f(Bounded x) -> int { return x; } pub fnc main() -> int { val a = 43; return f(a); }","E_REFINEMENT_PRECONDITION"]);
 const dir=mkdtempSync(join(tmpdir(),"atto-refinement-casts-"));
 try{
  for(const [id,body,want] of cases){
