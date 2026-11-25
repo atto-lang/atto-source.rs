@@ -524,10 +524,6 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         let prefix=lexer::lex("pub fnc main(): int {")?;
         let alternate=lexer::lex("pub fnc main() -> int {")?;
         let n=prefix.len()-1;
-        if root.len()<=n || !(root[..n].iter().map(|t|&t.tok).eq(prefix[..n].iter().map(|t|&t.tok))
-            || root[..n].iter().map(|t|&t.tok).eq(alternate[..n].iter().map(|t|&t.tok))) {
-            return Err(denied());
-        }
         fn scalar_args(t:&[Token], start:usize)->R<(usize,usize)> {
             let bad=||err("E_UNSUPPORTED","external class arguments must be bounded integer literals");
             if t.get(start).map(|x|&x.tok)!=Some(&Tok::LParen){return Err(bad());}
@@ -644,13 +640,76 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             Ok(after)
         };
 
-        let mut caller=root[..n].to_vec();
-        let mut j=n;
+        // Closed application-local helpers. Readers take exactly one
+        // nominal object and return a public scalar method result. Factories
+        // return a freshly constructed nominal object. No helper is exported,
+        // recursive, or callable from a provider: its name is compiler-owned.
+        struct Helper { generated:String, key:Key, factory:bool }
+        let mut helpers:BTreeMap<String,Helper>=BTreeMap::new();
+        let mut helper_tokens=Vec::new();
+        let mut j=0usize;
+        while word(root.get(j),"fnc") {
+            if helpers.len()>=16{return Err(err("E_SOURCE_LIMIT","external class helper budget exceeded"));}
+            let h=match root.get(j+1).map(|t|&t.tok){
+                Some(Tok::Ident(h)) if crate::static_import_graph::valid_component(h) && h!="main" && !scope.has_root(h)=>h.clone(),
+                _=>return Err(denied()),
+            };
+            if helpers.contains_key(&h){return Err(err("E_DUPLICATE","duplicate external class helper"));}
+            let generated=format!("__atto_registry_helper_{h}");
+            let pos=root[j].pos;
+            if root.get(j+2).map(|t|&t.tok)!=Some(&Tok::LParen){return Err(denied());}
+            helper_tokens.extend([id("fnc",pos),id(&generated,pos),token(Tok::LParen,pos)]);
+            j+=3;
+            let factory=root.get(j).map(|t|&t.tok)==Some(&Tok::RParen);
+            let key;
+            if factory {
+                j+=1;
+                if !matches!(root.get(j).map(|t|&t.tok),Some(Tok::Colon|Tok::Arrow)){return Err(denied());}
+                j+=1;
+                let brace=root[j..].iter().position(|t|t.tok==Tok::LBrace).map(|k|j+k).ok_or_else(denied)?;
+                let reference=path_tokens(&root[j..brace])?;
+                let (p,target)=resolve(&reference)?;
+                key=load(p,&target,&mut units)?;
+                helper_tokens.extend([token(Tok::RParen,pos),token(Tok::Colon,pos),id(&units[&key].generated,pos),token(Tok::LBrace,pos)]);
+                j=brace+1;
+                if !word(root.get(j),"return"){return Err(denied());}
+                helper_tokens.push(id("return",pos));
+                let (after,actual)=construct(j+1,&mut helper_tokens,&mut units)?;
+                if actual!=key{return Err(err("E_TYPE","different nominal factory return identity"));}
+                j=after;
+            }else{
+                let param=match root.get(j).map(|t|&t.tok){
+                    Some(Tok::Ident(s)) if crate::static_import_graph::valid_component(s) && !scope.has_root(s)=>s.clone(),
+                    _=>return Err(denied()),
+                };
+                if root.get(j+1).map(|t|&t.tok)!=Some(&Tok::Colon){return Err(denied());}
+                let close=root[j+2..].iter().position(|t|t.tok==Tok::RParen).map(|k|j+2+k).ok_or_else(denied)?;
+                let reference=path_tokens(&root[j+2..close])?;
+                let (p,target)=resolve(&reference)?;
+                key=load(p,&target,&mut units)?;
+                j=close+1;
+                if !matches!(root.get(j).map(|t|&t.tok),Some(Tok::Colon|Tok::Arrow))
+                    || !word(root.get(j+1),"int") || root.get(j+2).map(|t|&t.tok)!=Some(&Tok::LBrace)
+                    || !word(root.get(j+3),"return") || !word(root.get(j+4),&param){return Err(denied());}
+                helper_tokens.extend([id(&param,pos),token(Tok::Colon,pos),id(&units[&key].generated,pos),
+                    token(Tok::RParen,pos),token(Tok::Colon,pos),id("int",pos),token(Tok::LBrace,pos),id("return",pos),id(&param,pos)]);
+                j=call(j+5,&mut helper_tokens,&units[&key].class)?;
+            }
+            if root.get(j).map(|t|&t.tok)!=Some(&Tok::Semi) || root.get(j+1).map(|t|&t.tok)!=Some(&Tok::RBrace){return Err(denied());}
+            helper_tokens.extend_from_slice(&root[j..j+2]);j+=2;
+            helpers.insert(h,Helper{generated,key,factory});
+        }
+        let main_end=j.checked_add(n).ok_or_else(denied)?;
+        let main=root.get(j..main_end).ok_or_else(denied)?;
+        if !(main.iter().map(|t|&t.tok).eq(prefix[..n].iter().map(|t|&t.tok))
+            || main.iter().map(|t|&t.tok).eq(alternate[..n].iter().map(|t|&t.tok))){return Err(denied());}
+        let mut caller=main.to_vec();
+        j=main_end;
         let mut locals:BTreeMap<String,Key>=BTreeMap::new();
         while word(root.get(j),"val") || word(root.get(j),"const") {
             if locals.len()>=16{return Err(err("E_SOURCE_LIMIT","external class local budget exceeded"));}
             let local=match root.get(j+1).map(|x|&x.tok){
-                Some(Tok::Ident(s)) if crate::static_import_graph::valid_component(s) && !scope.has_root(s)=>s,
+                Some(Tok::Ident(s)) if crate::static_import_graph::valid_component(s) && !scope.has_root(s) && !helpers.contains_key(s)=>s,
                 _=>return Err(denied()),
             };
             if root.get(j+2).map(|x|&x.tok)!=Some(&Tok::Colon){return Err(denied());}
@@ -662,9 +721,18 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             caller.extend_from_slice(&root[j..j+3]);
             caller.push(id(&units[&key].generated,root[j+3].pos));
             caller.push(root[eq].clone());
-            let (after,actual)=construct(eq+1,&mut caller,&mut units)?;
-            if actual!=key{return Err(err("E_TYPE","different nominal local annotation and construction identities"));}
-            j=after;
+            if word(root.get(eq+1),"new"){
+                let (after,actual)=construct(eq+1,&mut caller,&mut units)?;
+                if actual!=key{return Err(err("E_TYPE","different nominal local annotation and construction identities"));}
+                j=after;
+            }else{
+                let h=match root.get(eq+1).map(|t|&t.tok){Some(Tok::Ident(h))=>h,_=>return Err(denied())};
+                let helper=helpers.get(h).filter(|h|h.factory).ok_or_else(denied)?;
+                if helper.key!=key{return Err(err("E_TYPE","different nominal factory and local identities"));}
+                if root.get(eq+2).map(|t|&t.tok)!=Some(&Tok::LParen)||root.get(eq+3).map(|t|&t.tok)!=Some(&Tok::RParen){return Err(denied());}
+                caller.push(id(&helper.generated,root[eq+1].pos));
+                caller.extend_from_slice(&root[eq+2..eq+4]);j=eq+4;
+            }
             if root.get(j).map(|x|&x.tok)!=Some(&Tok::Semi){return Err(denied());}
             caller.push(root[j].clone());j+=1;
         }
@@ -676,12 +744,19 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         }else{
             let mut count=0usize;
             loop {
-                let local=match root.get(j).map(|x|&x.tok){
-                    Some(Tok::Ident(s)) if locals.contains_key(s)=>s,
-                    _=>return Err(denied()),
-                };
-                caller.push(id(local,root[j].pos));
-                j=call(j+1,&mut caller,&units[&locals[local]].class)?;
+                let name=match root.get(j).map(|x|&x.tok){Some(Tok::Ident(s))=>s,_=>return Err(denied())};
+                if let Some(helper)=helpers.get(name).filter(|h|!h.factory){
+                    if root.get(j+1).map(|t|&t.tok)!=Some(&Tok::LParen)||root.get(j+3).map(|t|&t.tok)!=Some(&Tok::RParen){return Err(denied());}
+                    let local=match root.get(j+2).map(|t|&t.tok){Some(Tok::Ident(s))=>s,_=>return Err(denied())};
+                    let actual=locals.remove(local).ok_or_else(||err("E_OWNERSHIP","external object argument is unknown or already moved"))?;
+                    if actual!=helper.key{return Err(err("E_TYPE","different nominal helper argument identity"));}
+                    caller.push(id(&helper.generated,root[j].pos));
+                    caller.extend_from_slice(&root[j+1..j+4]);j+=4;
+                }else{
+                    let key=locals.get(name).ok_or_else(denied)?;
+                    caller.push(id(name,root[j].pos));
+                    j=call(j+1,&mut caller,&units[key].class)?;
+                }
                 count+=1;
                 if count>32{return Err(err("E_SOURCE_LIMIT","external class call budget exceeded"));}
                 if root.get(j).map(|x|&x.tok)!=Some(&Tok::Plus){break;}
@@ -699,6 +774,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         caller.extend_from_slice(&root[j..]);
         let mut linked=Vec::new();
         for unit in units.into_values(){linked.extend(unit.tokens);}
+        linked.extend(helper_tokens);
         linked.extend(caller);
         if linked.len()>lexer::MAX_TOKENS{return Err(err("E_SOURCE_LIMIT","external class guest token budget exceeded"));}
         let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;

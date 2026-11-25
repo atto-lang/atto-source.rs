@@ -687,3 +687,40 @@ fn generated_class_name_and_application_entry_cannot_be_captured() {
     let forged="import pkg '@org/project/package' as p; pub fnc main(): int { return new __atto_registry_class_fake().answer(); }";
     assert_eq!(compile_registry_guest(forged,&[&p]).unwrap_err().code,"E_RESERVED");
 }
+
+#[test]
+fn external_class_application_helpers_pass_and_return_nominal_objects() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; pub define class Item as private int value: 40; pub answer(int y): int { return self.value+y; } hidden(): int { return self.value; } end"),
+        ("src/other/types.atto","use namespace other; pub define class Item as private int value: 40; pub answer(int y): int { return self.value+y; } end"),
+    ]{inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    let read="fnc read(item: Data): int { return item.answer(2); }";
+    let make="fnc make(): p.model.Item { return new Data(); }";
+    for (i,body) in [
+        format!("{read} pub fnc main(): int {{ val a: Data = new Data(); return read(a); }}"),
+        format!("{make} pub fnc main(): int {{ val a: Data = make(); return a.answer(2); }}"),
+        format!("{read} {make} pub fnc main(): int {{ val a: Data = make(); return read(a); }}"),
+    ].iter().enumerate(){
+        let source=format!("{prefix}{body}");
+        let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-helper-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (body,code) in [
+        (format!("{read} pub fnc main(): int {{ val a: p.other.Item = new p.other.Item(); return read(a); }}"),"E_TYPE"),
+        (format!("{make} pub fnc main(): int {{ val a: p.other.Item = make(); return a.answer(2); }}"),"E_TYPE"),
+        (format!("{read} pub fnc main(): int {{ val a: Data = new Data(); return read(a)+read(a); }}"),"E_OWNERSHIP"),
+        ("fnc leak(item: Data): int { return item.hidden(); } pub fnc main(): int { val a: Data = new Data(); return leak(a); }".into(),"E_PRIVATE"),
+        ("fnc make(): Data { return new p.other.Item(); } pub fnc main(): int { val a: Data = make(); return a.answer(2); }".into(),"E_TYPE"),
+        ("pub fnc make(): Data { return new Data(); } pub fnc main(): int { return 0; }".into(),"E_UNSUPPORTED"),
+    ]{
+        let source=format!("{prefix}{body}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+}
