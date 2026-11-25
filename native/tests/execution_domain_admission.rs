@@ -72,3 +72,18 @@ fn actor_task_scope_must_not_be_desugared_into_inline_scalar_execution() {
         rejected_as_domain(source);
     }
 }
+
+#[test]
+fn suspension_and_task_scope_fail_before_all_native_emission_modes() {
+    for source in [
+        "pub suspends fnc main() -> int { return 42; }",
+        "pub fnc main() -> int { return await 42; }",
+        "pub fnc main() -> int { return task scope { 42 }; }",
+    ] {
+        assert!(oreslang_source_rs::compile(source).is_err());
+        assert!(oreslang_source_rs::compile_checked_i64(source).is_err());
+        assert!(oreslang_source_rs::compile_with_effect_ir(source).is_err());
+    }
+    let source = "pub fnc main() -> int { /* await suspends task scope {} */ return 42; }";
+    assert!(oreslang_source_rs::compile(source).is_ok());
+}
