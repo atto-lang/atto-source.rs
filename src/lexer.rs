@@ -2,8 +2,9 @@
 //!
 //! Follows spec chapter 16 lexical rules: case-sensitive identifiers that start
 //! with a letter or `_`, `//` line comments, nesting `/* */` block comments,
-//! decimal integers with `_` separators, `"..."`/`'...'` strings.
-//! Floats, imaginary literals, templates and Symbols are recognised so that
+//! decimal integers with `_` separators, `"..."`/`'...'` strings,
+//! and literal backtick-delimited strings (no template interpolation).
+//! Floats, imaginary literals and Symbols are recognised so that
 //! they can be rejected with a precise diagnostic instead of a generic error.
 
 use crate::diag::{Diagnostic, Pos};
@@ -229,6 +230,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 if i >= chars.len() || chars[i] == '\n' {
                     return Err(Diagnostic::new(pos, "E_STRING", "unterminated string literal"));
                 }
+                if chars[i] == '\0' {
+                    return Err(Diagnostic::new(Pos { line, col }, "E_NUL",
+                        "NUL characters are not allowed inside string literals"));
+                }
                 let ch = chars[i];
                 if ch == quote {
                     bump!();
@@ -285,6 +290,40 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             out.push(Token { tok: Tok::Str(s), pos });
             continue;
         }
+        if c == '\x60' {
+            // Literal, not a template: only backslash-backtick escapes the
+            // delimiter; all other backslashes and dollar-brace text remain.
+            bump!();
+            let mut s = String::new();
+            loop {
+                if i >= chars.len() || matches!(chars[i], '\n' | '\r') {
+                    return Err(Diagnostic::new(pos, "E_STRING",
+                        "unterminated backtick string literal"));
+                }
+                if chars[i] == '\0' {
+                    return Err(Diagnostic::new(Pos { line, col }, "E_NUL",
+                        "NUL characters are not allowed inside string literals"));
+                }
+                if chars[i] == '\x60' {
+                    bump!();
+                    break;
+                }
+                if chars[i] == '\\' && chars.get(i + 1) == Some(&'\x60') {
+                    bump!();
+                    s.push('\x60');
+                    bump!();
+                } else {
+                    s.push(chars[i]);
+                    bump!();
+                }
+                if s.len() > MAX_STRING_BYTES {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                        "string literal is too long"));
+                }
+            }
+            out.push(Token { tok: Tok::Str(s), pos });
+            continue;
+        }
         let next = chars.get(i + 1).copied();
         let (tok, len) = match (c, next) {
             ('(', _) => (Tok::LParen, 1),
@@ -327,13 +366,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('|', _) => (Tok::Pipe, 1),
             ('&', _) => (Tok::Amp, 1),
             ('@', _) => (Tok::At, 1),
-            ('`', _) => {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED",
-                    "template strings are not supported by the browser compiler yet",
-                ))
-            }
             ('#', _) => {
                 return Err(Diagnostic::new(
                     pos,

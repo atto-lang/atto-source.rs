@@ -159,7 +159,7 @@ pub(super) fn lower(f: &Func) -> R<Option<TGenerator>> {
     let mut steps = Vec::with_capacity(plan.instructions.len());
     for instruction in plan.instructions {
         let step = match instruction {
-            Instruction::Evaluate(Stmt::Bind { kind, name, ty, init, pos }) => {
+            Instruction::Evaluate(Stmt::Bind { kind, name, ty, init, pos, .. }) => {
                 if ty.is_some_and(|t| t != Type::Int) {
                     return Err(type_error(pos, "generator live locals must have type int"));
                 }

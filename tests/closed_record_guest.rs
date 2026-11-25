@@ -37,17 +37,17 @@ fn real_guest_compiles_canonical_closed_record_dot_fields() {
 }
 
 #[test]
-fn quoted_utf8_names_have_checked_direct_guest_field_loads() {
+fn unicode_identifier_record_fields_have_checked_guest_loads() {
     wasm(
         r#"
         pub fnc main(): int {
           let Record headers = {
-            "content-type": "application/json",
-            "über field": 40,
+            content_type: "application/json",
+            über_field: 40,
             status_code: 2
           };
-          stdio.println(headers["content-type"]);
-          return headers["über field"] + headers.status_code;
+          stdio.println(headers["content_type"]);
+          return headers["über_field"] + headers.status_code;
         }
     "#,
     );
@@ -85,12 +85,12 @@ fn two_source_permutations_share_one_generated_record_shape() {
 }
 
 #[test]
-fn known_scalar_type_slots_and_empty_string_label_compile() {
+fn known_scalar_record_type_slots_compile() {
     wasm(
         r#"
         pub fnc main(): int {
-          val Record r = {"": 40, enabled: true, ratio: 1.5};
-          return r[""];
+          val Record r = {empty: 40, enabled: true, ratio: 1.5};
+          return r["empty"];
         }
     "#,
     );
@@ -151,7 +151,7 @@ fn rejected_fields_and_ownership_do_not_emit_guest_wasm() {
             return 0;
         }
     "#,
-        "E_DUPLICATE",
+        "E_LITERAL_KIND",
     );
     invalid(
         r#"
@@ -179,7 +179,7 @@ fn rejected_fields_and_ownership_do_not_emit_guest_wasm() {
             return r.x;
         }
     "#,
-        "E_OWNERSHIP",
+        "E_IMMUTABLE",
     );
 }
 
@@ -264,7 +264,7 @@ fn dynamic_integer_index_is_not_a_string_field_projection() {
 
 #[test]
 fn parsed_bracket_index_keeps_provenance_before_private_lowering() {
-    let source = "pub fnc main(): int {let Record r = {\"x-y\": 42}; return r[\"x-y\"];}";
+    let source = "pub fnc main(): int {let Record r = {x_y: 42}; return r[\"x_y\"];}";
     let program = Parser::new(lexer::lex(source).unwrap())
         .parse_program()
         .unwrap();
@@ -294,10 +294,10 @@ fn record_dot_and_bracket_static_fields_both_compile_as_executable_expressions()
         pub fnc main(): int {
             let Record headers = {
                 status_code: 42,
-                "content-type": "application/json"
+                content_type: "application/json"
             };
             headers.status_code;
-            headers["content-type"];
+            headers["content_type"];
             return headers.status_code;
         }
     "#,
@@ -310,11 +310,11 @@ fn bracket_access_stays_typed_in_nested_lexical_blocks() {
         r#"
         pub fnc main(): int {
             let Record headers = {
-                "content-type": "application/json",
+                content_type: "application/json",
                 status_code: 42
             };
             block {
-                stdio.println(headers["content-type"]);
+                stdio.println(headers["content_type"]);
                 headers.status_code;
             }
             return headers["status_code"];
@@ -328,9 +328,9 @@ fn local_alias_of_a_closed_immutable_record_keeps_static_field_access() {
     wasm(
         r#"
         pub fnc main(): int {
-            let Record headers = {"content-type": 42, status_code: 42};
+            let Record headers = {content_type: 42, status_code: 42};
             val alias = headers;
-            return alias["content-type"];
+            return alias["content_type"];
         }
     "#,
     );
@@ -341,7 +341,7 @@ fn equivalent_dot_and_quoted_identifier_field_names_have_same_semantics() {
     wasm(
         r#"
         pub fnc main(): int {
-            let Record headers = {"status_code": 42, "content-type": "ok"};
+            let Record headers = {status_code: 42, content_type: "ok"};
             return headers.status_code + headers["status_code"] - 42;
         }
     "#,
@@ -353,10 +353,10 @@ fn shadowed_record_name_cannot_grant_bracket_access_to_a_scalar() {
     invalid(
         r#"
         pub fnc main(): int {
-            let Record headers = {"content-type": 42};
+            let Record headers = {content_type: 42};
             block {
                 let headers = 7;
-                stdio.println(headers["content-type"]);
+                stdio.println(headers["content_type"]);
             }
             return 0;
         }
@@ -384,7 +384,7 @@ fn string_expression_keys_remain_dynamic_and_unsupported() {
     invalid(
         r#"
         pub fnc main(): int {
-            let Record headers = {"content-type": 42};
+            let Record headers = {content_type: 42};
             return headers["content" + "-type"];
         }
     "#,
@@ -393,24 +393,24 @@ fn string_expression_keys_remain_dynamic_and_unsupported() {
 }
 
 #[test]
-fn quoted_key_unicode_and_empty_fields_are_not_normalized_or_conflated() {
+fn unicode_record_identifier_fields_remain_distinct() {
     wasm(
         r#"
         pub fnc main(): int {
             let Record headers = {
-                "": 1,
-                "café": 41,
-                "café": 7
+                empty: 1,
+                café: 41,
+                cafe_decomp: 7
             };
-            return headers[""] + headers["café"];
+            return headers["empty"] + headers["café"];
         }
     "#,
     );
     invalid(
         r#"
         pub fnc main(): int {
-            let Record headers = {"café": 42};
-            return headers["café"];
+            let Record headers = {café: 42};
+            return headers["cafe_decomp"];
         }
     "#,
         "E_NO_FIELD",
@@ -425,12 +425,12 @@ fn dot_and_static_bracket_share_exact_typed_field_offset_and_type() {
     let source = r#"
         pub fnc main(): int {
             let Record headers = {
-                "content-type": "application/json",
+                content_type: "application/json",
                 status_code: 200
             };
             headers.status_code;
             headers["status_code"];
-            headers["content-type"];
+            headers["content_type"];
             return 0;
         }
     "#;
@@ -471,23 +471,23 @@ fn dot_and_static_bracket_share_exact_typed_field_offset_and_type() {
 }
 
 #[test]
-fn decoded_escaped_field_names_are_exactly_equivalent() {
+fn identifier_record_field_names_share_static_bracket_alias() {
     wasm(
         r#"
         pub fnc main(): int {
             let Record headers = {
-                "x-y": 41,
-                "has\"quote": 1,
-                "line\nbreak": 2
+                x_y: 41,
+                has_quote: 1,
+                line_break: 2
             };
-            return headers["x\u{2d}y"] + headers["has\"quote"];
+            return headers["x_y"] + headers["has_quote"];
         }
     "#,
     );
     invalid(
         r#"
         pub fnc main(): int {
-            let Record headers = {"x-y": 1, "x\u{2d}y": 2};
+            let Record headers = {x_y: 1, x_y: 2};
             return 0;
         }
     "#,
@@ -496,7 +496,7 @@ fn decoded_escaped_field_names_are_exactly_equivalent() {
     invalid(
         r#"
         pub fnc main(): int {
-            let Record headers = {"x-y": 42};
+            let Record headers = {x_y: 42};
             return headers["x\u{zz}y"];
         }
     "#,
@@ -510,10 +510,10 @@ fn static_bracket_read_infers_field_type_in_return_checker() {
         r#"
         pub fnc main(): int {
             let Record headers = {
-                "content-type": "application/json",
+                content_type: "application/json",
                 status_code: 200
             };
-            return headers["content-type"];
+            return headers["content_type"];
         }
     "#,
         "E_TYPE",
@@ -521,11 +521,77 @@ fn static_bracket_read_infers_field_type_in_return_checker() {
     wasm(
         r#"
         pub fnc main(): int {
-            let Record headers = {"content-type": "application/json", status_code: 42};
+            let Record headers = {content_type: "application/json", status_code: 42};
             return headers["status_code"];
         }
     "#,
     );
+}
+
+
+#[test]
+fn checked_owned_scalar_record_writes_emit_guest_wasm() {
+    for source in [
+        r#"pub fnc main(): int {
+            let mut Record r = {foo: 1};
+            r["foo"] = 42;
+            return r.foo;
+        }"#,
+        r#"pub fnc main(): int {
+            val mut Record r = {content_type: 1};
+            r["content_type"] = 42;
+            return r["content_type"];
+        }"#,
+        r#"pub fnc main(): int {
+            let mut Record r = {foo: 1, bar: 9};
+            r.foo = 33;
+            return r["foo"] + r.bar;
+        }"#,
+        r#"pub fnc main(): int {
+            let mut Record r = {empty: 1, é: 2, e_decomp: 3};
+            r["empty"] = 37;
+            r["e_decomp"] = 3;
+            return r["empty"] + r["é"] + r["e_decomp"];
+        }"#,
+    ] {
+        wasm(source);
+    }
+}
+
+#[test]
+fn record_write_fail_closed_immutable_type_missing_or_computed() {
+    for (source, code) in [
+        (r#"pub fnc main(): int { let Record r={foo:1}; r["foo"]=42; return 0; }"#, "E_IMMUTABLE"),
+        (r#"pub fnc main(): int { val Record r={foo:1}; r.foo=42; return 0; }"#, "E_IMMUTABLE"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; r["bar"]=42; return 0; }"#, "E_NO_FIELD"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; r["foo"]="bad"; return 0; }"#, "E_TYPE"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; let string key="foo"; r[key]=42; return 0; }"#, "E_UNSUPPORTED"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; r[0]=42; return 0; }"#, "E_UNSUPPORTED"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; r["f"+"oo"]=42; return 0; }"#, "E_UNSUPPORTED"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; val moved=take! r; r["foo"]=42; return 0; }"#, "E_MOVED"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; val reader=borrow! r; r["foo"]=42; return 0; }"#, "E_BORROW"),
+        (r#"define struct Point as int foo; end pub fnc main(): int { let mut p=Point{foo:1}; p["foo"]=42; return 0; }"#, "E_UNSUPPORTED"),
+        (r#"define struct Point as int foo; end pub fnc main(): int { val p=Point{foo:1}; return p["foo"]; }"#, "E_UNSUPPORTED"),
+    ] {
+        invalid(source,code);
+    }
+}
+
+#[test]
+fn index_write_retains_field_type_and_lexical_class_identity() {
+    let p = Parser::new(lexer::lex(
+        r#"pub fnc main(): int {
+            let mut Record r={foo:1,a_b:9};
+            r["a_b"]=42;
+            return r["a_b"];
+        }"#).unwrap()).parse_program().unwrap();
+    let checked = collection_types::analyze(&p).unwrap();
+    let mut lowered=p.clone();
+    closed_record_guest::lower(&mut lowered, &checked).unwrap();
+    assert!(matches!(&lowered.funcs[0].body.last().unwrap(),
+        Stmt::Return(Some(v),_) if matches!(&v.kind,ExprKind::Index(_, _))));
+    assert!(lowered.classes.iter().any(|c| c.name.starts_with(
+        closed_record_guest::PRIVATE_PREFIX)));
 }
 
 #[test]
@@ -533,8 +599,8 @@ fn nested_field_index_and_computed_map_key_stay_fail_closed() {
     invalid(
         r#"
         pub fnc main(): int {
-            let Record headers = {"content-type": 42};
-            return headers["content-type"][0];
+            let Record headers = {content_type: 42};
+            return headers["content_type"][0];
         }
     "#,
         "E_UNSUPPORTED",
@@ -542,8 +608,8 @@ fn nested_field_index_and_computed_map_key_stay_fail_closed() {
     invalid(
         r#"
         pub fnc main(): int {
-            let Record headers = {"content-type": 42};
-            let string field = "content-type";
+            let Record headers = {content_type: 42};
+            let string field = "content_type";
             return headers[field];
         }
     "#,

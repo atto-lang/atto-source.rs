@@ -215,6 +215,9 @@ pub enum BindKind {
 pub enum Stmt {
     Bind {
         kind: BindKind,
+        /// Independent permission to mutate an owned referent, not binding rebinding.
+        /// Canonical: val/let are readonly; val mut/let mut are writable.
+        referent_mutable: bool,
         name: String,
         ty: Option<Type>,
         init: Expr,
@@ -235,6 +238,14 @@ pub enum Stmt {
     FieldAssign {
         target: Expr,
         field: String,
+        value: Expr,
+        pos: Pos,
+    },
+    /// Preserve a bracket assignment lvalue until type/ownership checking
+    /// identifies Map vs closed Record vs nominal Struct. No parser rewrite.
+    IndexAssign {
+        target: Expr,
+        index: Expr,
         value: Expr,
         pos: Pos,
     },

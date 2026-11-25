@@ -165,7 +165,7 @@ impl Context {
                 self.returns.push((ty, *p));
                 Ok(true)
             }
-            Stmt::Bind { kind, name, ty, init, pos } => {
+            Stmt::Bind { kind, name, ty, init, pos, .. } => {
                 if *kind == BindKind::Const && !matches!(init.kind,
                     ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_)) {
                     return Err(err(*pos, "E_CONST", "const lambda local needs literal initializer"));
@@ -291,7 +291,8 @@ impl Context {
 fn position(stmt: &Stmt) -> Pos {
     match stmt {
         Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
-        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
+        Stmt::FieldAssign { pos, .. } | Stmt::IndexAssign { pos, .. } |
+        Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |

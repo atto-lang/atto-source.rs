@@ -60,7 +60,7 @@ pub fn lower(input: &Program) -> R<Program> {
             .collect::<BTreeMap<String, Type>>();
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
-            if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
+            if let Stmt::Bind { kind, name, ty, init, pos, .. } = &stmt {
                 if let ExprKind::Lambda { params, .. } = &init.kind {
                     if direct.is_some() {
                         return Err(error(*pos, "E_UNSUPPORTED",
@@ -128,7 +128,7 @@ pub fn lower(input: &Program) -> R<Program> {
                     // inside a shadowing block. Values are immutable scalars.
                     for c in &captures {
                         body.push(Stmt::Bind {
-                            kind: BindKind::Val, name: c.snapshot.clone(),
+                            kind: BindKind::Val, referent_mutable: false, name: c.snapshot.clone(),
                             ty: Some(c.ty),
                             init: Expr { kind: ExprKind::Var(c.source.clone()), pos: *pos },
                             pos: *pos,
@@ -256,6 +256,8 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             rewrite_expr(target, d)?;
             rewrite_expr(value, d)
         }
+        Stmt::IndexAssign { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
+            "indexed assignment in direct lambda needs a checked lvalue/ownership rewrite")),
         Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
             "direct lambda rewriting cannot cross a protected state loan")),
         Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
@@ -461,7 +463,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
 fn stmt_pos(s: &Stmt) -> Pos {
     match s {
         Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
-        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
+        Stmt::FieldAssign { pos, .. } | Stmt::IndexAssign { pos, .. } |
+        Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
