@@ -51,4 +51,22 @@ mod tests{
         });
         assert_eq!(library::target_os(),default);
     }
+
+    #[test]
+    fn target_specific_library_bytes_are_distinct_and_executable(){
+        let source=r#"import module path from "atto.std/path"; pub fnc main(): int { return path.separator_code(); }"#;
+        let posix=library::with_target_os(TargetOs::Posix,||crate::compile(source)).unwrap();
+        let windows=library::with_target_os(TargetOs::Windows,||crate::compile(source)).unwrap();
+        assert_ne!(posix,windows);
+        let execute=|bytes:&[u8],expected:&str|{
+            use std::io::Write;
+            use std::process::{Command,Stdio};
+            let script="const fs=require('node:fs'),assert=require('node:assert/strict');const b=fs.readFileSync(0);assert.ok(WebAssembly.validate(b));const m=new WebAssembly.Module(b);assert.deepEqual(WebAssembly.Module.imports(m),[]);const i=new WebAssembly.Instance(m,{});assert.equal(i.exports.main(),BigInt(process.argv[1]));assert.equal(i.exports.panic_code.value,0);console.log('CACHE_TARGET_GUEST|result='+process.argv[1])";
+            let mut child=Command::new("node").args(["-e",script,expected]).stdin(Stdio::piped()).spawn().unwrap();
+            child.stdin.take().unwrap().write_all(bytes).unwrap();
+            assert!(child.wait().unwrap().success());
+        };
+        execute(&posix,"47");execute(&windows,"92");
+        assert_eq!(posix,library::with_target_os(TargetOs::Posix,||crate::compile(source)).unwrap());
+    }
 }

@@ -7,6 +7,11 @@ on:
       - 'src/compiler_artifact_receipt.rs'
       - 'src/compiler_artifact_store.rs'
       - 'src/secure_fs.rs'
+      - 'src/compiler_cache_witness.rs'
+      - 'src/compiler_cache_key_policy.rs'
+      - 'src/library.rs'
+      - 'src/package_resolver.rs'
+      - 'src/linker.rs'
       - '.github/workflows/compiler-cache-key.yml'
 permissions:
   contents: read

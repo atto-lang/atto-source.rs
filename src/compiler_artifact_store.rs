@@ -354,4 +354,38 @@ end"#;
             println!("CACHE_LOCKED_CHILD|graph-admitted|verified-hit|no-compile");
         }
     }
+
+    #[test]
+    fn locked_package_stage_timing_smoke(){
+        use crate::{compiler_cache_witness as witness,library::TargetOs,sha256::hex_digest};
+        use std::time::Instant;
+        const N:usize=21;
+        fn median(values:&mut [u128])->u128{values.sort_unstable();values[values.len()/2]}
+        let t=Temp::new();let store=ArtifactStore::open(&t.0).unwrap();
+        let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let pin=hex_digest(lock.as_bytes());
+        let start=Instant::now();
+        let mut binary=Vec::new();
+        File::open("/proc/self/exe").unwrap().take(128*1024*1024+1).read_to_end(&mut binary).unwrap();
+        assert!(binary.len()<=128*1024*1024);
+        let compiler=hex_digest(&binary);
+        let toolchain=hex_digest(b"fixture: same executable includes complete compiler");
+        let identity_ns=start.elapsed().as_nanos();
+        let prepare=||witness::prepare("src/main.atto",MANIFEST,&lock,&pin,&inputs,TargetOs::Posix,&compiler,&toolchain).unwrap();
+        let prepared=prepare();let baseline=prepared.compile().unwrap();
+        store.publish(&prepared.key,&receipt::seal(&prepared.key,&baseline,&SECRET).unwrap(),&SECRET).unwrap();
+        let (mut cold,mut warm,mut admission,mut emission,mut retrieval)=(Vec::new(),Vec::new(),Vec::new(),Vec::new(),Vec::new());
+        for _ in 0..N{
+            let start=Instant::now();let prepared=prepare();
+            admission.push(start.elapsed().as_nanos());let step=Instant::now();
+            let bytes=prepared.compile().unwrap();emission.push(step.elapsed().as_nanos());
+            cold.push(start.elapsed().as_nanos());assert_eq!(bytes,baseline);
+            let start=Instant::now();let prepared=prepare();let step=Instant::now();
+            let bytes=store.load(&prepared.key,&SECRET).unwrap().unwrap();retrieval.push(step.elapsed().as_nanos());
+            warm.push(start.elapsed().as_nanos());assert_eq!(bytes,baseline);
+        }
+        println!("CACHE_TIMING_FIXTURE|n={N}|identity_once_ns={identity_ns}|admission_median_ns={}|frontend_codegen_median_ns={}|verified_read_median_ns={}|cold_median_ns={}|warm_median_ns={}|bytes={}",
+            median(&mut admission),median(&mut emission),median(&mut retrieval),median(&mut cold),median(&mut warm),baseline.len());
+        // Smoke measurements only: debug build, tiny fixture, hot OS page cache,
+        // excludes process launch, publisher fsync and guest runtime. No threshold.
+    }
 }
