@@ -3,7 +3,7 @@
 //! Guest contract `atto.browser.guest.v2` (v1 plus classes and actors):
 //! * export `main: () -> i64` (a void `main` returns 0)
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
-//!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
+//!   1 = integer overflow; 2 = checked quantity division by zero;
 //!   3 = object heap exhausted; 4 = invalid generator handle/state;
 //!   5 = generator per-pull dispatch budget exhausted;
 //!   6 = logical stack exhausted: a recursive call exceeded [`MAX_CALL_DEPTH`]
@@ -31,7 +31,7 @@ mod generator_runtime;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
-/// Reserved ABI value; current admitted expressions cannot generate this panic.
+/// Checked quantity division by zero; ordinary scalar division is still separate.
 pub const PANIC_DIV_ZERO: i32 = 2;
 pub const PANIC_HEAP: i32 = 3;
 pub const PANIC_GENERATOR: i32 = 4;
@@ -1434,6 +1434,21 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    emit_inner(p, None)
+}
+
+/// Only the checked closed quantity frontend can select this path. The
+/// compiler has already validated the complete source, including dead suffixes.
+pub(crate) fn emit_quantity_failure(p: &TProgram, failure: crate::verified_quantities::ArithmeticFailure) -> Vec<u8> {
+    use crate::verified_quantities::ArithmeticFailure;
+    let code = match failure {
+        ArithmeticFailure::Overflow => PANIC_OVERFLOW,
+        ArithmeticFailure::DivisionByZero => PANIC_DIV_ZERO,
+    };
+    emit_inner(p, Some(code))
+}
+
+fn emit_inner(p: &TProgram, quantity_panic: Option<i32>) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
@@ -1514,7 +1529,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             calls: Vec::new(),
             landings: Vec::new(),
         };
-        if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
+        if let Some(code) = quantity_panic.filter(|_| i as u32 == p.main) {
+            panic(&mut e.code, code);
+        } else if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
             // Creator is lazy: allocate a 56-byte checked continuation frame
             // and return its generation-fenced handle. No body runs here.
             e.i32c(gen_id as i32);
