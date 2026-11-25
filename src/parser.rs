@@ -387,7 +387,7 @@ impl Parser {
 
     fn is_type_word(&self, n: usize) -> bool {
         matches!(self.word_at(n), Some("int" | "bool" | "boolean" | "void"))
-            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w) || self.class_types.contains_key(w) || self.actor_types.contains_key(w))
+            || self.word_at(n).is_some_and(|w| w == "Result" || UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w) || self.class_types.contains_key(w) || self.actor_types.contains_key(w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -397,6 +397,16 @@ impl Parser {
             _ => return Err(self.expected("a type")),
         };
         self.advance();
+        // The first actor slice admits only this concrete Result specialization.
+        // All other generic Results remain unsupported until full generic typing.
+        if name == "Result" {
+            self.expect(Tok::Lt, "'<' for Result<void, SendError>")?;
+            self.expect_word("void")?;
+            self.expect(Tok::Comma, "',' in Result<void, SendError>")?;
+            self.expect_word("SendError")?;
+            self.expect(Tok::Gt, "'>' to finish Result<void, SendError>")?;
+            return Ok(Type::SendResult);
+        }
         let ty = match name.as_str() {
             "int" => Type::Int,
             "bool" | "boolean" => Type::Bool,
@@ -1377,8 +1387,13 @@ impl Parser {
                         }
                     }
                     self.advance();
-                    let (field, _) = self.ident("a class field")?;
-                    e = Expr { kind: ExprKind::Field(Box::new(e), field), pos };
+                    let (member, _) = self.ident("a field or method")?;
+                    e = if *self.peek() == Tok::LParen {
+                        let args = self.parse_call_args()?;
+                        Expr { kind: ExprKind::MethodCall(Box::new(e), member, args), pos }
+                    } else {
+                        Expr { kind: ExprKind::Field(Box::new(e), member), pos }
+                    };
                     continue;
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
