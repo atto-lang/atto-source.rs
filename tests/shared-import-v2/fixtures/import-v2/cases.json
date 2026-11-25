@@ -2408,9 +2408,9 @@
       "implicitBuiltin": true
     },
     {
-      "id": "const-forward",
+      "id": "alias-forward",
       "stage": "resolution",
-      "source": "import pkg '@atto-lang/network/http' as p;\ndefine const a = b;\ndefine const b = p;",
+      "source": "import pkg '@atto-lang/network/http' as p;\ndefine alias a = b;\ndefine alias b = p;",
       "expect": {
         "outcome": "identity",
         "identity": "@atto-lang/network/http"
@@ -2419,9 +2419,9 @@
       "fixture": "http-roots"
     },
     {
-      "id": "const-cycle",
+      "id": "alias-cycle",
       "stage": "resolution",
-      "source": "import pkg '@atto-lang/network/http';\ndefine const http = a;\ndefine const a = http;",
+      "source": "import pkg '@atto-lang/network/http';\ndefine alias http = a;\ndefine alias a = http;",
       "expect": {
         "outcome": "reject",
         "reason": "cycle",
@@ -2431,9 +2431,9 @@
       "fixture": "http-roots"
     },
     {
-      "id": "const-self",
+      "id": "alias-self",
       "stage": "resolution",
-      "source": "define const a = a;",
+      "source": "define alias a = a;",
       "expect": {
         "outcome": "reject",
         "reason": "self",
@@ -2443,9 +2443,9 @@
       "fixture": "http-roots"
     },
     {
-      "id": "const-missing",
+      "id": "alias-missing",
       "stage": "resolution",
-      "source": "define const a = missing;",
+      "source": "define alias a = missing;",
       "expect": {
         "outcome": "reject",
         "reason": "missing",
