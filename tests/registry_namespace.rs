@@ -586,3 +586,44 @@ fn authenticated_newable_factory_is_sealed_and_exact() {
         assert!(FrozenClass::verify_newable("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).is_err(),"{changed}");
     }
 }
+
+
+#[test]
+fn sealed_factory_aliases_keep_package_identity_and_reject_bypass() {
+    use atto_compiler::registry_namespace::{FrozenClass,compile_frozen_classes};
+    let ma="[package]\nname = \"@a/project/pkg\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let mb=ma.replace("@a/project/pkg","@b/project/pkg");
+    let body="use namespace models; define pub class Cart implements Newable[Cart] as val int count = 20; pub fnc new(): Cart { return new Cart(); } pub get_count(): int { return self.count; } end";
+    let other=body.replace("count = 20","count = 22");
+    let a=[SnapshotSource{path:"src/models/cart.atto",source:body}];
+    let b=[SnapshotSource{path:"src/models/cart.atto",source:&other}];
+    let la=lock(ma,&a);
+    let lb=lock(&mb,&b);
+    let pa=FrozenClass::verify_newable("@a/project/pkg",ma,&la,&hex_digest(la.as_bytes()),&a).unwrap();
+    let pb=FrozenClass::verify_newable("@b/project/pkg",&mb,&lb,&hex_digest(lb.as_bytes()),&b).unwrap();
+    let prefix="import [class models.Cart as A] from pkg '@a/project/pkg'; import [class models.Cart as B] from pkg '@b/project/pkg'; import [class models.Cart as Again] from pkg '@a/project/pkg'; ";
+    let guest=format!("{prefix}pub fnc main(): int {{ val a: A = Again.new(); val b = B.new(); return a.get_count()+b.get_count(); }}");
+    let wasm=compile_frozen_classes(&guest,&[&pa,&pb]).unwrap();
+    assert_eq!(wasm,compile_frozen_classes(&guest,&[&pb,&pa]).unwrap());
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-newable-multi-0.wasm"),wasm).unwrap();
+    }
+    for root in [
+        "val a: A = B.new(); return a.get_count();",
+        "val a = new A(); return a.get_count();",
+        "val a = Cart.new(); return a.get_count();",
+        "val a = A.new(1); return a.get_count();",
+        "val a = A.__atto_sealed_newable_factory(); return a.get_count();",
+        "val A = 42; return A;",
+        "val a = Again.new(); return a.A.new();",
+        "val a = new __atto_frozen_class_0(); return a.get_count();",
+    ]{
+        let bad=format!("{prefix}pub fnc main(): int {{ {root} }}");
+        assert!(compile_frozen_classes(&bad,&[&pa,&pb]).is_err(),"{bad}");
+    }
+    let raw="use namespace models; define pub class Cart as pub constructor() {} pub get_count(): int { return 22; } end";
+    let b=[SnapshotSource{path:"src/models/cart.atto",source:raw}];
+    let lb=lock(&mb,&b);
+    let raw=FrozenClass::verify("@b/project/pkg",&mb,&lb,&hex_digest(lb.as_bytes()),&b).unwrap();
+    assert_eq!(compile_frozen_classes(&guest,&[&pa,&raw]).unwrap_err().code,"E_NEWABLE");
+}
