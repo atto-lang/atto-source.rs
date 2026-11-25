@@ -5,6 +5,7 @@ on:
       - 'src/verified_quantities.rs'
       - 'src/units.rs'
       - 'src/quantity_scale.rs'
+      - 'src/wasm.rs'
       - 'src/lib.rs'
       - 'tests/verified_quantity_guests.rs'
       - 'tests/units_of_measure.rs'
@@ -46,3 +47,14 @@ jobs:
           if target/debug/attoc "$work/bad.atto" -o "$work/bad.wasm" > "$work/log" 2>&1; then exit 1; fi
           grep -F E_UNIT_INEXACT "$work/log"
           test ! -e "$work/bad.wasm"
+          for case in zero overflow intermediate; do
+            case "$case" in
+              zero) expr='1<Second> / 0<Second>'; code=2 ;;
+              overflow) expr='-9223372036854775808<Second> / -1<Second>'; code=1 ;;
+              intermediate) expr='(9223372036854775807<Second> + 1<Second> - 1<Second>) / 1<Second>'; code=1 ;;
+            esac
+            printf 'define dimension Time; define unit Second: Time; pub fnc main() -> int { return %s; }\n' "$expr" > "$work/$case.atto"
+            target/debug/attoc "$work/$case.atto" -o "$work/$case.wasm"
+            node -e 'const fs=require("node:fs"); const a=require("node:assert/strict"); const i=new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(process.argv[1])),{}); a.throws(()=>i.exports.main(),WebAssembly.RuntimeError); a.equal(i.exports.panic_code.value,Number(process.argv[2])); console.log("PASS typed quantity trap",process.argv[2]);' "$work/$case.wasm" "$code"
+            sha256sum "$work/$case.atto" "$work/$case.wasm"
+          done
