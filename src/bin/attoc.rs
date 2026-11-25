@@ -19,12 +19,30 @@ enum Input {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
+    eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --durable-scalar-v1 <input.atto> -o out.wasm\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
     ExitCode::from(2)
 }
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    // Separate explicit ABI, no package/import lookup or borrow-report modes.
+    if raw.first().is_some_and(|a| a == "--durable-scalar-v1") {
+        let [_, input, flag, output] = raw.as_slice() else { return usage(); };
+        if flag != "-o" { return usage(); }
+        let mut source = String::new();
+        if let Err(e) = std::fs::File::open(input).and_then(|f|
+            f.take((atto_compiler::SOURCE_CAP + 1) as u64).read_to_string(&mut source)) {
+            eprintln!("{input}: {e}");
+            return ExitCode::from(2);
+        }
+        return match atto_compiler::compile_durable_scalar(&source) {
+            Ok(bytes) => match std::fs::write(output, bytes) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => { eprintln!("{output}: {e}"); ExitCode::from(2) }
+            },
+            Err(d) => { eprintln!("{input}: {d}"); ExitCode::from(1) }
+        };
+    }
     let mut args = Vec::new();
     let (mut report_path, mut compiler_sha, mut case) = (None, None, None);
     let mut it = raw.into_iter();
