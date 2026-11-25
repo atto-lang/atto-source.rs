@@ -715,3 +715,103 @@ impl FrozenClass {
         crate::compile_prelexed(linked,None)
     }
 }
+
+
+/// Link a bounded set of independently verified single-class packages.
+/// Each admitted snapshot receives exactly one deterministic internal class
+/// name. Explicit import aliases are not themselves nominal identities.
+/// This lane permits constructor, scalar static calls and colon-annotated
+/// type references; arbitrary class-name use or provider self-type references
+/// must wait for AST-level remapping.
+pub fn compile_frozen_classes(source: &str, packages: &[&FrozenClass]) -> R<Vec<u8>> {
+    use crate::lexer::{self, Tok};
+    use crate::import_v2::{self, Source};
+    if source.len()>crate::SOURCE_CAP || packages.is_empty() || packages.len()>16 {
+        return Err(err("E_SOURCE_LIMIT","bounded class guest input limit"));
+    }
+    let mut available=BTreeMap::new();
+    for p in packages {
+        if available.insert(p.name.as_str(),*p).is_some() {
+            return Err(err("E_DUPLICATE","multiple snapshots for one class package"));
+        }
+    }
+    let tokens=lexer::lex(source)?;
+    let word=|i:usize,s:&str|matches!(tokens.get(i).map(|t|&t.tok),Some(Tok::Ident(n)) if n==s);
+    let mut scope=Scope::new();
+    let mut selected=BTreeMap::new();
+    let mut aliases=BTreeMap::new();
+    let mut cursor=0;
+    while word(cursor,"import") {
+        let (import,end)=import_v2::parse_mixed(&tokens,cursor+1)?;
+        let Source::Package(name)=&import.source else {return Err(err("E_IMPORT_PATH","class import requires a pinned package"));};
+        let p=*available.get(name.as_str()).ok_or_else(||err("E_UNBOUND","class package not supplied"))?;
+        if import.selectors.len()!=1 {return Err(err("E_UNSUPPORTED","one class selector per import"));}
+        let sel=&import.selectors[0];
+        if sel.kind!=Kind::Class {return Err(err("E_IMPORT_KIND","class selector required"));}
+        if sel.path!=p.declaration {return Err(err("E_UNBOUND","class not in pinned package"));}
+        if sel.binding=="main" || aliases.contains_key(&sel.binding) {
+            return Err(err("E_DUPLICATE","duplicate or reserved class binding"));
+        }
+        scope.bind_mixed(&p.view,&import)?;
+        let identity=scope.resolve_nominal(&sel.binding,&[&p.view])?;
+        selected.insert(name.clone(),p);
+        aliases.insert(sel.binding.clone(),(name.clone(),identity));
+        if aliases.len()>32 {return Err(err("E_SOURCE_LIMIT","class binding limit"));}
+        cursor=end;
+    }
+    if selected.is_empty() {return Err(err("E_SYNTAX","class guest requires explicit imports"));}
+    let mut owners=BTreeMap::new();
+    let mut linked=Vec::new();
+    for (name,p) in &selected {
+        let owner=format!("__atto_frozen_class_{}",owners.len());
+        // Provider isolation was checked before linking. Do not rewrite
+        // arbitrary identifier occurrences (fields, locals, type parameters).
+        // Only an exact class declaration header may contain this spelling.
+        for (i,t) in p.tokens.iter().enumerate().take(p.tokens.len()-1) {
+            let mut t=t.clone();
+            if matches!(&t.tok,Tok::Ident(n) if n==&p.class_name) {
+                if i!=3 {return Err(err("E_UNSUPPORTED","class self-type/member spelling requires typed remapping"));}
+                t.tok=Tok::Ident(owner.clone());
+            }
+            linked.push(t);
+        }
+        owners.insert(name.clone(),owner);
+        if linked.len()>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","class declaration token budget"));}
+    }
+    let root=&tokens[cursor..];
+    // Validate original structure before rewriting. The guest may declare
+    // only main, not extra classes or routines that could capture providers.
+    let parsed=crate::parser::Parser::new(root.to_vec()).parse_program()?;
+    if parsed.funcs.len()!=1 || parsed.funcs[0].name!="main" || !parsed.classes.is_empty()
+        || !parsed.enums.is_empty() || !parsed.actors.is_empty() || parsed.actor_interface.is_some() {
+        return Err(err("E_UNSUPPORTED","class guest root must contain only main"));
+    }
+    for (i,t) in root.iter().enumerate() {
+        let mut t=t.clone();
+        if let Tok::Ident(n)=&t.tok {
+            if n.starts_with("__atto_") || matches!(n.as_str(),"import"|"use"|"define"|"declare"|"external") {
+                return Err(err("E_UNSUPPORTED","class root cannot introduce ambient declarations or internal names"));
+            }
+            if let Some((name,_identity))=aliases.get(n) {
+                let before=i.checked_sub(1).and_then(|j|root.get(j));
+                let after=root.get(i+1);
+                let constructor=before.is_some_and(|v|matches!(&v.tok,Tok::Ident(s) if s=="new"));
+                let typed=before.is_some_and(|v|v.tok==Tok::Colon);
+                let static_call=after.is_some_and(|v|v.tok==Tok::Dot)
+                    && matches!(root.get(i+2).map(|v|&v.tok),Some(Tok::Ident(_)))
+                    && root.get(i+3).is_some_and(|v|v.tok==Tok::LParen)
+                    && !before.is_some_and(|v|v.tok==Tok::Dot);
+                if !(constructor || typed || static_call) {
+                    return Err(err("E_IMPORT_KIND","class binding is not a runtime value or local name"));
+                }
+                t.tok=Tok::Ident(owners.get(name).ok_or_else(||err("E_INTERNAL","missing class owner"))?.clone());
+            }
+        }
+        linked.push(t);
+        if linked.len()>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","class guest token budget"));}
+    }
+    let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
+    let checked=crate::check::check(&parsed)?;
+    if !checked.imports.is_empty() {return Err(err("E_UNSUPPORTED","class guest cannot request ambient host imports"));}
+    crate::compile_prelexed(linked,None)
+}

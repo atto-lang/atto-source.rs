@@ -506,3 +506,43 @@ fn authenticated_single_class_guest_uses_constructor_and_method_checker() {
         assert!(FrozenClass::verify("@org/project/package",manifest,&cl,&hex_digest(cl.as_bytes()),&changed).is_err());
     }
 }
+
+
+#[test]
+fn frozen_class_aliases_preserve_distinct_package_types() {
+    use atto_compiler::registry_namespace::{FrozenClass,compile_frozen_classes};
+    let manifest_a="[package]\nname = \"@a/project/pkg\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let manifest_b=manifest_a.replace("@a/project/pkg","@b/project/pkg");
+    let body_a="use namespace models; define pub class Counter as let int value = 0; pub constructor(int x) { self.value = x; } pub fnc get(): int { return self.value+1; } pub static fnc tag(): int { return 20; } end";
+    let body_b=body_a.replace("self.value+1","self.value+2").replace("return 20;","return 22;");
+    let a=[SnapshotSource{path:"src/models/counter.atto",source:body_a}];
+    let b=[SnapshotSource{path:"src/models/counter.atto",source:&body_b}];
+    let la=lock(manifest_a,&a);
+    let lb=lock(&manifest_b,&b);
+    let pa=FrozenClass::verify("@a/project/pkg",manifest_a,&la,&hex_digest(la.as_bytes()),&a).unwrap();
+    let pb=FrozenClass::verify("@b/project/pkg",&manifest_b,&lb,&hex_digest(lb.as_bytes()),&b).unwrap();
+    let prefix="import [class models.Counter as A] from pkg '@a/project/pkg'; import [class models.Counter as B] from pkg '@b/project/pkg'; ";
+    let guests=[
+        format!("{prefix}pub fnc main(): int {{ val a = new A(10); val b = new B(29); return a.get()+b.get(); }}"),
+        format!("{prefix}pub fnc main(): int {{ return A.tag()+B.tag(); }}"),
+        "import [class models.Counter as A] from pkg '@a/project/pkg'; import [class models.Counter as Again] from pkg '@a/project/pkg'; pub fnc main(): int { val a: A = new Again(41); return a.get(); }".into(),
+    ];
+    for (i,guest) in guests.iter().enumerate() {
+        let wasm=compile_frozen_classes(guest,&[&pa,&pb]).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        assert_eq!(wasm,compile_frozen_classes(guest,&[&pb,&pa]).unwrap());
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-multi-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for bad in [
+        format!("{prefix}pub fnc main(): int {{ val a: A = new B(41); return a.get(); }}"),
+        format!("{prefix}pub fnc main(): int {{ val a = new Counter(41); return a.get(); }}"),
+        format!("{prefix}pub fnc main(): int {{ val A = 42; return A; }}"),
+        format!("{prefix}pub fnc main(): int {{ val a = new __atto_frozen_class_0(41); return a.get(); }}"),
+        "import [class models.Counter as A] from pkg '@a/project/pkg'; import [class models.Counter as A] from pkg '@b/project/pkg'; pub fnc main(): int { return 42; }".into(),
+    ]{
+        assert!(compile_frozen_classes(&bad,&[&pa,&pb]).is_err(),"{bad}");
+    }
+    assert_eq!(compile_frozen_classes(&guests[0],&[&pa,&pa,&pb]).unwrap_err().code,"E_DUPLICATE");
+}
