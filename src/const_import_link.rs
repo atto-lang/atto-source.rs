@@ -248,6 +248,14 @@ fn provider_declarations(tokens: &[Token]) -> R<(BTreeMap<String, ConstExport>, 
     Ok((exports, functions))
 }
 
+/// Validate each physical source unit before combining a namespace. This
+/// prevents an incomplete declaration in one file consuming another file.
+pub(crate) fn registry_file_inventory(tokens: &[Token]) -> R<BTreeMap<String,bool>> {
+    let (exports,_) = provider_declarations(tokens)?;
+    if exports.is_empty(){return Err(fail(Pos::default(),"E_MANIFEST","empty registry source unit"));}
+    Ok(exports.into_iter().map(|(name,item)|(name,item.public)).collect())
+}
+
 /// Frozen registry provider inventory, derived only from authenticated tokens.
 pub(crate) struct RegistryProvider {
     pub literals: BTreeMap<String, (bool, Vec<Tok>)>,

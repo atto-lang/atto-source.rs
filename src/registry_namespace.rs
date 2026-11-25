@@ -1,6 +1,6 @@
 //! Frozen registry namespace resolver and bounded direct-function guest linker.
-//! Explicitly bounded profile: one source file per exported directory,
-//! direct functions only, declared namespace equals manifest namespace key.
+//! Explicitly bounded profile: bounded direct source files per exported directory,
+//! direct functions and scalar literal constants only, declared namespace equals manifest namespace key.
 //! No source is loaded by a manifest path; inputs are immutable pinned bytes.
 use crate::{Diagnostic, Pos};
 use crate::import_v2::Kind;
@@ -126,21 +126,60 @@ impl FrozenRegistry {
                     return Err(err("E_MANIFEST", "undeclared parent namespace"));
                 }
             }
-            let mut matching = sources.iter().filter(|(path,_)| path.starts_with(dir.as_str()));
-            let (&file,&source) = matching.next().ok_or_else(|| err("E_MANIFEST", "namespace directory has no pinned source"))?;
-            if matching.next().is_some() || file[dir.len()..].contains('/') {
-                return Err(err("E_UNSUPPORTED", "namespace profile requires exactly one direct pinned file per directory"));
-            }
             use crate::lexer::{self,Tok};
-            let normalized=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(file)))?;
-            if normalized.iter().any(|t|matches!(&t.tok,Tok::Ident(s) if s.starts_with("__atto_"))){
-                return Err(err("E_RESERVED","compiler-generated identifier in registry source"));
+            // BTreeMap iteration fixes ordering by pinned logical path;
+            // no filesystem listing or caller input order is consulted.
+            let matching:Vec<_>=sources.iter().filter(|(path,_)|path.starts_with(dir.as_str())).collect();
+            if matching.is_empty(){return Err(err("E_MANIFEST","namespace directory has no pinned source"));}
+            if matching.len()>16 || matching.iter().any(|(path,_)|path[dir.len()..].contains('/')){
+                return Err(err("E_UNSUPPORTED","namespace requires at most 16 direct pinned files"));
             }
             let header=lexer::lex(&format!("use namespace {ns};"))?;
             let end=header.len()-1;
-            if normalized.len()<=end || normalized[..end].iter().map(|t|&t.tok).ne(header[..end].iter().map(|t|&t.tok)){
-                return Err(err("E_MANIFEST","source namespace differs from manifest key"));
+            let mut files=Vec::new();
+            let mut owners=BTreeMap::new();
+            let mut total=0usize;
+            for (index,(&file,&source)) in matching.iter().copied().enumerate(){
+                let normalized=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(file)))?;
+                if normalized.iter().any(|t|matches!(&t.tok,Tok::Ident(s) if s.starts_with("__atto_"))){
+                    return Err(err("E_RESERVED","compiler-generated identifier in registry source"));
+                }
+                if normalized.len()<=end || normalized[..end].iter().map(|t|&t.tok).ne(header[..end].iter().map(|t|&t.tok)){
+                    return Err(err("E_MANIFEST","source namespace differs from manifest key"));
+                }
+                total=total.saturating_add(normalized.len());
+                if total>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","namespace aggregate token budget exceeded"));}
+                if matching.len()>1 {
+                    for (name,public) in crate::const_import_link::registry_file_inventory(&normalized)? {
+                        if owners.insert(name,(index,public)).is_some(){
+                            return Err(err("E_DUPLICATE","duplicate declaration across namespace files"));
+                        }
+                    }
+                }
+                files.push(normalized);
             }
+            // Conservative multi-file lane: public declarations may be
+            // referenced across files. Private declarations remain usable
+            // only in their own pinned file; no namespace-header spoof can
+            // confer private authority on a different source unit.
+            for (index,tokens) in files.iter().enumerate(){
+                for t in &tokens[end..] {
+                    if let Tok::Ident(name)=&t.tok {
+                        if owners.get(name).is_some_and(|(owner,public)|*owner!=index && !*public){
+                            return Err(Diagnostic::new(t.pos,"E_PRIVATE","cross-file private declaration reference"));
+                        }
+                    }
+                }
+            }
+            let (&file,&source)=matching[0];
+            let normalized=if files.len()==1 {files.pop().unwrap()}else{
+                let mut combined=header[..end].to_vec();
+                for tokens in files {
+                    combined.extend_from_slice(&tokens[end..tokens.len()-1]);
+                }
+                combined.push(header.last().unwrap().clone());
+                combined
+            };
             view.add(ns, ns, Kind::Namespace, true)?;
             if let Some(provider)=crate::const_import_link::registry_provider(&normalized,end)?{
                 for (name,(public,value)) in provider.literals {
@@ -157,8 +196,16 @@ impl FrozenRegistry {
                     verified_sources.insert(ns.clone(),(file.to_string(),source.to_string()));
                 }
             }else{
-                let (declared,functions)=crate::import_link::registry_function_exports(source,Path::new(file))?;
-                if declared!=*ns {return Err(err("E_MANIFEST","source namespace differs from manifest key"));}
+                let functions=if matching.len()==1 {
+                    let (declared,functions)=crate::import_link::registry_function_exports(source,Path::new(file))?;
+                    if declared!=*ns {return Err(err("E_MANIFEST","source namespace differs from manifest key"));}
+                    functions
+                }else{
+                    let body=normalized[end..].to_vec();
+                    let (functions,_)=crate::import_link::functions(&body)?;
+                    mixed_functions.insert(ns.clone(),body);
+                    functions
+                };
                 for (function,public) in functions {
                     let path=format!("{ns}.{function}");
                     view.add(&path,&path,Kind::Fnc,public)?;
