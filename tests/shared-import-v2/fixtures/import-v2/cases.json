@@ -3065,6 +3065,170 @@
       },
       "reference": "c",
       "fixture": "manifest-root"
+    },
+    {
+      "id": "builtin-alias-equals",
+      "stage": "guest",
+      "source": "import core.num;\ndefine alias math = core.num;\npub fnc main(): int { return math.clamp(42, 0, 100); }",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-alias-as",
+      "stage": "guest",
+      "source": "import core.num;\ndefine alias core.num as math;\npub fnc main(): int { return math.clamp(42, 0, 100); }",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-alias-as-chain",
+      "stage": "guest",
+      "source": "import core.num;\ndefine alias second as math; define alias core.num as second;\npub fnc main(): int { return math.clamp(42, 0, 100); }",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-alias-mixed-chain",
+      "stage": "guest",
+      "source": "import core.num;\ndefine alias math = second; define alias core.num as second;\npub fnc main(): int { return math.clamp(42, 0, 100); }",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "alias-guest-negative-self",
+      "stage": "guest",
+      "source": "define alias a as a;\npub fnc main(): int { return 42; }",
+      "expect": {
+        "outcome": "reject",
+        "reason": "alias cycle",
+        "code": "E_IMPORT_CYCLE"
+      }
+    },
+    {
+      "id": "alias-guest-negative-three",
+      "stage": "guest",
+      "source": "define alias a as b; define alias b as c; define alias c as a;\npub fnc main(): int { return 42; }",
+      "expect": {
+        "outcome": "reject",
+        "reason": "alias cycle",
+        "code": "E_IMPORT_CYCLE"
+      }
+    },
+    {
+      "id": "alias-guest-negative-mixed",
+      "stage": "guest",
+      "source": "import core.num;\ndefine alias b as a; define alias b = c; define alias a as c;\npub fnc main(): int { return 42; }",
+      "expect": {
+        "outcome": "reject",
+        "reason": "alias cycle",
+        "code": "E_IMPORT_CYCLE"
+      }
+    },
+    {
+      "id": "alias-guest-negative-qualified",
+      "stage": "guest",
+      "source": "define alias b.child as a; define alias a as b;\npub fnc main(): int { return 42; }",
+      "expect": {
+        "outcome": "reject",
+        "reason": "alias cycle",
+        "code": "E_IMPORT_CYCLE"
+      }
+    },
+    {
+      "id": "alias-guest-negative-unused",
+      "stage": "guest",
+      "source": "define alias unused = missing; define alias a as b; define alias b as a;\npub fnc main(): int { return 42; }",
+      "expect": {
+        "outcome": "reject",
+        "reason": "alias cycle",
+        "code": "E_IMPORT_CYCLE"
+      }
+    },
+    {
+      "id": "alias-guest-negative-duplicate",
+      "stage": "guest",
+      "source": "import core.num;\ndefine alias core.num as math; define alias math = num;\npub fnc main(): int { return 42; }",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate binding",
+        "code": "E_DUPLICATE"
+      }
+    },
+    {
+      "id": "alias-guest-negative-destination",
+      "stage": "guest",
+      "source": "import core.num;\ndefine alias core.num as a.b;\npub fnc main(): int { return 42; }",
+      "expect": {
+        "outcome": "reject",
+        "reason": "invalid alias destination",
+        "code": "E_SYNTAX"
+      }
+    },
+    {
+      "id": "alias-guest-negative-double-separator",
+      "stage": "guest",
+      "source": "import core.num;\ndefine alias core.num as math = num;\npub fnc main(): int { return 42; }",
+      "expect": {
+        "outcome": "reject",
+        "reason": "malformed alias",
+        "code": "E_SYNTAX"
+      }
+    },
+    {
+      "id": "alias-resolution-as",
+      "stage": "resolution",
+      "source": "import pkg '@atto-lang/network/http' as p;\ndefine alias p as math;",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@atto-lang/network/http"
+      },
+      "reference": "math.get",
+      "fixture": "http-roots"
+    },
+    {
+      "id": "alias-resolution-mixed",
+      "stage": "resolution",
+      "source": "import pkg '@atto-lang/network/http' as p;\ndefine alias second as math; define alias second = p;",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@atto-lang/network/http"
+      },
+      "reference": "math.get",
+      "fixture": "http-roots"
+    },
+    {
+      "id": "alias-resolution-cycle-as",
+      "stage": "resolution",
+      "source": "import pkg '@atto-lang/network/http' as p;\ndefine alias a as b; define alias b as c; define alias c as a;",
+      "expect": {
+        "outcome": "reject",
+        "reason": "alias cycle",
+        "code": "E_IMPORT_CYCLE",
+        "atomic": true
+      },
+      "reference": "a.get",
+      "fixture": "http-roots"
+    },
+    {
+      "id": "alias-resolution-cycle-mixed",
+      "stage": "resolution",
+      "source": "import pkg '@atto-lang/network/http' as p;\ndefine alias b as a; define alias b = a;",
+      "expect": {
+        "outcome": "reject",
+        "reason": "alias cycle",
+        "code": "E_IMPORT_CYCLE",
+        "atomic": true
+      },
+      "reference": "a.get",
+      "fixture": "http-roots"
     }
   ]
 }
