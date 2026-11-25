@@ -34,12 +34,36 @@ cases.push(["inferred-positive","pub fnc main() -> int { val a = 42.<Second>::<P
  ["inferred-unit-erasure","pub fnc main() -> int { val a = 42.<Second>; return a; }","E_UNIT_ERASURE"],
  ["inferred-parameter-proof","fnc f(Bounded x) -> int { return x; } pub fnc main() -> int { val a = (40 + 2); return f(a); }",42n],
  ["inferred-parameter-denial","fnc f(Bounded x) -> int { return x; } pub fnc main() -> int { val a = 43; return f(a); }","E_REFINEMENT_PRECONDITION"]);
+// Strict profile checks all private helper bodies, not just main's result.
+const strictCases = [
+ ["literal-safe", main("40+2"),42n],
+ ["alias-range", "fnc inc(Bounded x) -> int { return x + 1; } "+main("inc(41)"),42n],
+ ["positive-denominator", "fnc divide(Positive x) -> int { return 42<Second> / x; } "+main("divide(1<Second>)"),42n],
+ ["proven-cast", main("(42 as Bounded)"),42n],
+ ["narrowed-call", "fnc narrow(Bounded x) -> Bounded { return x as Bounded; } "+main("narrow(42)"),42n],
+ ["signed-min-valid", main("-9223372036854775808"),-9223372036854775808n],
+ ["unknown-add", "fnc f(int x) -> int { return x + 1; } "+main("f(41)"),"E_VERIFY_UNPROVEN"],
+ ["unknown-sub", "fnc f(int x) -> int { return x - 1; } "+main("f(43)"),"E_VERIFY_UNPROVEN"],
+ ["unknown-mul", "fnc f(int x) -> int { return x * 2; } "+main("f(21)"),"E_VERIFY_UNPROVEN"],
+ ["unknown-neg", "fnc f(int x) -> int { return -x; } "+main("f(-42)"),"E_VERIFY_UNPROVEN"],
+ ["zero-denominator", main("42<Second> / 0<Second>"),"E_VERIFY_UNPROVEN"],
+ ["min-div-neg-one", main("-9223372036854775808<Second> / -1<Second>"),"E_VERIFY_UNPROVEN"],
+ ["unknown-denominator", "fnc f(Duration x) -> int { return 42<Second> / x; } "+main("f(1<Second>)"),"E_VERIFY_UNPROVEN"],
+ ["unknown-cast", "fnc f(int x) -> Bounded { return x as Bounded; } "+main("f(42)"),"E_VERIFY_UNPROVEN"],
+ ["eager-unused", "pub fnc main() -> int { val int x = 9223372036854775807 + 1; return 42; }","E_VERIFY_UNPROVEN"],
+ ["eager-masked", main("(9223372036854775807+1)*0"),"E_VERIFY_UNPROVEN"],
+ ["nested-cast-cannot-sanitize", main("(9223372036854775807+1) as Bounded"),"E_VERIFY_UNPROVEN"],
+ ["partial-normal-range", "fnc f(int x) -> int { return (x + 1) as Bounded; } "+main("f(41)"),"E_VERIFY_UNPROVEN"],
+ ["unreachable-private-helper", "fnc f(int x) -> int { return x + 1; } "+main("42"),"E_VERIFY_UNPROVEN"],
+ ["bad-argument", "fnc f(Bounded x) -> int { return x; } "+main("f(43)"),"E_REFINEMENT_PRECONDITION"]
+];
+for (const [id,body,want] of strictCases) cases.push(["strict-"+id,body,want,true]);
 const dir=mkdtempSync(join(tmpdir(),"atto-refinement-casts-"));
 try{
- for(const [id,body,want] of cases){
+ for(const [id,body,want,strict] of cases){
   const input=join(dir,id+".atto"),output=join(dir,id+".wasm");
   writeFileSync(input,pre+body);
-  const r=spawnSync(compiler,[input,"-o",output],{cwd:dir,encoding:"utf8",timeout:30000});
+  const r=spawnSync(compiler,[...(strict?["--verify=strict"]:[]),input,"-o",output],{cwd:dir,encoding:"utf8",timeout:30000});
   if(r.error)throw r.error;
   assert.equal(r.signal,null,id);
   if(typeof want==="string"){
@@ -61,5 +85,18 @@ try{
   }
   console.log("PASS refinement "+id);
  }
- console.log("verified "+cases.length+" real refinement cast source cases");
+ // Strict mode cannot silently fall back to the ordinary compiler.
+ for (const [id,source] of [
+   ["ordinary-source",main("42")],
+   ["closed-quantity","define dimension Time; define unit Second: Time; "+main("42<Second> / 1<Second>")]
+ ]) {
+   const input=join(dir,id+".atto"),output=join(dir,id+".wasm");
+   writeFileSync(input,source);
+   const r=spawnSync(compiler,["--verify=strict",input,"-o",output],{cwd:dir,encoding:"utf8",timeout:30000});
+   if(r.error)throw r.error;
+   assert.equal(r.status,1,id+": "+r.stderr);
+   assert.match(r.stderr,/: E_VERIFY_UNSUPPORTED: /,id);
+   assert.equal(existsSync(output),false,id);
+ }
+ console.log("verified "+cases.length+" real refinement cast source cases plus 2 strict fallback negatives");
 }finally{rmSync(dir,{recursive:true,force:true});}
