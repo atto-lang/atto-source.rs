@@ -61,7 +61,7 @@ pub(crate) fn scoped_identity_ok(identity: &str) -> bool {
         name.starts_with('@') && package_name_ok(name) && version_ok(version))
 }
 
-fn namespace_name_ok(name: &str) -> bool {
+pub(crate) fn namespace_name_ok(name: &str) -> bool {
     name.len() <= 64 && name.split('.').count() <= 8 && name.split('.').all(|part|
         !part.is_empty()
         && part.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
@@ -106,22 +106,31 @@ impl PackageManifest {
             .ok_or_else(|| error("E_UNBOUND", format!("package subpath '{subpath}' is not exported")))?;
         Ok((namespace, self.namespace_entry(namespace)?))
     }
-    /// Local first-slice self-package selection. Other package identities
-    /// require an authenticated dependency graph; never load them locally.
-    pub(crate) fn select_local_namespace(&self, selector: &str, name: &str) -> R<&str> {
+    /// Local self-package selection. The canonical provider name is kept
+    /// separate from the caller's lexical binding. A subpath is explicit,
+    /// and a qualified root selector may use a unique final-component match.
+    pub(crate) fn select_local_namespace(&self, selector: &str, name: &str) -> R<(&str, &str)> {
         if selector == self.name {
-            return self.namespace_entry(name);
+            if let Some((key, path)) = self.namespaces.get_key_value(name) {
+                return Ok((key.as_str(), path.as_str()));
+            }
+            if let Some((_, leaf)) = name.rsplit_once('.') {
+                let mut matches = self.namespaces.iter().filter(|(key, _)|
+                    key.rsplit('.').next() == Some(leaf));
+                if let Some((key, path)) = matches.next() {
+                    if matches.next().is_some() {
+                        return Err(error("E_DUPLICATE", "ambiguous namespace final-component match"));
+                    }
+                    return Ok((key.as_str(), path.as_str()));
+                }
+            }
+            return Err(error("E_UNBOUND", format!("namespace '{name}' is not exported")));
         }
         if let Some(subpath) = selector.strip_prefix(self.name.as_str()).and_then(|s| s.strip_prefix('/')) {
-            // Legacy unscoped identities cannot safely distinguish package/subpath.
             if !self.name.starts_with('@') {
                 return Err(error("E_UNSUPPORTED", "legacy package subpaths require explicit registry identity"));
             }
-            let (namespace, path) = self.exported_subpath(subpath)?;
-            if namespace != name {
-                return Err(error("E_UNSUPPORTED", "local namespace subpath binding must match the export name"));
-            }
-            return Ok(path);
+            return self.exported_subpath(subpath);
         }
         Err(error("E_UNSUPPORTED", "external packages require an authenticated dependency resolver"))
     }
