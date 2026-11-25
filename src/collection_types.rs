@@ -6,8 +6,9 @@
 //! an invented runtime type. Once this is wired to checked guest allocation the
 //! same type and tree structure can be consumed by the lowering stage.
 
-use crate::ast::{Expr, ExprKind, Program, Stmt, Type, UnOp};
+use crate::ast::{BindKind, Expr, ExprKind, Program, Stmt, Type, UnOp};
 use crate::diag::{Diagnostic, Pos};
+use std::collections::BTreeMap;
 
 pub const MAX_LITERAL_DEPTH: usize = 128;
 
@@ -18,6 +19,7 @@ pub enum LiteralType {
     Bool,
     Float,
     String,
+    Symbol,
     /// A polymorphic element slot in an empty collection; never a dynamic Any.
     Bottom,
     /// The built-in open Record supertype. Access requires a shape/presence guard.
@@ -25,6 +27,8 @@ pub enum LiteralType {
     /// Preserved concrete field-name -> field-type structure.
     Record(Vec<(String, LiteralType)>),
     Map(Box<LiteralType>, Box<LiteralType>),
+    /// Nominal immutable Map Entry. Never a Tuple or anonymous Record.
+    Entry(Box<LiteralType>, Box<LiteralType>),
     List(Box<LiteralType>),
     Array(Box<LiteralType>),
     /// Unparameterized Tuple accepts any arity; not the same as ().
@@ -108,6 +112,7 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
         "bool" => LiteralType::Bool,
         "float" => LiteralType::Float,
         "string" => LiteralType::String,
+        "Symbol" => LiteralType::Symbol,
         "Record" => LiteralType::OpenRecord,
         "Array" => LiteralType::Array(Box::new(LiteralType::Bottom)),
         "List" => LiteralType::List(Box::new(LiteralType::Bottom)),
@@ -126,6 +131,8 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
                 ("List", [item]) => LiteralType::List(Box::new(item.clone())),
                 ("Map", [key, value]) =>
                     LiteralType::Map(Box::new(key.clone()), Box::new(value.clone())),
+                ("Entry", [key, value]) =>
+                    LiteralType::Entry(Box::new(key.clone()), Box::new(value.clone())),
                 ("Tuple", values) if !values.is_empty() => LiteralType::Tuple(values.to_vec()),
                 _ => return Err(diag(pos, "E_TYPE_ARITY",
                     format!("unsupported collection constructor/arity in '{name}'"))),
@@ -163,7 +170,8 @@ fn compatible(actual: &LiteralType, expected: &LiteralType) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|((na,ta),(nb,tb))|
                 na == nb && compatible(ta,tb)),
         (Array(a), Array(b)) | (List(a), List(b)) => compatible(a,b),
-        (Map(ka, va), Map(kb, vb)) => compatible(ka,kb) && compatible(va,vb),
+        (Map(ka, va), Map(kb, vb)) |
+        (Entry(ka, va), Entry(kb, vb)) => compatible(ka,kb) && compatible(va,vb),
         (Tuple(_), AnyTuple) => true,
         (Tuple(a), Tuple(b)) =>
             a.len() == b.len() && a.iter().zip(b).all(|(x,y)| compatible(x,y)),
@@ -182,6 +190,8 @@ fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagno
         (List(a), List(b)) => Ok(List(Box::new(common(*a, *b, at)?))),
         (Array(a), Array(b)) => Ok(Array(Box::new(common(*a, *b, at)?))),
         (Map(ka,va), Map(kb,vb)) => Ok(Map(
+            Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
+        (Entry(ka,va), Entry(kb,vb)) => Ok(Entry(
             Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
         (Tuple(a), Tuple(b)) if a.len() == b.len() =>
             Ok(Tuple(a.into_iter().zip(b).map(|(x,y)| common(x,y,at))
@@ -203,7 +213,8 @@ fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Po
     Ok(())
 }
 
-fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
+fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
+    known_consts: &BTreeMap<String, LiteralType>)
     -> Result<TypedLiteral, Diagnostic>
 {
     use LiteralType::*;
@@ -219,6 +230,10 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
+        ExprKind::Symbol(_) => Symbol,
+        ExprKind::Var(name) => known_consts.get(name).cloned().ok_or_else(||
+            diag(e.pos, "E_UNSUPPORTED",
+                "computed Entry/Map keys require a previously checked immutable scalar const binding"))?,
         ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
@@ -229,7 +244,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             Int
         }
         ExprKind::Unary(UnOp::Plus, v) if matches!(v.kind, ExprKind::Int(_)) =>
-            inferred(v, Some(&Int), depth + 1)?.ty,
+            inferred(v, Some(&Int), depth + 1,known_consts)?.ty,
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
                 Some(Array(element)) => (true, element.as_ref().clone()),
@@ -240,7 +255,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             let mut found = Bottom;
             for item in items {
                 let child = inferred(item,
-                    if element == Bottom { None } else { Some(&element) }, depth + 1)?;
+                    if element == Bottom { None } else { Some(&element) }, depth + 1,known_consts)?;
                 found = common(found, child.ty.clone(), item.pos)?;
                 children.push(child);
             }
@@ -253,7 +268,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             let mut typed_fields = Vec::new();
             for (field, value) in fields {
-                let child = inferred(value, None, depth + 1)?;
+                let child = inferred(value, None, depth + 1,known_consts)?;
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
             }
@@ -272,6 +287,27 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             Record(typed_fields)
         }
+        ExprKind::Entry(key, value) => {
+            let (wanted_k, wanted_v) = match expected {
+                Some(Entry(k,v)) => (k.as_ref().clone(),v.as_ref().clone()),
+                None => (Bottom,Bottom),
+                _ => return Err(diag(e.pos,"E_TYPE",
+                    "Entry<K,V> cannot be coerced into a Map, Record or Tuple")),
+            };
+            let key_node = inferred(key,
+                if wanted_k == Bottom {None} else {Some(&wanted_k)}, depth+1,known_consts)?;
+            let value_node = inferred(value,
+                if wanted_v == Bottom {None} else {Some(&wanted_v)}, depth+1,known_consts)?;
+            let key_ty = if wanted_k == Bottom {key_node.ty.clone()} else {wanted_k};
+            let value_ty = if wanted_v == Bottom {value_node.ty.clone()} else {wanted_v};
+            if !matches!(key_ty, Int | Bool | String | Symbol) {
+                return Err(diag(e.pos,"E_MAP_KEY",
+                    "Entry key requires a stable scalar Hash/Eq type"));
+            }
+            children.push(key_node);
+            children.push(value_node);
+            Entry(Box::new(key_ty),Box::new(value_ty))
+        }
         ExprKind::Map(entries) => {
             let (wanted_k, wanted_v) = match expected {
                 Some(Map(k,v)) => (k.as_ref().clone(), v.as_ref().clone()),
@@ -280,8 +316,8 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let (mut keys, mut vals) = (Bottom, Bottom);
             for (key,value) in entries {
-                let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1)?;
-                let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1)?;
+                let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1,known_consts)?;
+                let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1,known_consts)?;
                 keys = common(keys,key_node.ty.clone(),key.pos)?;
                 vals = common(vals,value_node.ty.clone(),value.pos)?;
                 children.push(key_node);
@@ -289,7 +325,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             let key_ty = if wanted_k == Bottom { keys } else { wanted_k };
             let val_ty = if wanted_v == Bottom { vals } else { wanted_v };
-            if !matches!(key_ty, Int | Bool | String | Bottom) {
+            if !matches!(key_ty, Int | Bool | String | Symbol | Bottom) {
                 return Err(diag(e.pos, "E_MAP_KEY",
                     "this profile permits only scalar hashable map key types"));
             }
@@ -316,7 +352,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let mut tys = Vec::new();
             for (i,item) in items.iter().enumerate() {
-                let child = inferred(item,slots.map(|s| &s[i]),depth + 1)?;
+                let child = inferred(item,slots.map(|s| &s[i]),depth + 1,known_consts)?;
                 tys.push(child.ty.clone());
                 children.push(child);
             }
@@ -348,54 +384,82 @@ pub fn static_record_field_type(
 
 fn starts_literal(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
-        ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
+        ExprKind::Map(_) | ExprKind::Entry(_, _) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
 }
 
-/// Staged semantic preflight: checked declarations are *not* yet executable.
-/// Scalar-only statements remain the responsibility of the existing checker.
-fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
-    -> Result<(), Diagnostic>
+/// Nested scopes never leak const key identities outward or across
+/// control-flow alternatives. Only direct, immutable scalar constants are
+/// eligible for early computed-key type inference; all other names require
+/// the ordinary ownership-aware binder and fail closed in this profile.
+fn walk_scoped(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>,
+    known: &BTreeMap<String,LiteralType>) -> Result<(), Diagnostic> {
+    let mut inner = known.clone();
+    walk(body, program, out, &mut inner)
+}
+
+fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>,
+    known: &mut BTreeMap<String,LiteralType>) -> Result<(), Diagnostic>
 {
     for stmt in body {
         match stmt {
-            Stmt::Bind {name, ty,init,pos,..} => {
+            Stmt::Bind {name, ty,init,pos,kind,..} => {
                 let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
                 if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
-                    LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::OpenRecord |
-                    LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
+                    LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::Entry(_,_) |
+                    LiteralType::OpenRecord | LiteralType::Record(_) |
+                    LiteralType::Tuple(_) | LiteralType::AnyTuple))
                     || starts_literal(init)
                 {
-                    let value = inferred(init,wanted.as_ref(),0)?;
+                    let value = inferred(init,wanted.as_ref(),0,known)?;
                     if ty.is_none() && (matches!(&init.kind, ExprKind::EmptyBraces) ||
                         matches!(&init.kind, ExprKind::Array(v) if v.is_empty())) {
                         return Err(diag(init.pos,"E_INFER",
                             "empty collection without type annotation is ambiguous"));
                     }
-                    out.push(TypedBinding {name:name.clone(),declared:wanted,value});
+                    out.push(TypedBinding {name:name.clone(),declared:wanted.clone(),value});
+                }
+                let is_direct_scalar = matches!(&init.kind,
+                    ExprKind::Int(Some(_)) | ExprKind::Bool(_) | ExprKind::Float(_) |
+                    ExprKind::Str(_) | ExprKind::Symbol(_));
+                let accepted = if *kind == BindKind::Const && is_direct_scalar {
+                    wanted.as_ref().filter(|t| matches!(t,
+                        LiteralType::Int | LiteralType::Bool | LiteralType::Float |
+                        LiteralType::String | LiteralType::Symbol)).cloned()
+                } else {
+                    None
+                };
+                // Do not grant inferred type based on annotation alone: verify
+                // the literal expression truly has that declared scalar type.
+                if let Some(t) = accepted {
+                    inferred(init,Some(&t),0,known)?;
+                    known.insert(name.clone(),t);
+                } else {
+                    known.remove(name);
                 }
             }
             Stmt::Block(inner) | Stmt::While {body:inner,..} |
             Stmt::Loop {body:inner,..} | Stmt::StateWrite {body:inner,..} |
-            Stmt::ForIn {body:inner,..} => walk(inner,program,out)?,
+            Stmt::ForIn {body:inner,..} => walk_scoped(inner,program,out,known)?,
             Stmt::If {arms,otherwise,..} => {
-                for (_,inner) in arms { walk(inner,program,out)?; }
-                if let Some(inner) = otherwise { walk(inner,program,out)?; }
+                for (_,inner) in arms { walk_scoped(inner,program,out,known)?; }
+                if let Some(inner) = otherwise { walk_scoped(inner,program,out,known)?; }
             }
             Stmt::For {init,update,body,..} => {
-                if let Some(s) = init { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
-                walk(body,program,out)?;
-                if let Some(s) = update { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
+                let mut local = known.clone();
+                if let Some(s) = init { walk(std::slice::from_ref(s.as_ref()),program,out,&mut local)?; }
+                walk_scoped(body,program,out,&local)?;
+                if let Some(s) = update { walk(std::slice::from_ref(s.as_ref()),program,out,&mut local)?; }
             }
             Stmt::Match {arms,..} => {
-                for arm in arms { walk(&arm.body,program,out)?; }
+                for arm in arms { walk_scoped(&arm.body,program,out,known)?; }
             }
             Stmt::Try {body,catch,finally,..} => {
-                walk(body,program,out)?;
-                if let Some((_,inner)) = catch { walk(inner,program,out)?; }
-                if let Some(inner) = finally { walk(inner,program,out)?; }
+                walk_scoped(body,program,out,known)?;
+                if let Some((_,inner)) = catch { walk_scoped(inner,program,out,known)?; }
+                if let Some(inner) = finally { walk_scoped(inner,program,out,known)?; }
             }
             Stmt::Defer {body,..} | Stmt::Recover {body,..} =>
-                walk(body,program,out)?,
+                walk_scoped(body,program,out,known)?,
             _ => {}
         }
     }
@@ -407,7 +471,7 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
 pub fn analyze(program: &Program) -> Result<Vec<TypedBinding>, Diagnostic> {
     let mut out = Vec::new();
     for func in &program.funcs {
-        walk(&func.body,program,&mut out)?;
+        walk(&func.body,program,&mut out,&mut BTreeMap::new())?;
     }
     Ok(out)
 }
