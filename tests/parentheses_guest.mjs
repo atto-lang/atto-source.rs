@@ -32,7 +32,18 @@ cases.push(
   ['fnc fixtures(): Tuple<int,int> { return (8,34); }\n' + main('let (a,b) = ((1 <<< 3),34); return a+b;'), 42n],
   [main('let (a,b) = (20,22,); return a+b;'), 42n],
 );
+cases.push(
+  [main('val p: Pair<int> = Pair.of("name",42); return p.second;'), 42n],
+  [main('val p: Pair<string,int> = Pair.of("name",42); return p.second;'), 42n],
+  [main('val p = Pair.of("first-name",42); return p.second;'), 42n],
+  [main('val e: Entry<int,int> = Entry.of(42,5); return e.key;'), 42n],
+);
 const malformed = [
+  'val p = Pair.of(42,5); return 0;',
+  'val p = Pair.of(true,5); return 0;',
+  'val p: Pair<int,int> = Pair(42,5); return 0;',
+  'val p: Pair<int> = Pair.of(); return 0;',
+  'val p: Pair<int> = Pair.of(42,5); return 0;',
   'return (5,,6);', 'return (5 + 6];', 'return (5 + );',
   'return (a=5,6);', 'return (5,a=6);', 'return (5,6.true);',
   'return (5 + (6);',
