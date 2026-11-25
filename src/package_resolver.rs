@@ -40,59 +40,183 @@ fn version_ok(s: &str) -> bool {
         && s.as_bytes().first().is_some_and(u8::is_ascii_digit)
 }
 
-/// Strict TOML subset: one [package] table with name/version string keys.
-/// Unknown or duplicate keys, other tables, escaped strings and interpolation
-/// are intentionally unsupported rather than silently ignored.
-pub fn parse_package_identity(manifest: &str) -> R<String> {
-    if manifest.len() > MAX_MANIFEST || manifest.contains('\0') {
-        return Err(error("E_MANIFEST", "manifest exceeds budget or contains NUL"));
+/// Parsed manifest metadata; names are logical exports, not filesystem discovery.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageManifest {
+    pub name: String,
+    pub version: String,
+    namespaces: BTreeMap<String, String>,
+    exports: BTreeMap<String, String>,
+}
+
+fn package_name_ok(name: &str) -> bool {
+    if let Some(scoped) = name.strip_prefix('@') {
+        let parts: Vec<_> = scoped.split('/').collect();
+        parts.len() == 3 && parts.iter().all(|p| package_segment(p))
+    } else { package_segment(name) }
+}
+
+pub(crate) fn scoped_identity_ok(identity: &str) -> bool {
+    identity.len() <= 128 && identity.rsplit_once('@').is_some_and(|(name, version)|
+        name.starts_with('@') && package_name_ok(name) && version_ok(version))
+}
+
+pub(crate) fn namespace_name_ok(name: &str) -> bool {
+    name.len() <= 64 && name.split('.').count() <= 8 && name.split('.').all(|part|
+        !part.is_empty()
+        && part.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && !crate::parser::is_reserved(part)
+        && !matches!(part, "pkg" | "enum" | "use" | "declare" | "mtd")
+        && !part.starts_with("__atto_"))
+}
+
+fn namespace_entry(value: &str) -> R<String> {
+    // A directory spelling is exactly one explicit entrypoint, never a scan.
+    let path = if value.ends_with('/') { format!("{value}namespace.atto") } else { value.to_string() };
+    if !linker::path_ok(&path)
+        || path.split('/').any(|part| part.starts_with('.') || part.starts_with("__atto_"))
+        || matches!(path.split('/').next(), Some("core" | "alloc" | "std")) {
+        return Err(error("E_MANIFEST", "namespace entry must be a canonical package-owned .atto path"));
     }
-    let mut in_package = false;
+    Ok(path)
+}
+
+fn manifest_string(value: &str) -> R<&str> {
+    let value = value.trim().strip_prefix('"')
+        .ok_or_else(|| error("E_MANIFEST", "manifest values must be quoted ASCII strings"))?;
+    let end = value.find('"').ok_or_else(|| error("E_MANIFEST", "unterminated manifest string"))?;
+    let (raw, suffix) = value.split_at(end);
+    if !raw.bytes().all(|b| (b' '..=b'~').contains(&b) && b != b'\\')
+        || (!suffix[1..].trim().is_empty() && !suffix[1..].trim().starts_with('#')) {
+        return Err(error("E_MANIFEST", "unsupported manifest string or inline content"));
+    }
+    Ok(raw)
+}
+
+impl PackageManifest {
+    pub fn identity(&self) -> String { format!("{}@{}", self.name, self.version) }
+    /// Exact export lookup; no basename, folder, or case-fold fallback.
+    pub fn namespace_entry(&self, name: &str) -> R<&str> {
+        self.namespaces.get(name).map(String::as_str)
+            .ok_or_else(|| error("E_UNBOUND", format!("namespace '{name}' is not exported")))
+    }
+    pub fn exported_subpath(&self, subpath: &str) -> R<(&str, &str)> {
+        let namespace = self.exports.get(subpath)
+            .ok_or_else(|| error("E_UNBOUND", format!("package subpath '{subpath}' is not exported")))?;
+        Ok((namespace, self.namespace_entry(namespace)?))
+    }
+    /// Local self-package selection. The canonical provider name is kept
+    /// separate from the caller's lexical binding. A subpath is explicit,
+    /// and a qualified root selector may use a unique final-component match.
+    pub(crate) fn select_local_namespace(&self, selector: &str, name: &str) -> R<(&str, &str)> {
+        if selector == self.name {
+            if let Some((key, path)) = self.namespaces.get_key_value(name) {
+                return Ok((key.as_str(), path.as_str()));
+            }
+            if let Some((_, leaf)) = name.rsplit_once('.') {
+                let mut matches = self.namespaces.iter().filter(|(key, _)|
+                    key.rsplit('.').next() == Some(leaf));
+                if let Some((key, path)) = matches.next() {
+                    if matches.next().is_some() {
+                        return Err(error("E_DUPLICATE", "ambiguous namespace final-component match"));
+                    }
+                    return Ok((key.as_str(), path.as_str()));
+                }
+            }
+            return Err(error("E_UNBOUND", format!("namespace '{name}' is not exported")));
+        }
+        if let Some(subpath) = selector.strip_prefix(self.name.as_str()).and_then(|s| s.strip_prefix('/')) {
+            if !self.name.starts_with('@') {
+                return Err(error("E_UNSUPPORTED", "legacy package subpaths require explicit registry identity"));
+            }
+            return self.exported_subpath(subpath);
+        }
+        Err(error("E_UNSUPPORTED", "external packages require an authenticated dependency resolver"))
+    }
+    fn check_provider(&self, path: &str, source: &str) -> R<()> {
+        let Some((name, _)) = self.namespaces.iter().find(|(_, entry)| entry.as_str() == path) else { return Ok(()); };
+        let declared = linker::declared_namespace(source, path)?;
+        if declared.as_deref() != Some(name.as_str()) {
+            return Err(error("E_MANIFEST", format!("namespace '{name}' provider '{path}' has a different or absent namespace header")));
+        }
+        Ok(())
+    }
+}
+
+/// Strict bounded TOML subset, retaining existing [package] manifests.
+/// Keys are bare identifiers or quoted literal keys; no escape expansion,
+/// dotted TOML keys, arrays, inline tables, duplicate tables or unknown fields.
+pub fn parse_package_manifest(manifest: &str) -> R<PackageManifest> {
+    if manifest.len() > MAX_MANIFEST || !manifest.bytes().all(|b| matches!(b, 9 | 13 | 10 | b' '..=b'~'))
+        || manifest.split(char::from(10)).any(|line| line.strip_suffix(char::from(13)).unwrap_or(line).contains(char::from(13)))
+        || manifest.ends_with(char::from(13)) {
+        return Err(error("E_MANIFEST", "manifest exceeds budget or contains unsupported bytes"));
+    }
+    let mut section = "";
+    let mut tables = BTreeSet::new();
     let (mut name, mut version): (Option<String>, Option<String>) = (None, None);
+    let mut namespaces = BTreeMap::new();
+    let mut exports = BTreeMap::new();
     for (i, raw) in manifest.lines().enumerate() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.starts_with('[') {
+            section = match line {
+                "[package]" => "package", "[namespaces]" => "namespaces", "[exports]" => "exports",
+                _ => return Err(error("E_MANIFEST", format!("unsupported table at line {}", i + 1))),
+            };
+            if !tables.insert(section) { return Err(error("E_MANIFEST", "duplicate manifest table")); }
             continue;
         }
-        if line == "[package]" {
-            if in_package || name.is_some() || version.is_some() {
-                return Err(error("E_MANIFEST", format!("duplicate package table at line {}", i + 1)));
-            }
-            in_package = true;
-            continue;
-        }
-        if line.starts_with('[') || !in_package {
-            return Err(error("E_MANIFEST", format!("unsupported manifest table at line {}", i + 1)));
-        }
-        let (key, value) = line
-            .split_once('=')
+        let (key, value) = line.split_once('=')
             .ok_or_else(|| error("E_MANIFEST", format!("expected key=value at line {}", i + 1)))?;
         let key = key.trim();
-        let value = value.trim();
-        let value = value
-            .strip_prefix('"')
-            .ok_or_else(|| error("E_MANIFEST", "package values must be quoted ASCII strings"))?;
-        let end = value.find('"').ok_or_else(|| error("E_MANIFEST", "unterminated package string"))?;
-        let (raw_value, suffix) = value.split_at(end);
-        if raw_value.contains('\\') || !raw_value.is_ascii() || (!suffix[1..].trim().is_empty() && !suffix[1..].trim().starts_with('#')) {
-            return Err(error("E_MANIFEST", "unsupported package value or inline content"));
-        }
-        match key {
-            "name" if name.is_none() => name = Some(raw_value.to_string()),
-            "version" if version.is_none() => version = Some(raw_value.to_string()),
-            _ => return Err(error("E_MANIFEST", "unknown or duplicate package key")),
+        let value = manifest_string(value)?;
+        let quoted = key.starts_with('"');
+        let key = if quoted {
+            key.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+                .ok_or_else(|| error("E_MANIFEST", "malformed quoted manifest key"))?
+        } else { key };
+        match section {
+            "package" => match key {
+                "name" if name.is_none() => name = Some(value.to_string()),
+                "version" if version.is_none() => version = Some(value.to_string()),
+                _ => return Err(error("E_MANIFEST", "unknown or duplicate package key")),
+            },
+            "namespaces" => {
+                if !namespace_name_ok(key) || (!quoted && key.contains('.')) {
+                    return Err(error("E_MANIFEST", "invalid namespace export name; quote dotted keys"));
+                }
+                let path = namespace_entry(value)?;
+                if namespaces.len() >= MAX_FILES || namespaces.values().any(|prior| prior == &path)
+                    || namespaces.insert(key.to_string(), path).is_some() {
+                    return Err(error("E_MANIFEST", "duplicate namespace name, provider path or excessive namespace exports"));
+                }
+            },
+            "exports" => {
+                if !quoted || key.len() > 256 || key.split('/').count() > 16
+                    || !key.split('/').all(package_segment) || !namespace_name_ok(value)
+                    || exports.len() >= MAX_FILES || exports.insert(key.to_string(), value.to_string()).is_some() {
+                    return Err(error("E_MANIFEST", "invalid, duplicate or excessive public subpath"));
+                }
+            },
+            _ => return Err(error("E_MANIFEST", "manifest key outside supported table")),
         }
     }
     let name = name.ok_or_else(|| error("E_MANIFEST", "missing [package].name"))?;
     let version = version.ok_or_else(|| error("E_MANIFEST", "missing [package].version"))?;
-    if !package_segment(&name) || !version_ok(&version) {
-        return Err(error("E_MANIFEST", "invalid package name or version"));
+    if !package_name_ok(&name) || !version_ok(&version) || name.len() + version.len() + 1 > 128 {
+        return Err(error("E_MANIFEST", "invalid package name, version or identity length"));
     }
-    let identity = format!("{name}@{version}");
-    if identity.len() > 128 {
-        return Err(error("E_MANIFEST", "canonical package identity exceeds budget"));
+    if exports.values().any(|name| !namespaces.contains_key(name)) {
+        return Err(error("E_MANIFEST", "public subpath must reference a declared namespace"));
     }
-    Ok(identity)
+    Ok(PackageManifest { name, version, namespaces, exports })
+}
+
+pub fn parse_package_identity(manifest: &str) -> R<String> {
+    Ok(parse_package_manifest(manifest)?.identity())
 }
 
 /// Verify every physical path component and containment, not just string
@@ -159,7 +283,8 @@ fn compile_package_impl(root: &Path, entry: &str, pins: Option<&LockedSources>) 
             return Err(error("E_LOCK_HASH", "package manifest does not match authenticated lock digest"));
         }
     }
-    let identity = parse_package_identity(&manifest)?;
+    let metadata = parse_package_manifest(&manifest)?;
+    let identity = metadata.identity();
     let mut pending = vec![entry.to_string()];
     let mut loaded = BTreeMap::<String, String>::new();
     let mut seen = BTreeSet::new();
@@ -199,6 +324,8 @@ fn compile_package_impl(root: &Path, entry: &str, pins: Option<&LockedSources>) 
                 ));
             }
         }
+        let src = linker::resolve_manifest_imports(&src, &relative, &metadata)?;
+        metadata.check_provider(&relative, &src)?;
         for child in linker::import_paths(&src, &relative)? {
             // Compiler-embedded allocation libraries never live in the
             // caller's writable package tree or authenticated lockfile.
@@ -421,7 +548,8 @@ pub fn compile_locked_snapshot(
     if crate::sha256::hex_digest(manifest.as_bytes()) != pins.manifest_sha256 {
         return Err(error("E_LOCK_HASH", "snapshot manifest content mismatch"));
     }
-    let identity = parse_package_identity(manifest)?;
+    let metadata = parse_package_manifest(manifest)?;
+    let identity = metadata.identity();
     if inputs.is_empty() || inputs.len() > MAX_FILES || inputs.len() != pins.files.len() {
         return Err(error("E_LOCK_HASH", "snapshot file count differs from trusted lock"));
     }
@@ -443,7 +571,9 @@ pub fn compile_locked_snapshot(
                 format!("snapshot source content mismatch for '{}'", input.path),
             ));
         }
-        if sources.insert(input.path, input.source).is_some() {
+        let source = linker::resolve_manifest_imports(input.source, input.path, &metadata)?;
+        metadata.check_provider(input.path, &source)?;
+        if sources.insert(input.path, source).is_some() {
             return Err(error("E_DUPLICATE", "duplicate snapshot source path"));
         }
     }
