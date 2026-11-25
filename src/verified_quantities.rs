@@ -2,15 +2,15 @@
 //! No imports, runtime conversions, affine values or general quantity ABI.
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
-use crate::units::Ratio;
+use crate::quantity_scale::{ConversionError, Scale};
 use std::collections::{BTreeMap, BTreeSet};
 
 type R<T> = Result<T, Diagnostic>;
 type Powers = BTreeMap<String, i32>;
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Unit { powers: Powers, scale: Ratio }
+struct Unit { powers: Powers, scale: Scale }
 impl Unit {
-    fn scalar() -> Self { Self { powers: BTreeMap::new(), scale: Ratio::ONE } }
+    fn scalar() -> Self { Self { powers: BTreeMap::new(), scale: Scale::ONE } }
     fn combine(&self, other: &Self, divide: bool, pos: Pos) -> R<Self> {
         let mut powers = self.powers.clone();
         for (name, exponent) in &other.powers {
@@ -20,7 +20,7 @@ impl Unit {
         }
         if powers.len() > 32 { return Err(error(pos, "E_UNIT_LIMIT", "more than 32 dimensions")); }
         let scale = self.scale.mul(if divide { other.scale.inv() } else { other.scale })
-            .map_err(|_| error(pos, "E_UNIT_LIMIT", "Rust preview scale exceeds 128 bits"))?;
+            .map_err(|_| error(pos, "E_UNIT_LIMIT", "Rust preview scale exceeds 256 bits"))?;
         Ok(Self { powers, scale })
     }
 }
@@ -32,14 +32,10 @@ fn checked(value: Option<i64>, pos: Pos) -> R<i64> {
 }
 fn convert(value: Value, unit: Unit, pos: Pos) -> R<Value> {
     if value.unit.powers != unit.powers { return Err(error(pos, "E_UNIT_DIMENSION", "conversion dimensions differ")); }
-    let factor = value.unit.scale.mul(unit.scale.inv())
-        .map_err(|_| error(pos, "E_UNIT_LIMIT", "Rust preview conversion ratio exceeds 128 bits"))?;
-    let magnitude = u128::from(value.number.unsigned_abs());
-    if magnitude % factor.den != 0 { return Err(error(pos, "E_UNIT_INEXACT", "conversion is not integral")); }
-    let range = || error(pos, "E_UNIT_RANGE", "conversion exceeds signed i64");
-    let result = (magnitude / factor.den).checked_mul(factor.num).ok_or_else(range)?;
-    let number = if value.number < 0 && result == (1u128 << 63) { i64::MIN }
-        else { let n = i64::try_from(result).map_err(|_| range())?; if value.number < 0 { -n } else { n } };
+    let number = value.unit.scale.convert(value.number, unit.scale).map_err(|failure| match failure {
+        ConversionError::Inexact => error(pos, "E_UNIT_INEXACT", "conversion is not integral"),
+        ConversionError::Range => error(pos, "E_UNIT_RANGE", "conversion exceeds signed i64"),
+    })?;
     Ok(Value { unit, number })
 }
 
@@ -96,9 +92,12 @@ impl Parser<'_> {
     fn lookup(&self, name: &str) -> R<Unit> {
         self.units.get(name).cloned().ok_or_else(|| self.err("E_UNIT_NAME", "unknown or forward unit name"))
     }
-    fn factor(&mut self) -> R<Ratio> {
+    fn factor(&mut self) -> R<Scale> {
         match self.token().tok {
-            Tok::Int(Some(n)) if n > 0 => { self.at += 1; Ratio::new(u128::from(n),1) }
+            Tok::Int(Some(n)) if n > 0 && self.decimal_end(self.token().pos).is_some() => {
+                self.at += 1;
+                Scale::positive(n).ok_or_else(|| self.err("E_UNIT_SCALE", "expected positive decimal scale"))
+            }
             _ => Err(self.err("E_UNIT_SCALE", "expected positive signed-i64 scale")),
         }
     }
@@ -126,16 +125,16 @@ impl Parser<'_> {
             } else {
                 let base = self.name()?;
                 let factor = if self.take(Tok::Star) { self.factor()? }
-                    else if self.take(Tok::Slash) { self.factor()?.inv() } else { Ratio::ONE };
+                    else if self.take(Tok::Slash) { self.factor()?.inv() } else { Scale::ONE };
                 (base, factor)
             };
             let base = self.lookup(&base)?;
             if base.powers != powers { return Err(self.err("E_UNIT_DIMENSION", "derived unit has different dimension")); }
-            let scale = base.scale.mul(factor).map_err(|_| self.err("E_UNIT_LIMIT", "Rust preview scale exceeds 128 bits"))?;
+            let scale = base.scale.mul(factor).map_err(|_| self.err("E_UNIT_LIMIT", "Rust preview scale exceeds 256 bits"))?;
             Unit { powers, scale }
         } else {
             if !self.bases.insert(dim) { return Err(self.err("E_UNIT_DUPLICATE", "duplicate base unit")); }
-            Unit { powers, scale: Ratio::ONE }
+            Unit { powers, scale: Scale::ONE }
         };
         self.expect(Tok::Semi)?;
         self.units.insert(name, unit);
@@ -145,7 +144,11 @@ impl Parser<'_> {
         let line = self.lines.get(pos.line.checked_sub(1)? as usize)?;
         let start = pos.col.checked_sub(1)? as usize;
         let digits = line.get(start..)?.iter().take_while(|c| c.is_ascii_digit() || **c == '_').count();
-        if digits == 0 { None } else { Some(pos.col + digits as u32) }
+        if digits == 0 || line.get(start + digits).is_some_and(|c| c.is_alphabetic()) {
+            None
+        } else {
+            Some(pos.col + digits as u32)
+        }
     }
     fn atom(&mut self, depth: usize) -> R<Value> {
         if depth > 64 || self.budget == 0 { return Err(self.err("E_UNIT_LIMIT", "quantity expression budget")); }
