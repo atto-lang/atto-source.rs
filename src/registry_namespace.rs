@@ -1,4 +1,4 @@
-//! Frozen registry namespace resolver, not acquisition or guest codegen.
+//! Frozen registry namespace resolver and bounded direct-function guest linker.
 //! Explicitly bounded profile: one source file per exported directory,
 //! direct functions only, declared namespace equals manifest namespace key.
 //! No source is loaded by a manifest path; inputs are immutable pinned bytes.
@@ -218,7 +218,7 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
 
 
 /// Compile the bounded frozen-registry direct-function guest profile.
-/// Only whole registry package imports, typed namespace selections and
+/// Only whole registry package imports, typed function/namespace selections and
 /// source aliases are admitted. All source bytes are owned by verified
 /// snapshots. No filesystem/network lookup, implicit fallback, or runtime
 /// namespace objects are possible. The ordinary compiler still handles
@@ -354,6 +354,21 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
             // no ambient root/other-package authority is admitted.
             if funcs.iter().any(|t| t.tok==Tok::Dot || word(Some(t),"main")) {
                 return Err(err("E_UNSUPPORTED","registry dependency must be a closed direct-function unit"));
+            }
+            // Reject free calls, callable-value capture and shadowing of
+            // namespace-owned routines before converting them into qualified
+            // calls. Only closed direct calls survive this deliberately
+            // conservative first executable lane.
+            for (j,t) in funcs.iter().enumerate() {
+                if heads.contains(&j) { continue; }
+                if let Tok::Ident(s)=&t.tok {
+                    let direct=funcs.get(j+1).is_some_and(|n|n.tok==Tok::LParen);
+                    if (names.contains_key(s) && !direct)
+                        || (direct && !names.contains_key(s)
+                            && !matches!(s.as_str(),"if"|"while"|"match"|"for")) {
+                        return Err(Diagnostic::new(t.pos,"E_UNSUPPORTED","registry dependency has a free call or non-call routine reference"));
+                    }
+                }
             }
             let mut isolated=funcs[..funcs.len()-1].to_vec();
             isolated.extend(lexer::lex("pub fnc main(): int { return 0; }")?);
