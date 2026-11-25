@@ -37,6 +37,12 @@ fn error(pos: Pos, code: &'static str, message: &str) -> Diagnostic { Diagnostic
 fn checked(value: Option<i64>) -> Outcome {
     value.ok_or(ArithmeticFailure::Overflow)
 }
+fn attach(source: &Unit, target: Unit, pos: Pos) -> R<Unit> {
+    if *source != Unit::scalar() {
+        return Err(error(pos, "E_UNIT_ATTACHMENT", "unit attachment requires a dimensionless scale-one number; use to_unit for conversion"));
+    }
+    Ok(target)
+}
 fn convert(value: Value, unit: Unit, pos: Pos) -> R<Value> {
     if value.unit.powers != unit.powers { return Err(error(pos, "E_UNIT_DIMENSION", "conversion dimensions differ")); }
     let number = match value.number {
@@ -105,6 +111,21 @@ impl Parser<'_> {
     fn lookup(&self, name: &str) -> R<Unit> {
         self.units.get(name).cloned().ok_or_else(|| self.err("E_UNIT_NAME", "unknown or forward unit name"))
     }
+    // The existing ColonColon token stays unchanged. Only consume it in
+    // this quantity expression context; ordinary callable headers are untouched.
+    fn explicit_unit(&mut self) -> R<Option<Unit>> {
+        if !self.take(Tok::ColonColon) { return Ok(None); }
+        self.expect(Tok::Lt)?;
+        let name = self.name()?;
+        self.expect(Tok::Gt)?;
+        self.lookup(&name).map(Some)
+    }
+    fn attach_postfix(&mut self, mut value: Value, pos: Pos) -> R<Value> {
+        while let Some(unit) = self.explicit_unit()? {
+            value.unit = attach(&value.unit, unit, pos)?;
+        }
+        Ok(value)
+    }
     fn factor(&mut self) -> R<Scale> {
         match self.token().tok {
             Tok::Int(Some(n)) if n > 0 && self.decimal_end(self.token().pos).is_some() => {
@@ -172,7 +193,7 @@ impl Parser<'_> {
                 let mut v = self.literal(true)?;
                 if self.token().tok == Tok::Dot { return Err(self.err("E_UNSUPPORTED", "signed minimum postfix preview not supported")); }
                 v.number = Ok(i64::MIN);
-                return Ok(v);
+                return self.attach_postfix(v, pos);
             }
             let mut v = self.atom(depth + 1)?;
             v.number = v.number.and_then(|n| checked(n.checked_neg()));
@@ -193,7 +214,7 @@ impl Parser<'_> {
             self.expect(Tok::LParen)?; self.expect(Tok::RParen)?;
             v = convert(v,self.lookup(&name)?,pos)?;
         }
-        Ok(v)
+        self.attach_postfix(v, pos)
     }
     fn literal(&mut self, min: bool) -> R<Value> {
         let pos = self.token().pos;
@@ -253,6 +274,13 @@ impl Parser<'_> {
                 _ => unreachable!(),
             }));
             left = Value { unit, number };
+        }
+        // Like checked casts, 'as' has lower precedence than arithmetic.
+        // Parenthesize attachment when it is an operand of another operation.
+        if precedence == 0 && self.word("as") {
+            let pos = self.token().pos;
+            let name = self.name()?;
+            left.unit = attach(&left.unit, self.lookup(&name)?, pos)?;
         }
         Ok(left)
     }
