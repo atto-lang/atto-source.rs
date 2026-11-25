@@ -1,0 +1,5 @@
+// expect-error: E_EFFECT_TYPE
+@throws(Error)
+fnc callable(): int { return 42; }
+@raises(Error)
+pub fnc main(): int { return callable(); }

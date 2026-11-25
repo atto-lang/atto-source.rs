@@ -44,7 +44,9 @@ fn expr(value: &TE, effects: &[u8]) -> u8 {
 }
 
 fn stmts(body: &[TStmt], effects: &[u8]) -> u8 {
-    body.iter().fold(0, |mask, stmt| mask | match stmt {
+    let mut mask = 0;
+    for stmt in body {
+        mask |= match stmt {
         TStmt::Set(_, v) | TStmt::GlobalSet(_, v) |
         TStmt::Expr(v) | TStmt::Return(Some(v)) => expr(v, effects),
         TStmt::Throw(value) => THROW | expr(value, effects),
@@ -62,7 +64,20 @@ fn stmts(body: &[TStmt], effects: &[u8]) -> u8 {
         TStmt::Block(body) => stmts(body, effects),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue |
         TStmt::Unreachable => 0,
-    })
+        };
+        // Do not attribute effects from unreachable statements to a caller.
+        // The typed checker already uses this definite-exit predicate when
+        // deciding whether non-void functions return on every path. Include
+        // break/continue, which terminate their current statement sequence.
+        // This is structural reachability, not constant-folding: uncertain
+        // branches and loop conditions remain conservatively effectful.
+        if super::returns(std::slice::from_ref(stmt))
+            || matches!(stmt, TStmt::Break | TStmt::Continue)
+        {
+            break;
+        }
+    }
+    mask
 }
 
 /// Map source declarations to their exact typed function indices. The
@@ -87,6 +102,7 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
             bounds[i] = Some((&m.failure_effects, m.pos));
         }
     }
+    let mut receiver_indices = Vec::<(usize, crate::diag::Pos, &str)>::new();
     for a in &program.actors {
         for m in &a.methods {
             let label = format!("{}.{}", a.name, m.name);
@@ -95,6 +111,15 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
                     format!("typed actor method '{}' missing its effect-checking body", label))
             })?;
             bounds[i] = Some((&m.failure_effects, m.pos));
+        }
+        if let Some(r) = &a.receive {
+            let label = format!("{}.receive", a.name);
+            let i = typed_index.get(label.as_str()).copied().ok_or_else(|| {
+                Diagnostic::new(r.pos, "E_EFFECT_TYPE",
+                    format!("typed receive handler '{}' missing its effect-checking body", label))
+            })?;
+            bounds[i] = Some((&r.failure_effects, r.pos));
+            receiver_indices.push((i, r.pos, a.name.as_str()));
         }
     }
 
@@ -131,6 +156,18 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
                     funcs[i].name, name)));
         }
     }
+    // Type errors must take precedence over runtime-admission errors:
+    // otherwise a bad method's declared bound could be hidden behind an
+    // E_UNSUPPORTED receive gate.
+    // A receive handler may not carry even a potential escaping failure
+    // through this runtime: no verified supervisor priority CONTROL path
+    // or exception-safe teardown is implemented here.
+    for (i, pos, actor) in receiver_indices {
+        if effects[i] != 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("actor '{}.receive' has escaping failure effects; supervisor CONTROL/error transport is not implemented for this browser target", actor)));
+        }
+    }
     Ok(())
 }
 
@@ -142,5 +179,25 @@ mod tests {
     fn effect_bits_remain_independent() {
         assert_eq!(THROW | RAISE | PANIC, 7);
         assert_eq!((RAISE | PANIC) & !THROW, RAISE | PANIC);
+    }
+
+    #[test]
+    fn exhaustive_three_bit_effect_algebra_never_hides_raise_or_panic() {
+        // All 8 summaries and all 64 possible pairwise call compositions.
+        // This verifies the finite transfer algebra, not whole-program soundness.
+        for a in 0..=ALL {
+            assert_eq!(a & !THROW, a & (RAISE | PANIC));
+            assert_eq!((a & !THROW) & RAISE, a & RAISE);
+            assert_eq!((a & !THROW) & PANIC, a & PANIC);
+            for b in 0..=ALL {
+                let composition = a | b;
+                let trapped = composition & !THROW;
+                assert_eq!(trapped, (a & !THROW) | (b & !THROW));
+                assert_eq!(trapped & RAISE, composition & RAISE);
+                assert_eq!(trapped & PANIC, composition & PANIC);
+                assert_eq!(composition | a, composition);
+                assert_eq!(composition | b, composition);
+            }
+        }
     }
 }

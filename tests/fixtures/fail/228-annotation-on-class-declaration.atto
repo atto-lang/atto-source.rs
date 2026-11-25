@@ -1,0 +1,6 @@
+// expect-error: E_EFFECT_TYPE
+@throws(Error)
+define class Foo as
+    final int x: 1;
+end
+pub fnc main(): int {return 0;}

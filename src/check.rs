@@ -729,11 +729,17 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for (name, pos, kind) in decl_names {
         if matches!(
             name,
-            "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "int" | "bool" | "boolean"
+            "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" |
+            "Error" | "Throwable" | "Raisable" | "Panicable" |
+            "int" | "bool" | "boolean"
         ) {
             return Err(Diagnostic::new(
                 pos,
-                "E_DUPLICATE",
+                if matches!(name, "Error" | "Throwable" | "Raisable" | "Panicable") {
+                    "E_RESERVED"
+                } else {
+                    "E_DUPLICATE"
+                },
                 format!("'{name}' is a builtin and cannot be redefined"),
             ));
         }
@@ -762,10 +768,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None") {
+        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" |
+            "Some" | "None" | "Error" | "Throwable" | "Raisable" | "Panicable") {
             return Err(Diagnostic::new(
                 f.pos,
-                "E_DUPLICATE",
+                if matches!(f.name.as_str(), "Error" | "Throwable" | "Raisable" | "Panicable") {
+                    "E_RESERVED"
+                } else {
+                    "E_DUPLICATE"
+                },
                 format!("'{}' is a builtin and cannot be redefined", f.name),
             ));
         }

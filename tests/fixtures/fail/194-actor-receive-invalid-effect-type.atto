@@ -1,0 +1,7 @@
+// expect-error: E_EFFECT_TYPE
+define actor Worker as
+    receive(ActorMail<int> m): void raises(string) {
+        return;
+    }
+end
+pub fnc main(): int { return 0; }
