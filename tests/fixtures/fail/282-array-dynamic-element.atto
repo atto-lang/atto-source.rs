@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+// java: target-only
+pub fnc main(): int { val n: int = 1; val xs = [n,2]; return 0; }

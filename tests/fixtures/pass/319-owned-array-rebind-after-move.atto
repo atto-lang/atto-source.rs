@@ -1,0 +1,8 @@
+// expect-exit: 6
+// java: target-only
+define class Particle as
+    mut int n = 0;
+    constructor(int v) { self.n = v; }
+    pub value(): int { return self.n; }
+end
+pub fnc main(): int { let xs = [new Particle(1),new Particle(2)]; let total=0; for (Particle p : xs) { total=total+p.value(); } xs = [new Particle(3)]; for (Particle p of xs) { total=total+p.value(); } return total; }

@@ -1,0 +1,3 @@
+// expect-error: E_INTEGER_RANGE
+// java: target-only
+pub fnc main(): int { val xs = [9223372036854775808]; return 0; }
