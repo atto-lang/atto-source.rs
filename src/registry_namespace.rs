@@ -1002,27 +1002,46 @@ impl FrozenGenericClass {
             return Err(err("E_NEWABLE","generic class requires exact leading public zero-arg factory"));
         }
         let members=tail[factory.len()..].to_vec();
+        let mut braces=0usize;
+        let mut parens=0usize;
+        let mut signature=false;
         for (i,t) in members.iter().enumerate() {
             if let Tok::Ident(n)=&t.tok {
                 if n.starts_with("__atto_") || n==&class_name || matches!(n.as_str(),"Newable"|"new"|"constructor"|"define"|"declare"|"import"|"use"|"external"|"pkg"|"main") {
                     return Err(err("E_UNSUPPORTED","generic class has unsupported member or ambient identifier"));
                 }
+                // Only an explicit top-level fnc header can establish a
+                // generic substitution site. Body calls, field initializers
+                // and nested parentheses must not manufacture type authority.
+                if braces==0 && parens==0 && n=="fnc" {signature=true;}
                 if n==&parameter {
                     let before=i.checked_sub(1).and_then(|j|members.get(j));
                     let before2=i.checked_sub(2).and_then(|j|members.get(j));
                     let after=members.get(i+1);
-                    let parameter_type=before.is_some_and(|v|matches!(v.tok,Tok::LParen|Tok::Comma))
+                    let parameter_type=braces==0 && signature && parens==1
+                        && before.is_some_and(|v|matches!(v.tok,Tok::LParen|Tok::Comma))
                         && matches!(after.map(|v|&v.tok),Some(Tok::Ident(_)))
                         && members.get(i+2).is_some_and(|v|matches!(v.tok,Tok::Comma|Tok::RParen));
-                    let result_type=before.is_some_and(|v|matches!(v.tok,Tok::Colon|Tok::Arrow))
+                    let result_type=braces==0 && signature && parens==0
+                        && before.is_some_and(|v|matches!(v.tok,Tok::Colon|Tok::Arrow))
                         && before2.is_some_and(|v|v.tok==Tok::RParen)
                         && after.is_some_and(|v|v.tok==Tok::LBrace);
                     if !(parameter_type || result_type) {
-                        return Err(err("E_UNSUPPORTED","generic parameter permitted only in scalar method signature"));
+                        return Err(err("E_UNSUPPORTED","generic parameter permitted only in top-level scalar fnc signature; no implicit generic field default"));
                     }
                 }
             }
+            match t.tok {
+                Tok::LBrace => {braces+=1; signature=false;}
+                Tok::RBrace => {braces=braces.checked_sub(1).ok_or_else(||err("E_SYNTAX","unmatched generic member brace"))?;}
+                Tok::LParen => parens+=1,
+                Tok::RParen => {parens=parens.checked_sub(1).ok_or_else(||err("E_SYNTAX","unmatched generic member parenthesis"))?;}
+                Tok::Semi if braces==0 => signature=false,
+                _=>{}
+            }
+            if braces>128 || parens>128 {return Err(err("E_SOURCE_LIMIT","generic member nesting budget"));}
         }
+        if braces!=0 || parens!=0 {return Err(err("E_SYNTAX","unclosed generic member delimiter"));}
         let declaration=format!("{namespace}.{class_name}");
         let mut view=ExportView::new(Origin::External(id.clone()));
         view.add(&namespace,&namespace,Kind::Namespace,true)?;
