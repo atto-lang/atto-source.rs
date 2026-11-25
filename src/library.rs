@@ -502,9 +502,11 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
 }
 
 /// Expand library imports. Sources without them are returned unchanged.
-pub fn expand(source: &str) -> R<String> {
+pub fn expand(source: &str) -> R<String> { expand_inner(source, false) }
+pub(crate) fn expand_for_file_linker(source: &str) -> R<String> { expand_inner(source, true) }
+fn expand_inner(source: &str, allow_local: bool) -> R<String> {
     if !source.contains("import") { return Ok(source.to_string()); }
-    crate::import_v2::preflight(source)?;
+    crate::import_v2::preflight_with_local(source, allow_local)?;
     let imports = library_imports(source)?;
     if imports.is_empty() { return Ok(source.to_string()); }
     let os = target_os();
