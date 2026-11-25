@@ -74,10 +74,11 @@ pub enum Import {
     PrintStr,
     PrintNewline,
     ActorSpawn,
+    ActorSend,
 }
 
 impl Import {
-    pub const ALL: [Import; 5] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn];
+    pub const ALL: [Import; 6] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend];
     pub fn name(self) -> &'static str {
         match self {
             Import::PrintI64 => "print_i64",
@@ -85,6 +86,7 @@ impl Import {
             Import::PrintStr => "print_str",
             Import::PrintNewline => "print_newline",
             Import::ActorSpawn => "actor_spawn",
+            Import::ActorSend => "actor_send",
         }
     }
 }
@@ -96,6 +98,10 @@ pub enum TExpr {
     /// Compact, checked variant index of a distinct nominal enum type.
     EnumTag(u32),
     SpawnActor(u16),
+    /// Admission attempt only; Result<void, SendError> uses a zero Ok tag.
+    ActorSend(Box<TE>, Box<TE>),
+    /// Result inspection: true for a zero admission status, or its complement.
+    SendStatus(Box<TE>, bool),
     /// Allocate an independently owned guest instance with immutable defaults.
     NewClass { size: u32, fields: Vec<(u32, FieldValue)> },
     /// Load a scalar class field at a checked, compiler-derived byte offset.
@@ -355,6 +361,18 @@ pub fn check(p: &Program) -> R<TProgram> {
             body,
         });
     }
+
+    // The stage-1 actor worker grants no stdio or nested-spawn capabilities.
+    // Direct calls are rejected during lowering; this closed-world call-graph
+    // walk also rejects helper functions that *transitively* reach those effects.
+    // A bounded recursion guard permits pure mutually recursive helpers.
+    for (_, idx) in &actor_handlers {
+        let mut visiting = vec![false; funcs.len()];
+        if actor_func_requires_host(*idx as usize, &funcs, &mut visiting) {
+            return Err(Diagnostic::new(all_funcs[*idx as usize].pos, "E_UNSUPPORTED",
+                "actor receive() transitively requires host capabilities not granted to the worker"));
+        }
+    }
     imports.sort();
     imports.dedup();
     Ok(TProgram {
@@ -365,6 +383,59 @@ pub fn check(p: &Program) -> R<TProgram> {
         heap_used,
         actor_handlers,
     })
+}
+
+
+// Host-effect reachability, scoped to actor receive() entrypoints. This is
+// deliberately conservative: even a branch that is never taken cannot grant
+// an implicit host capability to a separately instantiated actor worker.
+fn actor_func_requires_host(index: usize, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    if visiting[index] { return false; }
+    visiting[index] = true;
+    let found = funcs[index].body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting));
+    visiting[index] = false;
+    found
+}
+
+fn actor_stmt_requires_host(stmt: &TStmt, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    match stmt {
+        TStmt::Set(_, expr) | TStmt::Expr(expr) | TStmt::Return(Some(expr)) =>
+            actor_expr_requires_host(expr, funcs, visiting),
+        TStmt::If(arms, other) =>
+            arms.iter().any(|(cond, body)|
+                actor_expr_requires_host(cond, funcs, visiting) ||
+                body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting))) ||
+            other.as_ref().is_some_and(|body|
+                body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting))),
+        TStmt::Loop { cond, body, update } =>
+            cond.as_ref().is_some_and(|expr| actor_expr_requires_host(expr, funcs, visiting)) ||
+            body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)) ||
+            update.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)),
+        TStmt::Block(body) =>
+            body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)),
+        TStmt::Return(None) | TStmt::Break | TStmt::Continue => false,
+    }
+}
+
+fn actor_expr_requires_host(expr: &TE, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    match &expr.e {
+        TExpr::Print { .. } | TExpr::PrintStr { .. } | TExpr::SpawnActor(_) | TExpr::ActorSend(_, _) => true,
+        TExpr::SendStatus(expr, _) => actor_expr_requires_host(expr, funcs, visiting),
+        TExpr::Field(inner, _) | TExpr::Neg(inner) | TExpr::Not(inner) =>
+            actor_expr_requires_host(inner, funcs, visiting),
+        TExpr::Bin(_, lhs, rhs) | TExpr::Builtin(_, lhs, rhs) =>
+            actor_expr_requires_host(lhs, funcs, visiting) ||
+            actor_expr_requires_host(rhs, funcs, visiting),
+        TExpr::Ternary(cond, yes, no) =>
+            actor_expr_requires_host(cond, funcs, visiting) ||
+            actor_expr_requires_host(yes, funcs, visiting) ||
+            actor_expr_requires_host(no, funcs, visiting),
+        TExpr::Call(index, args) =>
+            args.iter().any(|arg| actor_expr_requires_host(arg, funcs, visiting)) ||
+            actor_func_requires_host(*index as usize, funcs, visiting),
+        TExpr::I64(_) | TExpr::Bool(_) | TExpr::EnumTag(_) |
+        TExpr::NewClass { .. } | TExpr::Local(_) => false,
+    }
 }
 
 /// Definite-return analysis matching the Java reference: an `if` returns
@@ -798,6 +869,7 @@ impl FnCx<'_> {
                 }
             }
             ExprKind::NewClass(name, args) => self.construct_class(name, args, pos)?,
+            ExprKind::MethodCall(receiver, name, args) => self.method_call(receiver, name, args, pos)?,
             ExprKind::SpawnActor(name, args) => {
                 if self.in_actor_handler { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                     "nested actor spawn from receive() is not admitted without a supervisor")); }
@@ -812,6 +884,49 @@ impl FnCx<'_> {
             },
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
         })
+    }
+
+
+    /// Only scalar actor handles can send. The return value is a distinct
+    /// Result<void, SendError>, not a boolean or a completion acknowledgement.
+    fn method_call(&mut self, receiver: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        let value = self.value(receiver)?;
+        match (value.ty, name) {
+            (Type::Actor(_), "send") => {
+                if self.in_actor_handler {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "actor receive() cannot send without an explicit capability"));
+                }
+                if args.len() != 1 {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "actor send() requires exactly one int message"));
+                }
+                let message = self.value(&args[0])?;
+                if message.ty != Type::Int {
+                    return Err(Diagnostic::new(args[0].pos, "E_UNSUPPORTED",
+                        "actor send transport admits only owned scalar int values; references and pointers cannot cross workers"));
+                }
+                self.imports.push(Import::ActorSend);
+                Ok(TE { e: TExpr::ActorSend(Box::new(value), Box::new(message)),
+                    ty: Type::SendResult })
+            }
+            (Type::Actor(_), "get_done") =>
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "get_done() requires async completion/task semantics; mailbox admission is not handler completion")),
+            (Type::SendResult, "is_ok" | "is_err") => {
+                if !args.is_empty() {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "Result.is_ok() / is_err() takes no arguments"));
+                }
+                Ok(TE { e: TExpr::SendStatus(Box::new(value), name == "is_ok"),
+                    ty: Type::Bool })
+            }
+            (Type::Actor(_), _) | (Type::SendResult, _) =>
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    format!("member '{name}' is not part of the admitted actor/Result subset"))),
+            _ => Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("method '{name}' is not supported on type {}", value.ty.name()))),
+        }
     }
 
     /// Allocation is only authorized by an explicit syntax node from `new`.
