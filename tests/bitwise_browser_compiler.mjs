@@ -89,6 +89,10 @@ for (const [source, result] of [
   ['pub fnc main(): int { return 5 / 2; }', 2n],
   ['pub fnc main(): int { return -5 / 2; }', -2n],
   ['pub fnc main(): int { return 9007199254740993 / 1; }', 9007199254740993n],
+  ['pub fnc main(): int { return Integer.rem(-7, 3); }', -1n],
+  ['pub fnc main(): int { return Integer.mod(-7, -3); }', 2n],
+  ['pub fnc main(): int { return Integer.rem(-9223372036854775808, -1); }', 0n],
+  ['pub fnc main(): int { return Integer.mod(-1, -9223372036854775808); }', 9223372036854775807n],
 ]) {
   const compiled = compile(source);
   assert.equal(compiled.ok, true, compiled.diagnostic);
@@ -99,6 +103,8 @@ for (const [source, result] of [
 for (const [source, code] of [
   ['fnc q(int d): int { return 7 / d; } pub fnc main(): int { return q(0); }', 2],
   ['fnc q(int d): int { return -9223372036854775808 / d; } pub fnc main(): int { return q(-1); }', 1],
+  ['fnc q(int d): int { return Integer.rem(7, d); } pub fnc main(): int { return q(0); }', 2],
+  ['fnc q(int d): int { return Integer.mod(7, d); } pub fnc main(): int { return q(0); }', 2],
 ]) {
   const compiled = compile(source);
   assert.equal(compiled.ok, true, compiled.diagnostic);
