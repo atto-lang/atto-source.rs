@@ -376,6 +376,50 @@
           "value": 1
         }
       }
+    },
+    "multifile-root": {
+      "identity": "@org/project/package",
+      "exports": [
+        [
+          "service",
+          "namespace",
+          true
+        ],
+        [
+          "service.CAP",
+          "const",
+          true
+        ],
+        [
+          "service.OFFSET",
+          "const",
+          false
+        ],
+        [
+          "service.inc",
+          "fnc",
+          true
+        ],
+        [
+          "service.answer",
+          "fnc",
+          true
+        ]
+      ],
+      "files": {
+        "src/service/constants.atto": "use namespace service; define pub const int CAP = 41;",
+        "src/service/functions.atto": "use namespace service; define const int OFFSET = 1; pub fnc inc(int x): int { return x+OFFSET; } pub fnc answer(): int { return inc(CAP); }"
+      },
+      "literalValues": {
+        "service.CAP": {
+          "type": "int",
+          "value": 41
+        },
+        "service.OFFSET": {
+          "type": "int",
+          "value": 1
+        }
+      }
     }
   },
   "cases": [
@@ -4277,6 +4321,131 @@
         "outcome": "reject",
         "reason": "duplicate binding",
         "code": "E_DUPLICATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-public-constant",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\n",
+      "reference": "multi.service.CAP",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.CAP"
+      }
+    },
+    {
+      "id": "multifile-public-function",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\n",
+      "reference": "multi.service.answer",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.answer"
+      }
+    },
+    {
+      "id": "multifile-mixed",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import [const service.CAP as cap, fnc service.inc as inc] from pkg '@org/project/package';",
+      "reference": "inc",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.inc"
+      }
+    },
+    {
+      "id": "multifile-tree",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport multi.service.{const CAP as cap, fnc answer};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.CAP"
+      }
+    },
+    {
+      "id": "multifile-alias",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\ndefine alias multi.service as service_alias;",
+      "reference": "service_alias.answer",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.answer"
+      }
+    },
+    {
+      "id": "multifile-negative-private",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\n",
+      "reference": "multi.service.OFFSET",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private constant",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-negative-atomic",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport multi.service.{CAP as cap, OFFSET as hidden};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport fnc multi.service.CAP;",
+      "reference": "CAP",
+      "expect": {
+        "outcome": "reject",
+        "reason": "constant is not function",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-negative-duplicate",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport multi.service.{CAP as x, inc as x};",
+      "reference": "x",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate binding",
+        "code": "E_DUPLICATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-negative-missing",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport multi.service.{CAP as cap, missing};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing leaf rejects group",
+        "code": "E_UNBOUND",
         "atomic": true
       }
     }
