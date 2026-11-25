@@ -550,3 +550,50 @@ fn unused_indirect_and_qualified_alias_cycles_never_emit_guest() {
         assert_eq!(loads, 0);
     }
 }
+
+#[test]
+fn namespace_alias_as_spelling_has_source_to_binding_direction() {
+    let baseline = compile("import core.num; define alias math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }").unwrap();
+    for declarations in [
+        "define alias core.num as math;",
+        "define alias second as math; define alias core.num as second;",
+        "define alias math = second; define alias core.num as second;",
+        "define alias second as math; define alias second = core.num;",
+    ] {
+        let src = format!("import core.num; {declarations} pub fnc main(): int {{ return math.clamp(42, 0, 100); }}");
+        assert_eq!(compile(&src).unwrap(), baseline, "{src}");
+    }
+}
+#[test]
+fn namespace_alias_as_cycles_and_mixed_cycles_reject_before_io() {
+    for (declarations, cycle) in [
+        ("define alias a as a;", "a -> a"),
+        ("define alias a as b; define alias b as c; define alias c as a;", "a -> c -> b -> a"),
+        ("define alias b as a; define alias b = c; define alias a as c;", "a -> b -> c -> a"),
+        ("define alias b.child as a; define alias a as b;", "a -> b -> a"),
+    ] {
+        let src = format!("import core.num; {declarations} pub fnc main(): int {{ return 42; }}");
+        let mut loads = 0;
+        let d = compile_with_imports(&src, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err();
+        assert_eq!(d.code, "E_IMPORT_CYCLE", "{src}: {d}");
+        assert!(d.to_string().contains(cycle), "{d}");
+        assert_eq!(loads, 0);
+    }
+}
+#[test]
+fn namespace_alias_as_rejects_invalid_destinations_and_duplicate_bindings() {
+    for (declarations, expected) in [
+        ("define alias core.num as math; define alias math = num;", "E_DUPLICATE"),
+        ("define alias core.num as num;", "E_DUPLICATE"),
+        ("define alias core.num as a.b;", "E_SYNTAX"),
+        ("define alias core.num as;", "E_SYNTAX"),
+        ("define alias as math;", "E_IMPORT"),
+        ("define alias core.num as math = num;", "E_SYNTAX"),
+        ("define alias core.num as a as b;", "E_SYNTAX"),
+    ] {
+        let src = format!("import core.num; {declarations} pub fnc main(): int {{ return 42; }}");
+        assert_eq!(compile(&src).unwrap_err().code, expected, "{src}");
+    }
+}
