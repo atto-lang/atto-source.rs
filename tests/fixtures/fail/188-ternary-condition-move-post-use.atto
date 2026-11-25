@@ -1,0 +1,7 @@
+// expect-error: E_MOVED
+// java: rejects
+pub fnc main(): int {
+  val flag = true;
+  val value = take! flag ? 41 : 40;
+  return flag ? value : 0;
+}

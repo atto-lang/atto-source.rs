@@ -1,0 +1,11 @@
+// expect-error: E_MOVED
+// java: rejects
+fnc *gen empty(): Generator<int> {}
+pub fnc main(): int {
+  let total = 41;
+  val moved = take! total;
+  for item in empty() do
+    total = item;
+  done
+  return total;
+}

@@ -1,0 +1,12 @@
+// expect-exit: 42
+// java: rejects
+// Argument ownership transfers are valid when not aliased with receiver.
+define class Parcel as
+  pub let int value = 21;
+  pub combine(Parcel other): int { return self.value + other.value; }
+end
+pub fnc main(): int {
+  let receiver = new Parcel();
+  let other = new Parcel();
+  return receiver.combine(other);
+}

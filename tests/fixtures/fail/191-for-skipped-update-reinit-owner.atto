@@ -1,0 +1,13 @@
+// expect-error: E_MOVED
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val moved = take! parcel;
+  for (let i = 0; i < 0; parcel = new Parcel()) {
+    stdio.println(i);
+  }
+  return parcel.value;
+}

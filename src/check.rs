@@ -385,6 +385,10 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Method receivers remain borrowed during argument evaluation. A
+    /// transfer in those arguments cannot invalidate an earlier receiver.
+    /// Nested calls can add more guards without dropping outer guards.
+    receiver_guards: Vec<u32>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1518,6 +1522,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            receiver_guards: Vec::new(),
             imports,
             data,
         }
@@ -1723,6 +1728,10 @@ impl<'a> FnCx<'a> {
                         "for-in currently requires a fresh generator call"));
                 }
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
+                // A generator may yield zero elements. Reassigning a moved
+                // outer scalar inside its body does not prove it was
+                // reinitialized on the zero-iteration exit path.
+                let at_entry = self.moved.clone();
                 self.scopes.push(Vec::new());
                 let checked = (|| {
                     let value_slot = self.declare(name, Type::Int, false, *pos)?;
@@ -1730,6 +1739,7 @@ impl<'a> FnCx<'a> {
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
                 self.pop_scope();
+                self.moved.extend(at_entry);
                 checked?
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
@@ -1786,7 +1796,11 @@ impl<'a> FnCx<'a> {
             }
             Stmt::While { cond, body, .. } => {
                 let c = self.repeated_cond(cond, "while")?;
+                let at_entry = self.moved.clone();
                 let body = self.looped(body)?;
+                // Zero iterations are possible: a body-local assignment
+                // must not make an already-moved owner appear initialized.
+                self.moved.extend(at_entry);
                 TStmt::Loop {
                     cond: Some(c),
                     body,
@@ -1794,7 +1808,10 @@ impl<'a> FnCx<'a> {
                 }
             }
             Stmt::Loop { body, .. } => {
+                let at_entry = self.moved.clone();
                 let body = self.looped(body)?;
+                // An early break/continue can skip a reassignment.
+                self.moved.extend(at_entry);
                 TStmt::Loop {
                     cond: None,
                     body,
@@ -1815,6 +1832,9 @@ impl<'a> FnCx<'a> {
                     // including after continue; they must not transfer
                     // locals allocated before the loop's repeated region.
                     let repeated_floor = self.nparams + self.locals.len() as u32;
+                    // The initializer definitely ran; the body/update may
+                    // run zero times. Preserve any moved owner at this join.
+                    let at_entry = self.moved.clone();
                     let c = match cond {
                         Some(c) => Some(self.repeated_cond(c, "for")?),
                         None => None,
@@ -1827,6 +1847,7 @@ impl<'a> FnCx<'a> {
                     };
                     self.loop_floors.pop();
                     let u = update_result?;
+                    self.moved.extend(at_entry);
                     out.push(TStmt::Loop {
                         cond: c,
                         body: b,
@@ -2405,6 +2426,10 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
                 };
                 let slot = *slot_ref;
+                if self.receiver_guards.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "take! cannot transfer a method receiver while its call arguments are evaluated"));
+                }
                 if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
                     return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
                 }
@@ -2423,6 +2448,10 @@ impl<'a> FnCx<'a> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
+            if self.receiver_guards.contains(&slot) {
+                return Err(Diagnostic::new(e.pos, "E_BORROW",
+                    "cannot transfer a method receiver while its call arguments are evaluated"));
+            }
             if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
                 return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
             }
@@ -2723,8 +2752,16 @@ impl<'a> FnCx<'a> {
     fn ternary(&mut self, c: &Expr, a: &Expr, b: &Expr, pos: Pos) -> R<TE> {
         Ok({
             let c = self.cond(c, "ternary")?;
+            // Only one arm executes. Check each from the ownership state
+            // after the condition, then join their moved sets. Checking the
+            // arms sequentially wrongly rejected take! on the same scalar
+            // in both mutually exclusive arms.
+            let at_branch = self.moved.clone();
             let a = self.value(a)?;
+            let moved_after_a = self.moved.clone();
+            self.moved = at_branch;
             let b = self.value(b)?;
+            self.moved.extend(moved_after_a);
             if a.ty != b.ty {
                 return Err(type_err(
                     pos,
@@ -3308,8 +3345,24 @@ impl<'a> FnCx<'a> {
         }
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
+        // The receiver is evaluated before arguments. Treat its local as
+        // borrowed for the entire evaluation of those arguments, even when
+        // it is not an explicitly named lexical loan. Otherwise
+        // receiver.method(receiver) or receiver.method(take! receiver)
+        // could invalidate the receiver before the call begins.
+        let receiver_slot = match &recv.e {
+            TExpr::Local(slot) => Some(*slot),
+            _ => None,
+        };
+        if let Some(slot) = receiver_slot {
+            self.receiver_guards.push(slot);
+        }
+        let checked_args = self.args(&label, args, &m.params);
+        if receiver_slot.is_some() {
+            self.receiver_guards.pop();
+        }
         let mut targs = vec![recv];
-        targs.extend(self.args(&label, args, &m.params)?);
+        targs.extend(checked_args?);
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,

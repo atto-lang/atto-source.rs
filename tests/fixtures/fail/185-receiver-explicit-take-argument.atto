@@ -1,0 +1,10 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+  pub combine(Parcel other): int { return other.value; }
+end
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return parcel.combine(take! parcel);
+}

@@ -1,0 +1,11 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+  pub add(int n): int { return self.value + n; }
+end
+fnc drain(Parcel p): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return parcel.add(drain(parcel));
+}
