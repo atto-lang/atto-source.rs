@@ -2646,6 +2646,15 @@ impl<'a> FnCx<'a> {
             Some(l) => (l.slot, l.ty),
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
+        // Closed Record guest fields use checked constructor initialization
+        // but are immutable after construction in this first profile.
+        // Do not expose class-based mutable write-through via borrow! mut.
+        if mutable && matches!(owner_ty, Type::Class(c)
+            if self.g.classes[c as usize].name.starts_with(crate::closed_record_guest::PRIVATE_PREFIX)
+                || self.g.classes[c as usize].name.starts_with(crate::fixed_sequence_guest::PRIVATE_PREFIX)) {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "compiler-owned Record/Array/Tuple storage cannot be mutably borrowed without a verified mutation/ownership ABI"));
+        }
         if self.loans.contains_key(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
@@ -3121,6 +3130,10 @@ impl<'a> FnCx<'a> {
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
+            ExprKind::Call(name, _)
+                if matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of") =>
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "Array.of/List.of guest allocation is not implemented for this compiler profile")),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
@@ -3189,7 +3202,7 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                     "record, map and tuple literals are parsed but require checked collection types and guest allocation")),
             ExprKind::Index(_, _) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "bracket selection is parsed but requires checked field/key presence, ownership and guest lowering")),
+                "bracket selection requires a proven static closed Record receiver and literal field name")),
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
         })
@@ -3404,6 +3417,13 @@ impl<'a> FnCx<'a> {
                 } else {
                     format!("class '{}' has no field '{name}'", class.name)
                 };
+                // A canonical closed Record uses the checked class slot
+                // ABI, but its external diagnostics remain structural:
+                // no user-visible synthetic class identity or fake field.
+                if class.name.starts_with(crate::closed_record_guest::PRIVATE_PREFIX) {
+                    return Err(Diagnostic::new(pos, "E_NO_FIELD",
+                        format!("closed Record has no field '{name}'")));
+                }
                 return Err(Diagnostic::new(pos, "E_UNBOUND", what));
             }
         };

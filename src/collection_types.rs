@@ -118,6 +118,42 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
                 diag(pos, "E_UNSUPPORTED_TYPE", format!("collection element type '{name}' is not in this static typing profile")))?;
             let inner = rest.strip_suffix('>').ok_or_else(||
                 diag(pos, "E_TYPE", "collection type arguments must end with '>'"))?;
+            if head == "Record" {
+                let row = inner.strip_prefix('{')
+                    .and_then(|s| s.strip_suffix('}'))
+                    .ok_or_else(|| diag(pos, "E_TYPE_ARITY",
+                        "Record's generic argument must be a closed {field: Type} row"))?;
+                let parts = if row.is_empty() { Vec::new() }
+                    else { type_args(row, pos, depth + 1)? };
+                let mut fields = Vec::with_capacity(parts.len());
+                for entry in parts {
+                    let (hex, ty) = entry.split_once(':').ok_or_else(|| diag(
+                        pos, "E_TYPE", "invalid compiler-owned closed Record field descriptor"
+                    ))?;
+                    if hex.len() % 2 != 0 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+                        return Err(diag(pos, "E_TYPE",
+                            "invalid compiler-owned closed Record field name"));
+                    }
+                    let bytes = hex.as_bytes().chunks_exact(2).map(|pair| {
+                        let digits = std::str::from_utf8(pair).map_err(|_| diag(
+                            pos, "E_TYPE", "invalid Record field name encoding"
+                        ))?;
+                        u8::from_str_radix(digits, 16).map_err(|_| diag(
+                            pos, "E_TYPE", "invalid Record field name encoding"
+                        ))
+                    }).collect::<Result<Vec<_>, _>>()?;
+                    let name = String::from_utf8(bytes).map_err(|_| diag(
+                        pos, "E_TYPE", "Record field name must be valid UTF-8"
+                    ))?;
+                    fields.push((name, canonical_type(ty, pos, depth + 1)?));
+                }
+                fields.sort_by(|a, b| a.0.cmp(&b.0));
+                if fields.windows(2).any(|w| w[0].0 == w[1].0) {
+                    return Err(diag(pos, "E_DUPLICATE",
+                        "duplicate closed Record type field"));
+                }
+                return Ok(LiteralType::Record(fields));
+            }
             let parts = type_args(inner, pos, depth + 1)?;
             let args: Vec<_> = parts.iter().map(|p| canonical_type(p, pos, depth + 1))
                 .collect::<Result<_, _>>()?;
@@ -230,6 +266,37 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         }
         ExprKind::Unary(UnOp::Plus, v) if matches!(v.kind, ExprKind::Int(_)) =>
             inferred(v, Some(&Int), depth + 1)?.ty,
+        // Keep Array and List factories distinct even though both accept
+        // positional items. Rewriting both to bracket literals would infer
+        // List for an untyped Array.of(...) and violate the factory contract.
+        ExprKind::Call(name, args)
+            if matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of") => {
+            let is_array = name == "@builtin/Array.of";
+            let element = match (is_array, expected) {
+                (true, Some(Array(item))) | (false, Some(List(item))) => (**item).clone(),
+                (_, None) => Bottom,
+                _ => return Err(diag(e.pos, "E_TYPE",
+                    "collection factory result does not match expected Array/List type")),
+            };
+            if args.is_empty() && element == Bottom {
+                return Err(diag(e.pos, "E_TYPE_INFERENCE",
+                    "empty Array.of/List.of requires a concrete generic element type"));
+            }
+            let target = if is_array {
+                Array(Box::new(element))
+            } else {
+                List(Box::new(element))
+            };
+            let literal = Expr {pos: e.pos, kind: ExprKind::Array(args.clone())};
+            return inferred(&literal, Some(&target), depth + 1).map_err(|err| {
+                if err.code == "E_TYPE" {
+                    diag(err.pos, "E_TYPE_INFERENCE",
+                        "Array.of/List.of elements have no checked common type")
+                } else {
+                    err
+                }
+            });
+        }
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
                 Some(Array(element)) => (true, element.as_ref().clone()),
@@ -248,14 +315,31 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             if kind { Array(Box::new(element_ty)) } else { List(Box::new(element_ty)) }
         }
         ExprKind::Record(fields) => {
-            if matches!(expected, Some(Map(_,_) | Array(_) | List(_) | Tuple(_) | AnyTuple)) {
-                return Err(diag(e.pos,"E_TYPE", "record literal requires Record context"));
-            }
+            let expected_fields = match expected {
+                Some(Record(row)) => Some(row.as_slice()),
+                Some(OpenRecord) | None => None,
+                _ => return Err(diag(e.pos, "E_TYPE",
+                    "record literal requires Record context")),
+            };
             let mut typed_fields = Vec::new();
             for (field, value) in fields {
-                let child = inferred(value, None, depth + 1)?;
+                let wanted = expected_fields.and_then(|row|
+                    row.iter().find(|(name, _)| name == field).map(|(_, ty)| ty));
+                if expected_fields.is_some() && wanted.is_none() {
+                    return Err(diag(value.pos, "E_NO_FIELD",
+                        format!("closed Record type has no field '{field}'")));
+                }
+                let child = inferred(value, wanted, depth + 1)?;
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
+            }
+            if let Some(row) = expected_fields {
+                for (name, _) in row {
+                    if !fields.iter().any(|(source, _)| source == name) {
+                        return Err(diag(e.pos, "E_NO_FIELD",
+                            format!("closed Record is missing required field '{name}'")));
+                    }
+                }
             }
             // Canonical structural identity is independent of source field
             // order. Evaluate values in the original source order, then place
@@ -348,7 +432,9 @@ pub fn static_record_field_type(
 
 fn starts_literal(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
-        ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
+        ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_)) ||
+        matches!(&e.kind, ExprKind::Call(name, _) if
+            matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of"))
 }
 
 /// Staged semantic preflight: checked declarations are *not* yet executable.

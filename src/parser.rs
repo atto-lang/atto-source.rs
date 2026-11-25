@@ -8,6 +8,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use std::fmt::Write as _;
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
@@ -247,6 +248,8 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    factories_seen: Vec<&'static str>,
+    factory_shadowing: Vec<(String, Pos)>,
 }
 
 struct TypeFirstField {
@@ -300,6 +303,8 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            factories_seen: Vec::new(),
+            factory_shadowing: Vec::new(),
         }
     }
 
@@ -399,6 +404,9 @@ impl Parser {
         let pos = self.pos();
         match self.peek().clone() {
             Tok::Ident(s) => {
+                if matches!(s.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List") {
+                    self.factory_shadowing.push((s.clone(), pos));
+                }
                 if is_reserved(&s) {
                     return Err(Diagnostic::new(
                         pos,
@@ -440,7 +448,58 @@ impl Parser {
                 // browser profile; never misread '<' as an expression comparison.
                 let generic = self.eat(&Tok::Lt);
                 let mut args = Vec::new();
-                if generic {
+                // A closed Record's sole generic argument is a *type-level row*,
+                // not a list of homogeneous value parameters. Serialize labels
+                // as UTF-8 hex in the compiler-private type identity so names
+                // containing punctuation, commas or angle brackets stay safe.
+                let mut closed_row = None;
+                if generic && builtin == "Record" && self.eat(&Tok::LBrace) {
+                    let mut fields: Vec<(String, String)> = Vec::new();
+                    if !self.eat(&Tok::RBrace) {
+                        loop {
+                            if fields.len() >= MAX_PARAMS {
+                                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                    "closed Record type exceeds the field limit"));
+                            }
+                            let at = self.pos();
+                            let label = match self.peek().clone() {
+                                Tok::Ident(name) | Tok::Str(name) => name,
+                                _ => return Err(Diagnostic::new(at, "E_TYPE",
+                                    "closed Record type needs a static field label; open rows are not yet supported")),
+                            };
+                            self.advance();
+                            self.expect(Tok::Colon, "':' after Record type field")?;
+                            let field_type = self.parse_type()?;
+                            let type_spelling = match field_type {
+                                Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) =>
+                                    self.type_names[i as usize].0.clone(),
+                                other => other.name().to_string(),
+                            };
+                            if fields.iter().any(|(name, _)| *name == label) {
+                                return Err(Diagnostic::new(at, "E_DUPLICATE",
+                                    "duplicate closed Record type field"));
+                            }
+                            fields.push((label, type_spelling));
+                            if self.eat(&Tok::Comma) {
+                                if self.eat(&Tok::RBrace) { break; }
+                            } else {
+                                self.expect(Tok::RBrace, "'}' after Record type fields")?;
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Tok::Gt, "'>' after closed Record type")?;
+                    fields.sort_by(|a, b| a.0.cmp(&b.0));
+                    let row = fields.into_iter().map(|(label, ty)| {
+                        let mut hex = String::with_capacity(label.len() * 2);
+                        for byte in label.as_bytes() {
+                            write!(&mut hex, "{byte:02x}")
+                                .expect("writing to a String cannot fail");
+                        }
+                        format!("{hex}:{ty}")
+                    }).collect::<Vec<_>>().join(",");
+                    closed_row = Some(format!("{{{row}}}"));
+                } else if generic {
                     if *self.peek() == Tok::Gt {
                         return Err(Diagnostic::new(self.pos(), "E_TYPE_ARITY",
                             format!("{builtin} does not accept an empty generic argument list")));
@@ -462,7 +521,7 @@ impl Parser {
                     self.expect(Tok::Gt, "'>' to close collection type arguments")?;
                 }
                 let correct_arity = match builtin {
-                    "Record" => !generic,
+                    "Record" => !generic || closed_row.is_some(),
                     "Array" | "List" => !generic || args.len() == 1,
                     "Map" => !generic || args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
@@ -472,10 +531,11 @@ impl Parser {
                     return Err(Diagnostic::new(pos, "E_TYPE_ARITY",
                         format!("incorrect number of generic type arguments for {builtin}")));
                 }
-                // Inaccessible sentinel spelling: parser recognizes syntax but
-                // guest collection allocation/layout is deliberately not lowered.
-                // Its resolution in check.rs always fails closed.
-                let spelling = if generic {
+                // Internal type identity only. It never authorizes a host object
+                // or bypasses checked guest allocation and ownership.
+                let spelling = if let Some(row) = closed_row {
+                    format!("@builtin/Record<{row}>")
+                } else if generic {
                     format!("@builtin/{builtin}<{}>", args.join(","))
                 } else {
                     format!("@builtin/{builtin}")
@@ -684,6 +744,12 @@ impl Parser {
                     return Err(unsupported(self.pos(), &what));
                 }
                 _ => prog.funcs.push(self.parse_func()?),
+            }
+        }
+        for (name, pos) in &self.factory_shadowing {
+            if self.factories_seen.iter().any(|factory| factory == name) {
+                return Err(Diagnostic::new(*pos, "E_RESERVED",
+                    format!("builtin factory '{name}.of' cannot be shadowed by a user declaration")));
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
@@ -2876,6 +2942,85 @@ impl Parser {
         Ok(args)
     }
 
+
+    /// Canonical Record.of fields are static labels, not dynamic arguments.
+    /// Checked Record allocation and shape validation remain in later passes.
+    fn parse_record_of_args(&mut self) -> R<Vec<(String, Expr)>> {
+        self.expect(Tok::LParen, "'(' after Record.of")?;
+        let mut fields = Vec::new();
+        if self.eat(&Tok::RParen) { return Ok(fields); }
+        loop {
+            if fields.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many Record.of fields"));
+            }
+            let at = self.pos();
+            let name = match (self.peek().clone(), self.peek_at(1)) {
+                (Tok::Ident(s), Tok::Colon | Tok::Assign) => s,
+                (Tok::Str(s), Tok::Colon) => s,
+                _ => return Err(Diagnostic::new(at, "E_UNSUPPORTED",
+                    "Record.of requires static field=value or quoted field: value; dynamic keys/spreads forbidden")),
+            };
+            self.advance(); // name
+            self.advance(); // ':' or '='
+            if fields.iter().any(|(prior, _): &(String, Expr)| *prior == name) {
+                return Err(Diagnostic::new(at, "E_DUPLICATE",
+                    format!("duplicate Record.of field '{name}'")));
+            }
+            let value = self.parse_expr()?;
+            fields.push((name, value));
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) { break; }
+            } else {
+                self.expect(Tok::RParen, "')' after Record.of fields")?;
+                break;
+            }
+        }
+        Ok(fields)
+    }
+
+    /// Map.of supports either Entry-arrow or alternating key/value arguments.
+    /// Guest Map allocation remains explicitly unsupported until implemented.
+    fn parse_map_of_args(&mut self) -> R<Vec<(Expr, Expr)>> {
+        self.expect(Tok::LParen, "'(' after Map.of")?;
+        let mut entries: Vec<(Expr, Expr)> = Vec::new();
+        if self.eat(&Tok::RParen) { return Ok(entries); }
+        let mut arrow_form: Option<bool> = None;
+        loop {
+            if entries.len() >= MAX_PARAMS / 2 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many Map.of pairs"));
+            }
+            let key = self.parse_expr()?;
+            let arrow = self.eat(&Tok::FatArrow);
+            if arrow_form.is_some_and(|prior| prior != arrow) {
+                return Err(Diagnostic::new(key.pos, "E_FACTORY_ARITY",
+                    "Map.of cannot mix Entry-arrow and alternating key/value pairs"));
+            }
+            arrow_form = Some(arrow);
+            if !arrow && !self.eat(&Tok::Comma) {
+                return Err(Diagnostic::new(self.pos(), "E_FACTORY_ARITY",
+                    "Map.of positional arguments require alternating key/value pairs"));
+            }
+            let value = self.parse_expr()?;
+            if let Some(key_id) = constant_map_key(&key) {
+                if entries.iter().any(|(prev, _)| constant_map_key(prev).as_deref()
+                    == Some(key_id.as_str())) {
+                    return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
+                        "duplicate constant Map.of key"));
+                }
+            }
+            entries.push((key, value));
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) { break; }
+            } else {
+                self.expect(Tok::RParen, "')' after Map.of pairs")?;
+                break;
+            }
+        }
+        Ok(entries)
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let mut chain = 0u32;
         let r = self.parse_postfix_chain(&mut chain);
@@ -2948,18 +3093,50 @@ impl Parser {
                     }
                     self.advance();
                     let member = match self.peek().clone() {
-                        Tok::Ident(m) if !is_reserved(&m) => m,
+                        Tok::Ident(m) if !is_reserved(&m) ||
+                            (m == "of" && *self.peek_at(1) == Tok::LParen &&
+                                matches!(&e.kind, ExprKind::Var(base) if
+                                    matches!(base.as_str(), "Record" | "Map" | "Tuple" | "Array" | "List"))) => m,
                         _ => return Err(self.expected("a member name after '.'")),
                     };
                     self.advance();
                     self.grow(1)?;
                     *chain += 1;
                     if *self.peek() == Tok::LParen {
-                        let args = self.parse_args()?;
-                        e = Expr {
-                            kind: ExprKind::MethodCall(Box::new(e), member, args),
-                            pos: dot,
+                        let builtin = match &e.kind {
+                            ExprKind::Var(base) if member == "of"
+                                && matches!(base.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List") =>
+                                Some(base.clone()),
+                            _ => None,
                         };
+                        if let Some(name) = builtin {
+                            let kind = match name.as_str() {
+                                "Record" => ExprKind::Record(self.parse_record_of_args()?),
+                                "Map" => ExprKind::Map(self.parse_map_of_args()?),
+                                "Tuple" => ExprKind::Tuple(self.parse_args()?),
+                                "Array" => ExprKind::Call("@builtin/Array.of".into(), self.parse_args()?),
+                                "List" => ExprKind::Call("@builtin/List.of".into(), self.parse_args()?),
+                                _ => unreachable!(),
+                            };
+                            let symbol = match name.as_str() {
+                                "Record" => "Record",
+                                "Map" => "Map",
+                                "Tuple" => "Tuple",
+                                "Array" => "Array",
+                                "List" => "List",
+                                _ => unreachable!(),
+                            };
+                            if !self.factories_seen.contains(&symbol) {
+                                self.factories_seen.push(symbol);
+                            }
+                            e = Expr {kind, pos: dot};
+                        } else {
+                            let args = self.parse_args()?;
+                            e = Expr {
+                                kind: ExprKind::MethodCall(Box::new(e), member, args),
+                                pos: dot,
+                            };
+                        }
                     } else {
                         e = Expr {
                             kind: ExprKind::Member(Box::new(e), member),

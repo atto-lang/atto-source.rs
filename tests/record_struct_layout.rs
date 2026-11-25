@@ -218,12 +218,18 @@ fn no_excessive_static_shape_or_field_allocation() {
 }
 
 #[test]
-fn fixed_slot_plan_is_not_guest_codegen_authorization() {
-    // The current Rust/browser compiler intentionally rejects allocation
-    // of records/maps/structs. A host-only shape plan is no permission to
-    // emit an object with fabricated offsets or bypass ownership.
-    let code = "fnc main(): int {let Record r = {name: \"Atto\", age: 3}; return 0;}";
-    let err = atto_compiler::compile(code).expect_err("Record guest lowering not yet supported");
+fn closed_scalar_record_is_executable_but_unresolved_record_layout_stays_blocked() {
+    // The new compiler-authenticated closed Record profile lowers static
+    // int/string fields to the same checked direct-offset guest field ABI
+    // as the restricted nominal class path, not a Map or fabricated offset.
+    let code = "fnc main(): int {let Record r = {name: \"Atto\", age: 3}; return r.age;}";
+    let wasm = atto_compiler::compile(code).expect("scalar Record guest ABI is implemented");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(wasm, atto_compiler::compile(code).unwrap());
+
+    let unsupported = "fnc main(): int {let Record r = {children: [1,2]}; return 0;}";
+    let err = atto_compiler::compile(unsupported)
+        .expect_err("nested unverified Record allocation must produce no guest");
     assert_eq!(err.code, "E_UNSUPPORTED");
 }
 
