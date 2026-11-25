@@ -55,7 +55,7 @@ pub mod layout_plan;
 pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
-/// Lock-pinned registry namespace graph; no runtime or guest package linking.
+/// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
 pub mod registry_namespace;
 #[cfg(target_os = "linux")]
 mod secure_fs;
