@@ -648,8 +648,8 @@ fn frozen_generic_class_source_arity_and_scalar_guests() {
     let prefix="import [class models.Container] from pkg '@org/project/package'; ";
     let guests=[
         (S::Int,"val c: Container[int] = Container[int].new(); return c.echo(42);"),
-        (S::Bool,"val c = Container[bool].new(); if c.echo(true) { return 42; } return 0;"),
-        (S::String,"val c = Container[string].new(); val v = c.echo(\"answer\"); if v == \"answer\" { return 42; } return 0;"),
+        (S::Bool,"val c = Container[bool].new(); if c.echo(true) then return 42; fi return 0;"),
+        (S::String,"val c = Container[string].new(); val v = c.echo(\"answer\"); if v == \"answer\" then return 42; fi return 0;"),
     ];
     for (i,(scalar,root)) in guests.iter().enumerate(){
         let guest=format!("{prefix}pub fnc main(): int {{ {root} }}");
@@ -694,7 +694,7 @@ fn frozen_generic_instances_share_executable_but_not_nominal_identity() {
     let l=lock(manifest,&inputs);
     let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
     let prefix="import [class models.Container as C] from pkg '@org/project/package'; import [class models.Container as Again] from pkg '@org/project/package'; ";
-    let guest=format!("{prefix}pub fnc main(): int {{ val a: C[int] = Again[int].new(); val b = C[bool].new(); val c = C[string].new(); if b.echo(true) && c.echo(\"ok\") == \"ok\" {{ return a.echo(42); }} return 0; }}");
+    let guest=format!("{prefix}pub fnc main(): int {{ val a: C[int] = Again[int].new(); val b = C[bool].new(); val c = C[string].new(); if b.echo(true) && c.echo(\"ok\") == \"ok\" then return a.echo(42); fi return 0; }}");
     let wasm=p.compile_guest_instances(&guest).unwrap();
     assert!(wasm.starts_with(b"\0asm"));
     assert_eq!(wasm,p.compile_guest_instances(&guest).unwrap());
