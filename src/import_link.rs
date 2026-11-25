@@ -67,6 +67,7 @@ struct Import {
     path: PathBuf,
     namespace: Option<String>,
     names: Vec<(String, String)>,
+    typed: Option<crate::import_v2::MixedImport>,
     pos: Pos,
 }
 struct FileUnit {
@@ -90,6 +91,19 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
     while word(toks.get(i), "import") {
         let pos = toks[i].pos;
         i += 1;
+        if crate::import_v2::is_mixed(toks, i) {
+            let (typed, end) = crate::import_v2::parse_mixed(toks, i)?;
+            if !crate::import_v2::local_function_group(&typed) {
+                return Err(diagnostic(pos, "E_UNSUPPORTED", "only grouped local direct functions are linked"));
+            }
+            let crate::import_v2::Source::Local(value) = &typed.source else { unreachable!() };
+            let path = import_path(logical, value, pos)?;
+            let names = typed.selectors.iter().map(|s| (s.path.clone(), s.binding.clone())).collect();
+            result.push(Import { path, namespace: None, names, typed: Some(typed), pos });
+            if result.len() > MAX_BINDINGS { return Err(diagnostic(pos, "E_SOURCE_LIMIT", "too many import declarations")); }
+            i = end;
+            continue;
+        }
         let mut namespace = None;
         let mut names = Vec::new();
         if toks.get(i).is_some_and(|t| t.tok == Tok::Star) {
@@ -128,9 +142,17 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
             return Err(diagnostic(pos, "E_SYNTAX", "expected ';' after file import"));
         }
         i += 1;
-        result.push(Import { path, namespace, names, pos });
+        result.push(Import { path, namespace, names, typed: None, pos });
         if result.len() > MAX_BINDINGS {
             return Err(diagnostic(pos, "E_SOURCE_LIMIT", "too many import declarations"));
+        }
+    }
+    // Validate the complete binding inventory before any loader invocation.
+    let mut names = BTreeSet::new();
+    for imp in &result {
+        for name in imp.namespace.iter().chain(imp.names.iter().map(|(_, local)| local)) {
+            if !names.insert(name) { return Err(diagnostic(imp.pos, "E_DUPLICATE", "duplicate file import binding")); }
+            if names.len() > MAX_BINDINGS { return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "too many file import bindings")); }
         }
     }
     let mut remaining = toks[..prefix_end].to_vec();
@@ -284,6 +306,16 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             id
         };
         let file = &units[id];
+        if let Some(typed) = &imp.typed {
+            use crate::static_import_graph::{ExportView, Origin, Scope};
+            use crate::import_v2::{Kind, Source};
+            let Source::Local(requested) = &typed.source else { unreachable!() };
+            // Actual parsed file declarations, not caller-supplied export metadata.
+            // The existing trusted loader authorizes the canonical relative path.
+            let mut view = ExportView::new(Origin::Local(requested.clone()));
+            for (name, public) in &file.funcs { view.add(name, name, Kind::Fnc, *public)?; }
+            Scope::new().bind_mixed(&view, typed)?;
+        }
         let mut add = |local: String, export: Option<String>| -> R<()> {
             if root_names.contains(&local) || bound.contains_key(&local) {
                 return Err(diagnostic(imp.pos, "E_DUPLICATE", format!("import '{local}' collides with local declaration")));
