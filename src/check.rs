@@ -2307,11 +2307,9 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
         TExpr::IntToFloat(a) | TExpr::FNeg(a) |
-        TExpr::Neg(a) | TExpr::Not(a) | TExpr::ErrorMessage(a) | TExpr::ErrorMessage(a) |
+        TExpr::Neg(a) | TExpr::Not(a) | TExpr::ErrorMessage(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
-        TExpr::ErrorSameIdentity(a, b) =>
-            pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
         TExpr::ErrorSameIdentity(a, b) =>
             pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
         TExpr::Bin(op, a, b) => {
