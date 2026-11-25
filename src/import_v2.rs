@@ -15,6 +15,7 @@ pub struct Selection {
     pub kind: Kind,
     pub path: String,
     pub binding: String,
+    pub explicit_alias: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source { Builtin(String), Local(String), Package(String) }
@@ -83,13 +84,14 @@ impl Cursor<'_> {
     fn selector(&mut self, kind: Kind, out: &mut Vec<Selection>) -> R<()> {
         if out.len() >= MAX_ITEMS { return Err(self.err("E_SOURCE_LIMIT", "too many mixed import selectors")); }
         let parts = self.path()?;
-        let binding = if self.word("as") {
+        let explicit_alias = self.word("as");
+        let binding = if explicit_alias {
             if kind == Kind::Namespace { self.path()?.join(".") } else { self.ident()? }
         } else if kind == Kind::Namespace { parts.join(".") } else { parts.last().unwrap().clone() };
         if out.iter().any(|s| s.binding == binding) {
             return Err(self.err("E_DUPLICATE", "duplicate mixed import binding"));
         }
-        let selection = Selection { kind, path: parts.join("."), binding };
+        let selection = Selection { kind, path: parts.join("."), binding, explicit_alias };
         if out.iter().any(|s| obstructs(s, &selection)) {
             return Err(self.err("E_DUPLICATE", "non-namespace import obstructs qualified binding"));
         }
