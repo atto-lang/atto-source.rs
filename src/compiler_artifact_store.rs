@@ -182,4 +182,69 @@ mod tests {
         assert_eq!(store.publish(&KEY,&data,&SECRET).unwrap_err().kind(),io::ErrorKind::WouldBlock);
         drop(lock);store.publish(&KEY,&data,&SECRET).unwrap();
     }
+
+    // Fixture-only compiler integration. No public cache-load CLI or production
+    // key provisioning. Bind to the actual test executable and exact literal
+    // source; no ambient imports or user-configurable target flags in this lane.
+    const GUEST: &str = "pub fnc main(): int { return 6 * 7; }";
+    fn guest_key(source:&str)->[u8;32] {
+        use crate::{compiler_cache_key as k,sha256::hex_digest};
+        let mut binary=Vec::new();
+        File::open("/proc/self/exe").unwrap().take(128*1024*1024+1).read_to_end(&mut binary).unwrap();
+        assert!(binary.len()<=128*1024*1024);
+        let compiler=hex_digest(&binary);
+        let toolchain=hex_digest(b"fixture: same executable contains compiler and code emitter");
+        let target=hex_digest(format!("fixture: wasm32/{}; posix",crate::ABI_VERSION).as_bytes());
+        let config=hex_digest(b"fixture: literal scalar source; no host imports; compile()");
+        let sources=hex_digest(source.as_bytes());
+        let bindings=hex_digest(b"fixture: no imports");
+        let key=k::encode(&k::Input{stage:"wasm-module",owner:"@test/cache/fixture",
+            unit_kind:"source-unit",unit:"main.atto",compiler:&compiler,toolchain:&toolchain,
+            target:&target,configuration:&config,sources:&sources,bindings:&bindings,
+            generated:None,dependencies:&[]}).unwrap();
+        let mut result=[0u8;32];
+        for (i,byte) in result.iter_mut().enumerate(){
+            *byte=u8::from_str_radix(&key[i*2..i*2+2],16).unwrap();
+        }
+        result
+    }
+    fn execute_wasm(path:&Path){
+        let script="const fs=require('node:fs'),assert=require('node:assert/strict');const b=fs.readFileSync(process.argv[1]);assert.ok(WebAssembly.validate(b));const m=new WebAssembly.Module(b);assert.deepEqual(WebAssembly.Module.imports(m),[]);const i=new WebAssembly.Instance(m,{});assert.equal(i.exports.main(),42n);assert.equal(i.exports.panic_code.value,0);console.log('CACHE_WASM_EXECUTED|result=42')";
+        let status=Command::new("node").args(["-e",script]).arg(path).status().unwrap();
+        assert!(status.success());
+    }
+    #[test]
+    fn compiled_guest_cross_process_fixture(){
+        let t=Temp::new();
+        let store=ArtifactStore::open(&t.0).unwrap();
+        let key=guest_key(GUEST);
+        let changed=guest_key("pub fnc main(): int { return 43; }");
+        assert_ne!(key,changed);
+        assert!(store.load(&key,&SECRET).unwrap().is_none());
+        let cold=crate::compile(GUEST).expect("real compiler rejected fixture");
+        store.publish(&key,&receipt::seal(&key,&cold,&SECRET).unwrap(),&SECRET).unwrap();
+        let cold_path=t.0.join("cold.wasm");
+        fs::write(&cold_path,&cold).unwrap();execute_wasm(&cold_path);
+        assert!(store.load(&changed,&SECRET).unwrap().is_none());
+        let status=Command::new(std::env::current_exe().unwrap()).args(["--exact","compiler_artifact_store::tests::compiled_guest_child","--nocapture"])
+            .env("ATTO_CACHE_GUEST_ROOT",&t.0).status().unwrap();
+        assert!(status.success());
+        let warm=fs::read(t.0.join("warm.wasm")).unwrap();
+        assert_eq!(cold,warm);
+        assert_eq!(cold,crate::compile(GUEST).unwrap());
+        println!("CACHE_GUEST_FIXTURE|cold=compiled|warm=loaded-in-second-process|byte-identical|result=42");
+    }
+    #[test]
+    fn compiled_guest_child(){
+        if let Some(root)=std::env::var_os("ATTO_CACHE_GUEST_ROOT"){
+            let root=Path::new(&root);
+            let store=ArtifactStore::open(root).unwrap();
+            let bytes=store.load(&guest_key(GUEST),&SECRET).unwrap().expect("expected authenticated hit");
+            let path=root.join("warm.wasm");
+            fs::write(&path,bytes).unwrap();
+            execute_wasm(&path);
+            // This child deliberately never invokes the compiler.
+            println!("CACHE_GUEST_CHILD|verified-hit|no-compile");
+        }
+    }
 }
