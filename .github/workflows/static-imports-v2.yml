@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'src/import_v2.rs'
+      - 'src/registry_namespace.rs'
+      - 'src/package_resolver.rs'
+      - 'tests/registry_namespace.rs'
       - 'src/import_link.rs'
       - 'tests/relative_file_imports.rs'
       - 'tests/layout_plan.rs'
@@ -41,7 +44,7 @@ jobs:
           rustc --version
       - name: Run focused and compatibility compiler suites
         run: |
-          cargo test --locked --no-fail-fast --test layout_plan --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
+          cargo test --locked --no-fail-fast --test layout_plan --test registry_namespace --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
       - name: Compile real builtin guests and run exported main
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
