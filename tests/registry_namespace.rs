@@ -767,3 +767,36 @@ fn external_class_lexical_read_loans_require_read_only_receiver_proof() {
         assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_BORROW");
     }
 }
+
+#[test]
+fn external_class_exclusive_lexical_loan_checks_receiver_effects_and_conflicts() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } pub adjust(int y): int { self.value = self.value+y; return self.value; } pub opaque(): int { return self.answer(22); } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    for (i,body) in [
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.adjust(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.adjust(1)+b.answer(0);",
+    ].iter().enumerate(){
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-exclusive-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for body in [
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return a.answer(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; val c: Data = borrow! a; return c.answer(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! a; val c: Data = borrow! mut a; return c.answer(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; val c: Data = borrow! mut a; return c.answer(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.opaque();",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; val c: Data = borrow! b; return c.answer(22);",
+        "const a: Data = new Data(); val b: Data = borrow! mut a; return b.adjust(22);",
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_BORROW","{source}");
+    }
+}

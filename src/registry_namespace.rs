@@ -636,7 +636,24 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 _=>false,
             }
         }
-        let call=|dot:usize,out:&mut Vec<Token>,class:&crate::ast::ClassDecl,read_only:bool|->R<usize>{
+        // Exclusive loans admit a closed scalar receiver effect: a single
+        // read expression, optionally preceded by one direct self field write.
+        // No calls, reference-valued fields, allocation or escaping handles.
+        // The ordinary checker independently validates writable field mode.
+        fn write_proven(class:&crate::ast::ClassDecl,method:&crate::ast::Method)->bool {
+            use crate::ast::{Stmt,ExprKind,Type};
+            match method.body.as_slice() {
+                [Stmt::Return(Some(value),_)]=>read_expr(value,class,method),
+                [Stmt::FieldAssign{target,field,value,..},Stmt::Return(Some(result),_)]=>
+                    matches!(&target.kind,ExprKind::SelfRef)
+                    && class.fields.iter().any(|f|f.name==*field && f.ty==Type::Int)
+                    && read_expr(value,class,method)&&read_expr(result,class,method),
+                _=>false,
+            }
+        }
+        #[derive(Clone,Copy)]
+        enum Access { Owned, Read, Exclusive }
+        let call=|dot:usize,out:&mut Vec<Token>,class:&crate::ast::ClassDecl,access:Access|->R<usize>{
             if root.get(dot).map(|x|&x.tok)!=Some(&Tok::Dot){return Err(denied());}
             let member=match root.get(dot+1).map(|x|&x.tok){
                 Some(Tok::Ident(s))=>s.as_str(),_=>return Err(denied()),
@@ -655,13 +672,16 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             if method.ret!=crate::ast::Type::Int || method.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
                 return Err(err("E_TYPE","external method must have scalar int signature"));
             }
-            if read_only {
+            if matches!(access,Access::Read) {
                 let [crate::ast::Stmt::Return(Some(value),_)]=method.body.as_slice() else {
                     return Err(err("E_BORROW","read loan method lacks checked read-only receiver proof"));
                 };
                 if !read_expr(value,class,method){
                     return Err(err("E_BORROW","read loan method lacks checked read-only receiver proof"));
                 }
+            }
+            if matches!(access,Access::Exclusive) && !write_proven(class,method) {
+                return Err(err("E_BORROW","exclusive loan method lacks checked scalar receiver effect proof"));
             }
             out.extend_from_slice(&root[dot..after]);
             Ok(after)
@@ -726,7 +746,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                     || !word(root.get(j+3),"return") || !word(root.get(j+4),&param){return Err(denied());}
                 helper_tokens.extend([id(&param,pos),token(Tok::Colon,pos),id(&units[&key].generated,pos),
                     token(Tok::RParen,pos),token(Tok::Colon,pos),id("int",pos),token(Tok::LBrace,pos),id("return",pos),id(&param,pos)]);
-                j=call(j+5,&mut helper_tokens,&units[&key].class,false)?;
+                j=call(j+5,&mut helper_tokens,&units[&key].class,Access::Owned)?;
             }
             if root.get(j).map(|t|&t.tok)!=Some(&Tok::Semi) || root.get(j+1).map(|t|&t.tok)!=Some(&Tok::RBrace){return Err(denied());}
             helper_tokens.extend_from_slice(&root[j..j+2]);j+=2;
@@ -739,21 +759,31 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         let mut caller=main.to_vec();
         j=main_end;
         let mut locals:BTreeMap<String,Key>=BTreeMap::new();
-        let mut loans:BTreeMap<String,String>=BTreeMap::new();
+        let mut mutable_owners=BTreeSet::new();
+        let mut loans:BTreeMap<String,(String,bool)>=BTreeMap::new();
         while word(root.get(j),"val") || word(root.get(j),"const") {
             if locals.len()>=16{return Err(err("E_SOURCE_LIMIT","external class local budget exceeded"));}
-            let local=match root.get(j+1).map(|x|&x.tok){
+            let explicit_mut=word(root.get(j+1),"mut");
+            let local_at=j+1+usize::from(explicit_mut);
+            let local=match root.get(local_at).map(|x|&x.tok){
                 Some(Tok::Ident(s)) if crate::static_import_graph::valid_component(s) && !scope.has_root(s) && !helpers.contains_key(s)=>s,
                 _=>return Err(denied()),
             };
-            if root.get(j+2).map(|x|&x.tok)!=Some(&Tok::Colon){return Err(denied());}
-            let eq=root[j+3..].iter().position(|t|t.tok==Tok::Assign).map(|k|j+3+k).ok_or_else(denied)?;
-            let annotation=path_tokens(&root[j+3..eq])?;
+            if root.get(local_at+1).map(|x|&x.tok)!=Some(&Tok::Colon){return Err(denied());}
+            let type_at=local_at+2;
+            let eq=root[type_at..].iter().position(|t|t.tok==Tok::Assign).map(|k|type_at+k).ok_or_else(denied)?;
+            let annotation=path_tokens(&root[type_at..eq])?;
             let (p,target)=resolve(&annotation)?;
             let key=load(p,&target,&mut units)?;
             if locals.insert(local.clone(),key.clone()).is_some(){return Err(err("E_DUPLICATE","duplicate external class local"));}
-            caller.extend_from_slice(&root[j..j+3]);
-            caller.push(id(&units[&key].generated,root[j+3].pos));
+            // val already denotes a mutable referent in this parser; do
+            // not emit a redundant val mut qualifier. const mut is retained.
+            if explicit_mut && word(root.get(j),"val"){
+                caller.push(root[j].clone());
+                caller.extend_from_slice(&root[local_at..type_at]);
+            }else{caller.extend_from_slice(&root[j..type_at]);}
+            if explicit_mut {mutable_owners.insert(local.clone());}
+            caller.push(id(&units[&key].generated,root[type_at].pos));
             caller.push(root[eq].clone());
             if word(root.get(eq+1),"new"){
                 let (after,actual)=construct(eq+1,&mut caller,&mut units)?;
@@ -761,16 +791,23 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 j=after;
             }else if word(root.get(eq+1),"borrow"){
                 if root.get(eq+2).map(|t|&t.tok)!=Some(&Tok::Bang){return Err(denied());}
-                if word(root.get(eq+3),"mut"){return Err(err("E_BORROW","external mutable loans require verified receiver effects"));}
-                let owner=match root.get(eq+3).map(|t|&t.tok){
+                let mutable=word(root.get(eq+3),"mut");
+                let owner_at=eq+3+usize::from(mutable);
+                let owner=match root.get(owner_at).map(|t|&t.tok){
                     Some(Tok::Ident(s))=>s,
-                    _=>return Err(err("E_BORROW","external read loan requires a named owner")),
+                    _=>return Err(err("E_BORROW","external loan requires a named owner")),
                 };
                 if owner==local || loans.contains_key(owner){return Err(err("E_BORROW","self borrow or reborrow is not admitted"));}
-                let actual=locals.get(owner).ok_or_else(||err("E_BORROW","external read loan owner is not bound"))?;
-                if actual!=&key{return Err(err("E_TYPE","different nominal read loan identity"));}
-                loans.insert(local.clone(),owner.clone());
-                caller.extend_from_slice(&root[eq+1..eq+4]);j=eq+4;
+                let actual=locals.get(owner).ok_or_else(||err("E_BORROW","external loan owner is not bound"))?;
+                if actual!=&key{return Err(err("E_TYPE","different nominal loan identity"));}
+                if loans.values().any(|(existing,write)|existing==owner && (mutable||*write)){
+                    return Err(err("E_BORROW","conflicting external exclusive loan"));
+                }
+                if mutable && !mutable_owners.contains(owner){
+                    return Err(err("E_BORROW","exclusive loan requires explicit mutable owner"));
+                }
+                loans.insert(local.clone(),(owner.clone(),mutable));
+                caller.extend_from_slice(&root[eq+1..owner_at+1]);j=owner_at+1;
             }else{
                 let h=match root.get(eq+1).map(|t|&t.tok){Some(Tok::Ident(h))=>h,_=>return Err(denied())};
                 let helper=helpers.get(h).filter(|h|h.factory).ok_or_else(denied)?;
@@ -786,7 +823,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         caller.push(root[j].clone());j+=1;
         if locals.is_empty(){
             let (after,key)=construct(j,&mut caller,&mut units)?;
-            j=call(after,&mut caller,&units[&key].class,false)?;
+            j=call(after,&mut caller,&units[&key].class,Access::Owned)?;
         }else{
             let mut count=0usize;
             let mut moved=BTreeSet::new();
@@ -795,7 +832,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 if let Some(helper)=helpers.get(name).filter(|h|!h.factory){
                     if root.get(j+1).map(|t|&t.tok)!=Some(&Tok::LParen)||root.get(j+3).map(|t|&t.tok)!=Some(&Tok::RParen){return Err(denied());}
                     let local=match root.get(j+2).map(|t|&t.tok){Some(Tok::Ident(s))=>s,_=>return Err(denied())};
-                    if loans.contains_key(local)||loans.values().any(|owner|owner==local){
+                    if loans.contains_key(local)||loans.values().any(|(owner,_)|owner==local){
                         return Err(err("E_BORROW","external loan or borrowed owner cannot transfer"));
                     }
                     let actual=locals.remove(local).ok_or_else(||err("E_OWNERSHIP","external object argument is unknown or already moved"))?;
@@ -807,8 +844,16 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                     if moved.contains(name){return Err(err("E_OWNERSHIP","external object already moved to helper"));}
                     let key=locals.get(name).ok_or_else(denied)?;
                     caller.push(id(name,root[j].pos));
-                    let read_only=loans.contains_key(name)||loans.values().any(|owner|owner==name);
-                    j=call(j+1,&mut caller,&units[key].class,read_only)?;
+                    if loans.values().any(|(owner,write)|owner==name && *write){
+                        return Err(err("E_BORROW","owner access conflicts with live exclusive loan"));
+                    }
+                    let access=match loans.get(name){
+                        Some((_,true))=>Access::Exclusive,
+                        Some((_,false))=>Access::Read,
+                        None if loans.values().any(|(owner,_)|owner==name)=>Access::Read,
+                        None=>Access::Owned,
+                    };
+                    j=call(j+1,&mut caller,&units[key].class,access)?;
                 }
                 count+=1;
                 if count>32{return Err(err("E_SOURCE_LIMIT","external class call budget exceeded"));}
