@@ -106,6 +106,10 @@ pub struct Target {
     pub declaration: String,
     pub kind: Kind,
 }
+/// Opaque resolver identity; not a runtime type descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NominalId(Target);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier { Implicit, Deliberate, Explicit }
 
@@ -189,11 +193,17 @@ impl Scope {
         if resolved.target.origin != view.origin {
             return Err(err("E_IMPORT_PATH", "export view does not match selected origin"));
         }
-        if resolved.remainder.is_empty() { return Ok(resolved.target); }
+        // Revalidate exact bindings too: a lexical alias or a caller-supplied
+        // Target is not proof that a declaration remains public in this view.
         let base = &resolved.target.declaration;
-        if !base.is_empty() && view.lookup(base)? != resolved.target {
-            return Err(err("E_IMPORT_KIND", "canonical namespace view mismatch"));
+        if base.is_empty() {
+            if resolved.target.kind != Kind::Namespace || !matches!(&resolved.target.origin, Origin::External(_)) {
+                return Err(err("E_IMPORT_KIND", "only external package namespaces have an empty declaration"));
+            }
+        } else if view.lookup(base)? != resolved.target {
+            return Err(err("E_IMPORT_KIND", "canonical declaration view mismatch"));
         }
+        if resolved.remainder.is_empty() { return Ok(resolved.target); }
         let key = if base.is_empty() { resolved.remainder }
             else { format!("{base}.{}", resolved.remainder) };
         view.lookup(&key)
@@ -206,6 +216,17 @@ impl Scope {
         let view = matching.next().ok_or_else(|| err("E_UNBOUND", "missing authenticated export view"))?;
         if matching.next().is_some() { return Err(err("E_AMBIGUOUS", "duplicate authenticated export view")); }
         self.resolve_export(reference, view)
+    }
+
+    /// Resolve a nominal declaration identity, not its runtime layout or ABI.
+    /// General type aliases are intentionally excluded until their expansion
+    /// rules are checked. The authenticated package digest is part of identity.
+    pub fn resolve_nominal(&self, reference: &str, view: &ExportView) -> R<NominalId> {
+        let target = self.resolve_export(reference, view)?;
+        if !matches!(target.kind, Kind::Class | Kind::Enum | Kind::Actor) {
+            return Err(err("E_IMPORT_KIND", "expected nominal class, enum or actor"));
+        }
+        Ok(NominalId(target))
     }
 
     /// Create a namespace alias after resolution of a checked namespace node.
