@@ -431,7 +431,11 @@ fn pinned_namespace_private_members_cross_files_but_not_boundaries() {
         "use namespace http; fnc secret(int x): int { return x+1; }",
     ].iter().enumerate(){
         let mut inputs=INPUTS.to_vec();
-        inputs[0].source="use namespace http; pub fnc answer(): int { return secret(41); }";
+        inputs[0].source=if i==0 {
+            "use namespace http; pub fnc answer(): int { return secret(40)+OFFSET; }"
+        }else{
+            "use namespace http; pub fnc answer(): int { return secret(41); }"
+        };
         inputs.push(SnapshotSource{path:"src/http/private.atto",source:provider});
         let l=lock(MANIFEST,&inputs);
         let digest=hex_digest(l.as_bytes());
