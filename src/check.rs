@@ -3936,11 +3936,9 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                // Canonical int / int produces binary64, never integer
-                // truncation. The existing IntToFloat typed IR already
-                // lowers to signed f64.convert_i64_s in wasm.rs. Both operands
-                // are converted exactly once before the f64 division.
-                if a.ty != Type::Int || b.ty != Type::Int || *op == BinOp::Div {
+                // Spec chapter 17: int/int is checked signed quotient.
+                // Preserve the existing floating path when a float is present.
+                if a.ty != Type::Int || b.ty != Type::Int {
                     // Java binary numeric promotion: an int operand widens to float.
                     let widen = |v: TE| -> TE {
                         if v.ty == Type::Int {
@@ -3964,8 +3962,7 @@ impl<'a> FnCx<'a> {
                 }
             }
             let ty = match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
-                BinOp::Div => unreachable!("division widens its operands before integer lowering"),
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => Type::Int,
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr =>
                     unreachable!("bitwise operations handled before numeric promotion"),
