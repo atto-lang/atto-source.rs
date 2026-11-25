@@ -201,15 +201,14 @@ int atto_actor_commit(atto_actor_db *store, const char *actor_id, uint64_t epoch
         if (!old_tag || tag_length!=8) {
             sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_CORRUPT);
         }
-        if (memcmp(old_tag,tag,8)!=0) {
-            sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_SCHEMA);
-        }
+        uint64_t stored_schema=le64(old_tag);
         const void *old_data=sqlite3_column_blob(st,2);
         int old_length=sqlite3_column_bytes(st,2);
         if (!old_data || old_length<27 || old_length>(int)MAX_SNAPSHOT_BYTES ||
-            atto_actor_validate_snapshot(old_data,(size_t)old_length,schema_id)!=ATTO_ACTOR_STORE_OK) {
+            atto_actor_validate_snapshot(old_data,(size_t)old_length,stored_schema)!=ATTO_ACTOR_STORE_OK) {
             sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_CORRUPT);
         }
+        if (stored_schema!=schema_id) {sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_SCHEMA);}
         sequence=(uint64_t)old;
     } else if (rc!=SQLITE_DONE) {sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_IO);}
     sqlite3_finalize(st);
@@ -251,13 +250,14 @@ int atto_actor_load(atto_actor_db *store, const char *actor_id, uint64_t schema_
     const void *data=sqlite3_column_blob(st,1);
     int tlen=sqlite3_column_bytes(st,0),length=sqlite3_column_bytes(st,1);
     sqlite3_int64 seq=sqlite3_column_int64(st,2);
-    unsigned char expected[8];schema_bytes(schema_id,expected);
-    if (tlen!=8 || !tag || memcmp(tag,expected,8)!=0) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_SCHEMA;}
+    if (tlen!=8 || !tag) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_CORRUPT;}
+    uint64_t stored_schema=le64(tag);
     if (length<27 || length>(int)MAX_SNAPSHOT_BYTES || !data || seq<1) {
         sqlite3_finalize(st);return ATTO_ACTOR_STORE_CORRUPT;
     }
-    int valid=atto_actor_validate_snapshot(data,(size_t)length,schema_id);
-    if (valid!=ATTO_ACTOR_STORE_OK) {sqlite3_finalize(st);return valid;}
+    int valid=atto_actor_validate_snapshot(data,(size_t)length,stored_schema);
+    if (valid!=ATTO_ACTOR_STORE_OK) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_CORRUPT;}
+    if (stored_schema!=schema_id) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_SCHEMA;}
     void *copy=malloc((size_t)length);
     if (!copy) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_RESOURCE;}
     memcpy(copy,data,(size_t)length);

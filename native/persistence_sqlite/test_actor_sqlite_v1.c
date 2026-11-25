@@ -140,6 +140,22 @@ int main(void){
     /* A valid new checkpoint must not silently erase corrupted durable history. */
     sqlite3 *raw=NULL;
     assert(sqlite3_open(path,&raw)==SQLITE_OK);
+    /* The stored tag must agree with the embedded schema even if the caller
+     * requests another schema. Corruption is not a migration opportunity. */
+    assert(sqlite3_exec(raw,"UPDATE atto_actor_snapshots SET schema_tag=zeroblob(8) WHERE actor_id='actor:1';",NULL,NULL,NULL)==SQLITE_OK);
+    must(atto_actor_load(db,"actor:1",SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"inconsistent stored schema tag on load");
+    must(atto_actor_commit(db,"actor:1",new_epoch,4,SCHEMA,two,sizeof(two),&seq),
+         ATTO_ACTOR_STORE_CORRUPT,"inconsistent stored schema tag on commit");
+    assert(seq==0);
+    unsigned char zero_schema[36];snapshot(0,123,zero_schema);
+    must(atto_actor_commit(db,"actor:1",new_epoch,4,0,zero_schema,sizeof(zero_schema),&seq),
+         ATTO_ACTOR_STORE_CORRUPT,"caller matching corrupt tag cannot overwrite");
+    sqlite3_stmt *restore=NULL;
+    assert(sqlite3_prepare_v2(raw,"UPDATE atto_actor_snapshots SET schema_tag=?1 WHERE actor_id='actor:1';",-1,&restore,NULL)==SQLITE_OK);
+    assert(sqlite3_bind_blob(restore,1,two+9,8,SQLITE_TRANSIENT)==SQLITE_OK);
+    assert(sqlite3_step(restore)==SQLITE_DONE);
+    sqlite3_finalize(restore);
     assert(sqlite3_exec(raw,"UPDATE atto_actor_snapshots SET snapshot=zeroblob(36) WHERE actor_id='actor:1';",NULL,NULL,NULL)==SQLITE_OK);
     assert(sqlite3_close(raw)==SQLITE_OK);
     must(atto_actor_commit(db,"actor:1",new_epoch,4,SCHEMA,two,sizeof(two),&seq),
