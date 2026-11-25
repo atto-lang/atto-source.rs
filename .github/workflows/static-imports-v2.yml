@@ -129,7 +129,7 @@ jobs:
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
           set -eu
-          test "$(git hash-object tests/shared-import-v2/fixtures/import-v2/cases.json)" = a992e204e981d06aa633023bbc77a4b4e9cab4e5
+          test "$(git hash-object tests/shared-import-v2/fixtures/import-v2/cases.json)" = af8b7feb26562780fd06159029b9bb6c465eacc7
           test "$(git hash-object tests/shared-import-v2/tools/run-static-import-v2-rust-guests.mjs)" = 8d22505781e92798993b9b587c6a792806999567
           cargo build --locked --bin attoc
           node tests/shared-import-v2/tools/run-static-import-v2-rust-guests.mjs --compiler target/debug/attoc
