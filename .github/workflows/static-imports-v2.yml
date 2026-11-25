@@ -3,6 +3,10 @@ on:
   pull_request:
     paths:
       - 'src/import_v2.rs'
+      - 'src/import_link.rs'
+      - 'tests/relative_file_imports.rs'
+      - 'tests/layout_plan.rs'
+      - 'tests/profile_cli.rs'
       - 'src/static_import_graph.rs'
       - 'tests/static_import_graph.rs'
       - 'src/target_syntax.rs'
@@ -36,7 +40,7 @@ jobs:
           rustc --version
       - name: Run focused and compatibility compiler suites
         run: |
-          cargo test --locked --no-fail-fast --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
+          cargo test --locked --no-fail-fast --test layout_plan --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link
       - name: Compile real builtin guests and run exported main
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
@@ -71,3 +75,20 @@ jobs:
       - name: Legacy core alloc std real guest regression suite
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: node tests/atto_libraries.mjs target/debug/attoc
+      - name: Execute grouped relative function guests and rejection
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./import-v2-relative.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s\n' 'fnc twice(int x): int { return x+x; }' 'pub fnc square(int x): int { return x*x; }' 'pub fnc add(int x): int { return twice(x); }' > "$work/math.atto"
+          for clause in "import fnc [square as calc, add] from './math.atto';" "import fnc (square as calc, add) from './math.atto';" "import [fnc square as calc, fnc add] from './math.atto';" "import ([fnc square as calc, add]) from './math.atto';"; do
+            printf '%s\n%s\n' "$clause" 'pub fnc main(): int { return calc(6)+add(3); }' > "$work/main.atto"
+            target/debug/attoc "$work/main.atto" -o "$work/main.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); if(!WebAssembly.validate(b)||new WebAssembly.Instance(new WebAssembly.Module(b),{}).exports.main()!==42n) throw Error("bad guest"); console.log("grouped relative guest main=42")' "$work/main.wasm"
+          done
+          printf '%s\n%s\n' "import fnc [square, twice] from './math.atto';" 'pub fnc main(): int { return square(6); }' > "$work/negative.atto"
+          if target/debug/attoc "$work/negative.atto" -o "$work/negative.wasm" 2>"$work/negative.log"; then exit 1; fi
+          test ! -e "$work/negative.wasm"
+          grep -F E_PRIVATE "$work/negative.log"
