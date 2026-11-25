@@ -133,3 +133,62 @@ fn external_source_alias_spellings_share_checked_identity_and_cycle_detection() 
         &[&p]).unwrap_err().code,"E_PRIVATE");
     assert_eq!(scope.resolve("ok").unwrap_err().code,"E_UNBOUND");
 }
+
+#[test]
+fn registry_guest_real_compiler_accepts_aliases_and_typed_functions() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let p=verify(MANIFEST,&INPUTS).unwrap();
+    let sources=[
+        "import pkg '@org/project/package'; pub fnc main(): int { return package.http.get(41); }",
+        "import pkg '@org/project/package' as vendor; define alias first = second; define alias vendor.http as second; pub fnc main(): int { return first.get(41); }",
+        "import fnc [http.get as fetch], namespace [http3] from pkg '@org/project/package'; pub fnc main(): int { return fetch(19)+http3.get(20); }",
+        "import namespace custom from pkg '@org/project/package/a/b/c'; pub fnc main(): int { return custom.get(39); }",
+    ];
+    for (i,source) in sources.iter().enumerate() {
+        let wasm=compile_registry_guest(source,&[&p]).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        assert_eq!(wasm,compile_registry_guest(source,&[&p]).unwrap());
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR") {
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-{i}.wasm")),wasm).unwrap();
+        }
+    }
+}
+#[test]
+fn distinct_registry_packages_link_without_ambient_identity_capture() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let p=verify(MANIFEST,&INPUTS).unwrap();
+    let other=MANIFEST.replace("@org/project/package","@other/project/package");
+    let mut inputs=INPUTS;
+    inputs[0].source="use namespace http; pub fnc get(int x): int { return x+5; }";
+    let l=lock(&other,&inputs);
+    let q=FrozenRegistry::verify("@other/project/package",&other,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+    let source="import pkg '@org/project/package'; import pkg '@other/project/package'; pub fnc main(): int { return org.project.package.http.get(18)+other.project.package.http.get(18); }";
+    let wasm=compile_registry_guest(source,&[&p,&q]).unwrap();
+    assert_eq!(wasm,compile_registry_guest(source,&[&q,&p]).unwrap());
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR") {
+        std::fs::write(std::path::Path::new(&dir).join("registry-distinct.wasm"),wasm).unwrap();
+    }
+    let ambiguous="import pkg '@org/project/package'; import pkg '@other/project/package'; pub fnc main(): int { return package.http.get(41); }";
+    assert_eq!(compile_registry_guest(ambiguous,&[&p,&q]).unwrap_err().code,"E_AMBIGUOUS");
+}
+#[test]
+fn registry_guest_rejects_private_unbound_forged_and_cycle_references() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let p=verify(MANIFEST,&INPUTS).unwrap();
+    for (source,code) in [
+        ("import pkg '@org/project/package'; pub fnc main(): int { return package.http.secret(42); }","E_PRIVATE"),
+        ("import pkg '@org/project/package'; pub fnc main(): int { return package.http.absent(42); }","E_UNBOUND"),
+        ("import pkg '@org/project/package' as vendor; pub fnc main(): int { return package.http.get(41); }","E_UNBOUND"),
+        ("import pkg '@org/project/package'; pub fnc main(): int { return __atto_registry_0.get(41); }","E_RESERVED"),
+        ("import pkg '@org/project/package'; define alias a as b; define alias b as c; define alias c as a; pub fnc main(): int { return 42; }","E_IMPORT_CYCLE"),
+        ("import pkg '@org/project/package'; pub fnc main(): int { return package; }","E_UNSUPPORTED"),
+        ("import pkg '@unknown/project/package'; pub fnc main(): int { return 42; }","E_UNBOUND"),
+    ] {
+        assert_eq!(compile_registry_guest(source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+    let mut changed=INPUTS;
+    changed[0].source="use namespace http; pub fnc get(int x): int { return capture(x); }";
+    let q=verify(MANIFEST,&changed).unwrap();
+    let source="import pkg '@org/project/package'; fnc capture(int x): int { return 42; } pub fnc main(): int { return package.http.get(1); }";
+    assert_eq!(compile_registry_guest(source,&[&q]).unwrap_err().code,"E_UNSUPPORTED");
+}
