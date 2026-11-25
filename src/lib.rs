@@ -63,6 +63,10 @@ mod secure_fs;
 pub mod sha256;
 /// Canonical cache-key envelope only; no artifact reuse authority.
 pub mod compiler_cache_key;
+/// Candidate trusted-ledger envelope only, no executable cache loading.
+pub mod compiler_artifact_receipt;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod compiler_artifact_store;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.

@@ -48,6 +48,7 @@ pub struct LockedRoot {
 }
 
 impl LockedRoot {
+    pub(crate) fn directory(&self) -> &File { &self.directory }
     pub fn open(path: &Path) -> R<Self> {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
