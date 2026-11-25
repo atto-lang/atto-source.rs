@@ -4048,7 +4048,7 @@ fn incr(name: String, pos: Pos, op: BinOp) -> Stmt {
     }
 }
 
-fn describe(t: &Tok) -> String {
+pub(crate) fn describe(t: &Tok) -> String {
     match t {
         Tok::Ident(s) => format!("'{s}'"),
         Tok::Int(_) => "an integer".into(),

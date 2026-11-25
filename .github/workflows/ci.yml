@@ -59,6 +59,12 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/bitwise_guest.mjs
+      - name: Execute experimental v2 READY and checked actor bang as real compiled Wasm guest
+        run: |
+          # v2 is explicitly opt-in. The mainline/public compiler ABI remains unchanged.
+          cargo build --locked --bin attoc
+          node --check tests/node-v2-ready-bang-guest.mjs
+          node tests/node-v2-ready-bang-guest.mjs
       - name: Build actual Wasm compiler
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864

@@ -1,0 +1,26 @@
+// EXPERIMENTAL single-guest-memory atomically checked actor -> actor DATA.
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void { emit(mail.value); }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void { stdio.println(mail.value); }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  // No Future.all/get_ready required before this checked connection.
+  val Result<PipeHandle, PipeSetupError> link = producer pipe! consumer;
+  val int accepted = match link over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if accepted != 1 then return 90; fi
+  producer.send(40);
+  producer.send(2);
+  stop! producer;
+  await producer.get_done();
+  await consumer.get_done();
+  return 42;
+}
