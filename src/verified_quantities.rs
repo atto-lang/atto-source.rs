@@ -20,7 +20,7 @@ impl Unit {
         }
         if powers.len() > 32 { return Err(error(pos, "E_UNIT_LIMIT", "more than 32 dimensions")); }
         let scale = self.scale.mul(if divide { other.scale.inv() } else { other.scale })
-            .map_err(|_| error(pos, "E_UNIT_LIMIT", "Rust preview scale exceeds 256 bits"))?;
+            .ok_or_else(|| error(pos, "E_UNIT_LIMIT", "normalized scale exceeds 256 bits"))?;
         Ok(Self { powers, scale })
     }
 }
@@ -130,7 +130,7 @@ impl Parser<'_> {
             };
             let base = self.lookup(&base)?;
             if base.powers != powers { return Err(self.err("E_UNIT_DIMENSION", "derived unit has different dimension")); }
-            let scale = base.scale.mul(factor).map_err(|_| self.err("E_UNIT_LIMIT", "Rust preview scale exceeds 256 bits"))?;
+            let scale = base.scale.mul(factor).ok_or_else(|| self.err("E_UNIT_LIMIT", "normalized scale exceeds 256 bits"))?;
             Unit { powers, scale }
         } else {
             if !self.bases.insert(dim) { return Err(self.err("E_UNIT_DUPLICATE", "duplicate base unit")); }
