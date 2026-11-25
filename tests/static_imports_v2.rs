@@ -471,7 +471,7 @@ fn reject_internal_names_and_unsafe_remote_selector_shapes() {
 }
 
 #[test]
-fn namespace_aliass_lower_to_identical_builtin_guest_bytes() {
+fn namespace_aliases_lower_to_identical_builtin_guest_bytes() {
     let baseline = compile("import core.num; pub fnc main(): int { return num.clamp(42, 0, 100); }").unwrap();
     for src in [
         "import core.num; define alias math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
@@ -490,7 +490,7 @@ fn namespace_aliass_lower_to_identical_builtin_guest_bytes() {
 }
 
 #[test]
-fn namespace_aliass_do_not_remove_original_bindings() {
+fn namespace_aliases_do_not_remove_original_bindings() {
     let src = "import core.num; define alias math = core.num; pub fnc main(): int { return math.clamp(40, 0, 100)+num.clamp(1, 0, 100)+core.num.clamp(1, 0, 100); }";
     assert!(compile(src).is_ok());
     let src = "import core.num as math; define alias m = math; pub fnc main(): int { return num.clamp(42, 0, 100); }";
@@ -531,4 +531,22 @@ fn alias_is_distinct_from_value_constant_grammar() {
         "import core.num; define alias math = ; pub fnc main(): int { return 42; }",
         "import core.num; define alias math = core.num; define alias math = num; pub fnc main(): int { return 42; }",
     ] { assert!(compile(src).is_err(), "{src}"); }
+}
+
+#[test]
+fn unused_indirect_and_qualified_alias_cycles_never_emit_guest() {
+    for declarations in [
+        "define alias a = b; define alias b = c; define alias c = a;",
+        "define alias c = a; define alias a = b.child; define alias b = c;",
+        "define alias unused = absent; define alias a = b; define alias b = c; define alias c = a;",
+    ] {
+        let source = format!("import core.num; {declarations} pub fnc main(): int {{ return 42; }}");
+        let mut loads = 0;
+        let d = compile_with_imports(&source, Path::new("main.atto"), |_| {
+            loads += 1; Ok(String::new())
+        }).unwrap_err();
+        assert_eq!(d.code, "E_IMPORT_CYCLE");
+        assert!(d.to_string().contains("a -> b -> c -> a"), "{d}");
+        assert_eq!(loads, 0);
+    }
 }
