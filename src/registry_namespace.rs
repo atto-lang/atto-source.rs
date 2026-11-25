@@ -513,26 +513,22 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
     let views:Vec<_>=admitted.values().map(|p|p.view()).collect();
     scope.namespace_aliases(&pairs,&views).map_err(|d|at(d,Pos{line:1,col:1}))?;
 
-    // First executable external class lane: exactly one authenticated package,
-    // one selected ordinary class, and a scalar-returning direct construction
-    // and public instance call. No root declarations, object escape, cross-
-    // package assignment or package-field authority can enter this lane.
+    // Bounded external class lane: one package and nominal class, fresh
+    // typed local instances, no object escape or arbitrary caller expressions.
     if admitted.values().any(|p| !p.class_metadata.is_empty()) {
         if admitted.len()!=1 || current.is_some() {
             return Err(err("E_UNSUPPORTED","external class guest requires one external package"));
         }
         let p=*admitted.values().next().unwrap();
         let root=&tokens[i..];
-        let denied=||err("E_UNSUPPORTED","external class guest requires direct new and public scalar method call");
-        let prefix=lexer::lex("pub fnc main(): int { return new")?;
-        let alternate=lexer::lex("pub fnc main() -> int { return new")?;
+        let denied=||err("E_UNSUPPORTED","external class guest requires checked construction and public scalar calls");
+        let prefix=lexer::lex("pub fnc main(): int {")?;
+        let alternate=lexer::lex("pub fnc main() -> int {")?;
         let n=prefix.len()-1;
         if root.len()<=n || !(root[..n].iter().map(|t|&t.tok).eq(prefix[..n].iter().map(|t|&t.tok))
             || root[..n].iter().map(|t|&t.tok).eq(alternate[..n].iter().map(|t|&t.tok))) {
             return Err(denied());
         }
-        // No arbitrary caller expressions in either argument list. The
-        // production checker still owns literal range, arity and type checks.
         fn scalar_args(t:&[Token], start:usize)->R<(usize,usize)> {
             let bad=||err("E_UNSUPPORTED","external class arguments must be bounded integer literals");
             if t.get(start).map(|x|&x.tok)!=Some(&Tok::LParen){return Err(bad());}
@@ -551,10 +547,14 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 }
             }
         }
-        let open=root[n..].iter().position(|t|t.tok==Tok::LParen).map(|j|n+j).ok_or_else(denied)?;
-        let reference=path_tokens(&root[n..open])?;
+
+        // Initial construction chooses the provider; the entire root is
+        // subsequently consumed by the checked grammar before emission.
+        let first=root[n..].iter().position(|t|word(Some(t),"new")).map(|j|n+j).ok_or_else(denied)?;
+        let open=root[first+1..].iter().position(|t|t.tok==Tok::LParen).map(|j|first+1+j).ok_or_else(denied)?;
+        let reference=path_tokens(&root[first+1..open])?;
         let target=scope.resolve_export(&reference,p.view())?;
-        let _identity=scope.resolve_nominal(&reference,p.view())?;
+        let identity=scope.resolve_nominal(&reference,p.view())?;
         if target.kind!=Kind::Class{return Err(err("E_IMPORT_KIND","new requires a checked external class"));}
         let (ns,name)=target.declaration.rsplit_once('.').ok_or_else(denied)?;
         let source=p.class_metadata.get(ns).ok_or_else(denied)?;
@@ -566,45 +566,98 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         if ast.classes.len()!=1 {return Err(err("E_UNSUPPORTED","external class execution requires a single ordinary class in its source unit"));}
         let class=&ast.classes[0];
         if class.name!=name || !class.public || class.state_container{return Err(denied());}
-        let (after_ctor,argc)=scalar_args(root,open)?;
-        if let Some(ctor)=&class.ctor {
-            // Constructor AST currently erases visibility. Require the exact
-            // explicit public source modifier at the parsed constructor position.
-            if !body.windows(2).any(|w|w[0].pos==ctor.pos && word(w.first(),"pub") && word(w.get(1),"constructor")){
-                return Err(err("E_PRIVATE","external explicit constructor must be public"));
-            }
-            if ctor.params.len()!=argc || ctor.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
-                return Err(err("E_TYPE","external constructor requires matching scalar int arguments"));
-            }
-        } else if argc!=0 {return Err(err("E_TYPE","implicit constructor takes no arguments"));}
-        if root.get(after_ctor).map(|x|&x.tok)!=Some(&Tok::Dot){return Err(denied());}
-        let member=match root.get(after_ctor+1).map(|x|&x.tok){
-            Some(Tok::Ident(s))=>s.as_str(),_=>return Err(denied()),
+
+        let construct=|at:usize,out:&mut Vec<Token>|->R<usize>{
+            if !word(root.get(at),"new"){return Err(denied());}
+            let open=root[at+1..].iter().position(|t|t.tok==Tok::LParen).map(|j|at+1+j).ok_or_else(denied)?;
+            let reference=path_tokens(&root[at+1..open])?;
+            if scope.resolve_nominal(&reference,p.view())?!=identity{return Err(err("E_TYPE","different nominal construction identity"));}
+            let (after,argc)=scalar_args(root,open)?;
+            if let Some(ctor)=&class.ctor {
+                // Constructor AST currently erases visibility. Require the exact
+                // explicit public source modifier at the parsed constructor position.
+                if !body.windows(2).any(|w|w[0].pos==ctor.pos && word(w.first(),"pub") && word(w.get(1),"constructor")){
+                    return Err(err("E_PRIVATE","external explicit constructor must be public"));
+                }
+                if ctor.params.len()!=argc || ctor.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
+                    return Err(err("E_TYPE","external constructor requires matching scalar int arguments"));
+                }
+            } else if argc!=0 {return Err(err("E_TYPE","implicit constructor takes no arguments"));}
+            out.push(root[at].clone());
+            out.push(id(name,root[at+1].pos));
+            out.extend_from_slice(&root[open..after]);
+            Ok(after)
         };
-        if root.get(after_ctor+2).map(|x|&x.tok)!=Some(&Tok::LParen){
-            if class.fields.iter().any(|f|f.name==member && f.visibility!=crate::ast::FieldVisibility::Public){
-                return Err(err("E_PRIVATE","external class field is not public"));
+        let call=|dot:usize,out:&mut Vec<Token>|->R<usize>{
+            if root.get(dot).map(|x|&x.tok)!=Some(&Tok::Dot){return Err(denied());}
+            let member=match root.get(dot+1).map(|x|&x.tok){
+                Some(Tok::Ident(s))=>s.as_str(),_=>return Err(denied()),
+            };
+            if root.get(dot+2).map(|x|&x.tok)!=Some(&Tok::LParen){
+                if class.fields.iter().any(|f|f.name==member && f.visibility!=crate::ast::FieldVisibility::Public){
+                    return Err(err("E_PRIVATE","external class field is not public"));
+                }
+                return Err(denied());
             }
-            return Err(denied());
-        }
-        let (after_method,method_argc)=scalar_args(root,after_ctor+2)?;
-        if !root[after_method..].iter().map(|t|&t.tok).eq([Tok::Semi,Tok::RBrace,Tok::Eof].iter()){
-            return Err(denied());
-        }
-        let mut candidates=class.methods.iter().filter(|m|m.name==member && !m.is_static && m.params.len()==method_argc);
-        let method=candidates.next().ok_or_else(||err("E_UNBOUND","external instance method not found"))?;
-        if candidates.next().is_some(){return Err(err("E_AMBIGUOUS","ambiguous external method"));}
-        if !method.public{return Err(err("E_PRIVATE","external method is not public"));}
-        if method.ret!=crate::ast::Type::Int || method.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
-            return Err(err("E_TYPE","external method must have scalar int signature"));
-        }
-        // Flatten only the one checked declaration into a closed guest.
-        // The exact root grammar prevents caller-side capture of any other
-        // provider identifiers, fields, constructors or private members.
+            let (after,argc)=scalar_args(root,dot+2)?;
+            let mut candidates=class.methods.iter().filter(|m|m.name==member && !m.is_static && m.params.len()==argc);
+            let method=candidates.next().ok_or_else(||err("E_UNBOUND","external instance method not found"))?;
+            if candidates.next().is_some(){return Err(err("E_AMBIGUOUS","ambiguous external method"));}
+            if !method.public{return Err(err("E_PRIVATE","external method is not public"));}
+            if method.ret!=crate::ast::Type::Int || method.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
+                return Err(err("E_TYPE","external method must have scalar int signature"));
+            }
+            out.extend_from_slice(&root[dot..after]);
+            Ok(after)
+        };
         let mut linked=body[..body.len()-1].to_vec();
         linked.extend_from_slice(&root[..n]);
-        linked.push(id(name,root[n].pos));
-        linked.extend_from_slice(&root[open..]);
+        let mut j=n;
+        let mut locals=BTreeSet::new();
+        while word(root.get(j),"val") || word(root.get(j),"const") {
+            if locals.len()>=16{return Err(err("E_SOURCE_LIMIT","external class local budget exceeded"));}
+            let local=match root.get(j+1).map(|x|&x.tok){
+                Some(Tok::Ident(s)) if crate::static_import_graph::valid_component(s) && s!=name && !scope.has_root(s)=>s,
+                _=>return Err(denied()),
+            };
+            if root.get(j+2).map(|x|&x.tok)!=Some(&Tok::Colon){return Err(denied());}
+            let eq=root[j+3..].iter().position(|t|t.tok==Tok::Assign).map(|k|j+3+k).ok_or_else(denied)?;
+            let annotation=path_tokens(&root[j+3..eq])?;
+            if scope.resolve_nominal(&annotation,p.view())?!=identity{
+                return Err(err("E_TYPE","different nominal local annotation identity"));
+            }
+            if !locals.insert(local.clone()){return Err(err("E_DUPLICATE","duplicate external class local"));}
+            linked.extend_from_slice(&root[j..j+3]);
+            linked.push(id(name,root[j+3].pos));
+            linked.push(root[eq].clone());
+            j=construct(eq+1,&mut linked)?;
+            if root.get(j).map(|x|&x.tok)!=Some(&Tok::Semi){return Err(denied());}
+            linked.push(root[j].clone());j+=1;
+        }
+        if !word(root.get(j),"return"){return Err(denied());}
+        linked.push(root[j].clone());j+=1;
+        if locals.is_empty(){
+            j=construct(j,&mut linked)?;
+            j=call(j,&mut linked)?;
+        }else{
+            let mut count=0usize;
+            loop {
+                let local=match root.get(j).map(|x|&x.tok){
+                    Some(Tok::Ident(s)) if locals.contains(s)=>s,
+                    _=>return Err(denied()),
+                };
+                linked.push(id(local,root[j].pos));
+                j=call(j+1,&mut linked)?;
+                count+=1;
+                if count>32{return Err(err("E_SOURCE_LIMIT","external class call budget exceeded"));}
+                if root.get(j).map(|x|&x.tok)!=Some(&Tok::Plus){break;}
+                linked.push(root[j].clone());j+=1;
+            }
+        }
+        if !root[j..].iter().map(|t|&t.tok).eq([Tok::Semi,Tok::RBrace,Tok::Eof].iter()){
+            return Err(denied());
+        }
+        linked.extend_from_slice(&root[j..]);
         if linked.len()>lexer::MAX_TOKENS{return Err(err("E_SOURCE_LIMIT","external class guest token budget exceeded"));}
         let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
         let checked=crate::check::check(&parsed)?;

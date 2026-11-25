@@ -541,3 +541,41 @@ fn external_class_lane_is_closed_to_other_package_identities_and_root_declaratio
     let drift=verify(&manifest,&changed).unwrap();
     assert_eq!(compile_registry_guest(source,&[&p,&drift]).unwrap_err().code,"E_AMBIGUOUS");
 }
+
+#[test]
+fn authenticated_external_class_typed_locals_keep_instances_distinct() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 0; pub constructor(int x) { self.value = x; } pub answer(int y): int { return self.value+y; } hidden(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    let roots=[
+        "val a: Data = new Data(10); val b: p.model.Item = new p.model.Item(30); return a.answer(1)+b.answer(1);",
+        "const a: p.model.Item = new Data(10); const b: Data = new p.model.Item(30); return b.answer(1)+a.answer(1);",
+        "val a: Data = new Data(40); return a.answer(2);",
+    ];
+    for (i,body) in roots.iter().enumerate(){
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-local-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (body,code) in [
+        ("val a: Data = new Data(42); return a.hidden();","E_PRIVATE"),
+        ("val a: Data = new Data(42); return a.value;","E_PRIVATE"),
+        ("val a: Data = new Data(42); val a: Data = new Data(0); return a.answer(0);","E_DUPLICATE"),
+        ("val a: Data = new Data(42); val b: Data = a; return b.answer(0);","E_UNSUPPORTED"),
+        ("val a: Data = new Data(42); a = new Data(0); return a.answer(0);","E_UNSUPPORTED"),
+        ("val a: Data = new Data(42); return a;","E_UNSUPPORTED"),
+        ("val p: Data = new Data(42); return p.answer(0);","E_UNSUPPORTED"),
+        ("val a: Data = new Data(42); return a.answer(0)+1;","E_UNSUPPORTED"),
+        ("val a: Data = new Data(42); return a.answer(a);","E_UNSUPPORTED"),
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+}
