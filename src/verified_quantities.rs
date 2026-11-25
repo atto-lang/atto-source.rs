@@ -60,9 +60,12 @@ pub(crate) fn has_declarations(tokens: &[Token]) -> bool {
         (Tok::Ident(a),Tok::Ident(b)) if a == "define" && (b == "dimension" || b == "unit")))
 }
 pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Lowered>> {
+    lower_mode(source, tokens, false)
+}
+pub(crate) fn lower_mode(source: &str, tokens: &[Token], strict: bool) -> R<Option<Lowered>> {
     if !has_declarations(tokens) { return Ok(None); }
     let mut p = Parser { tokens, at: 0, lines: source.lines().map(|l| l.chars().collect()).collect(),
-        dimensions: BTreeSet::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256 };
+        dimensions: BTreeSet::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256, strict };
     let mut declarations = 0;
     while p.word("define") {
         declarations += 1;
@@ -71,6 +74,9 @@ pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Lowered>> {
     }
     if matches!(&p.token().tok, Tok::Ident(name) if name == "type") {
         return bindings::lower(&mut p).map(|program| Some(Lowered::Typed(program)));
+    }
+    if strict {
+        return Err(p.err("E_VERIFY_UNSUPPORTED", "strict verification currently requires typed quantity aliases"));
     }
     p.expect_word("pub")?; p.expect_word("fnc")?; p.expect_word("main")?;
     p.expect(Tok::LParen)?; p.expect(Tok::RParen)?; p.expect(Tok::Arrow)?;
@@ -85,7 +91,7 @@ pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Lowered>> {
 
 struct Parser<'a> {
     tokens: &'a [Token], at: usize, lines: Vec<Vec<char>>,
-    dimensions: BTreeSet<String>, bases: BTreeSet<String>, units: BTreeMap<String,Unit>, budget: usize,
+    dimensions: BTreeSet<String>, bases: BTreeSet<String>, units: BTreeMap<String,Unit>, budget: usize, strict: bool,
 }
 impl Parser<'_> {
     fn token(&self) -> &Token { &self.tokens[self.at.min(self.tokens.len()-1)] }
