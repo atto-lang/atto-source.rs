@@ -313,3 +313,56 @@ fn direct_nominal_binding_cannot_forge_kind_or_visibility() {
     other.add("models.User","models.User",Kind::Class,true).unwrap();
     assert_eq!(s.resolve_nominal("WrongKind",&[&other]).unwrap_err().code,"E_UNBOUND");
 }
+
+
+#[test]
+fn generic_nominal_keys_preserve_aliases_argument_order_and_package_identity() {
+    use atto_compiler::static_import_graph::{ScalarIdentity as S,TypeTerm as T};
+    let mut scope=Scope::new();
+    let mut views=Vec::new();
+    for (pkg,alias) in [("@a/project/pkg","a"),("@b/project/pkg","b")] {
+        let p=id(pkg);
+        let mut v=ExportView::new(Origin::External(p.clone()));
+        v.add("models","models",Kind::Namespace,true).unwrap();
+        v.add_generic("models.Pair","models.Pair",Kind::Class,true,2).unwrap();
+        v.add_generic("models.Wrap","models.Wrap",Kind::Type,true,1).unwrap();
+        v.add("models.User","models.User",Kind::Class,true).unwrap();
+        v.add("models.Hidden","models.Hidden",Kind::Class,false).unwrap();
+        scope.package(p,Some(alias)).unwrap();
+        views.push(v);
+    }
+    let refs:Vec<_>=views.iter().collect();
+    scope.namespace_aliases(&[("m","a.models")],&refs).unwrap();
+    let head=|reference|T::Nominal{reference,arguments:2};
+    let k=scope.resolve_type_identity(&[T::Scalar(S::Int),T::Scalar(S::Bool),head("a.models.Pair")],&refs).unwrap();
+    assert_eq!(k,scope.resolve_type_identity(&[T::Scalar(S::Int),T::Scalar(S::Bool),head("m.Pair")],&refs).unwrap());
+    assert_ne!(k,scope.resolve_type_identity(&[T::Scalar(S::Bool),T::Scalar(S::Int),head("a.models.Pair")],&refs).unwrap());
+    assert_ne!(k,scope.resolve_type_identity(&[T::Scalar(S::Int),T::Scalar(S::Bool),head("b.models.Pair")],&refs).unwrap());
+    let user=|reference|T::Nominal{reference,arguments:0};
+    let wrap=T::Nominal{reference:"a.models.Wrap",arguments:1};
+    let u=scope.resolve_type_identity(&[user("a.models.User"),wrap.clone()],&refs).unwrap();
+    assert_ne!(u,scope.resolve_type_identity(&[user("b.models.User"),wrap.clone()],&refs).unwrap());
+    assert_eq!(scope.resolve_type_identity(&[user("a.models.Hidden"),wrap],&refs).unwrap_err().code,"E_PRIVATE");
+}
+
+#[test]
+fn generic_nominal_keys_reject_arity_shape_and_resource_violations() {
+    use atto_compiler::static_import_graph::{ScalarIdentity as S,TypeTerm as T};
+    let p=id("@a/project/pkg");
+    let mut v=ExportView::new(Origin::External(p.clone()));
+    v.add_generic("Wrap","Wrap",Kind::Class,true,1).unwrap();
+    v.add("Plain","Plain",Kind::Class,true).unwrap();
+    assert_eq!(v.add_generic("Huge","Huge",Kind::Class,true,9).unwrap_err().code,"E_SOURCE_LIMIT");
+    assert_eq!(v.add_generic("f","f",Kind::Fnc,true,1).unwrap_err().code,"E_IMPORT_KIND");
+    let mut s=Scope::new();
+    s.package(p,Some("p")).unwrap();
+    let w=T::Nominal{reference:"p.Wrap",arguments:1};
+    let scalar=T::Scalar(S::Int);
+    assert_eq!(s.resolve_type_identity(&[w.clone()],&[&v]).unwrap_err().code,"E_ARITY");
+    assert_eq!(s.resolve_type_identity(&[scalar.clone(),T::Nominal{reference:"p.Plain",arguments:1}],&[&v]).unwrap_err().code,"E_ARITY");
+    assert_eq!(s.resolve_type_identity(&[scalar.clone(),scalar.clone()],&[&v]).unwrap_err().code,"E_ARITY");
+    let mut deep=vec![scalar.clone()];
+    deep.extend(std::iter::repeat(w).take(16));
+    assert_eq!(s.resolve_type_identity(&deep,&[&v]).unwrap_err().code,"E_SOURCE_LIMIT");
+    assert_eq!(s.resolve_type_identity(&vec![scalar;129],&[&v]).unwrap_err().code,"E_SOURCE_LIMIT");
+}
