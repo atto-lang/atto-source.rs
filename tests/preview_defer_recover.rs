@@ -20,6 +20,47 @@ fn reject(code: &str, s: &str) {
 }
 
 #[test]
+fn canonical_bang_throw_raise_compile_with_typed_error_guest_eh() {
+    // Unlike trap! (Result pending), throw! and raise! already reuse
+    // the Error(message)-checked AST and guest EH tags in this bounded
+    // top-level Rust/Wasm slice. Real guest traces are checked separately.
+    pass(r#"
+        fnc fail(): int throws(Error) { throw! Error("bang throw"); }
+        pub fnc main(): int {
+            try { return fail(); }
+            catch (Error err) { return 7; }
+            finally { stdio.println("finally"); }
+        }
+    "#);
+    pass(r#"
+        fnc fail(): int raises(Error) { raise! Error("bang raise"); }
+        fnc f(): int {
+            recover |err, cursor| -> { return 9; };
+            return fail();
+        }
+        pub fnc main(): int { return f(); }
+    "#);
+}
+
+#[test]
+fn canonical_exception_bangs_never_erase_error_type_or_result_identity() {
+    reject("E_TYPE", r#"
+        pub fnc main(): int { throw! 7; }
+    "#);
+    reject("E_TYPE", r#"
+        pub fnc main(): int { raise! "untyped"; }
+    "#);
+    reject("E_TRAP_BANG_RESULT_UNVERIFIED", r#"
+        pub fnc main(): int { return trap! 7; }
+    "#);
+    // Never pretend a fatal guest panic can be implemented by ordinary
+    // catch, host exceptions, or the Rust/Wasm Error/Result path.
+    reject("E_UNSUPPORTED", r#"
+        pub fnc main(): int { panic! Error("fatal"); }
+    "#);
+}
+
+#[test]
 fn exact_published_defer_recover_preview_compiles_to_guest_wasm() {
     pass(SITE);
 }
