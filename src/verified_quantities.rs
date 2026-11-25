@@ -1,0 +1,237 @@
+//! Narrow file-local, closed, successful signed-i64 quantity guest profile.
+//! No imports, runtime conversions, affine values or general quantity ABI.
+use crate::diag::{Diagnostic, Pos};
+use crate::lexer::{Tok, Token};
+use crate::units::Ratio;
+use std::collections::{BTreeMap, BTreeSet};
+
+type R<T> = Result<T, Diagnostic>;
+type Powers = BTreeMap<String, i32>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Unit { powers: Powers, scale: Ratio }
+impl Unit {
+    fn scalar() -> Self { Self { powers: BTreeMap::new(), scale: Ratio::ONE } }
+    fn combine(&self, other: &Self, divide: bool, pos: Pos) -> R<Self> {
+        let mut powers = self.powers.clone();
+        for (name, exponent) in &other.powers {
+            let next = powers.get(name).copied().unwrap_or(0) + if divide { -*exponent } else { *exponent };
+            if !(-64..=64).contains(&next) { return Err(error(pos, "E_UNIT_LIMIT", "dimension exponent exceeds 64")); }
+            if next == 0 { powers.remove(name); } else { powers.insert(name.clone(), next); }
+        }
+        if powers.len() > 32 { return Err(error(pos, "E_UNIT_LIMIT", "more than 32 dimensions")); }
+        let scale = self.scale.mul(if divide { other.scale.inv() } else { other.scale })
+            .map_err(|_| error(pos, "E_UNIT_LIMIT", "Rust preview scale exceeds 128 bits"))?;
+        Ok(Self { powers, scale })
+    }
+}
+#[derive(Clone)]
+struct Value { unit: Unit, number: i64 }
+fn error(pos: Pos, code: &'static str, message: &str) -> Diagnostic { Diagnostic::new(pos, code, message) }
+fn checked(value: Option<i64>, pos: Pos) -> R<i64> {
+    value.ok_or_else(|| error(pos, "E_UNSUPPORTED", "quantity arithmetic failure requires checked runtime lowering"))
+}
+fn convert(value: Value, unit: Unit, pos: Pos) -> R<Value> {
+    if value.unit.powers != unit.powers { return Err(error(pos, "E_UNIT_DIMENSION", "conversion dimensions differ")); }
+    let factor = value.unit.scale.mul(unit.scale.inv())
+        .map_err(|_| error(pos, "E_UNIT_LIMIT", "Rust preview conversion ratio exceeds 128 bits"))?;
+    let magnitude = u128::from(value.number.unsigned_abs());
+    if magnitude % factor.den != 0 { return Err(error(pos, "E_UNIT_INEXACT", "conversion is not integral")); }
+    let range = || error(pos, "E_UNIT_RANGE", "conversion exceeds signed i64");
+    let result = (magnitude / factor.den).checked_mul(factor.num).ok_or_else(range)?;
+    let number = if value.number < 0 && result == (1u128 << 63) { i64::MIN }
+        else { let n = i64::try_from(result).map_err(|_| range())?; if value.number < 0 { -n } else { n } };
+    Ok(Value { unit, number })
+}
+
+pub(crate) fn has_declarations(tokens: &[Token]) -> bool {
+    tokens.windows(2).any(|w| matches!((&w[0].tok,&w[1].tok),
+        (Tok::Ident(a),Tok::Ident(b)) if a == "define" && (b == "dimension" || b == "unit")))
+}
+pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<String>> {
+    if !has_declarations(tokens) { return Ok(None); }
+    let mut p = Parser { tokens, at: 0, lines: source.lines().map(|l| l.chars().collect()).collect(),
+        dimensions: BTreeSet::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256 };
+    let mut declarations = 0;
+    while p.word("define") {
+        declarations += 1;
+        if declarations > 128 { return Err(p.err("E_UNIT_LIMIT", "too many quantity declarations")); }
+        p.declaration()?;
+    }
+    p.expect_word("pub")?; p.expect_word("fnc")?; p.expect_word("main")?;
+    p.expect(Tok::LParen)?; p.expect(Tok::RParen)?; p.expect(Tok::Arrow)?;
+    p.expect_word("int")?; p.expect(Tok::LBrace)?; p.expect_word("return")?;
+    let result = p.expr(0, 0)?;
+    p.expect(Tok::Semi)?; p.expect(Tok::RBrace)?; p.expect(Tok::Eof)?;
+    if result.unit != Unit::scalar() { return Err(p.err("E_UNIT_ERASURE", "int return requires scalar scale one")); }
+    // Complete grammar and all arithmetic were checked before erasure. Ordinary
+    // compiler emits the Wasm guest; there is no runtime solver or source eval.
+    Ok(Some(format!("pub fnc main() -> int {{ return {}; }}", result.number)))
+}
+
+struct Parser<'a> {
+    tokens: &'a [Token], at: usize, lines: Vec<Vec<char>>,
+    dimensions: BTreeSet<String>, bases: BTreeSet<String>, units: BTreeMap<String,Unit>, budget: usize,
+}
+impl Parser<'_> {
+    fn token(&self) -> &Token { &self.tokens[self.at.min(self.tokens.len()-1)] }
+    fn err(&self, code: &'static str, message: &str) -> Diagnostic { error(self.token().pos, code, message) }
+    fn take(&mut self, tok: Tok) -> bool {
+        if self.token().tok == tok { self.at += 1; true } else { false }
+    }
+    fn expect(&mut self, tok: Tok) -> R<()> {
+        if self.take(tok) { Ok(()) } else { Err(self.err("E_SYNTAX", "unexpected quantity token")) }
+    }
+    fn word(&mut self, name: &str) -> bool {
+        if matches!(&self.token().tok, Tok::Ident(w) if w == name) { self.at += 1; true } else { false }
+    }
+    fn expect_word(&mut self, name: &str) -> R<()> {
+        if self.word(name) { Ok(()) } else { Err(self.err("E_SYNTAX", "unexpected quantity keyword")) }
+    }
+    fn name(&mut self) -> R<String> {
+        match self.token().tok.clone() {
+            Tok::Ident(name) => { self.at += 1; Ok(name) }
+            _ => Err(self.err("E_UNIT_NAME", "expected declaration name")),
+        }
+    }
+    fn lookup(&self, name: &str) -> R<Unit> {
+        self.units.get(name).cloned().ok_or_else(|| self.err("E_UNIT_NAME", "unknown or forward unit name"))
+    }
+    fn factor(&mut self) -> R<Ratio> {
+        match self.token().tok {
+            Tok::Int(Some(n)) if n > 0 => { self.at += 1; Ratio::new(u128::from(n),1) }
+            _ => Err(self.err("E_UNIT_SCALE", "expected positive signed-i64 scale")),
+        }
+    }
+    fn declaration(&mut self) -> R<()> {
+        let dimension = self.word("dimension");
+        if !dimension { self.expect_word("unit")?; }
+        let name = self.name()?;
+        if self.dimensions.contains(&name) || self.units.contains_key(&name) {
+            return Err(self.err("E_UNIT_DUPLICATE", "duplicate quantity name"));
+        }
+        if dimension {
+            self.expect(Tok::Semi)?;
+            self.dimensions.insert(name);
+            return Ok(());
+        }
+        self.expect(Tok::Colon)?;
+        let dim = self.name()?;
+        if !self.dimensions.contains(&dim) { return Err(self.err("E_UNIT_NAME", "unknown dimension")); }
+        let powers = BTreeMap::from([(dim.clone(),1)]);
+        let unit = if self.take(Tok::Assign) {
+            let (base, factor) = if matches!(self.token().tok, Tok::Int(_) | Tok::Minus) {
+                let f = self.factor()?;
+                self.expect(Tok::Star)?;
+                (self.name()?, f)
+            } else {
+                let base = self.name()?;
+                let factor = if self.take(Tok::Star) { self.factor()? }
+                    else if self.take(Tok::Slash) { self.factor()?.inv() } else { Ratio::ONE };
+                (base, factor)
+            };
+            let base = self.lookup(&base)?;
+            if base.powers != powers { return Err(self.err("E_UNIT_DIMENSION", "derived unit has different dimension")); }
+            let scale = base.scale.mul(factor).map_err(|_| self.err("E_UNIT_LIMIT", "Rust preview scale exceeds 128 bits"))?;
+            Unit { powers, scale }
+        } else {
+            if !self.bases.insert(dim) { return Err(self.err("E_UNIT_DUPLICATE", "duplicate base unit")); }
+            Unit { powers, scale: Ratio::ONE }
+        };
+        self.expect(Tok::Semi)?;
+        self.units.insert(name, unit);
+        Ok(())
+    }
+    fn decimal_end(&self, pos: Pos) -> Option<u32> {
+        let line = self.lines.get(pos.line.checked_sub(1)? as usize)?;
+        let start = pos.col.checked_sub(1)? as usize;
+        let digits = line.get(start..)?.iter().take_while(|c| c.is_ascii_digit() || **c == '_').count();
+        if digits == 0 { None } else { Some(pos.col + digits as u32) }
+    }
+    fn atom(&mut self, depth: usize) -> R<Value> {
+        if depth > 64 || self.budget == 0 { return Err(self.err("E_UNIT_LIMIT", "quantity expression budget")); }
+        self.budget -= 1;
+        let pos = self.token().pos;
+        if self.take(Tok::Minus) {
+            if self.token().tok == Tok::Int(None) {
+                let mut v = self.literal(true)?;
+                if self.token().tok == Tok::Dot { return Err(self.err("E_UNSUPPORTED", "signed minimum postfix preview not supported")); }
+                v.number = i64::MIN;
+                return Ok(v);
+            }
+            let mut v = self.atom(depth + 1)?;
+            v.number = checked(v.number.checked_neg(),pos)?;
+            return Ok(v);
+        }
+        let mut v = if self.take(Tok::LParen) {
+            let inner = self.expr(0,depth+1)?;
+            self.expect(Tok::RParen)?;
+            inner
+        } else {
+            self.literal(false)?
+        };
+        if self.take(Tok::Dot) {
+            self.expect_word("to_unit")?; self.expect(Tok::Lt)?;
+            let name = self.name()?; self.expect(Tok::Gt)?;
+            self.expect(Tok::LParen)?; self.expect(Tok::RParen)?;
+            v = convert(v,self.lookup(&name)?,pos)?;
+        }
+        Ok(v)
+    }
+    fn literal(&mut self, min: bool) -> R<Value> {
+        let pos = self.token().pos;
+        let number = match self.token().tok {
+            Tok::Int(Some(n)) if !min => n as i64,
+            Tok::Int(None) if min => i64::MIN,
+            _ => return Err(self.err("E_SYNTAX", "expected signed decimal integer")),
+        };
+        let end = self.decimal_end(pos);
+        self.at += 1;
+        let unit = if self.token().tok == Tok::Lt {
+            if self.token().pos.line != pos.line || end != Some(self.token().pos.col) {
+                return Err(self.err("E_SYNTAX", "quantity suffix must immediately follow decimal integer"));
+            }
+            self.at += 1;
+            let name = self.name()?;
+            self.expect(Tok::Gt)?;
+            self.lookup(&name)?
+        } else { Unit::scalar() };
+        Ok(Value { number, unit })
+    }
+    fn expr(&mut self, precedence: u8, depth: usize) -> R<Value> {
+        let mut left = self.atom(depth)?;
+        loop {
+            let pos = self.token().pos;
+            let (op, level) = match self.token().tok {
+                Tok::Plus => (Tok::Plus,1), Tok::Minus => (Tok::Minus,1),
+                Tok::Star => (Tok::Star,2), Tok::Slash => (Tok::Slash,2), _ => break,
+            };
+            if level <= precedence { break; }
+            self.at += 1;
+            let right = self.expr(level,depth+1)?;
+            let unit = match op {
+                Tok::Plus | Tok::Minus => {
+                    if left.unit.powers != right.unit.powers { return Err(error(pos,"E_UNIT_DIMENSION","mixed dimensions")); }
+                    if left.unit != right.unit { return Err(error(pos,"E_UNIT_SCALE","mixed scales")); }
+                    left.unit.clone()
+                }
+                Tok::Star => left.unit.combine(&right.unit,false,pos)?,
+                Tok::Slash => {
+                    if left.unit == Unit::scalar() && right.unit == Unit::scalar() {
+                        return Err(error(pos,"E_UNIT_SCALAR_DIVISION","legacy scalar division is outside quantity preview"));
+                    }
+                    left.unit.combine(&right.unit,true,pos)?
+                }
+                _ => unreachable!(),
+            };
+            let number = checked(match op {
+                Tok::Plus => left.number.checked_add(right.number),
+                Tok::Minus => left.number.checked_sub(right.number),
+                Tok::Star => left.number.checked_mul(right.number),
+                Tok::Slash => left.number.checked_div(right.number),
+                _ => unreachable!(),
+            },pos)?;
+            left = Value { unit, number };
+        }
+        Ok(left)
+    }
+}
