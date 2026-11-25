@@ -258,8 +258,8 @@ pub(crate) fn declared_namespace(source: &str, file: &str) -> R<Option<String>> 
 
 /// Resolve explicitly selected local manifest exports into canonical source
 /// edges. Raw bytes are authenticated by the caller before this rewrite.
-/// This bounded lane supports one natural namespace binding per clause;
-/// external dependencies and arbitrary aliasing remain fail-closed.
+/// This bounded lane supports exact natural namespace bindings (including lists);
+/// external dependencies, other kinds and arbitrary aliasing remain fail-closed.
 pub(crate) fn resolve_manifest_imports(source: &str, file: &str,
     manifest: &crate::package_resolver::PackageManifest) -> R<String> {
     let raw = lexer::lex(source)?;
@@ -276,16 +276,49 @@ pub(crate) fn resolve_manifest_imports(source: &str, file: &str,
         if raw[end].tok != Tok::Semi {
             return Err(err(raw[i].pos, "E_SYNTAX", "missing import semicolon"));
         }
-        if word(&raw, i + 1, "namespace") && word(&raw, i + 3, "from") && word(&raw, i + 4, "pkg") {
-            let name = ident(&raw, i + 2)?;
-            let selector = match raw.get(i + 5).map(|t| &t.tok) {
-                Some(Tok::Str(s)) if end == i + 6 => s,
+        // Only an exact namespace export can satisfy untyped shorthand.
+        // Never infer a namespace from the leaf of a physical file or URL.
+        let from = (i + 1..end).find(|at| word(&raw, *at, "from"));
+        if let Some(from) = from.filter(|at| word(&raw, *at + 1, "pkg")) {
+            let explicit = word(&raw, i + 1, "namespace");
+            let mut at = i + if explicit { 2 } else { 1 };
+            // Other typed kinds belong to the full typed package linker.
+            if !explicit && matches!(raw.get(at).map(|t| &t.tok),
+                Some(Tok::Ident(kind)) if matches!(kind.as_str(),
+                    "fnc" | "class" | "actor" | "enum" | "type" | "const" | "module" | "trait" | "interface" | "pkg")) {
+                return Err(err(raw[i].pos, "E_UNSUPPORTED", "manifest resolver supports namespace selections only"));
+            }
+            let selector = match raw.get(from + 2).map(|t| &t.tok) {
+                Some(Tok::Str(s)) if end == from + 3 => s,
                 _ => return Err(err(raw[i].pos, "E_SYNTAX", "expected one quoted manifest package selector")),
             };
-            let target = manifest.select_local_namespace(selector, &name)?;
+            let mut names = BTreeSet::new();
+            let mut replacement = String::new();
+            loop {
+                if at >= from {
+                    return Err(err(raw[i].pos, "E_SYNTAX", "empty or trailing namespace selector"));
+                }
+                let name = ident(&raw, at)?;
+                at += 1;
+                if at < from && word(&raw, at, "as") {
+                    return Err(err(raw[at].pos, "E_UNSUPPORTED", "manifest namespace alias requires full lexical linker"));
+                }
+                if !names.insert(name.clone()) {
+                    return Err(err(raw[i].pos, "E_DUPLICATE", "duplicate manifest namespace selection"));
+                }
+                if names.len() > MAX_IMPORTS {
+                    return Err(err(raw[i].pos, "E_SOURCE_LIMIT", "too many manifest namespace selections"));
+                }
+                let target = manifest.select_local_namespace(selector, &name)?;
+                replacement.push_str(&format!("import namespace {name} from \"+{target}\";"));
+                if at == from { break; }
+                if raw.get(at).map(|t| &t.tok) != Some(&Tok::Comma) {
+                    return Err(err(raw[at].pos, "E_UNSUPPORTED", "manifest resolver requires simple natural namespace selectors"));
+                }
+                at += 1;
+            }
             let (start, finish) = span(source, &raw, i, end)?;
             let original = &source[start..finish];
-            let mut replacement = format!("import namespace {name} from \"+{target}\";");
             for _ in original.bytes().filter(|b| *b == b'\n') { replacement.push('\n'); }
             edits.push((start, finish, replacement));
         }
