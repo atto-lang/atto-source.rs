@@ -47,6 +47,7 @@ pub mod module_lower;
 pub mod const_import_link;
 pub mod import_link;
 pub mod import_v2;
+pub mod static_import_graph;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
 pub mod linker;
