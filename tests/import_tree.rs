@@ -57,25 +57,25 @@ fn contextual_roots_are_namespace_paths_not_filesystem_traversal(){
         ("pkg.network.http",None,"network.http"),
         ("self.utils",Some("network.http"),"network.http.utils"),
         ("super.config",Some("network.http"),"network.config"),
-        ("super.super.shared",Some("network.http"),"shared"),
+        ("super.super.common",Some("network.http"),"common"),
     ]{assert_eq!(contextual_path(src,current).unwrap(),expected);assert_eq!(leaves(&format!("import {src};"))[0].path,src);}
     for (src,current) in [
-        ("self.utils",None),("super.config",None),("super.super.super.shared",Some("network.http")),
+        ("self.utils",None),("super.config",None),("super.super.super.common",Some("network.http")),
         ("pkg..hidden",None),("pkg.__atto_hidden",None),("self.super.config",Some("network.http")),
     ]{assert!(contextual_path(src,current).is_err(),"{src}");}
 }
 
 #[test]
 fn contextual_parent_cannot_erase_invalid_source_namespace() {
-    for current in ["network.", "network.__atto_hidden", "network.super", "network.bad-name",
+    for current in ["network.", "network.__atto_hidden", "network.super", "network.shared", "network.bad-name",
                     "a.b.c.d.e.f.g.h.i", "network..http"] {
         let e=contextual_path("super.config",Some(current)).unwrap_err();
         assert_eq!(e.code,"E_IMPORT_PATH","{current}");
     }
-    for src in ["pkg", "self", "super", "super.super", "pkg.a.b.c.d.e.f.g.h"] {
+    for src in ["pkg", "self", "super", "super.super", "super.super.shared", "pkg.a.b.c.d.e.f.g.h"] {
         assert_eq!(contextual_path(src,Some("network.http")).unwrap_err().code,"E_IMPORT_PATH","{src}");
     }
-    assert_eq!(contextual_path("super.super.shared",Some("network.http")).unwrap(),"shared");
+    assert_eq!(contextual_path("super.super.common",Some("network.http")).unwrap(),"common");
     assert_eq!(contextual_path("pkg.a.b.c.d.e.f.g",None).unwrap(),"a.b.c.d.e.f.g");
 }
 #[test]
