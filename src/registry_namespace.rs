@@ -636,20 +636,13 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 _=>false,
             }
         }
-        // Exclusive loans admit a closed scalar receiver effect: a single
-        // read expression, optionally preceded by one direct self field write.
-        // No calls, reference-valued fields, allocation or escaping handles.
-        // The ordinary checker independently validates writable field mode.
+        // The production checker currently rejects writes through ordinary
+        // class self. Exclusive loans therefore admit proved scalar reads
+        // only; never manufacture a mutable method receiver or relax core
+        // ownership checks while flattening registry code.
         fn write_proven(class:&crate::ast::ClassDecl,method:&crate::ast::Method)->bool {
-            use crate::ast::{Stmt,ExprKind,Type};
-            match method.body.as_slice() {
-                [Stmt::Return(Some(value),_)]=>read_expr(value,class,method),
-                [Stmt::FieldAssign{target,field,value,..},Stmt::Return(Some(result),_)]=>
-                    matches!(&target.kind,ExprKind::SelfRef)
-                    && class.fields.iter().any(|f|f.name==*field && f.ty==Type::Int)
-                    && read_expr(value,class,method)&&read_expr(result,class,method),
-                _=>false,
-            }
+            matches!(method.body.as_slice(),[crate::ast::Stmt::Return(Some(value),_)]
+                if read_expr(value,class,method))
         }
         #[derive(Clone,Copy)]
         enum Access { Owned, Read, Exclusive }

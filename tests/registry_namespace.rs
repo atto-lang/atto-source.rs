@@ -734,7 +734,7 @@ fn external_class_lexical_read_loans_require_read_only_receiver_proof() {
     let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
     let mut inputs=INPUTS.to_vec();
     for (path,source) in [
-        ("src/model/types.atto","use namespace model; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } pub update(): int { self.value = 0; return self.value; } hidden(): int { return self.value; } end"),
+        ("src/model/types.atto","use namespace model; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } pub update(): int { return self.answer(0); } hidden(): int { return self.value; } end"),
         ("src/other/types.atto","use namespace other; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } end"),
     ]{inputs.push(SnapshotSource{path,source});}
     let p=verify(&manifest,&inputs).unwrap();
@@ -774,12 +774,12 @@ fn external_class_exclusive_lexical_loan_checks_receiver_effects_and_conflicts()
     let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
     let mut inputs=INPUTS.to_vec();
     inputs.push(SnapshotSource{path:"src/model/types.atto",source:
-        "use namespace model; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } pub adjust(int y): int { self.value = self.value+y; return self.value; } pub opaque(): int { return self.answer(22); } end"});
+        "use namespace model; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } pub adjust(int y): int { return self.value+y; } pub opaque(): int { return self.answer(22); } end"});
     let p=verify(&manifest,&inputs).unwrap();
     let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
     for (i,body) in [
         "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.adjust(22);",
-        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.adjust(1)+b.answer(0);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.answer(1)+b.answer(1);",
     ].iter().enumerate(){
         let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
         let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
@@ -816,4 +816,13 @@ fn exclusive_external_loan_never_confers_transfer_or_binding_authority() {
     }
     let bad=format!("{prefix}pub fnc main(): int {{ val mut a: Data = new Data(); val b: Data = borrow! mut a; return b.answer(); }}");
     assert_eq!(compile_registry_guest(&bad,&[&p]).unwrap_err().code,"E_SYNTAX");
+}
+
+#[test]
+fn external_class_mutating_receiver_requires_real_checker_authority() {
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 20; pub adjust(int y): int { self.value = self.value+y; return self.value; } end"});
+    assert_eq!(verify(&manifest,&inputs).err().expect("ordinary readonly receiver must reject writes").code,"E_OWNERSHIP");
 }
