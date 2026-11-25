@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'src/verified_quantities.rs'
+      - 'src/verified_quantity_bindings.rs'
+      - 'src/bin/attoc.rs'
+      - 'scripts/test-verified-refinement-casts.mjs'
       - 'src/units.rs'
       - 'src/quantity_scale.rs'
       - 'src/wasm.rs'
@@ -33,6 +36,7 @@ jobs:
       - name: Focused real compiler tests
         run: |
           cargo +1.85.1 test --locked --lib quantity_scale::tests
+          cargo +1.85.1 test --locked --lib verified_quantities::bindings::strict_tests
           cargo +1.85.1 test --locked --test units_of_measure --test verified_quantity_guests --test immutable_binding_parity
       - name: Build actual compiler and execute emitted guest
         run: |
@@ -58,3 +62,5 @@ jobs:
             node -e 'const fs=require("node:fs"); const a=require("node:assert/strict"); const i=new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(process.argv[1])),{}); a.throws(()=>i.exports.main(),WebAssembly.RuntimeError); a.equal(i.exports.panic_code.value,Number(process.argv[2])); console.log("PASS typed quantity trap",process.argv[2]);' "$work/$case.wasm" "$code"
             sha256sum "$work/$case.atto" "$work/$case.wasm"
           done
+      - name: Execute refinement casts and strict verification guests
+        run: node scripts/test-verified-refinement-casts.mjs target/debug/attoc
