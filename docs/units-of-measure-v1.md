@@ -55,7 +55,7 @@ pub fnc main() -> int {
 }
 ```
 
-The new frontend consumes a complete standalone source file, resolves file-local nominal dimensions and exact rational scales, checks every closed arithmetic operation, and passes only a proved successful dimensionless result to the existing scalar Wasm compiler. It is deliberately narrower than spec #224: 128-bit scale components (not 256), no imports, no general quantity bindings/signatures, no affine values or polymorphism, no runtime failure lowering. Arithmetic that would trap is currently rejected before emission with E_UNSUPPORTED; this is not full conformance. The older nine-dimension algebra remains a separate internal API. The normal CLI path and direct compiler entry share this preview; imported quantities fail closed.
+The new frontend consumes a complete standalone source file, resolves file-local nominal dimensions and exact rational scales, checks every closed arithmetic operation, and passes only a proved successful dimensionless result to the existing scalar Wasm compiler. It is deliberately narrower than spec #224: 256-bit reduced scale components with 576-bit conversion work buffers, no imports, no general quantity bindings/signatures, no affine values or polymorphism, no runtime failure lowering. Arithmetic that would trap is currently rejected before emission with E_UNSUPPORTED; this is not full conformance. The older nine-dimension algebra remains a separate internal API. The normal CLI path and direct compiler entry share this preview; imported quantities fail closed.
 
 ## Tests
 
@@ -67,9 +67,11 @@ malformed/unknown expressions.
 ## Next slices
 
 1. Run the focused exact-head quantity test workflow and actual Wasm guest; preserve all origin gates.
-2. Extend scale precision to 256 bits and separate typing from runtime arithmetic trap lowering.
+2. Verify the new 256-bit scale arithmetic at the exact head and separate typing from runtime arithmetic trap lowering.
 3. Use compiler-resolved package/module/declaration IDs for imported and compound dimensions.
 4. Integrate checked quantity bindings, signatures, FFI and serialization; add affine and polymorphic profiles only after separate specification review.
 5. Execute shared conformance #584 with comparable backend receipts.
 
 The legacy immutable-binding Cranelift tests are retained verbatim in `tests/legacy/immutable_binding_parity_cranelift.rs`; the browser crate now has its own real compiler regression in `tests/immutable_binding_parity.rs`. The original Cranelift/effect-IR suite is not claimed as executed by this change.
+
+Wave 4 adds a dependency-free fixed-width rational implementation for the nominal frontend and focused source tests for wide scales, exact conversions and malformed decimal/quantity tokens. The legacy SI algebra retains its own 128-bit limits; its API is not the nominal declaration profile. The new shared corpus has 119 cases. These changes remain pending Rust compiler execution and cross-backend guest receipts.
