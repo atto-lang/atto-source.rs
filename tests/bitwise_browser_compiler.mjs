@@ -1,6 +1,7 @@
 // Prove the actual wasm32 compiler (not JS emulation or native-only lowering)
 // compiles the exact website bitwise preview into executable guest Wasm.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -111,6 +112,60 @@ for (const [source, code] of [
   const guest = new WebAssembly.Instance(new WebAssembly.Module(compiled.guest), {});
   assert.throws(() => guest.exports.main(), WebAssembly.RuntimeError);
   assert.equal(guest.exports.panic_code.value, code, 'provisional terminal fault ABI');
+}
+// Exact shared source, not rewritten for this backend. Failures are still
+// provisional terminal fault codes, not ordinary typed Atto Error values.
+const sharedNumeric = [
+  {
+    "id": "checked-i64-quotient",
+    "blob": "d7b61afd0fe074395b092aa4abaa08de4961602e",
+    "source": "// Candidate guest source: integer truncation and dividend-signed remainder.\n// Target main return 42. Not yet compiler/AOT executed.\npub fnc divide(int lhs, int rhs): int {\n  return lhs / rhs;\n}\npub fnc remainder(int lhs, int rhs): int {\n  return Integer.rem(lhs, rhs);\n}\npub fnc main(): int {\n  val int a = -7;\n  val int b = 3;\n  return divide(a, b) * -21 + (remainder(a, b) + 1);\n}\n",
+    "expected": {
+      "kind": "value",
+      "value": "42"
+    }
+  },
+  {
+    "id": "reject-i64-zero-divisor",
+    "blob": "6736c0fb356074a753406efe8277aaed724892a3",
+    "source": "// Candidate guest source: must fail with division_by_zero (not host exception).\n// Backend may issue a statically proved diagnostic or a typed guest runtime fault.\npub fnc checked(int divisor): int {\n  return 7 / divisor;\n}\npub fnc main(): int {\n  return checked(0);\n}\n",
+    "expected": {
+      "kind": "error",
+      "code": "division_by_zero"
+    }
+  },
+  {
+    "id": "reject-i64-min-overflow",
+    "blob": "aff2c8170924a3866c8e4f8ec095560148f8b9b5",
+    "source": "// Candidate guest source: MIN / -1 must be checked overflow, never MIN.\npub fnc checked(int divisor): int {\n  val int minimum = -9223372036854775808;\n  return minimum / divisor;\n}\npub fnc main(): int {\n  return checked(-1);\n}\n",
+    "expected": {
+      "kind": "error",
+      "code": "integer_overflow"
+    }
+  },
+  {
+    "id": "reject-i64-zero-remainder",
+    "blob": "a0325c64972b42825f6a82f5c2c941c67dcec7d1",
+    "source": "// Candidate guest source: integer remainder by zero is division_by_zero.\npub fnc checked(int divisor): int {\n  return Integer.rem(7, divisor);\n}\npub fnc main(): int {\n  return checked(0);\n}\n",
+    "expected": {
+      "kind": "error",
+      "code": "division_by_zero"
+    }
+  }
+];
+for (const c of sharedNumeric) {
+  const bytes = Buffer.from(c.source);
+  assert.equal(createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex'),c.blob);
+  const compiled = compile(c.source);
+  assert.equal(compiled.ok,true,c.id+': '+compiled.diagnostic);
+  const guest = new WebAssembly.Instance(new WebAssembly.Module(compiled.guest),{});
+  if(c.expected.kind==='value'){
+    assert.equal(guest.exports.main(),BigInt(c.expected.value),c.id);
+    assert.equal(guest.exports.panic_code.value,0);
+  }else{
+    assert.throws(()=>guest.exports.main(),WebAssembly.RuntimeError);
+    assert.equal(guest.exports.panic_code.value,c.expected.code==='integer_overflow'?1:2);
+  }
 }
 const rejectedTruncation = compile('pub fnc main(): int { return 5.0 / 2.0; }');
 assert.equal(rejectedTruncation.ok, false, 'explicit float result must not narrow to int');
