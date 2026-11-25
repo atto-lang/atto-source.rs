@@ -46,6 +46,7 @@ pub mod linker;
 pub mod package_resolver;
 pub mod units;
 mod verified_quantities;
+mod quantity_scale;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;
