@@ -109,3 +109,27 @@ fn distinct_locked_packages_do_not_collapse_and_alias_cycles_are_atomic() {
     assert_eq!(scope.namespace_aliases(&[("a","b"),("b","a")],&[p.view(),q.view()]).unwrap_err().code,"E_IMPORT_CYCLE");
     assert_eq!(scope.resolve("a").unwrap_err().code,"E_UNBOUND");
 }
+
+#[test]
+fn external_source_alias_spellings_share_checked_identity_and_cycle_detection() {
+    use atto_compiler::registry_namespace::bind_registry_aliases;
+    let p = verify(MANIFEST,&INPUTS).unwrap();
+    let mut scope = Scope::new();
+    p.bind_package(&mut scope,Some("vendor")).unwrap();
+    bind_registry_aliases(&mut scope,
+        "define alias first = second; define alias vendor.http as second; define alias first as third;",
+        &[&p]).unwrap();
+    let expected = scope.resolve_export("vendor.http.get",p.view()).unwrap();
+    for reference in ["first.get","second.get","third.get"] {
+        assert_eq!(scope.resolve_export(reference,p.view()).unwrap(),expected);
+    }
+    assert_eq!(scope.resolve_export("third.secret",p.view()).unwrap_err().code,"E_PRIVATE");
+    assert_eq!(bind_registry_aliases(&mut scope,
+        "define alias a as b; define alias b as c; define alias c as a;",
+        &[&p]).unwrap_err().code,"E_IMPORT_CYCLE");
+    assert_eq!(scope.resolve("a").unwrap_err().code,"E_UNBOUND");
+    assert_eq!(bind_registry_aliases(&mut scope,
+        "define alias ok = vendor.http; define alias bad = vendor.http.secret;",
+        &[&p]).unwrap_err().code,"E_PRIVATE");
+    assert_eq!(scope.resolve("ok").unwrap_err().code,"E_UNBOUND");
+}
