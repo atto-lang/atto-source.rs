@@ -514,3 +514,30 @@ fn authenticated_external_class_constructs_and_dispatches_public_method() {
     let q=verify(&manifest,&inputs).unwrap();
     assert_eq!(compile_registry_guest(sources[0],&[&q]).unwrap_err().code,"E_PRIVATE");
 }
+
+#[test]
+fn external_class_lane_is_closed_to_other_package_identities_and_root_declarations() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 42; pub answer(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let other=manifest.replace("@org/project/package","@other/project/package");
+    let l=lock(&other,&inputs);
+    let q=FrozenRegistry::verify("@other/project/package",&other,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+    let source="import pkg '@org/project/package' as p; pub fnc main(): int { return new p.model.Item().answer(); }";
+    let wasm=compile_registry_guest(source,&[&p,&q]).unwrap();
+    assert_eq!(wasm,compile_registry_guest(source,&[&q,&p]).unwrap());
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-class-4.wasm"),wasm).unwrap();
+    }
+    let dual="import pkg '@org/project/package' as p; import pkg '@other/project/package' as q; pub fnc main(): int { return new p.model.Item().answer(); }";
+    assert_eq!(compile_registry_guest(dual,&[&p,&q]).unwrap_err().code,"E_UNSUPPORTED");
+    let shadow="import pkg '@org/project/package' as p; define class Item as end pub fnc main(): int { return new p.model.Item().answer(); }";
+    assert_eq!(compile_registry_guest(shadow,&[&p]).unwrap_err().code,"E_UNSUPPORTED");
+    let mut changed=inputs.clone();
+    changed.last_mut().unwrap().source="use namespace model; pub define class Item as private int value: 41; pub answer(): int { return self.value; } end";
+    let drift=verify(&manifest,&changed).unwrap();
+    assert_eq!(compile_registry_guest(source,&[&p,&drift]).unwrap_err().code,"E_AMBIGUOUS");
+}

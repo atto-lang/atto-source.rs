@@ -351,10 +351,10 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
 }
 
 
-/// Compile the bounded frozen-registry direct-function guest profile.
-/// Only whole registry package imports, typed function/namespace selections and
-/// source aliases are admitted. All source bytes are owned by verified
-/// snapshots. No filesystem/network lookup, implicit fallback, or runtime
+/// Compile bounded frozen-registry guests: direct functions and literal constants,
+/// or one closed external class construction and public scalar method call.
+/// Whole-package imports, typed selections and source aliases use verified
+/// snapshots owning the source bytes. No filesystem/network lookup, implicit fallback, or runtime
 /// namespace objects are possible. The ordinary compiler still handles
 /// type checking, private module lowering and Wasm emission.
 pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<u8>> {
