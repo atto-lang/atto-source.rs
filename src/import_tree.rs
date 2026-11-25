@@ -142,3 +142,30 @@ pub fn contextual_path(path:&str,current:Option<&str>)->R<String>{
     }
     Ok(base.join("."))
 }
+
+/// Bind contextual roots against exactly one current-package export view.
+/// The caller must supply the authenticated current-package identity and
+/// declared source namespace. This intentionally uses public lookup only;
+/// private same-package authority requires the future source-owner proof.
+/// A tree cannot fall back to an external view or to filesystem traversal.
+pub fn bind_contextual(scope:&mut Scope, leaves:&[Leaf], current:Option<&str>,
+    current_package:&ExportView)->R<()> {
+    if leaves.len()>MAX {return Err(Diagnostic::new(Pos::default(),"E_SOURCE_LIMIT","import tree budget exceeded"));}
+    if leaves.is_empty() {return Err(Diagnostic::new(Pos::default(),"E_SYNTAX","empty import tree"));}
+    let mut staged=scope.clone();
+    let mut seen=BTreeSet::new();
+    for leaf in leaves {
+        if !seen.insert(&leaf.binding){
+            return Err(Diagnostic::new(Pos::default(),"E_DUPLICATE","duplicate contextual tree binding"));
+        }
+        let canonical=contextual_path(&leaf.path,current)?;
+        let target=current_package.lookup(&canonical)?;
+        if leaf.kind.is_some_and(|kind|kind!=target.kind)
+            || (leaf.group_self && !matches!(target.kind,Kind::Namespace|Kind::Module))
+            || (leaf.binding.contains('.') && !matches!(target.kind,Kind::Namespace|Kind::Module)){
+            return Err(Diagnostic::new(Pos::default(),"E_IMPORT_KIND","contextual leaf kind does not match export"));
+        }
+        staged.bind_verified(&leaf.binding,if leaf.explicit_alias{Tier::Explicit}else{Tier::Deliberate},target)?;
+    }
+    *scope=staged;Ok(())
+}
