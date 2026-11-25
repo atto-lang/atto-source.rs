@@ -67,8 +67,7 @@ fn resolve(scope:&mut Scope,source:&str,reference:&str,packages:&[(String,Packag
 
 #[test]
 fn shared_nominal_matrix(){
-    let file=std::env::var("ATTO_NOMINAL_MATRIX").expect("run projection script before this test");
-    let content=std::fs::read_to_string(file).unwrap();
+    let content=include_str!("shared-import-v2/nominal-matrix.tsv");
     let mut packages=Vec::new();
     let mut exports=Vec::new();
     let mut cases=Vec::new();

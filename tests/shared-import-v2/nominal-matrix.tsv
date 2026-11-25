@@ -1,0 +1,48 @@
+package	@org/project/nominal	1111111111111111111111111111111111111111111111111111111111111111
+package	@other/project/nominal	2222222222222222222222222222222222222222222222222222222222222222
+export	model	namespace	true
+export	model.Item	class	true
+export	model.State	enum	true
+export	model.Worker	actor	true
+export	model.Alias	type	true
+export	model.read	fnc	true
+export	model.HiddenItem	class	false
+export	model.HiddenState	enum	false
+export	model.HiddenWorker	actor	false
+export	model.HiddenAlias	type	false
+export	model.Hiddenread	fnc	false
+case	nominal-matrix-class-left-qualified	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n	left.model.Item	identity	@org/project/nominal	model.Item		false
+case	nominal-matrix-class-right-tree	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{class Item as Selected};	Selected	identity	@other/project/nominal	model.Item		false
+case	nominal-matrix-class-mixed-from	import [class model.Item as Selected] from pkg '@org/project/nominal';	Selected	identity	@org/project/nominal	model.Item		false
+case	nominal-matrix-class-alias-chain	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;	mm.Item	identity	@org/project/nominal	model.Item		false
+case	nominal-matrix-class-private	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport class right.model.HiddenItem as Selected;	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-class-wrong-kind	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport enum left.model.Item as Selected;	Selected	reject			E_IMPORT_KIND	true
+case	nominal-matrix-class-group-atomic	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{class Item as Selected, class HiddenItem as Denied};	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-enum-left-qualified	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n	left.model.State	identity	@org/project/nominal	model.State		false
+case	nominal-matrix-enum-right-tree	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{enum State as Selected};	Selected	identity	@other/project/nominal	model.State		false
+case	nominal-matrix-enum-mixed-from	import [enum model.State as Selected] from pkg '@org/project/nominal';	Selected	identity	@org/project/nominal	model.State		false
+case	nominal-matrix-enum-alias-chain	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;	mm.State	identity	@org/project/nominal	model.State		false
+case	nominal-matrix-enum-private	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport enum right.model.HiddenState as Selected;	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-enum-wrong-kind	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport actor left.model.State as Selected;	Selected	reject			E_IMPORT_KIND	true
+case	nominal-matrix-enum-group-atomic	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{enum State as Selected, enum HiddenState as Denied};	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-actor-left-qualified	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n	left.model.Worker	identity	@org/project/nominal	model.Worker		false
+case	nominal-matrix-actor-right-tree	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{actor Worker as Selected};	Selected	identity	@other/project/nominal	model.Worker		false
+case	nominal-matrix-actor-mixed-from	import [actor model.Worker as Selected] from pkg '@org/project/nominal';	Selected	identity	@org/project/nominal	model.Worker		false
+case	nominal-matrix-actor-alias-chain	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;	mm.Worker	identity	@org/project/nominal	model.Worker		false
+case	nominal-matrix-actor-private	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport actor right.model.HiddenWorker as Selected;	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-actor-wrong-kind	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport type left.model.Worker as Selected;	Selected	reject			E_IMPORT_KIND	true
+case	nominal-matrix-actor-group-atomic	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{actor Worker as Selected, actor HiddenWorker as Denied};	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-type-left-qualified	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n	left.model.Alias	identity	@org/project/nominal	model.Alias		false
+case	nominal-matrix-type-right-tree	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{type Alias as Selected};	Selected	identity	@other/project/nominal	model.Alias		false
+case	nominal-matrix-type-mixed-from	import [type model.Alias as Selected] from pkg '@org/project/nominal';	Selected	identity	@org/project/nominal	model.Alias		false
+case	nominal-matrix-type-alias-chain	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;	mm.Alias	identity	@org/project/nominal	model.Alias		false
+case	nominal-matrix-type-private	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport type right.model.HiddenAlias as Selected;	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-type-wrong-kind	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport fnc left.model.Alias as Selected;	Selected	reject			E_IMPORT_KIND	true
+case	nominal-matrix-type-group-atomic	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{type Alias as Selected, type HiddenAlias as Denied};	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-fnc-left-qualified	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n	left.model.read	identity	@org/project/nominal	model.read		false
+case	nominal-matrix-fnc-right-tree	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{fnc read as Selected};	Selected	identity	@other/project/nominal	model.read		false
+case	nominal-matrix-fnc-mixed-from	import [fnc model.read as Selected] from pkg '@org/project/nominal';	Selected	identity	@org/project/nominal	model.read		false
+case	nominal-matrix-fnc-alias-chain	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;	mm.read	identity	@org/project/nominal	model.read		false
+case	nominal-matrix-fnc-private	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport fnc right.model.Hiddenread as Selected;	Selected	reject			E_PRIVATE	true
+case	nominal-matrix-fnc-wrong-kind	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport class left.model.read as Selected;	Selected	reject			E_IMPORT_KIND	true
+case	nominal-matrix-fnc-group-atomic	import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{fnc read as Selected, fnc Hiddenread as Denied};	Selected	reject			E_PRIVATE	true

@@ -59,7 +59,8 @@ jobs:
           matrix="$(mktemp)"
           trap 'rm -f "$matrix"' EXIT
           node tests/shared-import-v2/nominal-matrix-projection.mjs > "$matrix"
-          ATTO_NOMINAL_MATRIX="$matrix" cargo test --locked --test shared_nominal_matrix -- --nocapture
+          cmp "$matrix" tests/shared-import-v2/nominal-matrix.tsv
+          cargo test --locked --test shared_nominal_matrix -- --nocapture
       - name: Compile real builtin guests and run exported main
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
