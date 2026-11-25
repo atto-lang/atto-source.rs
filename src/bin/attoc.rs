@@ -19,14 +19,14 @@ enum Input {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --durable-scalar-v1 <input.atto> -o out.wasm\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
+    eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --durable-scalar-v1 <input.atto> -o out.wasm\n       attoc --durable-counter-actor-v1 <input.atto> -o out.wasm\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
     ExitCode::from(2)
 }
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     // Separate explicit ABI, no package/import lookup or borrow-report modes.
-    if raw.first().is_some_and(|a| a == "--durable-scalar-v1") {
+    if raw.first().is_some_and(|a| a == "--durable-scalar-v1" || a == "--durable-counter-actor-v1") {
         let [_, input, flag, output] = raw.as_slice() else { return usage(); };
         if flag != "-o" { return usage(); }
         let mut source = String::new();
@@ -35,7 +35,12 @@ fn main() -> ExitCode {
             eprintln!("{input}: {e}");
             return ExitCode::from(2);
         }
-        return match atto_compiler::compile_durable_scalar(&source) {
+        let compiled = if raw[0] == "--durable-counter-actor-v1" {
+            atto_compiler::durable_counter_actor::compile(&source)
+        } else {
+            atto_compiler::compile_durable_scalar(&source)
+        };
+        return match compiled {
             Ok(bytes) => match std::fs::write(output, bytes) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => { eprintln!("{output}: {e}"); ExitCode::from(2) }
