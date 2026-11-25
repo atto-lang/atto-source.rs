@@ -102,6 +102,16 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            format!("source exceeds {SOURCE_CAP} UTF-8 bytes")));
+    }
+    // The CLI uses this entry even for standalone files. The quantity
+    // frontend consumes a complete file and cannot load any imports.
+    let lexical = lexer::lex(source)?;
+    if let Some(lowered) = verified_quantities::lower(source, &lexical)? {
+        return compile_prelexed(lexer::lex(&lowered)?, Some(logical_path));
+    }
     let tokens = import_link::lower(source, logical_path, load)?;
     compile_prelexed(tokens, Some(logical_path))
 }
