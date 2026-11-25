@@ -192,3 +192,41 @@ fn registry_guest_rejects_private_unbound_forged_and_cycle_references() {
     let source="import pkg '@org/project/package'; fnc capture(int x): int { return 42; } pub fnc main(): int { return package.http.get(1); }";
     assert_eq!(compile_registry_guest(source,&[&q]).unwrap_err().code,"E_UNSUPPORTED");
 }
+
+#[test]
+fn registry_tree_guest_executes_and_source_admission_is_order_independent(){
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let p=verify(MANIFEST,&INPUTS).unwrap();
+    let sources=[
+        "import pkg '@org/project/package' as p; import p.{http.{fnc get as fetch}, http3.{self as h, get as other},}; pub fnc main(): int { return fetch(19)+h.get(10)+other(8); }",
+        "import p.{http.{fnc get as fetch}, http3.{self as h, get as other},}; import pkg '@org/project/package' as p; pub fnc main(): int { return fetch(19)+h.get(10)+other(8); }",
+        "import pkg '@org/project/package' as p; import fnc p.http.get as fetch; pub fnc main(): int { return fetch(41); }",
+        "import pkg '@org/project/package' as p; import p.http.{self as h}; define alias h as math; pub fnc main(): int { return math.get(41); }",
+    ];
+    let mut bytes=Vec::new();
+    for (i,source) in sources.iter().enumerate(){
+        let wasm=compile_registry_guest(source,&[&p]).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-tree-{i}.wasm")),&wasm).unwrap();
+        }
+        bytes.push(wasm);
+    }
+    assert_eq!(bytes[0],bytes[1]);
+}
+#[test]
+fn registry_tree_guest_denies_private_missing_and_wrong_kind(){
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let p=verify(MANIFEST,&INPUTS).unwrap();
+    for (clause,code) in [
+        ("import p.http.{get, secret};","E_PRIVATE"),
+        ("import p.http.{get, missing};","E_UNBOUND"),
+        ("import p.http.{class get};","E_IMPORT_KIND"),
+        ("import p.http.*;","E_SYNTAX"),
+        ("import p.http.{get as x, secret as x};","E_DUPLICATE"),
+        ("import p.http.{};","E_SYNTAX"),
+    ]{
+        let source=format!("import pkg '@org/project/package' as p; {clause} pub fnc main(): int {{ return 42; }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+}
