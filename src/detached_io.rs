@@ -6,10 +6,17 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind { Read, Write }
+pub enum Kind {
+    Read,
+    Write,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Callback { None, SuccessOnly, Outcome(String) }
+pub enum Callback {
+    None,
+    SuccessOnly,
+    Outcome(String),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DetachedIo {
@@ -20,7 +27,11 @@ pub struct DetachedIo {
 }
 
 fn keyword(t: &Token) -> Option<&str> {
-    if let Tok::Ident(w) = &t.tok { Some(w.as_str()) } else { None }
+    if let Tok::Ident(w) = &t.tok {
+        Some(w.as_str())
+    } else {
+        None
+    }
 }
 
 fn fail(pos: Pos, code: &'static str, message: &str) -> Diagnostic {
@@ -34,32 +45,40 @@ fn handle(t: &[Token], mut i: usize) -> Option<(String, usize)> {
     while matches!(t.get(i).map(|x| &x.tok), Some(Tok::Dot)) {
         i += 1;
         let part = keyword(t.get(i)?)?;
-        if crate::parser::is_reserved(part) { return None; }
+        if crate::parser::is_reserved(part) {
+            return None;
+        }
         parts.push(part.to_owned());
         i += 1;
     }
     Some((parts.join("."), i))
 }
 
-fn callback(t: &[Token], mut i: usize, kind: Kind, pos: Pos)
-    -> Result<(Callback, usize), Diagnostic>
-{
+fn callback(t: &[Token], mut i: usize, kind: Kind, pos: Pos) -> Result<(Callback, usize), Diagnostic> {
     if !matches!(t.get(i).map(|x| &x.tok), Some(Tok::Pipe)) {
-        return Err(fail(pos, "E_IO_CALLBACK",
-            "detached completion callback must be a lambda with || or |outcome|"));
+        return Err(fail(
+            pos,
+            "E_IO_CALLBACK",
+            "detached completion callback must be a lambda with || or |outcome|",
+        ));
     }
     i += 1;
     let result = if matches!(t.get(i).map(|x| &x.tok), Some(Tok::Pipe)) {
         i += 1;
         if kind == Kind::Read {
-            return Err(fail(pos, "E_IO_DISCARD",
-                "detached read callback must accept one checked outcome; never discard read data"));
+            return Err(fail(
+                pos,
+                "E_IO_DISCARD",
+                "detached read callback must accept one checked outcome; never discard read data",
+            ));
         }
         Callback::SuccessOnly
     } else {
-        let binding = keyword(t.get(i).ok_or_else(|| fail(pos, "E_IO_CALLBACK",
-            "detached callback missing outcome binding"))?)
-            .ok_or_else(|| fail(pos, "E_IO_CALLBACK", "detached callback expects a binding"))?;
+        let binding = keyword(
+            t.get(i)
+                .ok_or_else(|| fail(pos, "E_IO_CALLBACK", "detached callback missing outcome binding"))?,
+        )
+        .ok_or_else(|| fail(pos, "E_IO_CALLBACK", "detached callback expects a binding"))?;
         if crate::parser::is_reserved(binding) {
             return Err(fail(pos, "E_IO_CALLBACK", "detached callback has reserved binding name"));
         }
@@ -71,12 +90,15 @@ fn callback(t: &[Token], mut i: usize, kind: Kind, pos: Pos)
         i += 1;
         result
     };
-    if !matches!(t.get(i).map(|x| &x.tok), Some(Tok::Arrow)) ||
-        t.get(i + 1).and_then(keyword) != Some("void") ||
-        !matches!(t.get(i + 2).map(|x| &x.tok), Some(Tok::LBrace))
+    if !matches!(t.get(i).map(|x| &x.tok), Some(Tok::Arrow))
+        || t.get(i + 1).and_then(keyword) != Some("void")
+        || !matches!(t.get(i + 2).map(|x| &x.tok), Some(Tok::LBrace))
     {
-        return Err(fail(pos, "E_IO_CALLBACK",
-            "detached callback must have return form -> void { ... }"));
+        return Err(fail(
+            pos,
+            "E_IO_CALLBACK",
+            "detached callback must have return form -> void { ... }",
+        ));
     }
     i += 3;
     let mut depth = 1usize;
@@ -92,7 +114,9 @@ fn callback(t: &[Token], mut i: usize, kind: Kind, pos: Pos)
         i += 1;
     }
     // A semicolon after the callback is optional at an enclosing block end.
-    if matches!(t.get(i).map(|x| &x.tok), Some(Tok::Semi)) { i += 1; }
+    if matches!(t.get(i).map(|x| &x.tok), Some(Tok::Semi)) {
+        i += 1;
+    }
     Ok((result, i))
 }
 
@@ -101,28 +125,35 @@ fn callback(t: &[Token], mut i: usize, kind: Kind, pos: Pos)
 pub fn inspect(t: &[Token]) -> Result<Vec<DetachedIo>, Diagnostic> {
     let mut operations = Vec::new();
     for start in 0..t.len().saturating_sub(1) {
-        if t.get(start).and_then(keyword) != Some("do") { continue; }
+        if t.get(start).and_then(keyword) != Some("do") {
+            continue;
+        }
         let kind = match t.get(start + 1).and_then(keyword) {
             Some("readch") => Kind::Read,
             Some("writech") => Kind::Write,
             _ => continue, // do select, do match, etc. are unrelated.
         };
         let pos = t[start].pos;
-        let (receiver, mut i) = handle(t, start + 2).ok_or_else(|| fail(pos,
-            "E_IO_SYNTAX", "detached I/O requires a qualified channel or stream handle"))?;
+        let (receiver, mut i) =
+            handle(t, start + 2).ok_or_else(|| fail(pos, "E_IO_SYNTAX", "detached I/O requires a qualified channel or stream handle"))?;
         // A call or computed receiver is not a plain readable capability.
         // Do not misreport foo() as a valid handle with a missing callback.
         if matches!(t.get(i).map(|x| &x.tok), Some(Tok::LParen)) {
-            return Err(fail(pos, "E_IO_SYNTAX",
-                "computed detached I/O receiver requires the full typed parser"));
+            return Err(fail(
+                pos,
+                "E_IO_SYNTAX",
+                "computed detached I/O receiver requires the full typed parser",
+            ));
         }
         if !matches!(t.get(i).map(|x| &x.tok), Some(Tok::Comma)) {
             if kind == Kind::Read {
-                return Err(fail(pos, "E_IO_DISCARD",
-                    "do readch requires a completion callback receiving the checked outcome"));
+                return Err(fail(
+                    pos,
+                    "E_IO_DISCARD",
+                    "do readch requires a completion callback receiving the checked outcome",
+                ));
             }
-            return Err(fail(pos, "E_IO_SYNTAX",
-                "do writech requires a comma followed by the payload"));
+            return Err(fail(pos, "E_IO_SYNTAX", "do writech requires a comma followed by the payload"));
         }
         i += 1;
         let cb = if kind == Kind::Read {
@@ -140,19 +171,16 @@ pub fn inspect(t: &[Token]) -> Result<Vec<DetachedIo>, Diagnostic> {
                     Some(Tok::RParen) if parens > 0 => parens -= 1,
                     Some(Tok::LBracket) => brackets += 1,
                     Some(Tok::RBracket) if brackets > 0 => brackets -= 1,
-                    Some(Tok::Comma | Tok::Semi | Tok::Eof | Tok::RBrace) | None
-                        if parens == 0 && brackets == 0 => break,
+                    Some(Tok::Comma | Tok::Semi | Tok::Eof | Tok::RBrace) | None if parens == 0 && brackets == 0 => break,
                     None | Some(Tok::Eof) => {
-                        return Err(fail(pos, "E_IO_SYNTAX",
-                            "unclosed detached-write payload expression"));
+                        return Err(fail(pos, "E_IO_SYNTAX", "unclosed detached-write payload expression"));
                     }
                     _ => {}
                 }
                 i += 1;
             }
             if i == value_begin {
-                return Err(fail(pos, "E_IO_SYNTAX",
-                    "detached write must have a nonempty payload"));
+                return Err(fail(pos, "E_IO_SYNTAX", "detached write must have a nonempty payload"));
             }
             if matches!(t.get(i).map(|x| &x.tok), Some(Tok::Comma)) {
                 let (cb, next) = callback(t, i + 1, kind, pos)?;
@@ -161,20 +189,29 @@ pub fn inspect(t: &[Token]) -> Result<Vec<DetachedIo>, Diagnostic> {
             } else {
                 match t.get(i).map(|x| &x.tok) {
                     Some(Tok::Semi) => i += 1,
-                    Some(Tok::Eof) => {},
-                    _ => return Err(fail(pos, "E_IO_SYNTAX",
-                        "detached write requires a semicolon or a completion callback")),
+                    Some(Tok::Eof) => {}
+                    _ => {
+                        return Err(fail(
+                            pos,
+                            "E_IO_SYNTAX",
+                            "detached write requires a semicolon or a completion callback",
+                        ))
+                    }
                 }
                 Callback::None
             }
         };
-        if !matches!(t.get(i).map(|x| &x.tok), Some(Tok::RBrace | Tok::Eof)) &&
-            (i > 0 && !matches!(t.get(i - 1).map(|x| &x.tok), Some(Tok::Semi)))
+        if !matches!(t.get(i).map(|x| &x.tok), Some(Tok::RBrace | Tok::Eof))
+            && (i > 0 && !matches!(t.get(i - 1).map(|x| &x.tok), Some(Tok::Semi)))
         {
-            return Err(fail(pos, "E_IO_SYNTAX",
-                "detached callback must terminate the statement"));
+            return Err(fail(pos, "E_IO_SYNTAX", "detached callback must terminate the statement"));
         }
-        operations.push(DetachedIo { kind, handle: receiver, callback: cb, pos });
+        operations.push(DetachedIo {
+            kind,
+            handle: receiver,
+            callback: cb,
+            pos,
+        });
     }
     Ok(operations)
 }

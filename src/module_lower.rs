@@ -31,13 +31,18 @@ fn word(tokens: &[Token], i: usize, expected: &str) -> bool {
 }
 fn ident(tokens: &[Token], i: usize, what: &str) -> R<String> {
     match tokens.get(i) {
-        Some(Token { tok: Tok::Ident(s), pos: _ }) if !s.is_empty() && s.len() <= MAX_NAME
-            && !matches!(s.as_str(), "as" | "end" | "pub" | "fnc" | "define" | "module") =>
-            Ok(s.clone()),
-        Some(token) => Err(Diagnostic::new(token.pos, "E_SYNTAX",
-            format!("invalid {what} (maximum {MAX_NAME} UTF-8 bytes)"))),
-        None => Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_EOF",
-            format!("missing {what}"))),
+        Some(Token {
+            tok: Tok::Ident(s),
+            pos: _,
+        }) if !s.is_empty() && s.len() <= MAX_NAME && !matches!(s.as_str(), "as" | "end" | "pub" | "fnc" | "define" | "module") => {
+            Ok(s.clone())
+        }
+        Some(token) => Err(Diagnostic::new(
+            token.pos,
+            "E_SYNTAX",
+            format!("invalid {what} (maximum {MAX_NAME} UTF-8 bytes)"),
+        )),
+        None => Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_EOF", format!("missing {what}"))),
     }
 }
 fn unsupported(pos: Pos, message: &str) -> Diagnostic {
@@ -55,8 +60,11 @@ pub fn lower(toks: Vec<Token>) -> R<Vec<Token>> {
     for token in &toks {
         if let Tok::Ident(name) = &token.tok {
             if name.starts_with(PREFIX) {
-                return Err(Diagnostic::new(token.pos, "E_RESERVED",
-                    "reserved internal module symbol cannot appear in source"));
+                return Err(Diagnostic::new(
+                    token.pos,
+                    "E_RESERVED",
+                    "reserved internal module symbol cannot appear in source",
+                ));
             }
         }
     }
@@ -73,12 +81,14 @@ pub fn lower(toks: Vec<Token>) -> R<Vec<Token>> {
             }
             let owner = ident(&toks, i + 2, "module name")?;
             if !word(&toks, i + 3, "as") {
-                return Err(Diagnostic::new(toks[i + 2].pos, "E_SYNTAX",
-                    "file-local module must start with 'define module Name as'"));
+                return Err(Diagnostic::new(
+                    toks[i + 2].pos,
+                    "E_SYNTAX",
+                    "file-local module must start with 'define module Name as'",
+                ));
             }
             if modules.contains_key(&owner) {
-                return Err(Diagnostic::new(pos, "E_DUPLICATE",
-                    format!("duplicate module '{owner}'")));
+                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate module '{owner}'")));
             }
             i += 4;
             let mut module = Module::default();
@@ -90,60 +100,70 @@ pub fn lower(toks: Vec<Token>) -> R<Vec<Token>> {
                     return Err(Diagnostic::new(pos, "E_EOF", "unterminated module"));
                 }
                 if module.members.len() >= MAX_MEMBERS {
-                    return Err(Diagnostic::new(current.pos, "E_SOURCE_LIMIT",
-                        "module member budget exceeded"));
+                    return Err(Diagnostic::new(current.pos, "E_SOURCE_LIMIT", "module member budget exceeded"));
                 }
                 let member_start = i;
                 let public = word(&toks, i, "pub");
-                if public { i += 1; }
+                if public {
+                    i += 1;
+                }
                 if !word(&toks, i, "fnc") {
-                    return Err(unsupported(toks[i].pos,
-                        "file-local module profile permits only fnc member declarations"));
+                    return Err(unsupported(
+                        toks[i].pos,
+                        "file-local module profile permits only fnc member declarations",
+                    ));
                 }
                 i += 1;
                 let name_at = i;
                 let name = ident(&toks, i, "module function name")?;
                 i += 1;
                 if toks.get(i).map(|t| &t.tok) != Some(&Tok::LParen) {
-                    return Err(unsupported(toks[i.min(toks.len()-1)].pos,
-                        "generic or non-function module members need a full module linker"));
+                    return Err(unsupported(
+                        toks[i.min(toks.len() - 1)].pos,
+                        "generic or non-function module members need a full module linker",
+                    ));
                 }
                 if module.members.contains_key(&name) {
-                    return Err(Diagnostic::new(toks[name_at].pos, "E_DUPLICATE",
-                        format!("duplicate module member '{owner}.{name}'")));
+                    return Err(Diagnostic::new(
+                        toks[name_at].pos,
+                        "E_DUPLICATE",
+                        format!("duplicate module member '{owner}.{name}'"),
+                    ));
                 }
                 // Only brace-bodied methods in this first executable module
                 // profile: no false assumption about nested end-delimiters.
                 let mut header = i;
-                while header < toks.len() &&
-                    toks[header].tok != Tok::LBrace &&
-                    toks[header].tok != Tok::Eof &&
-                    toks[header].tok != Tok::RBrace &&
-                    !word(&toks, header, "end") {
+                while header < toks.len()
+                    && toks[header].tok != Tok::LBrace
+                    && toks[header].tok != Tok::Eof
+                    && toks[header].tok != Tok::RBrace
+                    && !word(&toks, header, "end")
+                {
                     header += 1;
                 }
                 if toks.get(header).map(|t| &t.tok) != Some(&Tok::LBrace) {
-                    return Err(unsupported(toks[i].pos,
-                        "only braced module function bodies are executable"));
+                    return Err(unsupported(toks[i].pos, "only braced module function bodies are executable"));
                 }
                 let (mut close, mut depth) = (header + 1, 1usize);
                 while depth > 0 {
                     match toks.get(close).map(|t| &t.tok) {
                         Some(Tok::LBrace) => depth += 1,
                         Some(Tok::RBrace) => depth -= 1,
-                        Some(Tok::Eof) | None =>
-                            return Err(Diagnostic::new(toks[header].pos, "E_EOF",
-                                "unterminated module function body")),
+                        Some(Tok::Eof) | None => {
+                            return Err(Diagnostic::new(toks[header].pos, "E_EOF", "unterminated module function body"))
+                        }
                         _ => {}
                     }
                     if depth > 128 {
-                        return Err(Diagnostic::new(toks[header].pos, "E_NESTING",
-                            "module function nesting exceeds 128"));
+                        return Err(Diagnostic::new(
+                            toks[header].pos,
+                            "E_NESTING",
+                            "module function nesting exceeds 128",
+                        ));
                     }
                     close += 1;
                 }
-                let generated = format!("{PREFIX}{}_{}_{}_{}",
-                    owner.len(), owner, name.len(), name);
+                let generated = format!("{PREFIX}{}_{}_{}_{}", owner.len(), owner, name.len(), name);
                 for (index, original) in toks[member_start..close].iter().enumerate() {
                     let mut token = original.clone();
                     if member_start + index == name_at {
@@ -182,19 +202,31 @@ pub fn lower(toks: Vec<Token>) -> R<Vec<Token>> {
                 let member = match (
                     expanded.get(i + 1).map(|x| &x.0.tok),
                     expanded.get(i + 2).map(|x| &x.0.tok),
-                    expanded.get(i + 3).map(|x| &x.0.tok)
+                    expanded.get(i + 3).map(|x| &x.0.tok),
                 ) {
                     (Some(Tok::Dot), Some(Tok::Ident(member)), Some(Tok::LParen)) => member,
-                    _ => return Err(unsupported(pos,
-                        "file-local modules support direct qualified calls only, not module values or shadowed bindings")),
+                    _ => {
+                        return Err(unsupported(
+                            pos,
+                            "file-local modules support direct qualified calls only, not module values or shadowed bindings",
+                        ))
+                    }
                 };
-                let found = module.members.get(member).ok_or_else(|| Diagnostic::new(
-                    pos, "E_UNBOUND", format!("unknown module member '{owner}.{member}'")))?;
+                let found = module
+                    .members
+                    .get(member)
+                    .ok_or_else(|| Diagnostic::new(pos, "E_UNBOUND", format!("unknown module member '{owner}.{member}'")))?;
                 if !found.public && expanded[i].1.as_deref() != Some(owner.as_str()) {
-                    return Err(Diagnostic::new(pos, "E_PRIVATE",
-                        format!("private module member '{owner}.{member}' is not externally accessible")));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_PRIVATE",
+                        format!("private module member '{owner}.{member}' is not externally accessible"),
+                    ));
                 }
-                out.push(Token { tok: Tok::Ident(found.generated.clone()), pos });
+                out.push(Token {
+                    tok: Tok::Ident(found.generated.clone()),
+                    pos,
+                });
                 i += 3;
                 continue;
             }

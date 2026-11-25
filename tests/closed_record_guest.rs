@@ -12,11 +12,7 @@ use atto_compiler::{
 fn wasm(source: &str) -> Vec<u8> {
     let actual = compile(source).unwrap_or_else(|err| panic!("{source}\n{err}"));
     assert!(actual.starts_with(b"\0asm\x01\0\0\0"));
-    assert_eq!(
-        actual,
-        compile(source).unwrap(),
-        "guest compiler nondeterminism"
-    );
+    assert_eq!(actual, compile(source).unwrap(), "guest compiler nondeterminism");
     actual
 }
 fn invalid(source: &str, expected: &str) {
@@ -62,9 +58,7 @@ fn two_source_permutations_share_one_generated_record_shape() {
           return first.a + second.a - 39;
         }
     "#;
-    let program = Parser::new(lexer::lex(source).unwrap())
-        .parse_program()
-        .unwrap();
+    let program = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
     let typed = collection_types::analyze(&program).unwrap();
     let mut lowered = program.clone();
     closed_record_guest::lower(&mut lowered, &typed).unwrap();
@@ -264,9 +258,7 @@ fn dynamic_integer_index_is_not_a_string_field_projection() {
 #[test]
 fn parsed_bracket_index_keeps_provenance_before_private_lowering() {
     let source = "pub fnc main(): int {let Record r = {\"x-y\": 42}; return r[\"x-y\"];}";
-    let program = Parser::new(lexer::lex(source).unwrap())
-        .parse_program()
-        .unwrap();
+    let program = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
     match &program.funcs[0].body[1] {
         Stmt::Return(Some(v), _) => assert!(matches!(&v.kind, ExprKind::Index(_, _))),
         _ => panic!("the original parsed Index node must survive until checked lowering"),
