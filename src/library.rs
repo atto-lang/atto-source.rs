@@ -422,6 +422,78 @@ fn reserved_layer_name(selector: &str) -> &'static str {
 /// natural module name when only a qualified or explicit alias was requested.
 /// Reject shadowing, runtime namespace values, and mixed linker domains until
 /// the full lexical export graph can represent them.
+// Parse a complete contextual define alias declaration with no I/O.
+fn parse_alias_declaration(tokens: &[Token], i: usize) -> R<(String, String, Pos, usize)> {
+    let pos = tokens[i].pos;
+    let start = i + 2;
+    let mut end = start;
+    while tokens.get(end).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { end += 1; }
+    if tokens.get(end).is_none_or(|t| t.tok != Tok::Semi) {
+        return Err(err(pos, "E_SYNTAX", "unterminated namespace alias"));
+    }
+    // Normalize both spellings into (new name, existing reference):
+    // NAME = PATH, or PATH as NAME. Exactly one separator is allowed.
+    let body = &tokens[start..end];
+    let mut separators = body.iter().enumerate().filter(|(_, t)|
+        t.tok == Tok::Assign || ident(Some(t)) == Some("as"));
+    let (at, separator) = separators.next().ok_or_else(||
+        err(pos, "E_SYNTAX", "expected define alias NAME = PATH or PATH as NAME"))?;
+    if separators.next().is_some() {
+        return Err(err(pos, "E_SYNTAX", "namespace alias requires exactly one separator"));
+    }
+    let (left, right) = (&body[..at], &body[at + 1..]);
+    let (name_tokens, reference_tokens) = if separator.tok == Tok::Assign {
+        (left, right)
+    } else { (right, left) };
+    if name_tokens.len() != 1 {
+        return Err(err(pos, "E_SYNTAX", "namespace alias name must be a single identifier"));
+    }
+    let name = binding_path(name_tokens, pos)?;
+    let reference = binding_path(reference_tokens, pos)?;
+    Ok((name, reference, pos, end + 1))
+}
+
+// Check the entire leading alias inventory on original input, before any
+// builtin expansion or caller-supplied source loader can run. Unsupported
+// alias-bearing external source graphs remain fail-closed.
+fn alias_header_preflight(source: &str) -> R<Option<Pos>> {
+    if !source.contains("alias") { return Ok(None); }
+    if source.len() > crate::SOURCE_CAP {
+        return Err(err(Pos::default(), "E_SOURCE_LIMIT", "source exceeds byte limit"));
+    }
+    let tokens = lexer::lex(source)?;
+    let mut i = 0;
+    if ident(tokens.first()) == Some("use") {
+        while tokens.get(i).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { i += 1; }
+        if tokens.get(i).is_some_and(|t| t.tok == Tok::Semi) { i += 1; }
+    }
+    while ident(tokens.get(i)) == Some("import") {
+        while tokens.get(i).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { i += 1; }
+        if tokens.get(i).is_some_and(|t| t.tok == Tok::Semi) { i += 1; }
+        else { break; }
+    }
+    let mut first = None;
+    let mut decls = Vec::new();
+    while ident(tokens.get(i)) == Some("define") && ident(tokens.get(i + 1)) == Some("alias") {
+        let (name, reference, pos, next) = parse_alias_declaration(&tokens, i)?;
+        first.get_or_insert(pos);
+        if decls.len() >= crate::import_v2::MAX_ITEMS {
+            return Err(err(pos, "E_SOURCE_LIMIT", "too many namespace aliases"));
+        }
+        decls.push((name, reference));
+        i = next;
+    }
+    // Explicitly reject out-of-lane alias declarations rather than let an
+    // earlier valid import reach a loader before discovering late syntax.
+    if tokens[i..].windows(2).any(|w| ident(w.first()) == Some("define")
+        && ident(w.get(1)) == Some("alias")) {
+        return Err(err(tokens[i].pos, "E_UNSUPPORTED", "namespace aliases must precede other declarations in this backend"));
+    }
+    let refs: Vec<_> = decls.iter().map(|(n,r)| (n.as_str(),r.as_str())).collect();
+    crate::static_import_graph::precheck_alias_declarations(&refs)?;
+    Ok(first)
+}
+
 fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str, String)]) -> R<String> {
     let mut aliases = BTreeMap::<Vec<String>, String>::new();
     let mut protected = BTreeSet::<String>::new();
@@ -458,32 +530,8 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
     while ident(tokens.get(i)) == Some("define")
         && ident(tokens.get(i + 1)) == Some("alias")
     {
-        let pos = tokens[i].pos;
-        let start = i + 2;
-        let mut end = start;
-        while tokens.get(end).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { end += 1; }
-        if tokens.get(end).is_none_or(|t| t.tok != Tok::Semi) {
-            return Err(err(pos, "E_SYNTAX", "unterminated namespace alias"));
-        }
-        // Normalize both spellings into (new name, existing reference):
-        // NAME = PATH, or PATH as NAME. Exactly one separator is allowed.
-        let body = &tokens[start..end];
-        let mut separators = body.iter().enumerate().filter(|(_, t)|
-            t.tok == Tok::Assign || ident(Some(t)) == Some("as"));
-        let (at, separator) = separators.next().ok_or_else(||
-            err(pos, "E_SYNTAX", "expected define alias NAME = PATH or PATH as NAME"))?;
-        if separators.next().is_some() {
-            return Err(err(pos, "E_SYNTAX", "namespace alias requires exactly one separator"));
-        }
-        let (left, right) = (&body[..at], &body[at + 1..]);
-        let (name_tokens, reference_tokens) = if separator.tok == Tok::Assign {
-            (left, right)
-        } else { (right, left) };
-        if name_tokens.len() != 1 {
-            return Err(err(pos, "E_SYNTAX", "namespace alias name must be a single identifier"));
-        }
-        let name = binding_path(name_tokens, pos)?;
-        let reference = binding_path(reference_tokens, pos)?;
+        let (name, reference, pos, next) = parse_alias_declaration(&tokens, i)?;
+        let end = next - 1;
         if constants.len() >= crate::import_v2::MAX_ITEMS {
             return Err(err(pos, "E_SOURCE_LIMIT", "too many namespace aliases"));
         }
@@ -583,10 +631,21 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
 pub fn expand(source: &str) -> R<String> { expand_inner(source, false) }
 pub(crate) fn expand_for_file_linker(source: &str) -> R<String> { expand_inner(source, true) }
 fn expand_inner(source: &str, allow_local: bool) -> R<String> {
-    if !source.contains("import") { return Ok(source.to_string()); }
+    let alias_pos = alias_header_preflight(source)?;
+    if !source.contains("import") {
+        if let Some(pos) = alias_pos {
+            return Err(err(pos, "E_UNBOUND", "namespace alias requires an admitted namespace"));
+        }
+        return Ok(source.to_string());
+    }
     crate::import_v2::preflight_with_local(source, allow_local)?;
     let imports = library_imports(source)?;
-    if imports.is_empty() { return Ok(source.to_string()); }
+    if imports.is_empty() {
+        if let Some(pos) = alias_pos {
+            return Err(err(pos, "E_UNSUPPORTED", "namespace aliases require the authenticated external linker"));
+        }
+        return Ok(source.to_string());
+    }
     let os = target_os();
     let mut done = Vec::new();
     let mut seen = BTreeSet::new();
@@ -603,7 +662,7 @@ fn expand_inner(source: &str, allow_local: bool) -> R<String> {
     }
     let spans: Vec<_> = imports.iter().map(|i| (i.start, i.end)).collect();
     let mut out = blank(source, &spans);
-    if imports.iter().any(|imp| imp.v2) { out = rewrite_v2(&out, &imports, &done)?; }
+    if alias_pos.is_some() || imports.iter().any(|imp| imp.v2) { out = rewrite_v2(&out, &imports, &done)?; }
     for (_, _, text) in &done {
         out.push('\n');
         out.push_str(text);
