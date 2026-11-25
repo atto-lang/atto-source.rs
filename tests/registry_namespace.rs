@@ -546,3 +546,43 @@ fn frozen_class_aliases_preserve_distinct_package_types() {
     }
     assert_eq!(compile_frozen_classes(&guests[0],&[&pa,&pa,&pb]).unwrap_err().code,"E_DUPLICATE");
 }
+
+
+#[test]
+fn authenticated_newable_factory_is_sealed_and_exact() {
+    use atto_compiler::registry_namespace::FrozenClass;
+    let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let body="use namespace models; define pub class Cart implements Newable[Cart] as val int count = 42; pub fnc new(): Cart { return new Cart(); } pub get_count(): int { return self.count; } end";
+    let inputs=[SnapshotSource{path:"src/models/cart.atto",source:body}];
+    let l=lock(manifest,&inputs);
+    let digest=hex_digest(l.as_bytes());
+    let p=FrozenClass::verify_newable("@org/project/package",manifest,&l,&digest,&inputs).unwrap();
+    let prefix="import [class models.Cart] from pkg '@org/project/package'; ";
+    let guest=format!("{prefix}pub fnc main(): int {{ val c = Cart.new(); return c.get_count(); }}");
+    let wasm=p.compile_guest(&guest).unwrap();
+    assert!(wasm.starts_with(b"\0asm"));
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-newable-0.wasm"),wasm).unwrap();
+    }
+    for bad in [
+        format!("{prefix}pub fnc main(): int {{ val c = new Cart(); return c.get_count(); }}"),
+        format!("{prefix}pub fnc main(): int {{ val c = Cart.new(1); return c.get_count(); }}"),
+        format!("{prefix}pub fnc main(): int {{ val c = Cart.__atto_sealed_newable_factory(); return c.get_count(); }}"),
+    ]{
+        assert!(p.compile_guest(&bad).is_err(),"{bad}");
+    }
+    assert!(FrozenClass::verify("@org/project/package",manifest,&l,&digest,&inputs).is_err());
+    for changed in [
+        body.replace("implements Newable[Cart] ",""),
+        body.replace("Newable[Cart]","Newable[int]"),
+        body.replace("new(): Cart","new(): int"),
+        body.replace("pub fnc new","fnc new"),
+        body.replace("new(): Cart","new(int x): Cart"),
+        body.replace("return new Cart();","return new Other();"),
+        body.replace("define pub class","define trait Newable as end define pub class"),
+    ]{
+        let inputs=[SnapshotSource{path:"src/models/cart.atto",source:&changed}];
+        let l=lock(manifest,&inputs);
+        assert!(FrozenClass::verify_newable("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).is_err(),"{changed}");
+    }
+}
