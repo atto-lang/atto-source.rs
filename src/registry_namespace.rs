@@ -98,6 +98,7 @@ pub struct FrozenRegistry {
     // Owned, verified source bytes; cannot be replaced after verification.
     sources: BTreeMap<String,(String,String)>,
     literals: BTreeMap<String,Vec<crate::lexer::Tok>>,
+    mixed_functions: BTreeMap<String,Vec<crate::lexer::Token>>,
 }
 impl FrozenRegistry {
     pub fn verify(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
@@ -113,6 +114,7 @@ impl FrozenRegistry {
         let mut namespaces = BTreeSet::new();
         let mut verified_sources = BTreeMap::new();
         let mut literals = BTreeMap::new();
+        let mut mixed_functions = BTreeMap::new();
         // Nested namespace parents must be declared independently. For now
         // overlapping source directories are forbidden, even if pinned.
         for (ns, dir) in &parsed.namespaces {
@@ -140,11 +142,19 @@ impl FrozenRegistry {
                 return Err(err("E_MANIFEST","source namespace differs from manifest key"));
             }
             view.add(ns, ns, Kind::Namespace, true)?;
-            if let Some(values)=crate::const_import_link::registry_literal_exports(&normalized,end)?{
-                for (name,(public,value)) in values {
+            if let Some(provider)=crate::const_import_link::registry_provider(&normalized,end)?{
+                for (name,(public,value)) in provider.literals {
                     let path=format!("{ns}.{name}");
                     view.add(&path,&path,Kind::Const,public)?;
                     literals.insert(path,value);
+                }
+                for (name,public) in provider.functions {
+                    let path=format!("{ns}.{name}");
+                    view.add(&path,&path,Kind::Fnc,public)?;
+                }
+                if provider.function_tokens.len()>1 {
+                    mixed_functions.insert(ns.clone(),provider.function_tokens);
+                    verified_sources.insert(ns.clone(),(file.to_string(),source.to_string()));
                 }
             }else{
                 let (declared,functions)=crate::import_link::registry_function_exports(source,Path::new(file))?;
@@ -164,7 +174,7 @@ impl FrozenRegistry {
                 .ok_or_else(|| err("E_MANIFEST", "subpath targets undeclared namespace directory"))?;
             subpaths.insert(sub,target.clone());
         }
-        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, literals })
+        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, literals, mixed_functions })
     }
 
     pub fn view(&self) -> &ExportView { &self.view }
@@ -410,7 +420,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             let owner=format!("__atto_registry_{}",modules.len());
             let normalized=crate::namespace::normalize(&lexer::lex(body)?,Some(Path::new(file)))?;
             let semi=normalized.iter().position(|t|t.tok==Tok::Semi).ok_or_else(||err("E_SYNTAX","missing verified namespace header"))?;
-            let funcs=&normalized[semi+1..];
+            let funcs=p.mixed_functions.get(ns).map_or(&normalized[semi+1..],Vec::as_slice);
             let (names,heads)=crate::import_link::functions(funcs)?;
             // Before joining, typecheck the source in isolation. A synthetic
             // entry is only for this check and never enters the linked guest.
