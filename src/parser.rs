@@ -475,6 +475,7 @@ impl Parser {
         self.expect_word("as")?;
         let mut variants = Vec::new();
         let mut fields = Vec::new();
+        let mut actor_receive = None;
         if kind == DeclarationKind::Enum {
             while !self.is_word("end") {
                 if *self.peek() == Tok::Eof {
@@ -544,6 +545,31 @@ impl Parser {
                         "class fields need a newline, ',' or ';' separator"));
                 }
             }
+        } else if kind == DeclarationKind::Actor {
+            while !self.is_word("end") {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected("'end'"));
+                }
+                // The only executable actor member admitted in this version
+                // is a typed scalar receive(int)->int with no actor state.
+                self.eat_word("pub");
+                self.eat_word("fnc");
+                self.eat_word("routine");
+                let (method_name, at) = self.ident("an actor method name")?;
+                if method_name != "receive" {
+                    return Err(unsupported(at, "actor methods other than receive"));
+                }
+                if actor_receive.is_some() {
+                    return Err(Diagnostic::new(at, "E_DUPLICATE", "actor has more than one receive handler"));
+                }
+                let mut handler = self.parse_func_tail(method_name, at)?;
+                if handler.params.len() != 1 || handler.params[0].ty != Type::Int ||
+                    handler.ret != Type::Int {
+                    return Err(unsupported(at, "actor receive signatures other than (int)->int"));
+                }
+                handler.name = format!("{name}.receive");
+                actor_receive = Some(handler);
+            }
         } else if !self.is_word("end") {
             if *self.peek() == Tok::Eof {
                 return Err(self.expected("'end'"));
@@ -554,14 +580,13 @@ impl Parser {
             ));
         }
         self.expect_word("end")?;
-        Ok(Declaration { kind, name, pos, variants, fields })
+        Ok(Declaration { kind, name, pos, variants, fields, actor_receive })
     }
 
     fn parse_func(&mut self) -> R<Func> {
         if *self.peek() == Tok::At {
             return Err(unsupported(self.pos(), "annotations"));
         }
-        let start = self.pos();
         self.eat_word("pub");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
@@ -593,6 +618,12 @@ impl Parser {
             ));
         }
         let (name, pos) = self.ident("a function name")?;
+        self.parse_func_tail(name, pos)
+    }
+
+    /// Use exactly the ordinary function type/parameter/body parser for actor
+    /// receive handlers, preserving diagnostics and source positions.
+    fn parse_func_tail(&mut self, name: String, pos: Pos) -> R<Func> {
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic functions"));
         }
@@ -629,7 +660,6 @@ impl Parser {
             Type::Void
         };
         let body = self.parse_block()?;
-        let _ = start;
         Ok(Func {
             name,
             pos,

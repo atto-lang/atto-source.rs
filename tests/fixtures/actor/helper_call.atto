@@ -1,0 +1,6 @@
+// actor-input: 40
+// actor-result: 42
+fnc step(int x): int { return x + 2; }
+define actor Helper as
+  receive(int value): int { return step(value); }
+end

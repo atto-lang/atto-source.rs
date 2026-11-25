@@ -1,0 +1,5 @@
+// actor-input: 42
+// actor-result: 42
+define actor Identity as
+  receive(int value): int { return value; }
+end

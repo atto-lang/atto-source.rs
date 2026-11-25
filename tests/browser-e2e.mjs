@@ -10,6 +10,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -141,6 +142,201 @@ try{
   console.log('PASS browser: checked int overflow panics with output preserved');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: error recovery restores valid execution');
+  // Compile a real AttoLang actor handler inside a dedicated Web Worker,
+  // then execute its compiler-produced guest Wasm on multiple messages.
+  const actor=await evaluate(`(async()=>{
+    const worker=new Worker('/actor-worker.mjs',{type:'module'});
+    const request=packet=>new Promise((resolve,reject)=>{
+      const timeout=setTimeout(()=>reject(new Error('actor worker deadline')),5000);
+      worker.onmessage=e=>{clearTimeout(timeout);resolve(e.data)};
+      worker.onerror=e=>{clearTimeout(timeout);reject(new Error('actor worker failed'))};
+      worker.postMessage(packet);
+    });
+    try {
+      const ready=await request({kind:'init',source:'define actor Worker as receive(int value): int { return value + 2; } end'});
+      if(ready.kind!=='ready')throw new Error(JSON.stringify(ready));
+      const first=await request({kind:'message',id:1,value:40n});
+      const second=await request({kind:'message',id:2,value:-1n});
+      return {a:first.value?.toString(),b:second.value?.toString(),status:first.kind+'/'+second.kind};
+    } finally { worker.terminate(); }
+  })()`);
+  assert.deepEqual(actor,{a:'42',b:'1',status:'result/result'});
+  console.log('PASS browser: real Atto actor source -> compiler Wasm -> actor guest Wasm -> dedicated Web Worker receive');
+
+  // Metering is enforced by real compiler-produced Wasm, not a simulated
+  // host counter: the guest traps on *immediate* fuel depletion, independently
+  // of its once-per-128-charges slow path. A distinct fresh worker recovers.
+  const meteredActor=await evaluate(`(async()=>{
+    const src='define actor Metered as receive(int value): int { let i = 0; while i < value do i = i + 1; done return i; } end';
+    async function open() {
+      const worker=new Worker('/actor-worker.mjs',{type:'module'});
+      const request=packet=>new Promise((resolve,reject)=>{
+        const deadline=setTimeout(()=>reject(Error('metered worker deadline')),5000);
+        worker.onmessage=e=>{clearTimeout(deadline);resolve(e.data)};
+        worker.onerror=()=>{clearTimeout(deadline);reject(Error('metered worker error'))};
+        worker.postMessage(packet);
+      });
+      const initial=await request({kind:'init',source:src});
+      if(initial.kind!=='ready'){worker.terminate();throw Error('metered actor was not ready');}
+      return {worker,request};
+    }
+    const first=await open();
+    try {
+      const a=await first.request({kind:'message',id:1,value:60000n});
+      const b=await first.request({kind:'message',id:2,value:60000n});
+      const fault=await first.request({kind:'message',id:3,value:200000n});
+      const fresh=await open();
+      try {
+        const c=await fresh.request({kind:'message',id:1,value:42n});
+        return {a:a.value?.toString(),b:b.value?.toString(),fault:fault.kind,
+          message:fault.message,fresh:c.value?.toString()};
+      } finally { fresh.worker.terminate(); }
+    } finally { first.worker.terminate(); }
+  })()`);
+  assert.equal(meteredActor.a,'60000');
+  assert.equal(meteredActor.b,'60000');
+  assert.equal(meteredActor.fault,'fault');
+  assert.match(meteredActor.message,/E_ACTOR_PANIC/);
+  assert.equal(meteredActor.fresh,'42');
+  console.log('PASS browser: generated Wasm charges statements and loops, immediate fuel traps and fresh worker recovers');
+  const rejectedActor=await evaluate(`(async()=>{
+    const worker=new Worker('/actor-worker.mjs',{type:'module'});
+    try {
+      return await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('rejection deadline')),5000);
+        worker.onmessage=e=>{clearTimeout(timer);resolve(e.data)};
+        worker.onerror=()=>{clearTimeout(timer);reject(new Error('worker failed'))};
+        worker.postMessage({kind:'init',source:'define actor Bad as receive(bool value): int { return 1; } end'});
+      });
+    } finally { worker.terminate(); }
+  })()`);
+  assert.equal(rejectedActor.kind,'fault');
+  assert.match(rejectedActor.message,/E_UNSUPPORTED/);
+  console.log('PASS browser: wrong actor receive signature fails closed before guest creation');
+
+  // Probe the actual source-owned worker, not a simulated worker. Neither a
+  // second init during async compilation nor skipped/replayed message IDs
+  // may be accepted as guest execution.
+  const actorProtocol=await evaluate(`(async()=>{
+    const source='define actor Worker as receive(int value): int { return value + 2; } end';
+    async function probe(mode) {
+      const w=new Worker('/actor-worker.mjs',{type:'module'});
+      const next=()=>new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('actor protocol deadline: '+mode)),5000);
+        w.onmessage=e=>{clearTimeout(timer);resolve(e.data)};
+        w.onerror=()=>{clearTimeout(timer);reject(new Error('actor protocol worker error'))};
+      });
+      try {
+        if(mode==='double-init') {
+          const first=next();
+          w.postMessage({kind:'init',source});
+          w.postMessage({kind:'init',source});
+          const reply=await first;
+          return reply.kind==='fault' && /E_ACTOR_PROTOCOL/.test(reply.message);
+        }
+        let pending=next();
+        w.postMessage({kind:'init',source});
+        const ready=await pending;
+        if(ready.kind!=='ready') throw new Error('expected actor ready');
+        if(mode==='replay') {
+          pending=next();
+          w.postMessage({kind:'message',id:1,value:40n});
+          const valid=await pending;
+          if(valid.kind!=='result'||valid.value!==42n)throw new Error('initial receive failed');
+          pending=next();
+          w.postMessage({kind:'message',id:1,value:41n});
+        } else {
+          pending=next();
+          w.postMessage({kind:'message',id:2,value:41n});
+        }
+        const invalid=await pending;
+        return invalid.kind==='fault' && /E_ACTOR_PROTOCOL/.test(invalid.message);
+      } finally { w.terminate(); }
+    }
+    return {doubleInit:await probe('double-init'),replayed:await probe('replay'),skipped:await probe('skip')};
+  })()`);
+  assert.deepEqual(actorProtocol,{doubleInit:true,replayed:true,skipped:true});
+  console.log('PASS browser: actor double-init, replay and skipped IDs are rejected before guest execution');
+
+  // Real worker transport must preserve the full signed-i64 domain. A raw
+  // BigInt outside it must NOT be implicitly truncated modulo 2^64 by Wasm.
+  const actorI64Bounds=await evaluate(`(async()=>{
+    const source='define actor Identity as receive(int value): int { return value; } end';
+    async function open() {
+      const w=new Worker('/actor-worker.mjs',{type:'module'});
+      const request=packet=>new Promise((resolve,reject)=>{
+        const timeout=setTimeout(()=>reject(new Error('actor i64 deadline')),5000);
+        w.onmessage=e=>{clearTimeout(timeout);resolve(e.data)};
+        w.onerror=()=>{clearTimeout(timeout);reject(new Error('actor i64 worker error'))};
+        w.postMessage(packet);
+      });
+      const init=await request({kind:'init',source});
+      if(init.kind!=='ready'){w.terminate();throw Error('actor did not initialize');}
+      return {w,request};
+    }
+    const values=[-(1n<<63n),-1n,0n,(1n<<63n)-1n];
+    const first=await open();
+    try {
+      const results=[];
+      for(let i=0;i<values.length;i++){
+        const r=await first.request({kind:'message',id:i+1,value:values[i]});
+        results.push(r.kind==='result'&&r.id===i+1&&r.value===values[i]);
+      }
+      const reinit=await first.request({kind:'init',source});
+      if(reinit.kind!=='fault'||!/E_ACTOR_PROTOCOL/.test(reinit.message))
+        throw Error('reinit after ready must fault');
+      const bad=[(1n<<63n),-(1n<<63n)-1n,1,1.2,null,
+        {value:1n},true,undefined];
+      const refused=[];
+      for(const value of bad){
+        const a=await open();
+        try {
+          const r=await a.request({kind:'message',id:1,value});
+          refused.push(r.kind==='fault'&&/E_ACTOR_PROTOCOL/.test(r.message));
+        } finally {a.w.terminate();}
+      }
+      return {boundary:results,invalid:refused,reinit:true};
+    } finally {first.w.terminate();}
+  })()`);
+  assert.deepEqual(actorI64Bounds,{boundary:[true,true,true,true],
+    invalid:Array(8).fill(true),reinit:true});
+  console.log('PASS browser: actor signed i64 min/max roundtrip; out-of-range and non-BigInt payloads and second init fail closed');
+  const compilerFetchesBeforeOversize=requests.filter(x=>x.path==='/atto_compiler.wasm').length;
+  const oversizedActor=await evaluate(`(async()=>{
+    const worker=new Worker('/actor-worker.mjs',{type:'module'});
+    try {
+      return await new Promise((resolve,reject)=>{
+        const deadline=setTimeout(()=>reject(new Error('oversize actor deadline')),5000);
+        worker.onmessage=e=>{clearTimeout(deadline);resolve(e.data)};
+        worker.onerror=()=>{clearTimeout(deadline);reject(new Error('oversize worker failed'))};
+        worker.postMessage({kind:'init',source:'x'.repeat(65537)});
+      });
+    } finally { worker.terminate(); }
+  })()`);
+  assert.equal(oversizedActor.kind,'fault');
+  assert.match(oversizedActor.message,/E_SOURCE_LIMIT/);
+  assert.equal(requests.filter(x=>x.path==='/atto_compiler.wasm').length,
+    compilerFetchesBeforeOversize,'oversized source must fail before compiler fetch');
+  console.log('PASS browser: oversized actor source denied before fetching or compiling Wasm');
+
+  // UTF-16 code units are not UTF-8 bytes: the source cap must be checked
+  // before fetching the compiler even if the string's .length is below cap.
+  const unicodeLimit=await evaluate(`(async()=>{
+    const w=new Worker('/actor-worker.mjs',{type:'module'});
+    try {
+      return await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('unicode source deadline')),5000);
+        w.onmessage=e=>{clearTimeout(timer);resolve(e.data)};
+        w.onerror=()=>{clearTimeout(timer);reject(new Error('unicode source worker failed'))};
+        w.postMessage({kind:'init',source:'🚀'.repeat(18000)});
+      });
+    } finally {w.terminate();}
+  })()`);
+  assert.equal(unicodeLimit.kind,'fault');
+  assert.match(unicodeLimit.message,/E_SOURCE_LIMIT/);
+  assert.equal(requests.filter(x=>x.path==='/atto_compiler.wasm').length,compilerFetchesBeforeOversize,
+    'oversized UTF-8 source must fail before fetching compiler');
+  console.log('PASS browser: UTF-8 byte-limit protects actor compiler from oversized multibyte source');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

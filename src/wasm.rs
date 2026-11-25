@@ -22,6 +22,21 @@ pub const PANIC_DIV_ZERO: i32 = 2;
 /// Exhaustion of the fixed guest-private, one-page class heap.
 pub const PANIC_HEAP_LIMIT: i32 = 3;
 
+// Scalar actor v0 uses two import-free private accounting mechanisms:
+// (1) immediate saturating i64 fuel denial before guest-visible statements,
+// function entry, or loop iteration; (2) amortized i32 slow-path polls every
+// 128 charges. Worker/watchdog termination remains an independent boundary.
+// This is direct typed-Wasm lowering, not yet a verified post-opt MIR pass.
+const ACTOR_TICK_PERIOD: i32 = 128;
+const ACTOR_SLOW_BUDGET: i32 = 1024;
+const ACTOR_MAX_CALL_DEPTH: i32 = 256;
+const ACTOR_FUEL_BUDGET: i64 = (ACTOR_TICK_PERIOD as i64) * (ACTOR_SLOW_BUDGET as i64);
+const ACTOR_TICK_GLOBAL: u32 = 3;
+const ACTOR_BUDGET_GLOBAL: u32 = 4;
+const ACTOR_DEPTH_GLOBAL: u32 = 5;
+const ACTOR_FUEL_GLOBAL: u32 = 6;
+const ACTOR_BUSY_GLOBAL: u32 = 7;
+
 const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
 
@@ -120,6 +135,7 @@ struct Emit<'a> {
     /// `Some(..)` when compiling a void `main` export: plain `return` must
     /// still produce the exported i64 status 0.
     void_main: bool,
+    actor_metered: bool,
 }
 
 impl Emit<'_> {
@@ -153,8 +169,71 @@ impl Emit<'_> {
         self.frames.pop();
     }
 
+    fn actor_enter(&mut self) {
+        if !self.actor_metered { return; }
+        // Recursion depth counts active guest functions; trap before stack
+        // exhaustion can bypass the periodic loop/function fuel check.
+        self.op(0x23); uleb(&mut self.code, ACTOR_DEPTH_GLOBAL as u64);
+        self.i32c(1); self.op(0x6A); // i32.add
+        self.op(0x24); uleb(&mut self.code, ACTOR_DEPTH_GLOBAL as u64);
+        self.op(0x23); uleb(&mut self.code, ACTOR_DEPTH_GLOBAL as u64);
+        self.i32c(ACTOR_MAX_CALL_DEPTH); self.op(0x4B); // i32.gt_u
+        self.open(0x04, 0x40, Frame::Other);
+        self.op(0x00); // unreachable: actor stack quota
+        self.close();
+        self.actor_poll();
+    }
+
+    fn actor_leave(&mut self) {
+        if !self.actor_metered { return; }
+        self.op(0x23); uleb(&mut self.code, ACTOR_DEPTH_GLOBAL as u64);
+        self.i32c(1); self.op(0x6B); // i32.sub
+        self.op(0x24); uleb(&mut self.code, ACTOR_DEPTH_GLOBAL as u64);
+    }
+
+    fn actor_poll(&mut self) {
+        if !self.actor_metered { return; }
+        // Charge exactly one logical execution unit BEFORE guest side effects,
+        // including in the 127 calls between expensive scheduler polls. A zero
+        // or exhausted i64 quota traps before it may wrap or refuel.
+        self.op(0x23); uleb(&mut self.code, ACTOR_FUEL_GLOBAL as u64);
+        self.i64c(1);
+        self.op(0x58); // i64.le_u: remaining <= charge
+        self.open(0x04, 0x40, Frame::Other);
+        self.op(0x00); // unreachable: actor fuel exhausted
+        self.close();
+        self.op(0x23); uleb(&mut self.code, ACTOR_FUEL_GLOBAL as u64);
+        self.i64c(1);
+        self.op(0x7D); // i64.sub; remains positive, never underflows
+        self.op(0x24); uleb(&mut self.code, ACTOR_FUEL_GLOBAL as u64);
+        // Fast path: decrement and branch on the private countdown. No host
+        // calls, wall-clock access, allocator work, or slow check each tick.
+        self.op(0x23); uleb(&mut self.code, ACTOR_TICK_GLOBAL as u64);
+        self.i32c(1); self.op(0x6B); // i32.sub
+        self.op(0x24); uleb(&mut self.code, ACTOR_TICK_GLOBAL as u64);
+        self.op(0x23); uleb(&mut self.code, ACTOR_TICK_GLOBAL as u64);
+        self.op(0x45); // i32.eqz
+        self.open(0x04, 0x40, Frame::Other);
+        // Slow path runs once per ACTOR_TICK_PERIOD guest units.
+        self.i32c(ACTOR_TICK_PERIOD);
+        self.op(0x24); uleb(&mut self.code, ACTOR_TICK_GLOBAL as u64);
+        self.op(0x23); uleb(&mut self.code, ACTOR_BUDGET_GLOBAL as u64);
+        self.i32c(1); self.op(0x6B);
+        self.op(0x24); uleb(&mut self.code, ACTOR_BUDGET_GLOBAL as u64);
+        self.op(0x23); uleb(&mut self.code, ACTOR_BUDGET_GLOBAL as u64);
+        self.op(0x45); // i32.eqz
+        self.open(0x04, 0x40, Frame::Other);
+        self.op(0x00); // unreachable: actor reduction budget exhausted
+        self.close();
+        self.close();
+    }
+
     fn stmts(&mut self, s: &[TStmt]) {
         for st in s {
+            // Meter straight-line blocks too: a long chain of assignments,
+            // branches, and calls must not escape until the next loop edge.
+            // The loop header's separate tick covers empty-body infinite loops.
+            self.actor_poll();
             self.stmt(st);
         }
     }
@@ -178,12 +257,14 @@ impl Emit<'_> {
                 } else if self.void_main {
                     self.i64c(0);
                 }
+                self.actor_leave();
                 self.op(0x0F);
             }
             TStmt::If(arms, other) => self.if_chain(arms, other.as_deref()),
             TStmt::Loop { cond, body, update } => {
                 self.open(0x02, 0x40, Frame::Break);
                 self.open(0x03, 0x40, Frame::Top);
+                self.actor_poll(); // actor loop backedge and first iteration
                 if let Some(c) = cond {
                     self.expr(c);
                     self.op(0x45); // i32.eqz
@@ -435,6 +516,16 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    emit_inner(p, None)
+}
+
+/// A distinct actor guest ABI: exactly one receive(i64)->i64 export.
+/// Preserve the consolidated checked scalar/class backend for main guests.
+pub fn emit_actor(p: &TProgram, receive: u32) -> Vec<u8> {
+    emit_inner(p, Some(receive))
+}
+
+fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
     let layout = Layout {
         imports: p.imports.clone(),
     };
@@ -474,15 +565,50 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             code: locals_decl(&f.locals),
             frames: Vec::new(),
             void_main: is_void_main,
+            actor_metered: actor_receive.is_some(),
         };
+        e.actor_enter();
         e.stmts(&f.body);
         if is_void_main {
             e.i64c(0);
         } else if f.ret != Type::Void {
             e.op(0x00); // unreachable: definite-return analysis proved every path returns
         }
+        // Every reachable explicit return balances depth in TStmt::Return.
+        // A fallthrough void function also exits its stack accounting.
+        e.actor_leave();
         e.op(0x0B);
         bodies.push(e.code);
+    }
+    if let Some(receive) = actor_receive {
+        // Public receive is a wrapper that resets per-message quotas only
+        // after checking the private in-flight guard. If the guest traps at
+        // any point (fuel, overflow, stack, engine), the guard remains set:
+        // catching the Wasm exception cannot resurrect or refuel that actor.
+        // A normal return clears it. A fresh Wasm instance starts unpoisoned.
+        // No new imports, memory or public exports are introduced.
+        func_types.push(types.idx(Sig(vec![I64], vec![I64])));
+        let mut wrapper = vec![0]; // zero local declarations
+        wrapper.push(0x23); uleb(&mut wrapper, ACTOR_BUSY_GLOBAL as u64);
+        wrapper.extend_from_slice(&[0x04, 0x40, 0x00, 0x0B]); // if busy: unreachable
+        wrapper.extend_from_slice(&[0x41, 1, 0x24]); // mark in-flight before any guest call
+        uleb(&mut wrapper, ACTOR_BUSY_GLOBAL as u64);
+        for (idx, value) in [
+            (ACTOR_TICK_GLOBAL, ACTOR_TICK_PERIOD),
+            (ACTOR_BUDGET_GLOBAL, ACTOR_SLOW_BUDGET),
+            (ACTOR_DEPTH_GLOBAL, 0),
+        ] {
+            wrapper.push(0x41); sleb(&mut wrapper, value as i64);
+            wrapper.push(0x24); uleb(&mut wrapper, idx as u64);
+        }
+        wrapper.push(0x42); sleb(&mut wrapper, ACTOR_FUEL_BUDGET);
+        wrapper.push(0x24); uleb(&mut wrapper, ACTOR_FUEL_GLOBAL as u64);
+        wrapper.push(0x20); wrapper.push(0); // local.get 0
+        wrapper.push(0x10); uleb(&mut wrapper, layout.func(receive) as u64);
+        wrapper.extend_from_slice(&[0x41, 0, 0x24]); // clear only after normal return
+        uleb(&mut wrapper, ACTOR_BUSY_GLOBAL as u64);
+        wrapper.push(0x0B);
+        bodies.push(wrapper);
     }
 
     let mut out = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
@@ -517,23 +643,43 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // Private globals: panic code, heap bump cursor, construction scratch.
     // Reserve at least 16 bytes and align the heap past any string data.
     let heap_start = ((p.data.len() as u32 + 23) / 8) * 8;
-    let mut globals = vec![3, I32, 0x01, 0x41, 0, 0x0B, I32, 0x01, 0x41];
+    let mut globals = vec![if actor_receive.is_some() { 8 } else { 3 }, I32, 0x01, 0x41, 0, 0x0B, I32, 0x01, 0x41];
     sleb(&mut globals, heap_start as i64);
     globals.extend_from_slice(&[0x0B, I32, 0x01, 0x41, 0, 0x0B]);
+    if actor_receive.is_some() {
+        for initial in [ACTOR_TICK_PERIOD, ACTOR_SLOW_BUDGET, 0] {
+            globals.extend_from_slice(&[I32, 0x01, 0x41]);
+            sleb(&mut globals, initial as i64);
+            globals.push(0x0B);
+        }
+        globals.extend_from_slice(&[I64, 0x01, 0x42]);
+        sleb(&mut globals, ACTOR_FUEL_BUDGET);
+        globals.push(0x0B);
+        globals.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // $actor_busy = false
+    }
     section(&mut out, 6, globals);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, if has_memory { 3 } else { 2 });
-    name(&mut exp, "main");
-    exp.push(0x00);
-    uleb(&mut exp, layout.func(p.main) as u64);
-    name(&mut exp, "panic_code");
-    exp.push(0x03);
-    uleb(&mut exp, 0);
-    if has_memory {
-        name(&mut exp, "memory");
-        exp.push(0x02);
+    if let Some(receive) = actor_receive {
+        uleb(&mut exp, 1);
+        name(&mut exp, "receive");
+        exp.push(0x00);
+        // Wrapper resets fuel on each message; handler recursion cannot.
+        let _ = receive;
+        uleb(&mut exp, layout.func(p.funcs.len() as u32) as u64);
+    } else {
+        uleb(&mut exp, if has_memory { 3 } else { 2 });
+        name(&mut exp, "main");
+        exp.push(0x00);
+        uleb(&mut exp, layout.func(p.main) as u64);
+        name(&mut exp, "panic_code");
+        exp.push(0x03);
         uleb(&mut exp, 0);
+        if has_memory {
+            name(&mut exp, "memory");
+            exp.push(0x02);
+            uleb(&mut exp, 0);
+        }
     }
     section(&mut out, 7, exp);
 

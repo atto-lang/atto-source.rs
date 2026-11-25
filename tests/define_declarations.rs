@@ -50,7 +50,7 @@ fn declaration_admission_never_enables_runtime_features() {
     const MAIN: &str = "pub fnc main(): int { return 0; }";
     let cases = [
         ("define class Point as\n  fnc unsupported(): int { return 0; }\nend\n", "E_UNSUPPORTED"),
-        ("define actor Worker as\n  receive(int x) -> void :: return; end\nend\n", "E_UNSUPPORTED"),
+        ("define actor Worker as\n  receive(int x) -> void { return; }\nend\n", "E_UNSUPPORTED"),
         ("define struct Point as\n int x: 0\nend\n", "E_UNSUPPORTED"),
         ("define module M as\n  fnc f(): int { return 1; }\nend\n", "E_UNSUPPORTED"),
         ("define enum E as\n X\n X\nend\n", "E_DUPLICATE"),

@@ -130,7 +130,7 @@ check('define/rejection-and-no-artifact', () => {
   const main = 'pub fnc main(): int { return 0; }';
   for (const [prefix, code] of [
     ['define class P as\n fnc method(): int { return 0; }\nend\n', 'E_UNSUPPORTED'],
-    ['define actor A as\n receive(int msg) -> void :: return; end\nend\n', 'E_UNSUPPORTED'],
+    ['define actor A as\n receive(int msg): void { return; }\nend\n', 'E_UNSUPPORTED'],
     ['define enum E as X X end\n', 'E_SYNTAX'],
     ['define enum E as\n X\n X\nend\n', 'E_DUPLICATE'],
     ['define module Mod as\n fnc f(): int { return 2; }\nend\n', 'E_UNSUPPORTED'],
@@ -553,6 +553,383 @@ for (const op of ['%', '^', '^^']) {
     assert.equal(r.code, 'E_UNSUPPORTED');
     assert.equal('wasm' in r, false);
     assert.ok(r.line >= 1 && r.col >= 1);
+  });
+}
+
+// Actor receive, synthetic main and metered public wrapper consume three slots.
+// Test the exact 1024-function boundary through the WASM compiler ABI.
+check('actor/function-budget-includes-receive-and-synthetic-main', () => {
+  const helper = count => Array.from({length:count},(_,i)=>
+    'fnc helper_' + i + '(): int { return 0; }').join('\n') + '\n';
+  const actor = 'define actor Worker as receive(int value): int { return value + 1; } end';
+  const attempt = source => {
+    const bytes = encoder.encode(source);
+    assert.ok(bytes.length <= api.input_capacity(), 'quota test fits source input');
+    new Uint8Array(api.memory.buffer,api.input_ptr(),bytes.length).set(bytes);
+    return api.compile_actor(bytes.length);
+  };
+  assert.equal(attempt(helper(1022)+actor),1,'1025 total functions with wrapper must fail');
+  assert.equal(api.result_length(),0,'over-budget actor must not expose Wasm');
+  const mem = new Uint8Array(api.memory.buffer);
+  let end=api.error_ptr();
+  while(end<mem.length&&mem[end]&&end-api.error_ptr()<512)end++;
+  assert.match(decoder.decode(mem.subarray(api.error_ptr(),end)),/^E_SOURCE_LIMIT:/);
+  assert.equal(attempt(helper(1021)+actor),0,'1024 total functions including wrapper must fit');
+  const guest = new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  const mod=new WebAssembly.Module(guest);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(e=>e.name),['receive']);
+  assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(41n),42n);
+});
+
+// Exercise the actual wasm32-exported compiler ABI, rather than using the
+// safe host wrapper which rejects oversized inputs before entering Wasm.
+check('actor/ABI-negative-and-overcapacity-lengths-fail-without-artifact', () => {
+  const readError = () => {
+    const mem = new Uint8Array(api.memory.buffer);
+    const start = api.error_ptr();
+    let end = start;
+    while (end < mem.length && end - start < 512 && mem[end]) end++;
+    return decoder.decode(mem.subarray(start, end));
+  };
+  for (const length of [-1, api.input_capacity() + 1, 0x7fffffff]) {
+    assert.equal(api.compile_actor(length), 1, 'invalid ABI length ' + length);
+    assert.equal(api.result_length(), 0, 'invalid length must clear previous guest');
+    assert.match(readError(), /^E_SOURCE_LIMIT:/);
+    assert.equal(api.error_line_number(), 1);
+    assert.equal(api.error_column_number(), 1);
+  }
+});
+
+check('actor/ABI-invalid-UTF8-never-leaks-previous-Wasm-and-recovers', () => {
+  const source = 'define actor Identity as receive(int x): int { return x; } end';
+  const bytes = encoder.encode(source);
+  const emit = () => {
+    new Uint8Array(api.memory.buffer, api.input_ptr(), bytes.length).set(bytes);
+    assert.equal(api.compile_actor(bytes.length), 0);
+    const output = new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+    assert.ok(WebAssembly.validate(output));
+    return output;
+  };
+  const before = emit();
+  assert.equal(new WebAssembly.Instance(new WebAssembly.Module(before),{}).exports.receive(-1n),-1n);
+  new Uint8Array(api.memory.buffer,api.input_ptr(),2).set([0xc3,0x28]);
+  assert.equal(api.compile_actor(2),1,'invalid UTF-8 must not enter parser');
+  assert.equal(api.result_length(),0,'invalid UTF-8 must clear previous guest');
+  const mem = new Uint8Array(api.memory.buffer);
+  const start = api.error_ptr();
+  let end = start;
+  while (end < mem.length && end - start < 512 && mem[end]) end++;
+  assert.match(decoder.decode(mem.subarray(start,end)),/^E_UTF8:/);
+  assert.ok(api.error_line_number()>0 && api.error_column_number()>0);
+  const after = emit();
+  assert.deepEqual(after,before,'recovered actor bytes must be deterministic');
+  assert.equal(api.error_line_number(),0,'success clears stale actor diagnostics');
+  assert.equal(api.error_column_number(),0);
+});
+
+check('actor/compiler-entrypoints-must-not-confuse-main-and-receive-guests', () => {
+  const write = source => {
+    const input = encoder.encode(source);
+    new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+    return input.length;
+  };
+  const main = 'pub fnc main(): int { return 42; }';
+  const actor = 'define actor Worker as receive(int x): int { return x; } end';
+  assert.equal(api.compile(write(main)),0);
+  assert.ok(api.result_length()>0);
+  assert.equal(api.compile_actor(write(main)),1,'ordinary main must not become actor guest');
+  assert.equal(api.result_length(),0,'no normal guest may leak after rejected actor compile');
+  assert.equal(api.compile(write(actor)),1,'actor receive must not silently compile as main');
+  assert.equal(api.result_length(),0,'rejected main cannot expose previous Wasm');
+  assert.equal(api.compile_actor(write(actor)),0);
+  const bytes=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  const mod=new WebAssembly.Module(bytes);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(x=>x.name),['receive']);
+  assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(42n),42n);
+});
+// Each actor function entry, statement and loop header immediately consumes
+// one private fuel unit. A separate countdown amortizes the slow path to 128
+// charges. Only a new public message gets a fresh allotment; a Web Worker
+// that observes a trap must permanently retire the actor instance.
+check('actor/immediate-fuel-boundary-resets-per-message-and-traps-runaway-loop', () => {
+  const src = [
+    'define actor Worker as',
+    '  receive(int value): int {',
+    '    let i = 0;',
+    '    while i < value do',
+    '      i = i + 1;',
+    '    done',
+    '    return i;',
+    '  }',
+    'end',
+  ].join('\n');
+  const input=encoder.encode(src);
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  assert.equal(api.compile_actor(input.length),0);
+  const wasm=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(WebAssembly.validate(wasm));
+  const mod=new WebAssembly.Module(wasm);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(e=>e.name),['receive']);
+  const actor=new WebAssembly.Instance(mod,{});
+  // This compiled actor consumes: one function entry, one initial binding,
+  // one while-statement entry, (loop condition + assignment) * N,
+  // one final condition and one return = 2*N + 5 fuel charges.
+  // Fuel 131072 denies before the 131072nd charged operation.
+  assert.equal(actor.exports.receive(65533n),65533n,
+    '131071 charges fit in the actor fuel budget');
+  assert.equal(actor.exports.receive(65533n),65533n,
+    'per-message fuel must reset at the public wrapper boundary');
+  assert.throws(()=>actor.exports.receive(65534n),WebAssembly.RuntimeError,
+    'the first exhausted unit must trap before its statement effects');
+  assert.throws(()=>actor.exports.receive(0n),WebAssembly.RuntimeError,
+    'a trapped Wasm actor cannot reset fuel by invoking receive again');
+  // Trapped actor instances are terminal even outside the Web Worker. Fresh instances
+  // retain independent quotas and cannot inherit the exhausted fuel global.
+  const fresh=new WebAssembly.Instance(mod,{});
+  assert.equal(fresh.exports.receive(42n),42n);
+});
+
+
+check('actor/continue-paths-and-straight-line-metering-actually-run-in-wasm', () => {
+  const src=[
+    'define actor Worker as',
+    '  receive(int value): int {',
+    '    let i = 0;',
+    '    let visited = 0;',
+    '    while i < value do',
+    '      i = i + 1;',
+    '      if i < 10 then continue; fi',
+    '      visited = visited + 1;',
+    '    done',
+    '    return visited;',
+    '  }',
+    'end'
+  ].join('\n');
+  const input=encoder.encode(src);
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  assert.equal(api.compile_actor(input.length),0,'real compiler must accept continue loop');
+  const guest=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(WebAssembly.validate(guest),'the instrumented emitted Wasm must validate');
+  const module=new WebAssembly.Module(guest);
+  assert.deepEqual(WebAssembly.Module.imports(module),[]);
+  assert.deepEqual(WebAssembly.Module.exports(module).map(e=>e.name),['receive']);
+  const instance=new WebAssembly.Instance(module,{});
+  assert.equal(instance.exports.receive(9n),0n);
+  assert.equal(instance.exports.receive(42n),33n);
+  assert.throws(()=>instance.exports.receive(100000n),WebAssembly.RuntimeError,
+    'nonterminating or large continue loop must exhaust local fuel');
+  assert.throws(()=>instance.exports.receive(0n),WebAssembly.RuntimeError,
+    'the same actor instance cannot reuse its trapped budget');
+  const fresh=new WebAssembly.Instance(module,{});
+  assert.equal(fresh.exports.receive(15n),6n);
+});
+
+check('actor/recursive-function-depth-bounded-independent-of-loop-fuel', () => {
+  const src = [
+    'fnc recurse(int n): int {',
+    '  if n eq 0 then return 42; fi',
+    '  return recurse(n - 1);',
+    '}',
+    'define actor Worker as receive(int value): int { return recurse(value); } end',
+  ].join('\n');
+  const input=encoder.encode(src);
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  assert.equal(api.compile_actor(input.length),0);
+  const wasm=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(WebAssembly.validate(wasm));
+  const mod=new WebAssembly.Module(wasm);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  const actor=new WebAssembly.Instance(mod,{});
+  assert.equal(actor.exports.receive(60n),42n);
+  assert.equal(actor.exports.receive(60n),42n, 'call depth resets after successful return');
+  assert.throws(()=>actor.exports.receive(400n),WebAssembly.RuntimeError,
+    'deep recursion must trap from depth quota before native stack overflow');
+  assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(5n),42n);
+});
+
+// Compile identical actor sources through the native Rust CLI and the wasm32
+// compiler ABI. Both must emit byte-identical import-free actor guests; the
+// ordinary compile path must fail closed rather than quietly erasing receive.
+for (const fixture of await fixtures('actor')) {
+  check('actor/native-wasm-byte-parity/' + fixture.name, () => {
+    const input = encoder.encode(fixture.source);
+    assert.ok(input.length <= api.input_capacity());
+    new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+    assert.equal(api.compile_actor(input.length),0,'wasm32 actor fixture must compile');
+    const wasm=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+    assert.ok(WebAssembly.validate(wasm));
+    const module=new WebAssembly.Module(wasm);
+    assert.deepEqual(WebAssembly.Module.imports(module),[]);
+    assert.deepEqual(WebAssembly.Module.exports(module).map(e=>e.name),['receive']);
+    const instance=new WebAssembly.Instance(module,{});
+    assert.equal(instance.exports.receive(BigInt(header(fixture.source,'actor-input')[0])),
+      BigInt(header(fixture.source,'actor-result')[0]));
+    if(attoc) {
+      const native=spawnSync(attoc,['--actor',fixture.path],{maxBuffer:1<<22});
+      assert.equal(native.status,0,'native actor fixture failed: '+String(native.stderr));
+      assert.deepEqual(new Uint8Array(native.stdout),wasm,
+        'native Rust vs wasm32 actor emitted Wasm must be byte identical');
+      const normal=spawnSync(attoc,[fixture.path],{maxBuffer:1<<22});
+      assert.equal(normal.status,1,'normal compiler must not reinterpret actor as main');
+      assert.equal(normal.stdout.length,0,'rejected actor cannot emit main guest');
+      nativeChecked++;
+    }
+  });
+}
+
+// ---- source-compiled scalar actor receive guest ABI --------------------------
+check('actor/source-compiled-receive-guest-executes', () => {
+  assert.equal(typeof api.compile_actor, 'function', 'compiler must expose separate actor ABI entrypoint');
+  const src = 'define actor Worker as receive(int value): int { return value + 2; } end';
+  const bytes = encoder.encode(src);
+  new Uint8Array(api.memory.buffer, api.input_ptr(), bytes.length).set(bytes);
+  assert.equal(api.compile_actor(bytes.length), 0);
+  const guest = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+  assert.ok(WebAssembly.validate(guest));
+  const mod = new WebAssembly.Module(guest);
+  assert.deepEqual(WebAssembly.Module.imports(mod), []);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(x => x.name), ['receive']);
+  const actor = new WebAssembly.Instance(mod, {});
+  assert.equal(actor.exports.receive(40n), 42n);
+  assert.equal(actor.exports.receive(-1n), 1n);
+});
+// Validate the actual emitted Wasm *section surface*, not only its public
+// exports: a private memory, table, start or data section would violate the
+// browser actor v0 contract even if WebAssembly.Module.exports() hid it.
+check('actor/guest-v0-has-no-hidden-capability-sections', () => {
+  const input=encoder.encode('define actor A as receive(int x): int { return x + 1; } end');
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  assert.equal(api.compile_actor(input.length),0);
+  const bytes=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(WebAssembly.validate(bytes));
+  const mod=new WebAssembly.Module(bytes);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(e=>e.name),['receive']);
+  const forbidden=new Set([2,4,5,8,9,11,12,13]); // imports/table/memory/start/element/data/tag
+  const ids=[]; let at=8;
+  while(at<bytes.length){
+    const id=bytes[at++]; let size=0,done=false;
+    for(let i=0;i<5;i++){
+      assert.ok(at<bytes.length,'Wasm section header must be in bounds');
+      const b=bytes[at++];
+      size+=(b&127)*2**(7*i);
+      if(!(b&128)){done=true;break}
+    }
+    assert.ok(done&&Number.isSafeInteger(size),'bounded LEB128 section size');
+    assert.ok(at+size<=bytes.length,'section body must be in bounds');
+    ids.push(id); at+=size;
+  }
+  assert.equal(at,bytes.length);
+  assert.deepEqual(ids.filter(id=>forbidden.has(id)),[],
+    'no hidden actor memory/table/start/import/data sections');
+  assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(41n),42n);
+});
+
+// A scalar actor has the SAME canonical eager condition semantics as ordinary
+// AttoLang functions: even an apparently decisive LHS must evaluate the RHS.
+// With the boundary input, the RHS checked addition traps instead of being
+// incorrectly suppressed by short-circuit lowering.
+for (const [label, condition, safeResult] of [
+  ['false-comma', 'false, value + 1 eq 0', 9n],
+  ['true-pipe', 'true | value + 1 eq 0', 7n],
+]) {
+  check('actor/eager-' + label + '-executes-checked-rhs', () => {
+    const src = 'define actor Worker as\n' +
+      '  receive(int value): int {\n' +
+      '    if ' + condition + ' then\n' +
+      '      return 7;\n' +
+      '    fi\n' +
+      '    return 9;\n' +
+      '  }\n' +
+      'end';
+    const input = encoder.encode(src);
+    new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+    assert.equal(api.compile_actor(input.length), 0, label + ' must compile');
+    const guest = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+    assert.ok(WebAssembly.validate(guest));
+    const mod = new WebAssembly.Module(guest);
+    assert.deepEqual(WebAssembly.Module.imports(mod), []);
+    assert.deepEqual(WebAssembly.Module.exports(mod).map(x => x.name), ['receive']);
+    const actor = new WebAssembly.Instance(mod, {});
+    assert.equal(actor.exports.receive(0n), safeResult);
+    assert.throws(() => actor.exports.receive(9223372036854775807n),
+      WebAssembly.RuntimeError, 'eager RHS checked arithmetic must not be skipped');
+    assert.throws(() => actor.exports.receive(0n), WebAssembly.RuntimeError,
+      'checked-overflow guest trap must poison the actor wrapper permanently');
+    assert.equal(new WebAssembly.Instance(mod, {}).exports.receive(0n), safeResult,
+      'a fresh isolated actor instance starts without the previous trap state');
+  });
+}
+
+// Rejected syntax must produce NO actor artifact even following a successful
+// compile_actor call; subsequent valid source must still compile normally.
+for (const op of ['%', '^', '^^']) {
+  check('actor/removed-operator-' + op + '-does-not-leak-previous-guest', () => {
+    const emit = source => {
+      const input = encoder.encode(source);
+      new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+      return api.compile_actor(input.length);
+    };
+    const valid = 'define actor Worker as receive(int value): int { return value + 1; } end';
+    assert.equal(emit(valid), 0);
+    assert.ok(api.result_length() > 0);
+    assert.equal(emit('define actor Worker as receive(int value): int { return value ' + op + ' 2; } end'), 1);
+    assert.equal(api.result_length(), 0, 'rejected actor must not expose last good guest');
+    const memory = new Uint8Array(api.memory.buffer);
+    let offset = api.error_ptr(), limit = offset + 512;
+    while (offset < memory.length && offset < limit && memory[offset]) offset++;
+    const diagnostic = decoder.decode(memory.subarray(api.error_ptr(), offset));
+    assert.ok(diagnostic.startsWith('E_UNSUPPORTED:'), diagnostic);
+    assert.equal(emit(valid), 0, 'compiler must recover after rejected actor');
+    const wasm = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+    const actor = new WebAssembly.Instance(new WebAssembly.Module(wasm), {});
+    assert.equal(actor.exports.receive(41n), 42n);
+  });
+}
+
+// Actor guest arithmetic must inherit the same checked-i64 semantics as
+// ordinary compiler guests. A trap is terminal to the containing Web Worker;
+// it may never silently wrap and return a misleading Result/ack.
+for (const [label, expression, safeInput, safeOutput, overflowInput] of [
+  ['add', 'value + 1', 9223372036854775806n, 9223372036854775807n, 9223372036854775807n],
+  ['sub', 'value - 1', -9223372036854775807n, -9223372036854775808n, -9223372036854775808n],
+  ['mul', 'value * 2', 4611686018427387903n, 9223372036854775806n, 4611686018427387904n],
+]) {
+  check('actor/checked-i64-' + label + '-traps-on-overflow', () => {
+    const src = 'define actor Worker as receive(int value): int { return ' + expression + '; } end';
+    const input = encoder.encode(src);
+    new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+    assert.equal(api.compile_actor(input.length), 0, 'actor compilation must succeed');
+    const bytes = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+    assert.ok(WebAssembly.validate(bytes));
+    const mod = new WebAssembly.Module(bytes);
+    assert.deepEqual(WebAssembly.Module.imports(mod), [], 'actor must remain host-import-free');
+    assert.deepEqual(WebAssembly.Module.exports(mod).map(x => x.name), ['receive']);
+    const actor = new WebAssembly.Instance(mod, {});
+    assert.equal(actor.exports.receive(safeInput), safeOutput);
+    assert.throws(() => actor.exports.receive(overflowInput), WebAssembly.RuntimeError,
+      'checked actor arithmetic must trap rather than wrap');
+  });
+}
+for (const [label, src, want] of [
+  ['wrong-type', 'define actor A as receive(bool value): int { return 42; } end', 'E_UNSUPPORTED'],
+  ['multi-handlers', 'define actor A as receive(int x): int { return x; } receive(int y): int { return y; } end', 'E_DUPLICATE'],
+  ['no-handler', 'define actor A as end', 'E_ACTOR_ENTRY'],
+  ['unsupported-body', 'define actor A as int state: 0 end', 'E_UNSUPPORTED'],
+  ['stdio-import', 'define actor A as receive(int x): int { stdio.println(x); return x; } end', 'E_ACTOR_IMPORT'],
+]) {
+  check(`actor/${label}-fails-closed`, () => {
+    const bytes = encoder.encode(src);
+    new Uint8Array(api.memory.buffer, api.input_ptr(), bytes.length).set(bytes);
+    assert.equal(api.compile_actor(bytes.length), 1);
+    assert.equal(api.result_length(), 0);
+    const mem = new Uint8Array(api.memory.buffer);
+    let end = api.error_ptr();
+    while (mem[end]) end++;
+    assert.ok(decoder.decode(mem.subarray(api.error_ptr(), end)).startsWith(want + ':'), label);
   });
 }
 
