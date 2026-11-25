@@ -111,7 +111,7 @@ where F: FnMut(&std::path::Path) -> std::io::Result<String> {
     // frontend consumes a complete file and cannot load any imports.
     let lexical = lexer::lex(source)?;
     if let Some(lowered) = verified_quantities::lower(source, &lexical)? {
-        return compile_prelexed(lexer::lex(&lowered)?, Some(logical_path));
+        return compile_quantity(lowered, Some(logical_path));
     }
     let tokens = import_link::lower(source, logical_path, load)?;
     compile_prelexed(tokens, Some(logical_path))
@@ -128,12 +128,28 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     }
     let tokens = lexer::lex(source)?;
     if let Some(lowered) = verified_quantities::lower(source, &tokens)? {
-        return compile_prelexed(lexer::lex(&lowered)?, logical_path);
+        return compile_quantity(lowered, logical_path);
     }
     compile_prelexed(tokens, logical_path)
 }
 
+fn compile_quantity(outcome: verified_quantities::Outcome, logical_path: Option<&std::path::Path>)
+    -> Result<Vec<u8>, Diagnostic> {
+    let (number, failure) = match outcome {
+        Ok(number) => (number, None),
+        Err(failure) => (0, Some(failure)),
+    };
+    let scalar = format!("pub fnc main() -> int {{ return {number}; }}");
+    compile_prelexed_inner(lexer::lex(&scalar)?, logical_path, failure)
+}
+
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
+    -> Result<Vec<u8>, Diagnostic> {
+    compile_prelexed_inner(tokens, logical_path, None)
+}
+
+fn compile_prelexed_inner(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>,
+    quantity_failure: Option<verified_quantities::ArithmeticFailure>)
     -> Result<Vec<u8>, Diagnostic> {
     if verified_quantities::has_declarations(&tokens) {
         return Err(Diagnostic::new(tokens[0].pos, "E_UNSUPPORTED",
@@ -342,7 +358,10 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
-    let mut bytes = wasm::emit(&typed);
+    let mut bytes = match quantity_failure {
+        Some(failure) => wasm::emit_quantity_failure(&typed, failure),
+        None => wasm::emit(&typed),
+    };
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
