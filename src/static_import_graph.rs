@@ -112,11 +112,41 @@ pub struct Target {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NominalIdentity {
     target: Target,
+    arity: usize,
 }
 impl NominalIdentity {
     pub fn kind(&self) -> Kind { self.target.kind }
     pub fn declaration(&self) -> &str { &self.target.declaration }
+    pub fn arity(&self) -> usize { self.arity }
 }
+
+/// Scalar identity is compiler-defined, never inferred from a package name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarIdentity { Int, Bool, Float, String }
+
+/// Bounded postfix type expression; operands precede their nominal head.
+/// No recursive caller-owned input or graph expansion is required.
+#[derive(Clone, Debug)]
+pub enum TypeTerm<'a> {
+    Scalar(ScalarIdentity),
+    Nominal { reference: &'a str, arguments: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TypeIdentityNode {
+    Scalar(ScalarIdentity),
+    Nominal(NominalIdentity),
+}
+
+/// Opaque, canonical, ordered generic identity, not a layout or a
+/// constraint-satisfaction certificate. The flat postfix representation
+/// avoids unbounded recursive equality or drop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeIdentity(Vec<TypeIdentityNode>);
+
+const MAX_GENERIC_ARITY: usize = 8;
+const MAX_TYPE_NODES: usize = 128;
+const MAX_TYPE_DEPTH: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier { Implicit, Deliberate, Explicit }
@@ -237,7 +267,46 @@ impl Scope {
         if view.lookup(&target.declaration)? != target {
             return Err(err("E_IMPORT_KIND", "nominal declaration differs from canonical export"));
         }
-        Ok(NominalIdentity { target })
+        let arity = view.entries.get(&target.declaration)
+            .ok_or_else(||err("E_UNBOUND","missing canonical nominal declaration"))?.arity;
+        Ok(NominalIdentity { target, arity })
+    }
+
+    /// Resolve every node from checked views, enforcing declared arity,
+    /// bounded nesting and one complete expression. No inferred/default
+    /// arguments or structural equivalence are admitted in this profile.
+    pub fn resolve_type_identity(&self, terms: &[TypeTerm<'_>], views: &[&ExportView]) -> R<TypeIdentity> {
+        if terms.is_empty() || terms.len()>MAX_TYPE_NODES {
+            return Err(err("E_SOURCE_LIMIT","generic identity node budget exceeded"));
+        }
+        let mut nodes=Vec::with_capacity(terms.len());
+        let mut depths:Vec<usize>=Vec::new();
+        for term in terms {
+            match term {
+                TypeTerm::Scalar(s) => {
+                    nodes.push(TypeIdentityNode::Scalar(*s));
+                    depths.push(1);
+                }
+                TypeTerm::Nominal { reference, arguments } => {
+                    let id=self.resolve_nominal(reference,views)?;
+                    if *arguments!=id.arity || *arguments>depths.len() {
+                        return Err(err("E_ARITY","generic identity argument count differs from declaration"));
+                    }
+                    let base=depths.len()-*arguments;
+                    let depth=depths[base..].iter().copied().max().unwrap_or(0)+1;
+                    if depth>MAX_TYPE_DEPTH {
+                        return Err(err("E_SOURCE_LIMIT","generic identity depth exceeded"));
+                    }
+                    depths.truncate(base);
+                    depths.push(depth);
+                    nodes.push(TypeIdentityNode::Nominal(id));
+                }
+            }
+        }
+        if depths.len()!=1 {
+            return Err(err("E_ARITY","generic identity must describe exactly one complete type"));
+        }
+        Ok(TypeIdentity(nodes))
     }
 
     /// Create a namespace alias after resolution of a checked namespace node.
@@ -327,7 +396,7 @@ impl Scope {
 }
 
 #[derive(Clone, Debug)]
-struct Export { target: Target, public: bool }
+struct Export { target: Target, public: bool, arity: usize }
 /// Caller-verified source-owned export graph view. No filesystem walking.
 /// Parent namespace visibility must be represented in the supplied view.
 pub struct ExportView { origin: Origin, entries: BTreeMap<String, Export> }
@@ -335,11 +404,21 @@ impl ExportView {
     pub fn new(origin: Origin) -> Self { Self { origin, entries: BTreeMap::new() } }
 
     pub fn add(&mut self, export: &str, declaration: &str, kind: Kind, public: bool) -> R<()> {
+        self.add_generic(export,declaration,kind,public,0)
+    }
+
+    /// Caller must derive the arity from a checked declaration. This is
+    /// resolver metadata, not source authentication or generic codegen.
+    pub fn add_generic(&mut self, export: &str, declaration: &str, kind: Kind, public: bool, arity: usize) -> R<()> {
+        if arity>MAX_GENERIC_ARITY {return Err(err("E_SOURCE_LIMIT","generic arity limit exceeded"));}
+        if arity!=0 && !matches!(kind, Kind::Class | Kind::Enum | Kind::Type | Kind::Trait | Kind::Interface | Kind::Actor) {
+            return Err(err("E_IMPORT_KIND","generic metadata requires a nominal declaration"));
+        }
         if !path(export) || !path(declaration) { return Err(err("E_IMPORT_PATH", "invalid export identity")); }
         if self.entries.len() >= LIMIT { return Err(err("E_SOURCE_LIMIT", "export view budget exceeded")); }
         if self.entries.contains_key(export) { return Err(err("E_DUPLICATE", "duplicate export")); }
         self.entries.insert(export.into(), Export { target: Target {
-            origin: self.origin.clone(), declaration: declaration.into(), kind }, public });
+            origin: self.origin.clone(), declaration: declaration.into(), kind }, public, arity });
         Ok(())
     }
 
