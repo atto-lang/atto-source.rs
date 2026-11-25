@@ -471,14 +471,14 @@ fn reject_internal_names_and_unsafe_remote_selector_shapes() {
 }
 
 #[test]
-fn namespace_constants_lower_to_identical_builtin_guest_bytes() {
+fn namespace_aliass_lower_to_identical_builtin_guest_bytes() {
     let baseline = compile("import core.num; pub fnc main(): int { return num.clamp(42, 0, 100); }").unwrap();
     for src in [
-        "import core.num; define const math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
-        "import core.num; define const first = second; define const second = core.num; pub fnc main(): int { return first.clamp(42, 0, 100); }",
-        "import core.num as vendor.math; define const m = vendor.math; pub fnc main(): int { return m.clamp(42, 0, 100); }",
-        "import core.num; define const m = num; pub fnc main(): int { return m.clamp(42, 0, 100); }",
-        "import core.num; define const m = core /* comment */ . num; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+        "import core.num; define alias math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
+        "import core.num; define alias first = second; define alias second = core.num; pub fnc main(): int { return first.clamp(42, 0, 100); }",
+        "import core.num as vendor.math; define alias m = vendor.math; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+        "import core.num; define alias m = num; pub fnc main(): int { return m.clamp(42, 0, 100); }",
+        "import core.num; define alias m = core /* comment */ . num; pub fnc main(): int { return m.clamp(42, 0, 100); }",
     ] {
         assert_eq!(compile(src).unwrap(), baseline, "{src}");
         let mut loads = 0;
@@ -490,28 +490,28 @@ fn namespace_constants_lower_to_identical_builtin_guest_bytes() {
 }
 
 #[test]
-fn namespace_constants_do_not_remove_original_bindings() {
-    let src = "import core.num; define const math = core.num; pub fnc main(): int { return math.clamp(40, 0, 100)+num.clamp(1, 0, 100)+core.num.clamp(1, 0, 100); }";
+fn namespace_aliass_do_not_remove_original_bindings() {
+    let src = "import core.num; define alias math = core.num; pub fnc main(): int { return math.clamp(40, 0, 100)+num.clamp(1, 0, 100)+core.num.clamp(1, 0, 100); }";
     assert!(compile(src).is_ok());
-    let src = "import core.num as math; define const m = math; pub fnc main(): int { return num.clamp(42, 0, 100); }";
+    let src = "import core.num as math; define alias m = math; pub fnc main(): int { return num.clamp(42, 0, 100); }";
     assert!(compile(src).is_err());
 }
 
 #[test]
-fn namespace_constant_cycles_values_and_shadowing_fail_closed() {
+fn namespace_alias_cycles_values_and_shadowing_fail_closed() {
     for (src, expected) in [
-        ("import core.num; define const a = a; pub fnc main(): int { return 42; }", Some("E_IMPORT_CYCLE")),
-        ("import core.num; define const a = b; define const b = a; pub fnc main(): int { return 42; }", Some("E_IMPORT_CYCLE")),
-        ("import core.num; define const a = absent; pub fnc main(): int { return 42; }", Some("E_UNBOUND")),
-        ("import core.num; define const a = core.num; define const a = num; pub fnc main(): int { return 42; }", Some("E_DUPLICATE")),
-        ("import core.num; define const num = core.num; pub fnc main(): int { return 42; }", Some("E_DUPLICATE")),
-        ("import core.num; define const a = core.num; pub fnc main(): int { return a; }", None),
-        ("import core.num; define const a = core.num; pub fnc main(): int { let int a = 1; return a; }", None),
-        ("import core.num; define const a = core.num; pub fnc main(): int { return a.unknown(42); }", None),
-        ("import core.num; define const a = num.clamp; pub fnc main(): int { return 42; }", None),
-        ("import core.num; define const a = 42; pub fnc main(): int { return 42; }", None),
-        ("import core.num; define const a = core.num; pub fnc main(): int { return object.a.clamp(42, 0, 100); }", None),
-        ("import core.num as hidden; define const a = core.num; pub fnc main(): int { return 42; }", Some("E_UNBOUND")),
+        ("import core.num; define alias a = a; pub fnc main(): int { return 42; }", Some("E_IMPORT_CYCLE")),
+        ("import core.num; define alias a = b; define alias b = a; pub fnc main(): int { return 42; }", Some("E_IMPORT_CYCLE")),
+        ("import core.num; define alias a = absent; pub fnc main(): int { return 42; }", Some("E_UNBOUND")),
+        ("import core.num; define alias a = core.num; define alias a = num; pub fnc main(): int { return 42; }", Some("E_DUPLICATE")),
+        ("import core.num; define alias num = core.num; pub fnc main(): int { return 42; }", Some("E_DUPLICATE")),
+        ("import core.num; define alias a = core.num; pub fnc main(): int { return a; }", None),
+        ("import core.num; define alias a = core.num; pub fnc main(): int { let int a = 1; return a; }", None),
+        ("import core.num; define alias a = core.num; pub fnc main(): int { return a.unknown(42); }", None),
+        ("import core.num; define alias a = num.clamp; pub fnc main(): int { return 42; }", None),
+        ("import core.num; define alias a = 42; pub fnc main(): int { return 42; }", None),
+        ("import core.num; define alias a = core.num; pub fnc main(): int { return object.a.clamp(42, 0, 100); }", None),
+        ("import core.num as hidden; define alias a = core.num; pub fnc main(): int { return 42; }", Some("E_UNBOUND")),
     ] {
         let mut loads = 0;
         let d = compile_with_imports(src, Path::new("app/main.atto"), |_| {
@@ -520,4 +520,15 @@ fn namespace_constant_cycles_values_and_shadowing_fail_closed() {
         if let Some(code) = expected { assert_eq!(d.code, code, "{src}: {d}"); }
         assert_eq!(loads, 0, "{src}");
     }
+}
+
+#[test]
+fn alias_is_distinct_from_value_constant_grammar() {
+    for src in [
+        "import core.num; define const math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
+        "import core.num; define namespace const math = core.num; pub fnc main(): int { return math.clamp(42, 0, 100); }",
+        "import core.num; define alias math; pub fnc main(): int { return 42; }",
+        "import core.num; define alias math = ; pub fnc main(): int { return 42; }",
+        "import core.num; define alias math = core.num; define alias math = num; pub fnc main(): int { return 42; }",
+    ] { assert!(compile(src).is_err(), "{src}"); }
 }
