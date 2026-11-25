@@ -45,3 +45,30 @@ fn comments_and_longer_identifiers_stay_ordinary() {
                   }\n";
     frontend::parse(source).expect("ordinary source must parse");
 }
+
+#[test]
+fn await_and_suspends_are_language_constructs_but_unlowered_on_rs() {
+    // await 42 is syntactically valid at the language level only inside a
+    // suspends function. This scalar backend must reject before producing IR.
+    for source in [
+        "suspends fnc f() -> int { return 42; }",
+        "static fnc f() -> int { return await 42; }",
+        "static fnc f() -> int { const x = await 42; return x; }",
+        "static fnc await() -> int { return 42; }",
+        "static fnc f(int suspends) -> int { return suspends; }",
+    ] {
+        let error = frontend::parse(source).expect_err("no scalar fallback for suspension");
+        assert_eq!(error.class, "suspension_unsupported", "{source}: {error}");
+    }
+}
+
+#[test]
+fn actor_task_scope_must_not_be_desugared_into_inline_scalar_execution() {
+    for source in [
+        "static fnc f() -> int { return task scope { 1 }; }",
+        "static fnc f() -> int { return task { 1 }; }",
+        "static fnc f() -> int { return nb { 1 }; }",
+    ] {
+        rejected_as_domain(source);
+    }
+}
