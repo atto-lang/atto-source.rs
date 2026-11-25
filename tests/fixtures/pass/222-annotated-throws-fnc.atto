@@ -1,0 +1,9 @@
+// expect-exit: 42
+@throws(Error)
+fnc answer(): int {
+    return 42;
+}
+@throws(Error)
+pub fnc main(): int {
+    return answer();
+}

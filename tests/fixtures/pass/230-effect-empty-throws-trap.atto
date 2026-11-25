@@ -1,0 +1,12 @@
+// expect-exit: 42
+// The browser subset returns Option from trap; #275 migrates it to Result.
+// This fixture guards the current effect semantics during that migration.
+fnc risky(): int throws(Error) { throw Error("ordinary failure"); }
+@Throws()
+pub fnc main(): int {
+    val Option<int> result = trap risky();
+    match result over
+        on Some(value) -> { return value; }
+        on None -> { return 42; }
+    end
+}
