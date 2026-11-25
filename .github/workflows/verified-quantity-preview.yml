@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/verified_quantities.rs'
       - 'src/units.rs'
+      - 'src/quantity_scale.rs'
       - 'src/lib.rs'
       - 'tests/verified_quantity_guests.rs'
       - 'tests/units_of_measure.rs'
@@ -29,7 +30,9 @@ jobs:
       - name: Install pinned Rust
         run: rustup toolchain install 1.85.1 --profile minimal
       - name: Focused real compiler tests
-        run: cargo +1.85.1 test --locked --test units_of_measure --test verified_quantity_guests --test immutable_binding_parity
+        run: |
+          cargo +1.85.1 test --locked --lib quantity_scale::tests
+          cargo +1.85.1 test --locked --test units_of_measure --test verified_quantity_guests --test immutable_binding_parity
       - name: Build actual compiler and execute emitted guest
         run: |
           cargo +1.85.1 build --locked --bin attoc
