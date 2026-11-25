@@ -579,3 +579,37 @@ fn authenticated_external_class_typed_locals_keep_instances_distinct() {
         assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
     }
 }
+
+#[test]
+fn typed_external_class_rejects_distinct_declaration_identity_and_excess_locals() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; pub define class Item as private int value: 42; pub answer(): int { return self.value; } end"),
+        ("src/other/types.atto","use namespace other; pub define class Item as private int value: 42; pub answer(): int { return self.value; } end"),
+    ] {inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; import class p.other.Item as Other; ";
+    for body in [
+        "val a: Other = new Data(); return a.answer();",
+        "val a: Data = new Data(); val b: Data = new Other(); return a.answer()+b.answer();",
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_TYPE","{source}");
+    }
+    let mut body=String::new();
+    for i in 0..17{body.push_str(&format!("val a{i}: Data = new Data(); "));}
+    body.push_str("return a0.answer();");
+    let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+    assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_SOURCE_LIMIT");
+    for body in [
+        "val a: Data = new Data(",
+        "val a: Data = new Data(); val",
+        "val a: Data = new Data(); return a.",
+        "val a: Data = new Data(); return a.answer()+",
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {body}");
+        assert!(compile_registry_guest(&source,&[&p]).is_err(),"{source}");
+    }
+}
