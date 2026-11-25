@@ -627,3 +627,59 @@ fn sealed_factory_aliases_keep_package_identity_and_reject_bypass() {
     let raw=FrozenClass::verify("@b/project/pkg",&mb,&lb,&hex_digest(lb.as_bytes()),&b).unwrap();
     assert_eq!(compile_frozen_classes(&guest,&[&pa,&raw]).unwrap_err().code,"E_NEWABLE");
 }
+
+
+#[test]
+fn frozen_generic_class_source_arity_and_scalar_guests() {
+    use atto_compiler::registry_namespace::FrozenGenericClass;
+    use atto_compiler::static_import_graph::{ScalarIdentity as S,TypeTerm as T};
+    let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } pub fnc echo(T value): T { return value; } end";
+    let inputs=[SnapshotSource{path:"src/models/container.atto",source:body}];
+    let l=lock(manifest,&inputs);
+    let digest=hex_digest(l.as_bytes());
+    let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&digest,&inputs).unwrap();
+    let mut s=Scope::new();
+    let import=atto_compiler::import_v2::parse_mixed(&atto_compiler::lexer::lex("import [class models.Container] from pkg '@org/project/package';").unwrap(),1).unwrap().0;
+    s.bind_mixed(p.view(),&import).unwrap();
+    let head=T::Nominal{reference:"Container",arguments:1};
+    assert_eq!(s.resolve_nominal("Container",&[p.view()]).unwrap().arity(),1);
+    assert_ne!(s.resolve_type_identity(&[T::Scalar(S::Int),head.clone()],&[p.view()]).unwrap(),s.resolve_type_identity(&[T::Scalar(S::String),head],&[p.view()]).unwrap());
+    let prefix="import [class models.Container] from pkg '@org/project/package'; ";
+    let guests=[
+        (S::Int,"val c: Container[int] = Container[int].new(); return c.echo(42);"),
+        (S::Bool,"val c = Container[bool].new(); if c.echo(true) { return 42; } return 0;"),
+        (S::String,"val c = Container[string].new(); val v = c.echo(\"answer\"); if v == \"answer\" { return 42; } return 0;"),
+    ];
+    for (i,(scalar,root)) in guests.iter().enumerate(){
+        let guest=format!("{prefix}pub fnc main(): int {{ {root} }}");
+        let wasm=p.compile_guest(&guest,*scalar).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-generic-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for root in [
+        "val c = Container.new(); return c.echo(42);",
+        "val c = Container[bool].new(); return 42;",
+        "val c = Container[int].new(); return c.echo(false);",
+        "val c = new Container[int](); return 42;",
+        "val c = Container[int].new(); return c.__atto_sealed_newable_factory();",
+    ]{
+        let guest=format!("{prefix}pub fnc main(): int {{ {root} }}");
+        assert!(p.compile_guest(&guest,S::Int).is_err(),"{guest}");
+    }
+    for changed in [
+        body.replace("Container[T] implements","Container[T,U] implements"),
+        body.replace("Newable[Container[T]]","Newable[Container[int]]"),
+        body.replace("return value;","return T;"),
+        body.replace("pub fnc echo","val T field = 0; pub fnc echo"),
+        body.replace("return value;","return 42;"),
+    ]{
+        let changed=[SnapshotSource{path:"src/models/container.atto",source:&changed}];
+        let cl=lock(manifest,&changed);
+        assert!(FrozenGenericClass::verify("@org/project/package",manifest,&cl,&hex_digest(cl.as_bytes()),&changed).is_err());
+    }
+    let tampered=[SnapshotSource{path:inputs[0].path,source:"use namespace models; define pub class Container as end"}];
+    assert_eq!(FrozenGenericClass::verify("@org/project/package",manifest,&l,&digest,&tampered).err().unwrap().code,"E_LOCK_HASH");
+}
