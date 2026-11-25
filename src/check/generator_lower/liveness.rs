@@ -21,8 +21,7 @@ fn reads(f: &Func, value: &TE, slots: u32) -> R<u16> {
     match &value.e {
         TExpr::I64(_) | TExpr::Bool(_) => Ok(0),
         TExpr::Local(6) => Ok(0),
-        TExpr::Local(slot) if *slot >= 7 && *slot - 7 < slots =>
-            Ok(1u16 << (*slot - 7)),
+        TExpr::Local(slot) if *slot >= 7 && *slot - 7 < slots => Ok(1u16 << (*slot - 7)),
         TExpr::Neg(a) | TExpr::Not(a) => reads(f, a, slots),
         TExpr::Bin(_, a, b) => Ok(reads(f, a, slots)? | reads(f, b, slots)?),
         _ => Err(error(f, "unsupported expression in generator liveness graph")),
@@ -43,27 +42,20 @@ pub(super) fn analyze(f: &Func, steps: &[TGenStep], locals: u32) -> R<Vec<u16>> 
         return Err(error(f, "invalid generator continuation size"));
     }
     let n = steps.len();
-    let all = if locals == 16 {
-        u16::MAX
-    } else {
-        ((1u32 << locals) - 1) as u16
-    };
+    let all = if locals == 16 { u16::MAX } else { ((1u32 << locals) - 1) as u16 };
 
     let mut flow = Vec::with_capacity(n);
     for (pc, step) in steps.iter().enumerate() {
         let (uses, defines) = match step {
-            TGenStep::Set { local, value } if *local < locals =>
-                (reads(f, value, locals)?, 1u16 << local),
-            TGenStep::Guard { condition, .. } =>
-                (reads(f, condition, locals)?, 0),
+            TGenStep::Set { local, value } if *local < locals => (reads(f, value, locals)?, 1u16 << local),
+            TGenStep::Guard { condition, .. } => (reads(f, condition, locals)?, 0),
             TGenStep::Yield(value) => (reads(f, value, locals)?, 0),
             TGenStep::Jump { .. } | TGenStep::Done => (0, 0),
             _ => return Err(error(f, "unsupported step in typed generator liveness")),
         };
         let successors = match step {
             TGenStep::Jump { to } => vec![*to as usize],
-            TGenStep::Guard { on_false, .. } =>
-                vec![pc + 1, *on_false as usize],
+            TGenStep::Guard { on_false, .. } => vec![pc + 1, *on_false as usize],
             TGenStep::Done => Vec::new(),
             _ => vec![pc + 1],
         };
@@ -76,7 +68,9 @@ pub(super) fn analyze(f: &Func, steps: &[TGenStep], locals: u32) -> R<Vec<u16>> 
     let mut reachable = vec![false; n];
     let mut todo = vec![0usize];
     while let Some(pc) = todo.pop() {
-        if reachable[pc] { continue; }
+        if reachable[pc] {
+            continue;
+        }
         reachable[pc] = true;
         todo.extend(flow[pc].successors.iter().copied());
     }
@@ -87,7 +81,9 @@ pub(super) fn analyze(f: &Func, steps: &[TGenStep], locals: u32) -> R<Vec<u16>> 
     loop {
         let mut changed = false;
         for pc in 0..n {
-            if !reachable[pc] { continue; }
+            if !reachable[pc] {
+                continue;
+            }
             let output = in_def[pc] | flow[pc].defines;
             for &next in &flow[pc].successors {
                 let candidate = in_def[next] & output;
@@ -97,13 +93,13 @@ pub(super) fn analyze(f: &Func, steps: &[TGenStep], locals: u32) -> R<Vec<u16>> 
                 }
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
     for pc in 0..n {
         if reachable[pc] && flow[pc].uses & !in_def[pc] != 0 {
-            return Err(error(f, format!(
-                "local at resume PC {pc} may be read before initialization"
-            )));
+            return Err(error(f, format!("local at resume PC {pc} may be read before initialization")));
         }
     }
 
@@ -113,7 +109,9 @@ pub(super) fn analyze(f: &Func, steps: &[TGenStep], locals: u32) -> R<Vec<u16>> 
     loop {
         let mut changed = false;
         for pc in (0..n).rev() {
-            if !reachable[pc] { continue; }
+            if !reachable[pc] {
+                continue;
+            }
             let output = flow[pc].successors.iter().fold(0, |acc, &next| acc | live_in[next]);
             let input = flow[pc].uses | (output & !flow[pc].defines);
             if output != live_out[pc] || input != live_in[pc] {
@@ -122,11 +120,12 @@ pub(super) fn analyze(f: &Func, steps: &[TGenStep], locals: u32) -> R<Vec<u16>> 
                 changed = true;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
     Ok(live_out)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -145,18 +144,27 @@ mod tests {
     }
 
     fn int(value: i64) -> TE {
-        TE { e: TExpr::I64(value), ty: Type::Int }
+        TE {
+            e: TExpr::I64(value),
+            ty: Type::Int,
+        }
     }
 
     fn local(index: u32) -> TE {
-        TE { e: TExpr::Local(7 + index), ty: Type::Int }
+        TE {
+            e: TExpr::Local(7 + index),
+            ty: Type::Int,
+        }
     }
 
     #[test]
     fn branch_that_skips_initializer_cannot_read_uninitialized_slot() {
         let steps = vec![
             TGenStep::Guard {
-                condition: TE { e: TExpr::Bool(true), ty: Type::Bool },
+                condition: TE {
+                    e: TExpr::Bool(true),
+                    ty: Type::Bool,
+                },
                 on_false: 2,
             },
             TGenStep::Set { local: 0, value: int(8) },
@@ -173,15 +181,16 @@ mod tests {
         let steps = vec![
             TGenStep::Set { local: 0, value: int(0) },
             TGenStep::Guard {
-                condition: TE { e: TExpr::Bool(true), ty: Type::Bool },
+                condition: TE {
+                    e: TExpr::Bool(true),
+                    ty: Type::Bool,
+                },
                 on_false: 5,
             },
             TGenStep::Set {
                 local: 0,
                 value: TE {
-                    e: TExpr::Bin(
-                        BinOp::Add, Box::new(local(0)), Box::new(int(1))
-                    ),
+                    e: TExpr::Bin(BinOp::Add, Box::new(local(0)), Box::new(int(1))),
                     ty: Type::Int,
                 },
             },
@@ -210,12 +219,14 @@ mod tests {
     #[test]
     fn malformed_edges_and_physical_slots_reject_without_issuing_wasm() {
         let bad_jump = vec![TGenStep::Jump { to: 4 }, TGenStep::Done];
-        assert_eq!(analyze(&fake(), &bad_jump, 1).unwrap_err().code,
-                   "E_GENERATOR_LIVENESS");
-        let bad_slot = vec![TGenStep::Yield(TE {
-            e: TExpr::Local(99), ty: Type::Int,
-        }), TGenStep::Done];
-        assert_eq!(analyze(&fake(), &bad_slot, 1).unwrap_err().code,
-                   "E_GENERATOR_LIVENESS");
+        assert_eq!(analyze(&fake(), &bad_jump, 1).unwrap_err().code, "E_GENERATOR_LIVENESS");
+        let bad_slot = vec![
+            TGenStep::Yield(TE {
+                e: TExpr::Local(99),
+                ty: Type::Int,
+            }),
+            TGenStep::Done,
+        ];
+        assert_eq!(analyze(&fake(), &bad_slot, 1).unwrap_err().code, "E_GENERATOR_LIVENESS");
     }
 }
