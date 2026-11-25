@@ -776,12 +776,13 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             let (p,target)=resolve(&annotation)?;
             let key=load(p,&target,&mut units)?;
             if locals.insert(local.clone(),key.clone()).is_some(){return Err(err("E_DUPLICATE","duplicate external class local"));}
-            // val already denotes a mutable referent in this parser; do
-            // not emit a redundant val mut qualifier. const mut is retained.
+            // Keep the production parser's binding spelling intact:
+            // val mut is currently rejected as a duplicate qualifier.
+            // Use explicit const mut for this bounded exclusive-loan lane.
             if explicit_mut && word(root.get(j),"val"){
-                caller.push(root[j].clone());
-                caller.extend_from_slice(&root[local_at..type_at]);
-            }else{caller.extend_from_slice(&root[j..type_at]);}
+                return Err(err("E_SYNTAX","duplicate val mut qualifier; use const mut"));
+            }
+            caller.extend_from_slice(&root[j..type_at]);
             if explicit_mut {mutable_owners.insert(local.clone());}
             caller.push(id(&units[&key].generated,root[type_at].pos));
             caller.push(root[eq].clone());

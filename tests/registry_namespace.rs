@@ -800,3 +800,20 @@ fn external_class_exclusive_lexical_loan_checks_receiver_effects_and_conflicts()
         assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_BORROW","{source}");
     }
 }
+
+#[test]
+fn exclusive_external_loan_never_confers_transfer_or_binding_authority() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 42; pub answer(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    for arg in ["a","b"] {
+        let source=format!("{prefix}fnc read(item: Data): int {{ return item.answer(); }} pub fnc main(): int {{ const mut a: Data = new Data(); val b: Data = borrow! mut a; return read({arg}); }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_BORROW");
+    }
+    let bad=format!("{prefix}pub fnc main(): int {{ val mut a: Data = new Data(); val b: Data = borrow! mut a; return b.answer(); }}");
+    assert_eq!(compile_registry_guest(&bad,&[&p]).unwrap_err().code,"E_SYNTAX");
+}
