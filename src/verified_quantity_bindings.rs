@@ -202,24 +202,28 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         let mut slots = Vec::new();
         while p.word("val") {
             if slots.len() >= 64 { return Err(p.err("E_UNIT_LIMIT", "too many immutable bindings")); }
-            // Both forms admitted by the scalar refinements proposal.
+            // Preserve inferred initializer type and both explicit annotation orders.
             let first = p.token().pos;
             let (binding, wanted) = if p.tokens.get(p.at + 1).is_some_and(|t| t.tok == Tok::Colon) {
                 let binding = identifier(p)?;
                 p.expect(Tok::Colon)?;
-                (binding, annotation(p, &aliases)?)
+                (binding, Some(annotation(p, &aliases)?))
+            } else if p.tokens.get(p.at + 1).is_some_and(|t| t.tok == Tok::Assign) {
+                (identifier(p)?, None)
             } else {
                 let wanted = annotation(p, &aliases)?;
-                (identifier(p)?, wanted)
+                (identifier(p)?, Some(wanted))
             };
             if locals.contains_key(&binding) { return Err(p.err("E_UNIT_DUPLICATE", "duplicate immutable binding")); }
             p.expect(Tok::Assign)?;
             let value = expr(p, &aliases, &locals, &signatures, 0, 0)?;
-            boundary(&wanted, &value, first, "E_REFINEMENT_BINDING")?;
+            if let Some(want) = &wanted {
+                boundary(want, &value, first, "E_REFINEMENT_BINDING")?;
+            }
             p.expect(Tok::Semi)?;
             let slot = (params.len() + slots.len()) as u32;
             slots.push(Type::Int);
-            locals.insert(binding, (slot, Refined { range: value.range, ..wanted }));
+            locals.insert(binding, (slot, Refined { unit: value.unit, range: value.range }));
             body.push(TStmt::Set(slot, value.ir));
         }
         p.expect_word("return")?;
