@@ -256,3 +256,60 @@ fn long_alias_chains_are_bounded_and_nonrecursive() {
     assert_eq!(scope.namespace_aliases(&[("extra", "root")], &[]).unwrap_err().code, "E_SOURCE_LIMIT");
     assert_eq!(scope.resolve("extra").unwrap_err().code, "E_UNBOUND");
 }
+
+#[test]
+fn nominal_identity_is_alias_independent_and_snapshot_bound() {
+    let mut s=Scope::new();
+    let p=id("@a/project/pkg");
+    let q=id("@b/project/pkg");
+    let changed=PackageId::new("@a/project/pkg","1.0.0",&"b".repeat(64)).unwrap();
+    let mut views=Vec::new();
+    for (package,alias) in [(p.clone(),"p"),(q,"q"),(changed,"changed")] {
+        let mut v=ExportView::new(Origin::External(package.clone()));
+        v.add("models","models",Kind::Namespace,true).unwrap();
+        v.add("models.User","models.User",Kind::Class,true).unwrap();
+        v.add("models.State","models.State",Kind::Enum,true).unwrap();
+        v.add("models.helper","models.helper",Kind::Fnc,true).unwrap();
+        v.add("models.Hidden","models.Hidden",Kind::Class,false).unwrap();
+        s.package(package,Some(alias)).unwrap();
+        views.push(v);
+    }
+    let refs:Vec<_>=views.iter().collect();
+    let user=s.resolve_nominal("p.models.User",&refs).unwrap();
+    assert_eq!(user.kind(),Kind::Class);
+    assert_eq!(user.declaration(),"models.User");
+    s.namespace_aliases(&[("m","p.models")],&refs).unwrap();
+    assert_eq!(user,s.resolve_nominal("m.User",&refs).unwrap());
+    let target=s.resolve_in_views("p.models.User",&refs).unwrap();
+    s.bind_verified("Person",Tier::Explicit,target).unwrap();
+    assert_eq!(user,s.resolve_nominal("Person",&refs).unwrap());
+    assert_ne!(user,s.resolve_nominal("q.models.User",&refs).unwrap());
+    assert_ne!(user,s.resolve_nominal("changed.models.User",&refs).unwrap());
+    assert_ne!(user,s.resolve_nominal("p.models.State",&refs).unwrap());
+    assert_eq!(s.resolve_nominal("p.models.helper",&refs).unwrap_err().code,"E_IMPORT_KIND");
+    assert_eq!(s.resolve_nominal("p.models.Hidden",&refs).unwrap_err().code,"E_PRIVATE");
+    assert_eq!(s.resolve_nominal("Person",&[&views[0],&views[0]]).unwrap_err().code,"E_AMBIGUOUS");
+}
+
+#[test]
+fn direct_nominal_binding_cannot_forge_kind_or_visibility() {
+    let mut s=Scope::new();
+    let p=id("@a/project/pkg");
+    let origin=Origin::External(p);
+    let mut v=ExportView::new(origin.clone());
+    v.add("models","models",Kind::Namespace,true).unwrap();
+    v.add("models.User","models.User",Kind::Class,true).unwrap();
+    v.add("models.Hidden","models.Hidden",Kind::Class,false).unwrap();
+    for (alias,decl,kind,code) in [
+        ("WrongKind","models.User",Kind::Enum,"E_IMPORT_KIND"),
+        ("Private","models.Hidden",Kind::Class,"E_PRIVATE"),
+        ("Missing","models.Missing",Kind::Class,"E_UNBOUND"),
+    ] {
+        s.bind_verified(alias,Tier::Explicit,Target{origin:origin.clone(),declaration:decl.into(),kind}).unwrap();
+        assert_eq!(s.resolve_nominal(alias,&[&v]).unwrap_err().code,code);
+    }
+    let mut other=ExportView::new(Origin::External(id("@b/project/pkg")));
+    other.add("models","models",Kind::Namespace,true).unwrap();
+    other.add("models.User","models.User",Kind::Class,true).unwrap();
+    assert_eq!(s.resolve_nominal("WrongKind",&[&other]).unwrap_err().code,"E_UNBOUND");
+}
