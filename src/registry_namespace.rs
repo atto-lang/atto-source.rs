@@ -97,7 +97,11 @@ pub struct FrozenRegistry {
     view: ExportView,
     // Owned, verified source bytes; cannot be replaced after verification.
     sources: BTreeMap<String,(String,String)>,
-    // Physical owner of every admitted function or literal, from pinned bytes.
+    // Class-only namespaces admitted for static identity, not executable ABI.
+    class_metadata: BTreeMap<String,String>,
+    // Source-authenticated payload-free enum variants by canonical declaration.
+    enum_metadata: BTreeMap<String,Vec<String>>,
+    // Physical owner of each admitted declaration, from pinned bytes.
     declaration_sources: BTreeMap<String,String>,
     literals: BTreeMap<String,Vec<crate::lexer::Tok>>,
     mixed_functions: BTreeMap<String,Vec<crate::lexer::Token>>,
@@ -116,6 +120,8 @@ impl FrozenRegistry {
         let mut namespaces = BTreeSet::new();
         let mut verified_sources = BTreeMap::new();
         let mut declaration_sources = BTreeMap::new();
+        let mut class_metadata = BTreeMap::new();
+        let mut enum_metadata = BTreeMap::new();
         let mut literals = BTreeMap::new();
         let mut mixed_functions = BTreeMap::new();
         // Nested namespace parents must be declared independently. For now
@@ -161,11 +167,8 @@ impl FrozenRegistry {
                 }
                 files.push(normalized);
             }
-            // All files in this unit belong to the same manifest namespace
-            // and have already passed the exact lock and independent inventory
-            // checks. Private names may be used inside this closed namespace.
-            // The public ExportView still denies access to private members;
-            // unpinned contextual roots do not acquire this authority.
+            // Same lock-authenticated manifest namespace is the privacy unit.
+            // External and contextual lookups still require public exports.
             let (&file,&source)=matching[0];
             let source_for = |name: &str| owners.get(name).map_or(file, |(path,_)| *path);
             let normalized=if files.len()==1 {files.pop().unwrap()}else{
@@ -177,6 +180,64 @@ impl FrozenRegistry {
                 combined
             };
             view.add(ns, ns, Kind::Namespace, true)?;
+            // The first source-backed nominal lane is deliberately isolated:
+            // one class-only file, ordinary class AST visibility, no imports,
+            // no state containers, and no external ABI or executable claim.
+            let is_word = |i:usize,w:&str| matches!(normalized.get(i).map(|t|&t.tok),Some(Tok::Ident(s)) if s==w);
+            let at = end + usize::from(is_word(end,"pub"));
+            // Enum visibility is retained from the authenticated declaration.
+            // The current local parser has no public enum AST flag; strip
+            // only the exact visibility token for its isolated enum parse.
+            let pub_before=is_word(end,"pub")&&is_word(end+1,"define")&&is_word(end+2,"enum");
+            let pub_after=is_word(end,"define")&&is_word(end+1,"pub")&&is_word(end+2,"enum");
+            let private_enum=is_word(end,"define")&&is_word(end+1,"enum");
+            if matching.len()==1 && (pub_before||pub_after||private_enum){
+                let mut body=normalized[end..].to_vec();
+                if pub_before{body.remove(0);}else if pub_after{body.remove(1);}
+                let ast=crate::parser::Parser::new(body).parse_program()?;
+                if ast.enums.len()!=1 || !ast.classes.is_empty() || !ast.funcs.is_empty()
+                    || !ast.actors.is_empty() || ast.actor_interface.is_some(){
+                    return Err(err("E_UNSUPPORTED","registry enum metadata requires exactly one payload-free enum per source file"));
+                }
+                let en=&ast.enums[0];
+                let path=format!("{ns}.{}",en.name);
+                view.add(&path,&path,Kind::Enum,pub_before||pub_after)?;
+                declaration_sources.insert(path.clone(),file.to_string());
+                enum_metadata.insert(path,en.variants.iter().map(|(v,_)|v.clone()).collect());
+                namespaces.insert(ns.clone());
+                directories.insert(dir.clone(),ns.clone());
+                continue;
+            }
+            if matching.len()==1 && is_word(at,"define") && is_word(at+1,"class") {
+                let mut body=normalized[end..].to_vec();
+                if body.iter().any(|t|matches!(&t.tok,Tok::Ident(s) if s=="main")){
+                    return Err(err("E_UNSUPPORTED","registry class cannot capture synthetic entry"));
+                }
+                let ast=crate::parser::Parser::new(body.clone()).parse_program()?;
+                if ast.classes.is_empty() || !ast.funcs.is_empty() || !ast.enums.is_empty()
+                    || !ast.actors.is_empty() || ast.actor_interface.is_some()
+                    || ast.classes.iter().any(|c|c.state_container) {
+                    return Err(err("E_UNSUPPORTED","registry nominal metadata requires a class-only source unit"));
+                }
+                // Check the real source with a synthetic entry, but do not
+                // generate or expose an executable from this metadata lane.
+                body.pop();
+                body.extend(lexer::lex("pub fnc main(): int { return 0; }")?);
+                let checked_ast=crate::parser::Parser::new(body).parse_program()?;
+                let checked=crate::check::check(&checked_ast)?;
+                if !checked.imports.is_empty(){
+                    return Err(err("E_UNSUPPORTED","nominal metadata cannot request host imports"));
+                }
+                for class in ast.classes {
+                    let path=format!("{ns}.{}",class.name);
+                    view.add(&path,&path,Kind::Class,class.public)?;
+                    declaration_sources.insert(path,file.to_string());
+                }
+                class_metadata.insert(ns.clone(),source.to_string());
+                namespaces.insert(ns.clone());
+                directories.insert(dir.clone(),ns.clone());
+                continue;
+            }
             if let Some(provider)=crate::const_import_link::registry_provider(&normalized,end)?{
                 for (name,(public,value)) in provider.literals {
                     let path=format!("{ns}.{name}");
@@ -220,7 +281,7 @@ impl FrozenRegistry {
                 .ok_or_else(|| err("E_MANIFEST", "subpath targets undeclared namespace directory"))?;
             subpaths.insert(sub,target.clone());
         }
-        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, declaration_sources, literals, mixed_functions })
+        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, class_metadata, enum_metadata, declaration_sources, literals, mixed_functions })
     }
 
     pub fn view(&self) -> &ExportView { &self.view }
@@ -308,10 +369,10 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
 }
 
 
-/// Compile the bounded frozen-registry direct-function guest profile.
-/// Only whole registry package imports, typed function/namespace selections and
-/// source aliases are admitted. All source bytes are owned by verified
-/// snapshots. No filesystem/network lookup, implicit fallback, or runtime
+/// Compile bounded frozen-registry guests: direct functions and literal constants,
+/// or closed external class construction, local typed helpers, and public scalar calls.
+/// Whole-package imports, typed selections and source aliases use verified
+/// snapshots owning the source bytes. No filesystem/network lookup, implicit fallback, or runtime
 /// namespace objects are possible. The ordinary compiler still handles
 /// type checking, private module lowering and Wasm emission.
 pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<u8>> {
@@ -411,7 +472,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             p.bind_package(&mut scope,alias.as_deref()).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
         } else if import_v2::is_mixed(&tokens,start)
-            || ((word(tokens.get(start),"const") || word(tokens.get(start),"fnc"))
+            || ((word(tokens.get(start),"const") || word(tokens.get(start),"fnc") || word(tokens.get(start),"class") || word(tokens.get(start),"enum"))
                 && (start+1..end).any(|j|word(tokens.get(j),"from"))) {
             let (parsed,next)=import_v2::parse_mixed(&tokens,start)?;
             if next!=end+1 { return Err(Diagnostic::new(pos,"E_SYNTAX","invalid import extent")); }
@@ -419,8 +480,8 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest requires explicit pkg domain"));
             };
             let p=*available.get(name.as_str()).ok_or_else(||Diagnostic::new(pos,"E_UNBOUND","package is not in authenticated snapshot set"))?;
-            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace|Kind::Const)) {
-                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function, namespace and literal constant selectors only"));
+            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace|Kind::Const|Kind::Class|Kind::Enum)) {
+                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function, namespace, literal constant, class and enum selectors only"));
             }
             scope.bind_mixed(p.view(),&parsed).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
@@ -469,6 +530,435 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
     let pairs:Vec<_>=declarations.iter().map(|(n,r)|(n.as_str(),r.as_str())).collect();
     let views:Vec<_>=admitted.values().map(|p|p.view()).collect();
     scope.namespace_aliases(&pairs,&views).map_err(|d|at(d,Pos{line:1,col:1}))?;
+
+    // Authenticated enum guest: direct, exhaustive scalar return-match
+    // over a qualified or aliased payload-free enum. Only exact nominal
+    // variants are rewritten; the production match checker owns coverage.
+    let enum_root=&tokens[i..];
+    let ep=lexer::lex("pub fnc main(): int { return match")?;
+    let ea=lexer::lex("pub fnc main() -> int { return match")?;
+    let en=ep.len()-1;
+    if admitted.values().any(|p| !p.enum_metadata.is_empty()) && enum_root.len()>en
+        && (enum_root[..en].iter().map(|t|&t.tok).eq(ep[..en].iter().map(|t|&t.tok))
+            || enum_root[..en].iter().map(|t|&t.tok).eq(ea[..en].iter().map(|t|&t.tok))) {
+        if current.is_some(){return Err(err("E_UNSUPPORTED","external enum match cannot claim current package authority"));}
+        let denied=||err("E_UNSUPPORTED","external enum guest requires direct nominal variant match and scalar literal arms");
+        let variant=|part:&[Token]|->R<(Target,String,Vec<String>,String)>{
+            let reference=path_tokens(part)?;
+            let (ty,v)=reference.rsplit_once('.').ok_or_else(denied)?;
+            let resolved=scope.resolve(ty)?;
+            let p=admitted.values().find(|p|resolved.target.origin==Origin::External(p.id.clone())).copied()
+                .ok_or_else(||err("E_IMPORT_PATH","external enum origin is not admitted"))?;
+            let target=scope.resolve_export(ty,p.view())?;
+            if target.kind!=Kind::Enum{return Err(err("E_IMPORT_KIND","expected authenticated enum"));}
+            scope.resolve_nominal(ty,p.view())?;
+            p.declaration_source(&target)?;
+            let variants=p.enum_metadata.get(&target.declaration).ok_or_else(denied)?;
+            if !variants.iter().any(|name|name==v){return Err(err("E_UNBOUND","unknown authenticated enum variant"));}
+            let hash=crate::sha256::hex_digest(format!("{}/{}/{}",p.name,p.id.digest(),target.declaration).as_bytes());
+            Ok((target,v.to_string(),variants.clone(),format!("__atto_registry_enum_{}",&hash[..24])))
+        };
+        let over=enum_root[en..].iter().position(|t|word(Some(t),"over")).map(|j|en+j).ok_or_else(denied)?;
+        let (subject,selected,variants,generated)=variant(&enum_root[en..over])?;
+        let declaration=format!("define enum {generated} as {} end",variants.join(" "));
+        let mut linked=lexer::lex(&declaration)?;
+        linked.pop();
+        linked.extend_from_slice(&enum_root[..en]);
+        let emit_variant=|out:&mut Vec<Token>,name:&str,pos:Pos|{
+            out.extend([id(&generated,pos),token(Tok::Dot,pos),id(name,pos)]);
+        };
+        emit_variant(&mut linked,&selected,enum_root[en].pos);
+        linked.push(enum_root[over].clone());
+        let mut j=over+1;
+        let mut arms=0usize;
+        while word(enum_root.get(j),"on"){
+            arms+=1;
+            if arms>256{return Err(err("E_SOURCE_LIMIT","external enum match arm budget exceeded"));}
+            linked.push(enum_root[j].clone());
+            let arrow=enum_root[j+1..].iter().position(|t|t.tok==Tok::Arrow).map(|k|j+1+k).ok_or_else(denied)?;
+            let (target,member,_,_)=variant(&enum_root[j+1..arrow])?;
+            if target!=subject{return Err(err("E_TYPE","external enum arm has different nominal identity"));}
+            emit_variant(&mut linked,&member,enum_root[j+1].pos);
+            linked.push(enum_root[arrow].clone());
+            j=arrow+1;
+            if enum_root.get(j).map(|t|&t.tok)==Some(&Tok::Minus){linked.push(enum_root[j].clone());j+=1;}
+            if !matches!(enum_root.get(j).map(|t|&t.tok),Some(Tok::Int(_))){return Err(denied());}
+            linked.push(enum_root[j].clone());j+=1;
+            if enum_root.get(j).map(|t|&t.tok)==Some(&Tok::Comma){linked.push(enum_root[j].clone());j+=1;}
+            else if !word(enum_root.get(j),"end"){return Err(denied());}
+        }
+        if arms==0||!word(enum_root.get(j),"end"){return Err(denied());}
+        let end=j+1+usize::from(enum_root.get(j+1).map(|t|&t.tok)==Some(&Tok::Semi));
+        if !enum_root[end..].iter().map(|t|&t.tok).eq([Tok::RBrace,Tok::Eof].iter()){return Err(denied());}
+        linked.extend_from_slice(&enum_root[j..]);
+        if linked.len()>lexer::MAX_TOKENS{return Err(err("E_SOURCE_LIMIT","external enum token budget exceeded"));}
+        let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
+        let checked=crate::check::check(&parsed)?;
+        if !checked.imports.is_empty(){return Err(err("E_UNSUPPORTED","external enum guest cannot request host imports"));}
+        return crate::compile_prelexed(linked,None);
+    }
+    if admitted.values().any(|p| !p.enum_metadata.is_empty()) && !admitted.values().any(|p| !p.class_metadata.is_empty()){
+        return Err(err("E_UNSUPPORTED","external enum execution requires bounded nominal match"));
+    }
+
+    // Bounded external class lane. Each authenticated declaration gets a
+    // hygienic internal class name; identical source names never coalesce.
+    // Only fresh typed locals and checked public scalar calls can cross
+    // the package boundary. Object escape and general ABI remain denied.
+    if admitted.values().any(|p| !p.class_metadata.is_empty()) {
+        if current.is_some() {return Err(err("E_UNSUPPORTED","external class guest cannot claim current-package authority"));}
+        let root=&tokens[i..];
+        let denied=||err("E_UNSUPPORTED","external class guest requires checked construction and public scalar calls");
+        let prefix=lexer::lex("pub fnc main(): int {")?;
+        let alternate=lexer::lex("pub fnc main() -> int {")?;
+        let n=prefix.len()-1;
+        fn scalar_args(t:&[Token], start:usize)->R<(usize,usize)> {
+            let bad=||err("E_UNSUPPORTED","external class arguments must be bounded integer literals");
+            if t.get(start).map(|x|&x.tok)!=Some(&Tok::LParen){return Err(bad());}
+            let mut j=start+1;
+            let mut count=0usize;
+            if t.get(j).map(|x|&x.tok)==Some(&Tok::RParen){return Ok((j+1,0));}
+            loop {
+                if t.get(j).map(|x|&x.tok)==Some(&Tok::Minus){j+=1;}
+                if !matches!(t.get(j).map(|x|&x.tok),Some(Tok::Int(_))){return Err(bad());}
+                j+=1;count+=1;
+                if count>16{return Err(err("E_SOURCE_LIMIT","external class argument budget exceeded"));}
+                match t.get(j).map(|x|&x.tok) {
+                    Some(Tok::RParen)=>return Ok((j+1,count)),
+                    Some(Tok::Comma)=>j+=1,
+                    _=>return Err(bad()),
+                }
+            }
+        }
+
+
+        type Key=(String,String);
+        struct Unit {
+            target:Target,
+            generated:String,
+            class:crate::ast::ClassDecl,
+            tokens:Vec<Token>,
+            public_ctor:bool,
+        }
+        let resolve=|reference:&str|->R<(&FrozenRegistry,Target)>{
+            let resolved=scope.resolve(reference)?;
+            let p=admitted.values().find(|p|resolved.target.origin==Origin::External(p.id.clone()))
+                .copied().ok_or_else(||err("E_IMPORT_PATH","external class origin is not admitted"))?;
+            let target=scope.resolve_export(reference,p.view())?;
+            if target.kind!=Kind::Class{return Err(err("E_IMPORT_KIND","expected authenticated external class"));}
+            scope.resolve_nominal(reference,p.view())?;
+            Ok((p,target))
+        };
+        let mut units:BTreeMap<Key,Unit>=BTreeMap::new();
+        let load=|p:&FrozenRegistry,target:&Target,units:&mut BTreeMap<Key,Unit>|->R<Key>{
+            let key=(p.name.clone(),target.declaration.clone());
+            if let Some(unit)=units.get(&key){
+                if &unit.target!=target{return Err(err("E_TYPE","conflicting authenticated nominal identity"));}
+                return Ok(key);
+            }
+            if units.len()>=16{return Err(err("E_SOURCE_LIMIT","external class declaration budget exceeded"));}
+            let (ns,name)=target.declaration.rsplit_once('.').ok_or_else(denied)?;
+            let source=p.class_metadata.get(ns).ok_or_else(denied)?;
+            let owner=p.declaration_source(target)?;
+            let provider=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(owner)))?;
+            let semi=provider.iter().position(|t|t.tok==Tok::Semi).ok_or_else(denied)?;
+            let body=&provider[semi+1..];
+            let mut ast=crate::parser::Parser::new(body.to_vec()).parse_program()?;
+            if ast.classes.len()!=1{return Err(err("E_UNSUPPORTED","external class execution requires a single ordinary class per source unit"));}
+            let class=ast.classes.pop().unwrap();
+            if class.name!=name || !class.public || class.state_container{return Err(denied());}
+            // No token-wide textual substitution: only the declaration
+            // name is rewritten. Self-named references need typed AST
+            // remapping and are explicitly unsupported in this lane.
+            if body.iter().any(|t|word(Some(t),"main")){return Err(err("E_UNSUPPORTED","external class cannot capture application entry"));}
+            let positions:Vec<_>=body.iter().enumerate().filter_map(|(j,t)|word(Some(t),name).then_some(j)).collect();
+            if positions.len()!=1 || positions[0]<2 || !word(body.get(positions[0]-1),"class"){
+                return Err(err("E_UNSUPPORTED","external self-named references require typed nominal remapping"));
+            }
+            let hash=crate::sha256::hex_digest(format!("{}/{}/{}",p.name,p.id.digest(),target.declaration).as_bytes());
+            let generated=format!("__atto_registry_class_{}",&hash[..24]);
+            if units.values().any(|u|u.generated==generated){return Err(err("E_DUPLICATE","internal nominal name collision"));}
+            let public_ctor=class.ctor.as_ref().is_none_or(|ctor|
+                body.windows(2).any(|w|w[0].pos==ctor.pos && word(w.first(),"pub") && word(w.get(1),"constructor")));
+            let mut renamed=body[..body.len()-1].to_vec();
+            let pos=renamed[positions[0]].pos;
+            renamed[positions[0]]=id(&generated,pos);
+            units.insert(key.clone(),Unit{target:target.clone(),generated,class,tokens:renamed,public_ctor});
+            Ok(key)
+        };
+        let construct=|at:usize,out:&mut Vec<Token>,units:&mut BTreeMap<Key,Unit>|->R<(usize,Key)>{
+            if !word(root.get(at),"new"){return Err(denied());}
+            let open=root[at+1..].iter().position(|t|t.tok==Tok::LParen).map(|j|at+1+j).ok_or_else(denied)?;
+            let reference=path_tokens(&root[at+1..open])?;
+            let (p,target)=resolve(&reference)?;
+            let key=load(p,&target,units)?;
+            let unit=&units[&key];
+            let (after,argc)=scalar_args(root,open)?;
+            if let Some(ctor)=&unit.class.ctor {
+                if !unit.public_ctor{return Err(err("E_PRIVATE","external explicit constructor must be public"));}
+                if ctor.params.len()!=argc || ctor.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
+                    return Err(err("E_TYPE","external constructor requires matching scalar int arguments"));
+                }
+            }else if argc!=0{return Err(err("E_TYPE","implicit constructor takes no arguments"));}
+            out.push(root[at].clone());
+            out.push(id(&unit.generated,root[at+1].pos));
+            out.extend_from_slice(&root[open..after]);
+            Ok((after,key))
+        };
+        // A scalar return alone does not prove an immutable receiver.
+        // Admit only a closed, read-only expression over integer fields,
+        // integer parameters and arithmetic. Calls, assignments, allocation,
+        // ownership operations, protected state and nested handles fail closed.
+        fn read_expr(e:&crate::ast::Expr,class:&crate::ast::ClassDecl,method:&crate::ast::Method)->bool{
+            use crate::ast::{ExprKind,Type,BinOp};
+            match &e.kind {
+                ExprKind::Int(_)=>true,
+                ExprKind::Var(n)=>method.params.iter().any(|p|p.name==*n && p.ty==Type::Int),
+                ExprKind::Member(base,n)=>matches!(&base.kind,ExprKind::SelfRef)
+                    && class.fields.iter().any(|f|f.name==*n && f.ty==Type::Int),
+                ExprKind::Binary(BinOp::Add|BinOp::Sub|BinOp::Mul|BinOp::Div,a,b)=>
+                    read_expr(a,class,method)&&read_expr(b,class,method),
+                _=>false,
+            }
+        }
+        // The production checker currently rejects writes through ordinary
+        // class self. Exclusive loans therefore admit proved scalar reads
+        // only; never manufacture a mutable method receiver or relax core
+        // ownership checks while flattening registry code.
+        fn write_proven(class:&crate::ast::ClassDecl,method:&crate::ast::Method)->bool {
+            matches!(method.body.as_slice(),[crate::ast::Stmt::Return(Some(value),_)]
+                if read_expr(value,class,method))
+        }
+        #[derive(Clone,Copy)]
+        enum Access { Owned, Read, Exclusive }
+        let call=|dot:usize,out:&mut Vec<Token>,class:&crate::ast::ClassDecl,access:Access|->R<usize>{
+            if root.get(dot).map(|x|&x.tok)!=Some(&Tok::Dot){return Err(denied());}
+            let member=match root.get(dot+1).map(|x|&x.tok){
+                Some(Tok::Ident(s))=>s.as_str(),_=>return Err(denied()),
+            };
+            if root.get(dot+2).map(|x|&x.tok)!=Some(&Tok::LParen){
+                if class.fields.iter().any(|f|f.name==member && f.visibility!=crate::ast::FieldVisibility::Public){
+                    return Err(err("E_PRIVATE","external class field is not public"));
+                }
+                return Err(denied());
+            }
+            let (after,argc)=scalar_args(root,dot+2)?;
+            let mut candidates=class.methods.iter().filter(|m|m.name==member && !m.is_static && m.params.len()==argc);
+            let method=candidates.next().ok_or_else(||err("E_UNBOUND","external instance method not found"))?;
+            if candidates.next().is_some(){return Err(err("E_AMBIGUOUS","ambiguous external method"));}
+            if !method.public{return Err(err("E_PRIVATE","external method is not public"));}
+            if method.ret!=crate::ast::Type::Int || method.params.iter().any(|q|q.ty!=crate::ast::Type::Int){
+                return Err(err("E_TYPE","external method must have scalar int signature"));
+            }
+            if matches!(access,Access::Read) {
+                let [crate::ast::Stmt::Return(Some(value),_)]=method.body.as_slice() else {
+                    return Err(err("E_BORROW","read loan method lacks checked read-only receiver proof"));
+                };
+                if !read_expr(value,class,method){
+                    return Err(err("E_BORROW","read loan method lacks checked read-only receiver proof"));
+                }
+            }
+            if matches!(access,Access::Exclusive) && !write_proven(class,method) {
+                return Err(err("E_BORROW","exclusive loan method lacks checked scalar receiver effect proof"));
+            }
+            out.extend_from_slice(&root[dot..after]);
+            Ok(after)
+        };
+
+        // Closed application-local helpers. Readers take exactly one
+        // nominal object and return a public scalar method result. Factories
+        // return a freshly constructed nominal object. No helper is exported,
+        // recursive, or callable from a provider: its name is compiler-owned.
+        struct Helper { generated:String, key:Key, factory:bool }
+        let mut helpers:BTreeMap<String,Helper>=BTreeMap::new();
+        let mut helper_tokens=Vec::new();
+        let mut j=0usize;
+        while word(root.get(j),"fnc") {
+            if helpers.len()>=16{return Err(err("E_SOURCE_LIMIT","external class helper budget exceeded"));}
+            let h=match root.get(j+1).map(|t|&t.tok){
+                Some(Tok::Ident(h)) if crate::static_import_graph::valid_component(h) && h!="main" && !scope.has_root(h)=>h.clone(),
+                _=>return Err(denied()),
+            };
+            if helpers.contains_key(&h){return Err(err("E_DUPLICATE","duplicate external class helper"));}
+            let generated=format!("__atto_registry_helper_{h}");
+            let pos=root[j].pos;
+            if root.get(j+2).map(|t|&t.tok)!=Some(&Tok::LParen){return Err(denied());}
+            helper_tokens.extend([id("fnc",pos),id(&generated,pos),token(Tok::LParen,pos)]);
+            j+=3;
+            let factory=root.get(j).map(|t|&t.tok)==Some(&Tok::RParen);
+            let key;
+            if factory {
+                j+=1;
+                if !matches!(root.get(j).map(|t|&t.tok),Some(Tok::Colon|Tok::Arrow)){return Err(denied());}
+                j+=1;
+                let brace=root[j..].iter().position(|t|t.tok==Tok::LBrace).map(|k|j+k).ok_or_else(denied)?;
+                let reference=path_tokens(&root[j..brace])?;
+                let (p,target)=resolve(&reference)?;
+                key=load(p,&target,&mut units)?;
+                helper_tokens.extend([token(Tok::RParen,pos),token(Tok::Colon,pos),id(&units[&key].generated,pos),token(Tok::LBrace,pos)]);
+                j=brace+1;
+                if !word(root.get(j),"return"){return Err(denied());}
+                helper_tokens.push(id("return",pos));
+                let (after,actual)=construct(j+1,&mut helper_tokens,&mut units)?;
+                if actual!=key{return Err(err("E_TYPE","different nominal factory return identity"));}
+                j=after;
+            }else{
+                let close=root[j..].iter().position(|t|t.tok==Tok::RParen).map(|k|j+k).ok_or_else(denied)?;
+                let (param_at,type_start,type_end)=if root.get(j+1).map(|t|&t.tok)==Some(&Tok::Colon){
+                    (j,j+2,close)
+                }else{
+                    if close<j+2{return Err(denied());}
+                    (close-1,j,close-1)
+                };
+                if type_start>=type_end{return Err(denied());}
+                let param=match root.get(param_at).map(|t|&t.tok){
+                    Some(Tok::Ident(s)) if crate::static_import_graph::valid_component(s) && !scope.has_root(s)=>s.clone(),
+                    _=>return Err(denied()),
+                };
+                let reference=path_tokens(&root[type_start..type_end])?;
+                let (p,target)=resolve(&reference)?;
+                key=load(p,&target,&mut units)?;
+                j=close+1;
+                if !matches!(root.get(j).map(|t|&t.tok),Some(Tok::Colon|Tok::Arrow))
+                    || !word(root.get(j+1),"int") || root.get(j+2).map(|t|&t.tok)!=Some(&Tok::LBrace)
+                    || !word(root.get(j+3),"return") || !word(root.get(j+4),&param){return Err(denied());}
+                helper_tokens.extend([id(&param,pos),token(Tok::Colon,pos),id(&units[&key].generated,pos),
+                    token(Tok::RParen,pos),token(Tok::Colon,pos),id("int",pos),token(Tok::LBrace,pos),id("return",pos),id(&param,pos)]);
+                j=call(j+5,&mut helper_tokens,&units[&key].class,Access::Owned)?;
+            }
+            if root.get(j).map(|t|&t.tok)!=Some(&Tok::Semi) || root.get(j+1).map(|t|&t.tok)!=Some(&Tok::RBrace){return Err(denied());}
+            helper_tokens.extend_from_slice(&root[j..j+2]);j+=2;
+            helpers.insert(h,Helper{generated,key,factory});
+        }
+        let main_end=j.checked_add(n).ok_or_else(denied)?;
+        let main=root.get(j..main_end).ok_or_else(denied)?;
+        if !(main.iter().map(|t|&t.tok).eq(prefix[..n].iter().map(|t|&t.tok))
+            || main.iter().map(|t|&t.tok).eq(alternate[..n].iter().map(|t|&t.tok))){return Err(denied());}
+        let mut caller=main.to_vec();
+        j=main_end;
+        let mut locals:BTreeMap<String,Key>=BTreeMap::new();
+        let mut mutable_owners=BTreeSet::new();
+        let mut loans:BTreeMap<String,(String,bool)>=BTreeMap::new();
+        while word(root.get(j),"val") || word(root.get(j),"const") {
+            if locals.len()>=16{return Err(err("E_SOURCE_LIMIT","external class local budget exceeded"));}
+            let explicit_mut=word(root.get(j+1),"mut");
+            let local_at=j+1+usize::from(explicit_mut);
+            let local=match root.get(local_at).map(|x|&x.tok){
+                Some(Tok::Ident(s)) if crate::static_import_graph::valid_component(s) && !scope.has_root(s) && !helpers.contains_key(s)=>s,
+                _=>return Err(denied()),
+            };
+            if root.get(local_at+1).map(|x|&x.tok)!=Some(&Tok::Colon){return Err(denied());}
+            let type_at=local_at+2;
+            let eq=root[type_at..].iter().position(|t|t.tok==Tok::Assign).map(|k|type_at+k).ok_or_else(denied)?;
+            let annotation=path_tokens(&root[type_at..eq])?;
+            let (p,target)=resolve(&annotation)?;
+            let key=load(p,&target,&mut units)?;
+            if locals.insert(local.clone(),key.clone()).is_some(){return Err(err("E_DUPLICATE","duplicate external class local"));}
+            // Keep the production parser's binding spelling intact:
+            // val mut is currently rejected as a duplicate qualifier.
+            // Use explicit const mut for this bounded exclusive-loan lane.
+            if explicit_mut && word(root.get(j),"val"){
+                return Err(err("E_SYNTAX","duplicate val mut qualifier; use const mut"));
+            }
+            caller.extend_from_slice(&root[j..type_at]);
+            if explicit_mut {mutable_owners.insert(local.clone());}
+            caller.push(id(&units[&key].generated,root[type_at].pos));
+            caller.push(root[eq].clone());
+            if word(root.get(eq+1),"new"){
+                let (after,actual)=construct(eq+1,&mut caller,&mut units)?;
+                if actual!=key{return Err(err("E_TYPE","different nominal local annotation and construction identities"));}
+                j=after;
+            }else if word(root.get(eq+1),"borrow"){
+                if root.get(eq+2).map(|t|&t.tok)!=Some(&Tok::Bang){return Err(denied());}
+                let mutable=word(root.get(eq+3),"mut");
+                let owner_at=eq+3+usize::from(mutable);
+                let owner=match root.get(owner_at).map(|t|&t.tok){
+                    Some(Tok::Ident(s))=>s,
+                    _=>return Err(err("E_BORROW","external loan requires a named owner")),
+                };
+                if owner==local || loans.contains_key(owner){return Err(err("E_BORROW","self borrow or reborrow is not admitted"));}
+                let actual=locals.get(owner).ok_or_else(||err("E_BORROW","external loan owner is not bound"))?;
+                if actual!=&key{return Err(err("E_TYPE","different nominal loan identity"));}
+                if loans.values().any(|(existing,write)|existing==owner && (mutable||*write)){
+                    return Err(err("E_BORROW","conflicting external exclusive loan"));
+                }
+                if mutable && !mutable_owners.contains(owner){
+                    return Err(err("E_BORROW","exclusive loan requires explicit mutable owner"));
+                }
+                loans.insert(local.clone(),(owner.clone(),mutable));
+                caller.extend_from_slice(&root[eq+1..owner_at+1]);j=owner_at+1;
+            }else{
+                let h=match root.get(eq+1).map(|t|&t.tok){Some(Tok::Ident(h))=>h,_=>return Err(denied())};
+                let helper=helpers.get(h).filter(|h|h.factory).ok_or_else(denied)?;
+                if helper.key!=key{return Err(err("E_TYPE","different nominal factory and local identities"));}
+                if root.get(eq+2).map(|t|&t.tok)!=Some(&Tok::LParen)||root.get(eq+3).map(|t|&t.tok)!=Some(&Tok::RParen){return Err(denied());}
+                caller.push(id(&helper.generated,root[eq+1].pos));
+                caller.extend_from_slice(&root[eq+2..eq+4]);j=eq+4;
+            }
+            if root.get(j).map(|x|&x.tok)!=Some(&Tok::Semi){return Err(denied());}
+            caller.push(root[j].clone());j+=1;
+        }
+        if !word(root.get(j),"return"){return Err(denied());}
+        caller.push(root[j].clone());j+=1;
+        if locals.is_empty(){
+            let (after,key)=construct(j,&mut caller,&mut units)?;
+            j=call(after,&mut caller,&units[&key].class,Access::Owned)?;
+        }else{
+            let mut count=0usize;
+            let mut moved=BTreeSet::new();
+            loop {
+                let name=match root.get(j).map(|x|&x.tok){Some(Tok::Ident(s))=>s,_=>return Err(denied())};
+                if let Some(helper)=helpers.get(name).filter(|h|!h.factory){
+                    if root.get(j+1).map(|t|&t.tok)!=Some(&Tok::LParen)||root.get(j+3).map(|t|&t.tok)!=Some(&Tok::RParen){return Err(denied());}
+                    let local=match root.get(j+2).map(|t|&t.tok){Some(Tok::Ident(s))=>s,_=>return Err(denied())};
+                    if loans.contains_key(local)||loans.values().any(|(owner,_)|owner==local){
+                        return Err(err("E_BORROW","external loan or borrowed owner cannot transfer"));
+                    }
+                    let actual=locals.remove(local).ok_or_else(||err("E_OWNERSHIP","external object argument is unknown or already moved"))?;
+                    if actual!=helper.key{return Err(err("E_TYPE","different nominal helper argument identity"));}
+                    moved.insert(local.clone());
+                    caller.push(id(&helper.generated,root[j].pos));
+                    caller.extend_from_slice(&root[j+1..j+4]);j+=4;
+                }else{
+                    if moved.contains(name){return Err(err("E_OWNERSHIP","external object already moved to helper"));}
+                    let key=locals.get(name).ok_or_else(denied)?;
+                    caller.push(id(name,root[j].pos));
+                    if loans.values().any(|(owner,write)|owner==name && *write){
+                        return Err(err("E_BORROW","owner access conflicts with live exclusive loan"));
+                    }
+                    let access=match loans.get(name){
+                        Some((_,true))=>Access::Exclusive,
+                        Some((_,false))=>Access::Read,
+                        None if loans.values().any(|(owner,_)|owner==name)=>Access::Read,
+                        None=>Access::Owned,
+                    };
+                    j=call(j+1,&mut caller,&units[key].class,access)?;
+                }
+                count+=1;
+                if count>32{return Err(err("E_SOURCE_LIMIT","external class call budget exceeded"));}
+                if root.get(j).map(|x|&x.tok)!=Some(&Tok::Plus){break;}
+                caller.push(root[j].clone());j+=1;
+            }
+        }
+        if !root[j..].iter().map(|t|&t.tok).eq([Tok::Semi,Tok::RBrace,Tok::Eof].iter()){
+            return Err(denied());
+        }
+        // Preserve the previous fail-closed profile for unused admitted
+        // packages; their unlinked code must not gain ambient authority.
+        if admitted.keys().any(|p|!units.keys().any(|(name,_)|name.as_str()==*p)){
+            return Err(err("E_UNSUPPORTED","external class guest has unused admitted package"));
+        }
+        caller.extend_from_slice(&root[j..]);
+        let mut linked=Vec::new();
+        for unit in units.into_values(){linked.extend(unit.tokens);}
+        linked.extend(helper_tokens);
+        linked.extend(caller);
+        if linked.len()>lexer::MAX_TOKENS{return Err(err("E_SOURCE_LIMIT","external class guest token budget exceeded"));}
+        let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
+        let checked=crate::check::check(&parsed)?;
+        if !checked.imports.is_empty(){return Err(err("E_UNSUPPORTED","external class guest cannot request host imports"));}
+        return crate::compile_prelexed(linked,None);
+    }
 
     // Prepare deterministic private module owners for each verified source
     // namespace. Package name order, not caller or import order, determines
@@ -693,7 +1183,7 @@ impl FrozenClass {
         }
         let mut scope=Scope::new();
         scope.bind_mixed(&self.view,&import)?;
-        let _identity=scope.resolve_nominal(&self.class_name,&[&self.view])?;
+        let _identity=scope.resolve_nominal_in_views(&self.class_name,&[&self.view])?;
         let root=&tokens[end..];
         if root.iter().any(|t|matches!(&t.tok,Tok::Ident(n) if n.starts_with("__atto_") || matches!(n.as_str(),"import"|"use"|"define"|"declare"|"external"))) {
             return Err(err("E_UNSUPPORTED","class guest root must be a closed entry function"));
@@ -753,7 +1243,7 @@ pub fn compile_frozen_classes(source: &str, packages: &[&FrozenClass]) -> R<Vec<
             return Err(err("E_DUPLICATE","duplicate or reserved class binding"));
         }
         scope.bind_mixed(&p.view,&import)?;
-        let identity=scope.resolve_nominal(&sel.binding,&[&p.view])?;
+        let identity=scope.resolve_nominal_in_views(&sel.binding,&[&p.view])?;
         selected.insert(name.clone(),p);
         aliases.insert(sel.binding.clone(),(name.clone(),identity));
         if aliases.len()>32 {return Err(err("E_SOURCE_LIMIT","class binding limit"));}

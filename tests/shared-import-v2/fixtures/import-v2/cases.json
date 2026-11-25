@@ -420,6 +420,147 @@
           "value": 1
         }
       }
+    },
+    "nominal-root": {
+      "identity": "@org/project/nominal",
+      "exports": [
+        [
+          "model",
+          "namespace",
+          true
+        ],
+        [
+          "model.Item",
+          "class",
+          true
+        ],
+        [
+          "model.State",
+          "enum",
+          true
+        ],
+        [
+          "model.Worker",
+          "actor",
+          true
+        ],
+        [
+          "model.Hidden",
+          "class",
+          false
+        ],
+        [
+          "model.Alias",
+          "type",
+          true
+        ],
+        [
+          "model.read",
+          "fnc",
+          true
+        ]
+      ]
+    },
+    "cross-class-roots": {
+      "identities": [
+        "@org/project/nominal",
+        "@other/project/nominal"
+      ],
+      "exports": [
+        [
+          "model",
+          "namespace",
+          true
+        ],
+        [
+          "model.Item",
+          "class",
+          true
+        ],
+        [
+          "model.Hidden",
+          "class",
+          false
+        ],
+        [
+          "model.read",
+          "fnc",
+          true
+        ],
+        [
+          "other",
+          "namespace",
+          true
+        ],
+        [
+          "other.Item",
+          "class",
+          true
+        ]
+      ]
+    },
+    "nominal-kind-matrix": {
+      "identities": [
+        "@org/project/nominal",
+        "@other/project/nominal"
+      ],
+      "exports": [
+        [
+          "model",
+          "namespace",
+          true
+        ],
+        [
+          "model.Item",
+          "class",
+          true
+        ],
+        [
+          "model.State",
+          "enum",
+          true
+        ],
+        [
+          "model.Worker",
+          "actor",
+          true
+        ],
+        [
+          "model.Alias",
+          "type",
+          true
+        ],
+        [
+          "model.read",
+          "fnc",
+          true
+        ],
+        [
+          "model.HiddenItem",
+          "class",
+          false
+        ],
+        [
+          "model.HiddenState",
+          "enum",
+          false
+        ],
+        [
+          "model.HiddenWorker",
+          "actor",
+          false
+        ],
+        [
+          "model.HiddenAlias",
+          "type",
+          false
+        ],
+        [
+          "model.Hiddenread",
+          "fnc",
+          false
+        ]
+      ]
     }
   },
   "cases": [
@@ -4446,6 +4587,689 @@
         "outcome": "reject",
         "reason": "missing leaf rejects group",
         "code": "E_UNBOUND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\n",
+      "reference": "p.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-class-alias",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import class [model.Item as Data] from pkg '@org/project/nominal';",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-enum-tree",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport enum p.model.State as Status;",
+      "reference": "Status",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-actor-tree",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport actor p.model.Worker as Job;",
+      "reference": "Job",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-namespace-alias",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\ndefine alias p.model as m;",
+      "reference": "m.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-mixed-kind",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import [class model.Item as Data, enum model.State as Status, actor model.Worker as Job] from pkg '@org/project/nominal';",
+      "reference": "Status",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-negative-private",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport class p.model.Hidden as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private nominal declaration",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport enum p.model.Item as State;",
+      "reference": "State",
+      "expect": {
+        "outcome": "reject",
+        "reason": "class is not enum",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport p.model.{class Item as Data, class Hidden};",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-type-as-class",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport class p.model.Alias as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "type alias is not class",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-first",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "p.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-second",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "q.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-namespace",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "p.other.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "other.Item"
+      }
+    },
+    {
+      "id": "cross-class-alias-first",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class p.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-alias-second",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class q.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-namespace-alias",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\ndefine alias q.model as m;",
+      "reference": "m.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-ambiguous",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal';\nimport pkg '@other/project/nominal';",
+      "reference": "nominal.model.Item",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_AMBIGUOUS",
+        "reason": "distinct packages share a natural suffix",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-private",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class q.model.Hidden as H;",
+      "reference": "H",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_PRIVATE",
+        "reason": "private external class",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-wrong-kind",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport fnc p.model.Item as F;",
+      "reference": "F",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_IMPORT_KIND",
+        "reason": "class is not function",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-duplicate",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class p.model.Item as Data;\nimport class q.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_DUPLICATE",
+        "reason": "two distinct explicit class bindings",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-class-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-matrix-class-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{class Item as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-matrix-class-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [class model.Item as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-matrix-class-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-matrix-class-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport class right.model.HiddenItem as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-class-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport enum left.model.Item as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-class-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{class Item as Selected, class HiddenItem as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.State",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{enum State as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [enum model.State as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.State",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport enum right.model.HiddenState as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport actor left.model.State as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{enum State as Selected, enum HiddenState as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.Worker",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{actor Worker as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [actor model.Worker as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.Worker",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport actor right.model.HiddenWorker as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport type left.model.Worker as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{actor Worker as Selected, actor HiddenWorker as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-type-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.Alias",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Alias"
+      }
+    },
+    {
+      "id": "nominal-matrix-type-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{type Alias as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Alias"
+      }
+    },
+    {
+      "id": "nominal-matrix-type-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [type model.Alias as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Alias"
+      }
+    },
+    {
+      "id": "nominal-matrix-type-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.Alias",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Alias"
+      }
+    },
+    {
+      "id": "nominal-matrix-type-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport type right.model.HiddenAlias as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-type-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport fnc left.model.Alias as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-type-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{type Alias as Selected, type HiddenAlias as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.read",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.read"
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{fnc read as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.read"
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [fnc model.read as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.read"
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.read",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.read"
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport fnc right.model.Hiddenread as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport class left.model.read as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{fnc read as Selected, fnc Hiddenread as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
         "atomic": true
       }
     }

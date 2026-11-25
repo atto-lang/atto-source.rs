@@ -423,6 +423,449 @@ fn physical_declaration_provenance_never_grants_private_authority() {
 }
 
 #[test]
+fn authenticated_class_metadata_uses_source_visibility_and_nominal_identity() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as pub int value: 42; end define class Hidden as int value: 0; end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let mut scope=Scope::new();
+    p.bind_package(&mut scope,Some("p")).unwrap();
+    let target=scope.resolve_export("p.model.Item",p.view()).unwrap();
+    assert_eq!(target.kind,Kind::Class);
+    assert_eq!(p.declaration_source(&target).unwrap(),"src/model/types.atto");
+    let leaves=atto_compiler::import_tree::parse(&atto_compiler::lexer::lex("import class p.model.Item as Data;").unwrap(),1).unwrap().0;
+    atto_compiler::import_tree::bind(&mut scope,&leaves,&[p.view()]).unwrap();
+    let identity=scope.resolve_nominal("Data",p.view()).unwrap();
+    assert_eq!(identity,scope.resolve_nominal("p.model.Item",p.view()).unwrap());
+    assert_eq!(scope.resolve_export("p.model.Hidden",p.view()).unwrap_err().code,"E_PRIVATE");
+    let bad=atto_compiler::import_tree::parse(&atto_compiler::lexer::lex("import p.model.{class Item as Good, class Hidden};").unwrap(),1).unwrap().0;
+    assert_eq!(atto_compiler::import_tree::bind(&mut scope,&bad,&[p.view()]).unwrap_err().code,"E_PRIVATE");
+    assert_eq!(scope.resolve("Good").unwrap_err().code,"E_UNBOUND");
+    let source="import pkg '@org/project/package' as p; pub fnc main(): int { return 42; }";
+    assert_eq!(compile_registry_guest(source,&[&p]).unwrap_err().code,"E_UNSUPPORTED");
+    let l=lock(&manifest,&inputs);
+    let digest=hex_digest(l.as_bytes());
+    inputs.last_mut().unwrap().source="use namespace model; pub define class Item as pub int value: 41; end";
+    assert_eq!(error(FrozenRegistry::verify("@org/project/package",&manifest,&l,&digest,&inputs)),"E_LOCK_HASH");
+    let q=verify(&manifest,&inputs).unwrap();
+    let mut other=Scope::new();
+    q.bind_package(&mut other,Some("q")).unwrap();
+    assert_ne!(identity,other.resolve_nominal("q.model.Item",q.view()).unwrap());
+}
+
+#[test]
+fn authenticated_class_metadata_rejects_invalid_and_mixed_units() {
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:""});
+    for source in [
+        "use namespace model; pub define class Item as pub int value: 42;",
+        "use namespace model; pub define class Item as pub int value: true; end",
+        "use namespace model; pub define class Item as pub int value: 42; end define class Item as int value: 0; end",
+        "use namespace model; pub define class Item as pub int value: 42; end pub fnc f(): int { return 42; }",
+        "use namespace model; pub define class Item as pub int value: 42; end define enum State as Ready end",
+        "use namespace model; pub define class __atto_fake as int value: 0; end",
+    ] {
+        inputs.last_mut().unwrap().source=source;
+        assert!(verify(&manifest,&inputs).is_err(),"{source}");
+    }
+}
+
+#[test]
+fn authenticated_external_class_constructs_and_dispatches_public_method() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 0; pub constructor(int x) { self.value = x; } pub answer(int y): int { return self.value+y; } hidden(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let sources=[
+        "import pkg '@org/project/package' as p; pub fnc main(): int { return new p.model.Item(40).answer(2); }",
+        "import pkg '@org/project/package' as p; import class p.model.Item as Data; pub fnc main(): int { return new Data(40).answer(2); }",
+        "import class [model.Item as Data] from pkg '@org/project/package'; pub fnc main(): int { return new Data(40).answer(2); }",
+        "import pkg '@org/project/package' as p; define alias p.model as m; pub fnc main(): int { return new m.Item(40).answer(2); }",
+    ];
+    let mut expected=None;
+    for (i,source) in sources.iter().enumerate(){
+        let wasm=compile_registry_guest(source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Some(bytes)=&expected {assert_eq!(&wasm,bytes);}
+        else {expected=Some(wasm.clone());}
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (body,code) in [
+        ("return new p.model.Item(42).hidden();","E_PRIVATE"),
+        ("return new p.model.Item(42).value;","E_PRIVATE"),
+        ("return new p.model.Item().answer(2);","E_TYPE"),
+        ("return new p.model.Item(40).answer(2+0);","E_UNSUPPORTED"),
+        ("return new p.model.Item(40).answer(2)+1;","E_UNSUPPORTED"),
+        ("return new p.model.Missing(40).answer(2);","E_UNBOUND"),
+        ("return new p.http.get(40).answer(2);","E_IMPORT_KIND"),
+        ("val x = new p.model.Item(40); return x.answer(2);","E_UNSUPPORTED"),
+    ]{
+        let source=format!("import pkg '@org/project/package' as p; pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+    inputs.last_mut().unwrap().source="use namespace model; pub define class Item as private int value: 0; private constructor(int x) { self.value = x; } pub answer(int y): int { return self.value+y; } end";
+    let q=verify(&manifest,&inputs).unwrap();
+    assert_eq!(compile_registry_guest(sources[0],&[&q]).unwrap_err().code,"E_PRIVATE");
+}
+
+#[test]
+fn external_class_lane_is_closed_to_other_package_identities_and_root_declarations() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 42; pub answer(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let other=manifest.replace("@org/project/package","@other/project/package");
+    let l=lock(&other,&inputs);
+    let q=FrozenRegistry::verify("@other/project/package",&other,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+    let source="import pkg '@org/project/package' as p; pub fnc main(): int { return new p.model.Item().answer(); }";
+    let wasm=compile_registry_guest(source,&[&p,&q]).unwrap();
+    assert_eq!(wasm,compile_registry_guest(source,&[&q,&p]).unwrap());
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-class-4.wasm"),wasm).unwrap();
+    }
+    let dual="import pkg '@org/project/package' as p; import pkg '@other/project/package' as q; pub fnc main(): int { return new p.model.Item().answer(); }";
+    assert_eq!(compile_registry_guest(dual,&[&p,&q]).unwrap_err().code,"E_UNSUPPORTED");
+    let shadow="import pkg '@org/project/package' as p; define class Item as end pub fnc main(): int { return new p.model.Item().answer(); }";
+    assert_eq!(compile_registry_guest(shadow,&[&p]).unwrap_err().code,"E_UNSUPPORTED");
+    let mut changed=inputs.clone();
+    changed.last_mut().unwrap().source="use namespace model; pub define class Item as private int value: 41; pub answer(): int { return self.value; } end";
+    let drift=verify(&manifest,&changed).unwrap();
+    assert_eq!(compile_registry_guest(source,&[&p,&drift]).unwrap_err().code,"E_AMBIGUOUS");
+}
+
+#[test]
+fn authenticated_external_class_typed_locals_keep_instances_distinct() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 0; pub constructor(int x) { self.value = x; } pub answer(int y): int { return self.value+y; } hidden(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    let roots=[
+        "val a: Data = new Data(10); val b: p.model.Item = new p.model.Item(30); return a.answer(1)+b.answer(1);",
+        "const a: p.model.Item = new Data(10); const b: Data = new p.model.Item(30); return b.answer(1)+a.answer(1);",
+        "val a: Data = new Data(40); return a.answer(2);",
+    ];
+    for (i,body) in roots.iter().enumerate(){
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-local-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (body,code) in [
+        ("val a: Data = new Data(42); return a.hidden();","E_PRIVATE"),
+        ("val a: Data = new Data(42); return a.value;","E_PRIVATE"),
+        ("val a: Data = new Data(42); val a: Data = new Data(0); return a.answer(0);","E_DUPLICATE"),
+        ("val a: Data = new Data(42); val b: Data = a; return b.answer(0);","E_UNSUPPORTED"),
+        ("val a: Data = new Data(42); a = new Data(0); return a.answer(0);","E_UNSUPPORTED"),
+        ("val a: Data = new Data(42); return a;","E_UNSUPPORTED"),
+        ("val p: Data = new Data(42); return p.answer(0);","E_UNSUPPORTED"),
+        ("val a: Data = new Data(42); return a.answer(0)+1;","E_UNSUPPORTED"),
+        ("val a: Data = new Data(42); return a.answer(a);","E_UNSUPPORTED"),
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+}
+
+#[test]
+fn typed_external_class_rejects_distinct_declaration_identity_and_excess_locals() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; pub define class Item as private int value: 42; pub answer(): int { return self.value; } end"),
+        ("src/other/types.atto","use namespace other; pub define class Item as private int value: 42; pub answer(): int { return self.value; } end"),
+    ] {inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; import class p.other.Item as Other; ";
+    for body in [
+        "val a: Other = new Data(); return a.answer();",
+        "val a: Data = new Data(); val b: Data = new Other(); return a.answer()+b.answer();",
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_TYPE","{source}");
+    }
+    let mut body=String::new();
+    for i in 0..17{body.push_str(&format!("val a{i}: Data = new Data(); "));}
+    body.push_str("return a0.answer();");
+    let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+    assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_SOURCE_LIMIT");
+    for body in [
+        "val a: Data = new Data(",
+        "val a: Data = new Data(); val",
+        "val a: Data = new Data(); return a.",
+        "val a: Data = new Data(); return a.answer()+",
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {body}");
+        assert!(compile_registry_guest(&source,&[&p]).is_err(),"{source}");
+    }
+}
+
+#[test]
+fn same_named_classes_from_distinct_packages_compile_with_hygienic_identity() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 10; pub answer(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let other=manifest.replace("@org/project/package","@other/project/package");
+    inputs.last_mut().unwrap().source="use namespace model; pub define class Item as private int value: 32; pub answer(): int { return self.value; } end";
+    let l=lock(&other,&inputs);
+    let q=FrozenRegistry::verify("@other/project/package",&other,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import pkg '@other/project/package' as q; ";
+    let body="pub fnc main(): int { val a: p.model.Item = new p.model.Item(); val b: q.model.Item = new q.model.Item(); return a.answer()+b.answer(); }";
+    let source=format!("{prefix}{body}");
+    let wasm=compile_registry_guest(&source,&[&p,&q]).unwrap();
+    assert_eq!(wasm,compile_registry_guest(&source,&[&q,&p]).unwrap());
+    let reversed=format!("import pkg '@other/project/package' as q; import pkg '@org/project/package' as p; {body}");
+    assert_eq!(wasm,compile_registry_guest(&reversed,&[&p,&q]).unwrap());
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-class-cross-0.wasm"),wasm).unwrap();
+    }
+    for bad in [
+        "val a: p.model.Item = new q.model.Item(); return a.answer();",
+        "val a: p.model.Item = new p.model.Item(); val b: q.model.Item = new p.model.Item(); return a.answer()+b.answer();",
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {bad} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p,&q]).unwrap_err().code,"E_TYPE");
+    }
+    let source=format!("{prefix}pub fnc main(): int {{ val a: p.model.Item = new p.model.Item(); val b: q.model.Item = new q.model.Item(); return a.value; }}");
+    assert_eq!(compile_registry_guest(&source,&[&p,&q]).unwrap_err().code,"E_PRIVATE");
+}
+
+#[test]
+fn distinct_namespaces_and_package_scoped_fields_stay_isolated() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; pub define class Item as pub[pkg] int value: 10; pub answer(): int { return self.value; } end"),
+        ("src/other/types.atto","use namespace other; pub define class Item as pub[pkg] int value: 32; pub answer(): int { return self.value; } end"),
+    ]{inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; ";
+    let source=format!("{prefix}pub fnc main(): int {{ val a: p.model.Item = new p.model.Item(); val b: p.other.Item = new p.other.Item(); return a.answer()+b.answer(); }}");
+    let wasm=compile_registry_guest(&source,&[&p]).unwrap();
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-class-cross-1.wasm"),wasm).unwrap();
+    }
+    let bad=format!("{prefix}pub fnc main(): int {{ return new p.model.Item().value; }}");
+    assert_eq!(compile_registry_guest(&bad,&[&p]).unwrap_err().code,"E_PRIVATE");
+    let bad=format!("{prefix}pub fnc main(): int {{ val a: p.model.Item = new p.model.Item(); return a.value; }}");
+    assert_eq!(compile_registry_guest(&bad,&[&p]).unwrap_err().code,"E_PRIVATE");
+}
+
+#[test]
+fn generated_class_name_and_application_entry_cannot_be_captured() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as pub answer(): int { return main(); } end"});
+    let source="import pkg '@org/project/package' as p; pub fnc main(): int { return new p.model.Item().answer(); }";
+    // Whether the isolated checker rejects the reference or the linker
+    // rejects it, an application entry must not become provider authority.
+    if let Ok(p)=verify(&manifest,&inputs){
+        assert_eq!(compile_registry_guest(source,&[&p]).unwrap_err().code,"E_UNSUPPORTED");
+    }
+    inputs.last_mut().unwrap().source="use namespace model; pub define class Item as pub answer(): int { return 42; } end";
+    let p=verify(&manifest,&inputs).unwrap();
+    let forged="import pkg '@org/project/package' as p; pub fnc main(): int { return new __atto_registry_class_fake().answer(); }";
+    assert_eq!(compile_registry_guest(forged,&[&p]).unwrap_err().code,"E_RESERVED");
+}
+
+#[test]
+fn external_class_application_helpers_pass_and_return_nominal_objects() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; pub define class Item as private int value: 40; pub answer(int y): int { return self.value+y; } hidden(): int { return self.value; } end"),
+        ("src/other/types.atto","use namespace other; pub define class Item as private int value: 40; pub answer(int y): int { return self.value+y; } end"),
+    ]{inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    let read="fnc read(item: Data): int { return item.answer(2); }";
+    let make="fnc make(): p.model.Item { return new Data(); }";
+    for (i,body) in [
+        format!("{read} pub fnc main(): int {{ val a: Data = new Data(); return read(a); }}"),
+        format!("{make} pub fnc main(): int {{ val a: Data = make(); return a.answer(2); }}"),
+        format!("{read} {make} pub fnc main(): int {{ val a: Data = make(); return read(a); }}"),
+        format!("fnc read(p.model.Item item) -> int {{ return item.answer(2); }} {make} pub fnc main(): int {{ val a: Data = make(); return read(a); }}"),
+    ].iter().enumerate(){
+        let source=format!("{prefix}{body}");
+        let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-helper-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (body,code) in [
+        (format!("{read} pub fnc main(): int {{ val a: p.other.Item = new p.other.Item(); return read(a); }}"),"E_TYPE"),
+        (format!("{make} pub fnc main(): int {{ val a: p.other.Item = make(); return a.answer(2); }}"),"E_TYPE"),
+        (format!("{read} pub fnc main(): int {{ val a: Data = new Data(); return read(a)+read(a); }}"),"E_OWNERSHIP"),
+        (format!("{read} pub fnc main(): int {{ val a: Data = new Data(); return read(a)+a.answer(0); }}"),"E_OWNERSHIP"),
+        ("fnc read(item: Data): int { return item.answer(2); } fnc read(item: Data): int { return item.answer(2); } pub fnc main(): int { return 0; }".into(),"E_DUPLICATE"),
+        ("fnc leak(item: Data): int { return item.hidden(); } pub fnc main(): int { val a: Data = new Data(); return leak(a); }".into(),"E_PRIVATE"),
+        ("fnc make(): Data { return new p.other.Item(); } pub fnc main(): int { val a: Data = make(); return a.answer(2); }".into(),"E_TYPE"),
+        ("pub fnc make(): Data { return new Data(); } pub fnc main(): int { return 0; }".into(),"E_UNSUPPORTED"),
+    ]{
+        let source=format!("{prefix}{body}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+}
+
+#[test]
+fn external_class_lexical_read_loans_require_read_only_receiver_proof() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } pub update(): int { return self.answer(0); } hidden(): int { return self.value; } end"),
+        ("src/other/types.atto","use namespace other; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } end"),
+    ]{inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    for (i,body) in [
+        "val a: Data = new Data(); val b: Data = borrow! a; return b.answer(1)+a.answer(1);",
+        "val a: Data = new Data(); const b: p.model.Item = borrow! a; val c: Data = borrow! a; return b.answer(1)+c.answer(1);",
+    ].iter().enumerate(){
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-loan-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (body,code) in [
+        ("val a: Data = new Data(); val b: Data = borrow! a; return b.update();","E_BORROW"),
+        ("val a: Data = new Data(); val b: Data = borrow! a; return a.update();","E_BORROW"),
+        ("val a: Data = new Data(); val b: Data = borrow! a; return b.hidden();","E_PRIVATE"),
+        ("val a: Data = new Data(); val b: Data = borrow! a; return b.value;","E_PRIVATE"),
+        ("val a: Data = new Data(); val b: Data = borrow! mut a; return b.answer(22);","E_BORROW"),
+        ("val a: Data = new Data(); val b: Data = borrow! a; val c: Data = borrow! b; return c.answer(22);","E_BORROW"),
+        ("val a: Data = new Data(); val b: p.other.Item = borrow! a; return b.answer(22);","E_TYPE"),
+        ("val a: Data = borrow! a; return a.answer(22);","E_BORROW"),
+    ]{
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+    for arg in ["a","b"] {
+        let source=format!("{prefix}fnc read(item: Data): int {{ return item.answer(22); }} pub fnc main(): int {{ val a: Data = new Data(); val b: Data = borrow! a; return read({arg}); }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_BORROW");
+    }
+}
+
+#[test]
+fn external_class_exclusive_lexical_loan_checks_receiver_effects_and_conflicts() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } pub adjust(int y): int { return self.value+y; } pub opaque(): int { return self.answer(22); } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    for (i,body) in [
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.adjust(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.answer(1)+b.answer(1);",
+    ].iter().enumerate(){
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-exclusive-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for body in [
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return a.answer(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; val c: Data = borrow! a; return c.answer(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! a; val c: Data = borrow! mut a; return c.answer(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; val c: Data = borrow! mut a; return c.answer(22);",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; return b.opaque();",
+        "const mut a: Data = new Data(); val b: Data = borrow! mut a; val c: Data = borrow! b; return c.answer(22);",
+        "const a: Data = new Data(); val b: Data = borrow! mut a; return b.adjust(22);",
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_BORROW","{source}");
+    }
+}
+
+#[test]
+fn exclusive_external_loan_never_confers_transfer_or_binding_authority() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 42; pub answer(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    for arg in ["a","b"] {
+        let source=format!("{prefix}fnc read(item: Data): int {{ return item.answer(); }} pub fnc main(): int {{ const mut a: Data = new Data(); val b: Data = borrow! mut a; return read({arg}); }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_BORROW");
+    }
+    let bad=format!("{prefix}pub fnc main(): int {{ val mut a: Data = new Data(); val b: Data = borrow! mut a; return b.answer(); }}");
+    assert_eq!(compile_registry_guest(&bad,&[&p]).unwrap_err().code,"E_SYNTAX");
+}
+
+#[test]
+fn external_class_mutating_receiver_requires_real_checker_authority() {
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 20; pub adjust(int y): int { self.value = self.value+y; return self.value; } end"});
+    assert_eq!(verify(&manifest,&inputs).err().expect("ordinary readonly receiver must reject writes").code,"E_OWNERSHIP");
+}
+
+#[test]
+fn authenticated_external_enum_matches_nominal_variants_exhaustively() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\nsecret = \"src/secret/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; define pub enum State as Pending Ready end"),
+        ("src/other/types.atto","use namespace other; pub define enum State as Pending Ready end"),
+        ("src/secret/types.atto","use namespace secret; define enum State as Pending Ready end"),
+    ]{inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let cases=[
+        "import pkg '@org/project/package' as p; pub fnc main(): int { return match p.model.State.Ready over on p.model.State.Pending -> 0, on p.model.State.Ready -> 42, end }",
+        "import pkg '@org/project/package' as p; import enum p.model.State as Status; pub fnc main(): int { return match Status.Ready over on Status.Pending -> 0, on Status.Ready -> 42, end }",
+        "import [enum model.State as Status] from pkg '@org/project/package'; pub fnc main(): int { return match Status.Ready over on Status.Pending -> 0, on Status.Ready -> 42, end }",
+    ];
+    let mut expected=None;
+    for (i,source) in cases.iter().enumerate(){
+        let wasm=compile_registry_guest(source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        if let Some(bytes)=&expected{assert_eq!(&wasm,bytes);}else{expected=Some(wasm.clone());}
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-enum-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    let prefix="import pkg '@org/project/package' as p; ";
+    for (body,code) in [
+        ("return match p.model.State.Ready over on p.model.State.Ready -> 42, end","E_MATCH"),
+        ("return match p.model.State.Ready over on p.other.State.Pending -> 0, on p.model.State.Ready -> 42, end","E_TYPE"),
+        ("return match p.model.State.Missing over on p.model.State.Pending -> 0, on p.model.State.Ready -> 42, end","E_UNBOUND"),
+        ("return match p.secret.State.Ready over on p.secret.State.Pending -> 0, on p.secret.State.Ready -> 42, end","E_PRIVATE"),
+        ("return match p.model.State.Ready over on p.model.State.Pending -> 0, on p.model.State.Ready -> 42+0, end","E_UNSUPPORTED"),
+    ]{
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+}
+
+
+#[test]
 fn pinned_namespace_private_members_cross_files_but_not_boundaries() {
     use atto_compiler::registry_namespace::{compile_registry_guest,compile_contextual_guest};
     let root="import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.answer(); }";
@@ -481,7 +924,7 @@ fn authenticated_single_class_guest_uses_constructor_and_method_checker() {
     let wasm=p.compile_guest(&guest).unwrap();
     assert!(wasm.starts_with(b"\0asm"));
     if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
-        std::fs::write(std::path::Path::new(&dir).join("registry-class-0.wasm"),wasm).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("registry-preview-class-0.wasm"),wasm).unwrap();
     }
     for bad in [
         format!("{prefix}pub fnc main(): int {{ val c = new Counter(); return c.get(); }}"),

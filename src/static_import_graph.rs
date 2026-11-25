@@ -91,6 +91,8 @@ impl PackageId {
         { return Err(err("E_IMPORT_PATH", "invalid pinned canonical package identity")); }
         Ok(Self { name: name.into(), version: version.into(), digest: digest.into() })
     }
+    pub(crate) fn digest(&self) -> &str { &self.digest }
+
     pub fn suffixes(&self) -> Vec<String> {
         let parts: Vec<_> = self.name[1..].split('/').map(|p| p.replace('-', "_")).collect();
         (0..parts.len()).rev().map(|i| parts[i..].join(".")).filter(|p| path(p)).collect()
@@ -106,6 +108,10 @@ pub struct Target {
     pub declaration: String,
     pub kind: Kind,
 }
+/// Opaque resolver identity; not a runtime type descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NominalId(Target);
+
 /// Opaque nominal declaration key in the bounded static import graph.
 /// A pinned package snapshot is the identity domain for this initial lane.
 /// Cross-version/content ABI compatibility requires a separate policy.
@@ -147,6 +153,8 @@ pub struct TypeIdentity(Vec<TypeIdentityNode>);
 const MAX_GENERIC_ARITY: usize = 8;
 const MAX_TYPE_NODES: usize = 128;
 const MAX_TYPE_DEPTH: usize = 16;
+
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier { Implicit, Deliberate, Explicit }
@@ -231,11 +239,17 @@ impl Scope {
         if resolved.target.origin != view.origin {
             return Err(err("E_IMPORT_PATH", "export view does not match selected origin"));
         }
-        if resolved.remainder.is_empty() { return Ok(resolved.target); }
+        // Revalidate exact bindings too: a lexical alias or a caller-supplied
+        // Target is not proof that a declaration remains public in this view.
         let base = &resolved.target.declaration;
-        if !base.is_empty() && view.lookup(base)? != resolved.target {
-            return Err(err("E_IMPORT_KIND", "canonical namespace view mismatch"));
+        if base.is_empty() {
+            if resolved.target.kind != Kind::Namespace || !matches!(&resolved.target.origin, Origin::External(_)) {
+                return Err(err("E_IMPORT_KIND", "only external package namespaces have an empty declaration"));
+            }
+        } else if view.lookup(base)? != resolved.target {
+            return Err(err("E_IMPORT_KIND", "canonical declaration view mismatch"));
         }
+        if resolved.remainder.is_empty() { return Ok(resolved.target); }
         let key = if base.is_empty() { resolved.remainder }
             else { format!("{base}.{}", resolved.remainder) };
         view.lookup(&key)
@@ -250,11 +264,22 @@ impl Scope {
         self.resolve_export(reference, view)
     }
 
+    /// Resolve a nominal declaration identity, not its runtime layout or ABI.
+    /// General type aliases are intentionally excluded until their expansion
+    /// rules are checked. The authenticated package digest is part of identity.
+    pub fn resolve_nominal(&self, reference: &str, view: &ExportView) -> R<NominalId> {
+        let target = self.resolve_export(reference, view)?;
+        if !matches!(target.kind, Kind::Class | Kind::Enum | Kind::Actor) {
+            return Err(err("E_IMPORT_KIND", "expected nominal class, enum or actor"));
+        }
+        Ok(NominalId(target))
+    }
+
     /// Resolve a nominal declaration against exactly one caller-verified
     /// export view. Recheck even exact/direct bindings: bind_verified alone
     /// is not authority to forge a type or bypass private visibility.
     /// This API is resolver-only; no layouts, constructors or codegen.
-    pub fn resolve_nominal(&self, reference: &str, views: &[&ExportView]) -> R<NominalIdentity> {
+    pub fn resolve_nominal_in_views(&self, reference: &str, views: &[&ExportView]) -> R<NominalIdentity> {
         let target = self.resolve_in_views(reference, views)?;
         if !matches!(target.kind, Kind::Class | Kind::Enum | Kind::Type | Kind::Trait | Kind::Interface | Kind::Actor) {
             return Err(err("E_IMPORT_KIND", "reference is not a nominal type declaration"));
@@ -288,7 +313,7 @@ impl Scope {
                     depths.push(1);
                 }
                 TypeTerm::Nominal { reference, arguments } => {
-                    let id=self.resolve_nominal(reference,views)?;
+                    let id=self.resolve_nominal_in_views(reference,views)?;
                     if *arguments!=id.arity || *arguments>depths.len() {
                         return Err(err("E_ARITY","generic identity argument count differs from declaration"));
                     }
