@@ -203,7 +203,7 @@
           true
         ],
         [
-          "shared",
+          "common",
           "namespace",
           true
         ],
@@ -3489,13 +3489,13 @@
     {
       "id": "context-grandparent",
       "stage": "resolution",
-      "source": "use namespace network.http;\nimport super.super.shared;",
-      "reference": "shared",
+      "source": "use namespace network.http;\nimport super.super.common;",
+      "reference": "common",
       "fixture": "contextual-root",
       "expect": {
         "outcome": "identity",
         "identity": "@foo/bar/baz",
-        "declaration": "shared"
+        "declaration": "common"
       },
       "currentNamespace": "network.http"
     },
@@ -3543,7 +3543,7 @@
     {
       "id": "context-negative-escape",
       "stage": "resolution",
-      "source": "use namespace network.http;\nimport super.super.super.shared;",
+      "source": "use namespace network.http;\nimport super.super.super.common;",
       "reference": "config",
       "fixture": "contextual-root",
       "expect": {
@@ -3567,6 +3567,109 @@
         "atomic": true
       },
       "currentNamespace": "network.http"
+    },
+    {
+      "id": "builtin-tree-namespace",
+      "stage": "guest",
+      "source": "import core.{num}; pub fnc main(): int {return num.clamp(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-typed",
+      "stage": "guest",
+      "source": "import core.num.{fnc clamp as bound}; pub fnc main(): int {return bound(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-nested",
+      "stage": "guest",
+      "source": "import core.{num.{clamp as bound,},}; pub fnc main(): int {return bound(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-direct",
+      "stage": "guest",
+      "source": "import fnc core.num.clamp as bound; pub fnc main(): int {return bound(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-self",
+      "stage": "guest",
+      "source": "import core.num.{self as math}; pub fnc main(): int {return math.clamp(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-unknown",
+      "stage": "guest",
+      "source": "import core.num.{clamp, absent}; pub fnc main(): int {return 42;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "unknown",
+        "code": "E_UNBOUND"
+      }
+    },
+    {
+      "id": "builtin-tree-wrong-kind",
+      "stage": "guest",
+      "source": "import core.num.{class clamp}; pub fnc main(): int {return 42;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "wrong-kind",
+        "code": "E_IMPORT_KIND"
+      }
+    },
+    {
+      "id": "builtin-tree-duplicate",
+      "stage": "guest",
+      "source": "import core.num.{clamp as a, min as a}; pub fnc main(): int {return 42;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate",
+        "code": "E_DUPLICATE"
+      }
+    },
+    {
+      "id": "builtin-tree-empty",
+      "stage": "guest",
+      "source": "import core.num.{}; pub fnc main(): int {return 42;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "empty",
+        "code": "E_SYNTAX"
+      }
+    },
+    {
+      "id": "builtin-tree-no-leak",
+      "stage": "guest",
+      "source": "import core.num.{clamp as bound}; pub fnc main(): int {return num.clamp(42,0,100);}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "no-leak"
+      }
+    },
+    {
+      "id": "builtin-tree-runtime-value",
+      "stage": "guest",
+      "source": "import core.num.{clamp as bound}; pub fnc main(): int {return bound;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "runtime-value"
+      }
     }
   ]
 }
