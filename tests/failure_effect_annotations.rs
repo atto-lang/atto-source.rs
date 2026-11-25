@@ -27,7 +27,7 @@ define class C as
     pub static fnc first(): int { return 40; }
     @raises(Error)
     @panics(Error)
-    second(int n): int {return n + 2;}
+    pub second(int n): int {return n + 2;}
 end
 @throws(Error)
 @raises(Error)
@@ -40,15 +40,15 @@ pub fnc main(): int {val c = new C(); return c.second(C.first());}
     assert_eq!(ast.funcs[0].failure_effects.mask(), 7);
     assert!(compile(scalar).unwrap().starts_with(b"\0asm\x01\0\0\0"));
 
-    let mtd = r#"
+    let annotated_method = r#"
 define class C as
     @throws(Error)
-    mtd add(int n): int {return n + 2;}
+    pub add(int n): int {return n + 2;}
 end
 pub fnc main(): int throws(Error) {val c = new C(); return c.add(40);}
 "#;
-    assert_eq!(parse(mtd).classes[0].methods[0].failure_effects.mask(), 1);
-    assert!(compile(mtd).is_ok());
+    assert_eq!(parse(annotated_method).classes[0].methods[0].failure_effects.mask(), 1);
+    compile(annotated_method).unwrap_or_else(|e| panic!("method effect fixture failed: {e}"));
 
     let actor = r#"
 define actor Worker as

@@ -29,6 +29,8 @@ pub struct ReceiverHeader {
 #[derive(Clone, Debug)]
 pub struct ReceiverSite {
     pub declaration_start: usize,
+    /// Offset immediately after attached annotations, before optional pub.
+    pub modifier_start: usize,
     pub method_start: usize,
     pub end: usize,
 }
@@ -101,6 +103,68 @@ impl Cursor<'_> {
         }
         Ok(name)
     }
+    /// Only used for return-type headers. Preserve balanced generic types
+    /// without changing the older, restricted receiver-parameter type grammar.
+    /// Production parsing after lowering validates every generic instantiation.
+    fn return_type_name(&mut self) -> R<String> {
+        let mut text = match self.tok().clone() {
+            Tok::Ident(s) => { self.next(); s },
+            _ => return Err(self.err("E_SYNTAX", "expected a return type")),
+        };
+        if !self.take(&Tok::Lt) { return Ok(text); }
+        text.push('<');
+        let mut depth = 1usize;
+        let mut expect_argument = true;
+        let mut budget = 0usize;
+        while depth > 0 {
+            budget += 1;
+            if budget > 256 {
+                return Err(self.err("E_SOURCE_LIMIT", "generic return type exceeds token budget"));
+            }
+            match self.tok().clone() {
+                Tok::Ident(name) if expect_argument => {
+                    text.push_str(&name);
+                    expect_argument = false;
+                }
+                Tok::Lt if !expect_argument => {
+                    depth += 1;
+                    if depth > 64 {
+                        return Err(self.err("E_NESTING", "generic return type nesting exceeds 64"));
+                    }
+                    text.push('<');
+                    expect_argument = true;
+                }
+                Tok::Comma if !expect_argument => {
+                    text.push(',');
+                    expect_argument = true;
+                }
+                Tok::Gt if !expect_argument => {
+                    depth -= 1;
+                    text.push('>');
+                    expect_argument = false;
+                }
+                Tok::Eof => return Err(self.err("E_EOF", "unclosed generic return type")),
+                _ => return Err(self.err("E_SYNTAX", "malformed generic return type")),
+            }
+            self.next();
+        }
+        Ok(text)
+    }
+
+    fn looks_prefixed_return_type(&self) -> bool {
+        if !matches!(self.tok(), Tok::Ident(_)) { return false; }
+        let mut depth = 0usize;
+        for tok in self.toks.iter().skip(self.i + 1).take(256).map(|x| &x.tok) {
+            match tok {
+                Tok::Bullet if depth == 0 => return true,
+                Tok::Lt => { depth += 1; if depth > 64 { return false; } }
+                Tok::Gt if depth > 0 => depth -= 1,
+                Tok::Comma | Tok::Ident(_) if depth > 0 => {}
+                _ => return false,
+            }
+        }
+        false
+    }
     fn params(&mut self) -> R<Vec<ReceiverParam>> {
         self.expect(&Tok::LParen, "expected '(' before parameters")?;
         let mut params = Vec::new();
@@ -123,8 +187,141 @@ impl Cursor<'_> {
             }
         }
     }
-    fn body(&mut self, arrow_type: bool, colon_type: bool) -> R<()> {
-        // Target-only receiver bodies are delimiter scans, not executable Wasm.
+    /// Parse the target-only declaration header without swallowing effects.
+    /// These tokens are subsequently rechecked by the production parser after
+    /// out-of-line class receiver lowering. No fake runtime effect is emitted.
+    /// Recognize and preserve attached failure annotations so that mtd
+    /// lowering carries them into the real parser and checker.
+    fn failure_annotations(&mut self) -> R<()> {
+        let mut seen = 0u8;
+        while self.take(&Tok::At) {
+            let bit = match self.word() {
+                Some("Throws" | "throws") => 1,
+                Some("Raises" | "raises") => 2,
+                Some("Panics" | "panics") => 4,
+                _ => return Err(self.err("E_UNSUPPORTED", "unsupported target declaration annotation")),
+            };
+            if seen & bit != 0 {
+                return Err(self.err("E_EFFECT_TYPE", "duplicate failure-effect annotation"));
+            }
+            seen |= bit;
+            self.next();
+            self.expect(&Tok::LParen, "expected '(' after failure annotation")?;
+            let mut count = 0usize;
+            loop {
+                self.type_name()?;
+                count += 1;
+                if count > 64 {
+                    return Err(self.err("E_SOURCE_LIMIT", "too many annotated Error types"));
+                }
+                if !self.take(&Tok::Comma) { break; }
+            }
+            self.expect(&Tok::RParen, "expected ')' after failure annotation")?;
+        }
+        Ok(())
+    }
+
+    fn header_after_params(
+        &mut self, prefix_return: Option<String>,
+    ) -> R<(String, bool, bool, bool, bool)> {
+        let arrow_type = *self.tok() == Tok::Arrow;
+        let colon_type = *self.tok() == Tok::Colon;
+        if prefix_return.is_some() && (arrow_type || colon_type) {
+            return Err(self.err("E_SYNTAX", "duplicate return type after prefix '•'"));
+        }
+        let mut return_type = if self.take(&Tok::Colon) || self.take(&Tok::Arrow) {
+            self.return_type_name()?
+        } else {
+            prefix_return.clone().unwrap_or_else(|| "void".to_owned())
+        };
+        let inline_effects = matches!(self.word(), Some("throws" | "raises" | "panics"));
+        self.failure_effect_clauses()?;
+        let trailing_return = inline_effects && !arrow_type && !colon_type && self.take(&Tok::Arrow);
+        if trailing_return {
+            if prefix_return.is_some() {
+                return Err(self.err("E_SYNTAX", "duplicate return type after prefix '•'"));
+            }
+            return_type = self.return_type_name()?;
+        }
+        if matches!(self.word(), Some("throws" | "raises" | "panics")) {
+            return Err(self.err("E_SYNTAX", "effect clauses cannot follow the trailing return type"));
+        }
+        Ok((return_type, arrow_type, colon_type, inline_effects, trailing_return))
+    }
+
+    /// Recognize both legacy parenthesized and Java-style effect type lists.
+    /// Only the production parser may assert nominal Error ancestry.
+    fn failure_effect_clauses(&mut self) -> R<()> {
+        let mut seen = 0u8;
+        while let Some(kind) = self.word() {
+            let bit = match kind {
+                "throws" => 1,
+                "raises" => 2,
+                "panics" => 4,
+                _ => break,
+            };
+            if seen & bit != 0 {
+                return Err(self.err("E_EFFECT_TYPE", "duplicate failure effect declaration"));
+            }
+            seen |= bit;
+            self.next();
+            let enclosed = self.take(&Tok::LParen);
+            let mut count = 0usize;
+            loop {
+                self.type_name()?;
+                count += 1;
+                if count > 64 {
+                    return Err(self.err("E_SOURCE_LIMIT", "too many failure types"));
+                }
+                if !self.take(&Tok::Comma) { break; }
+            }
+            if enclosed {
+                self.expect(&Tok::RParen, "expected ')' after error type list")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Target-only scan of ordinary statement/end bodies. Unlike the older
+    /// Erlang comma-tail scan, these bodies allow semicolons and require no
+    /// implicit tail return. The actual statement grammar runs after lowering.
+    fn statements_to_end(&mut self) -> R<()> {
+        let (mut nested, mut conditionals, mut braces) = (0u32, 0u32, 0u32);
+        loop {
+            match self.tok() {
+                Tok::Eof => return Err(self.err("E_EOF", "unclosed statement/end method body")),
+                Tok::Ident(s) if s == "end" && braces == 0 => {
+                    if nested != 0 { nested -= 1; self.next(); continue; }
+                    if conditionals != 0 {
+                        return Err(self.err("E_SYNTAX", "unclosed conditional in statement/end body"));
+                    }
+                    // An empty void begin/end is legal. The production
+                    // checker rejects non-void fallthrough after lowering.
+                    self.next();
+                    return Ok(());
+                }
+                Tok::Ident(s) if braces == 0 && matches!(s.as_str(), "begin" | "match" | "switch" | "select") => nested += 1,
+                Tok::Ident(s) if braces == 0 && s == "if" => conditionals += 1,
+                Tok::Ident(s) if braces == 0 && s == "fi" => {
+                    if conditionals == 0 { return Err(self.err("E_SYNTAX", "unmatched fi")); }
+                    conditionals -= 1;
+                }
+                Tok::LBrace => {
+                    braces += 1;
+                    if braces > 128 { return Err(self.err("E_NESTING", "body nesting limit")); }
+                }
+                Tok::RBrace => {
+                    if braces == 0 { return Err(self.err("E_SYNTAX", "unmatched '}'")); }
+                    braces -= 1;
+                }
+                _ => {}
+            }
+            self.next();
+        }
+    }
+
+    fn body(&mut self, arrow_type: bool, colon_type: bool, inline_effects: bool, trailing_return: bool) -> R<()> {
+        // Preserve the older ': Type -> {' spelling.
         if colon_type && self.take(&Tok::Arrow) && *self.tok() != Tok::LBrace {
             return Err(self.err("E_SYNTAX", "': Type ->' requires a braced body"));
         }
@@ -143,6 +340,21 @@ impl Cursor<'_> {
                 self.next();
             }
             return Ok(());
+        }
+        if self.take_word("begin") {
+            return self.statements_to_end();
+        }
+        if inline_effects && !trailing_return {
+            return Err(self.err("E_SYNTAX",
+                "inline failure effects after the return type require '{' or 'begin'"));
+        }
+        if trailing_return {
+            let newline = self.i > 0 && self.toks[self.i - 1].pos.line < self.pos().line;
+            if !newline {
+                return Err(self.err("E_SYNTAX",
+                    "a trailing return type requires a newline or explicit body delimiter"));
+            }
+            return self.statements_to_end();
         }
         if !arrow_type {
             return Err(self.err("E_SYNTAX", "expected '{' for a method body"));
@@ -214,18 +426,20 @@ impl Cursor<'_> {
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
         let method_start = self.i;
+        let prefix_return = if self.looks_prefixed_return_type() {
+            let ty = self.return_type_name()?;
+            self.expect(&Tok::Bullet, "expected '•' after return type")?;
+            Some(ty)
+        } else {
+            None
+        };
         let name = self.ident()?;
         let params = self.params()?;
         let arity = params.len();
-        let arrow_type = *self.tok() == Tok::Arrow;
-        let colon_type = *self.tok() == Tok::Colon;
-        let return_type = if self.take(&Tok::Colon) || self.take(&Tok::Arrow) {
-            self.type_name()?
-        } else {
-            "void".to_owned()
-        };
+        let (return_type, arrow_type, colon_type, inline_effects, trailing_return) =
+            self.header_after_params(prefix_return)?;
         let start = self.i;
-        self.body(arrow_type, colon_type)?;
+        self.body(arrow_type, colon_type, inline_effects, trailing_return)?;
         let end = self.i;
         Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end, method_start))
     }
@@ -245,11 +459,22 @@ impl Cursor<'_> {
     fn function(&mut self) -> R<(usize, usize)> {
         self.ident()?;
         self.params()?;
-        let arrow_type = *self.tok() == Tok::Arrow;
-        let colon_type = *self.tok() == Tok::Colon;
-        if self.take(&Tok::Colon) || self.take(&Tok::Arrow) { self.type_name()?; }
+        let (_, arrow_type, colon_type, inline_effects, trailing_return) =
+            self.header_after_params(None)?;
         let start = self.i;
-        self.body(arrow_type, colon_type)?;
+        self.body(arrow_type, colon_type, inline_effects, trailing_return)?;
+        Ok((start, self.i))
+    }
+
+    fn typefirst_function(&mut self) -> R<(usize, usize)> {
+        let prefix_return = self.return_type_name()?;
+        self.expect(&Tok::Bullet, "expected '•' after return type")?;
+        self.ident()?;
+        self.params()?;
+        let (_, arrow_type, colon_type, inline_effects, trailing_return) =
+            self.header_after_params(Some(prefix_return))?;
+        let start = self.i;
+        self.body(arrow_type, colon_type, inline_effects, trailing_return)?;
         Ok((start, self.i))
     }
 }
@@ -325,6 +550,8 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             c.expect(&Tok::Semi, "expected ';' after actor")?;
         } else {
             let declaration_start = c.i;
+            c.failure_annotations()?;
+            let modifier_start = c.i;
             let public = c.take_word("pub");
             if c.take_word("mtd") {
                 let (method, start, end, method_start) = c.receiver(pos, public)?;
@@ -335,11 +562,13 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 }
                 spans.push((out.receivers.len(), start, end));
                 out.receiver_sites.push(ReceiverSite {
-                    declaration_start, method_start, end,
+                    declaration_start, modifier_start, method_start, end,
                 });
                 out.receivers.push(method);
             } else if c.take_word("fnc") || c.take_word("routine") {
                 function_spans.push(c.function()?);
+            } else if c.looks_prefixed_return_type() {
+                function_spans.push(c.typefirst_function()?);
             } else {
                 return Err(c.err("E_SYNTAX",
                     "expected namespace header, module import, declared/concrete actor, receiver method, or fnc"));
@@ -407,7 +636,8 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
     // scan. A forged overlapping ledger must be E_SYNTAX, never be interpreted
     // as a receiver body that can accidentally read another declaration.
     for site in &headers.receiver_sites {
-        if site.declaration_start >= site.method_start ||
+        if site.declaration_start > site.modifier_start ||
+            site.modifier_start >= site.method_start ||
             site.method_start >= site.end || site.end > toks.len() {
             return Err(Diagnostic::new(pos, "E_SYNTAX",
                 "invalid out-of-line receiver source span"));
@@ -428,7 +658,8 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
         let owner = headers.class_definitions.iter().position(|c| c.name == receiver.owner)
             .ok_or_else(|| Diagnostic::new(receiver.pos, "E_UNBOUND",
                 "class receiver owner has no local definition"))?;
-        if site.declaration_start >= site.method_start ||
+        if site.declaration_start > site.modifier_start ||
+            site.modifier_start >= site.method_start ||
             site.method_start >= site.end || site.end > toks.len() ||
             headers.class_ends[owner] >= toks.len() {
             return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
@@ -472,13 +703,16 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
                 _ => {}
             }
         }
+        // The original annotation tokens must be moved along with their
+        // receiver. Do not silently drop throws/raises/panics in lowering.
+        insertions[owner].extend_from_slice(&toks[site.declaration_start..site.modifier_start]);
         if receiver.public {
             // pub mtd (self: Type) method(...) becomes a public inline method.
-            if !matches!(&toks[site.declaration_start].tok, Tok::Ident(s) if s == "pub") {
+            if !matches!(&toks[site.modifier_start].tok, Tok::Ident(s) if s == "pub") {
                 return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
                     "missing public receiver visibility token"));
             }
-            insertions[owner].push(toks[site.declaration_start].clone());
+            insertions[owner].push(toks[site.modifier_start].clone());
         }
         insertions[owner].extend_from_slice(&toks[site.method_start..site.end]);
 
