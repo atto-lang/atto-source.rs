@@ -298,6 +298,22 @@ check('class/bounded-guest-heap', () => {
 // Exact bump-pointer boundary: with no string data the heap begins at byte
 // 16 in a 64-KiB non-growable page. An 8-byte object can be allocated
 // (65536 - 16) / 8 = 8190 times, never 8191, without wrapping or overlapping.
+check('class/guest-memory-fixed-one-page-and-isolated-per-instance', () => {
+  const source='define class Unit as\n int value: 1\nend\n'+
+    'pub fnc main(): int { val item = new Unit(); return item.value; }';
+  const compiled=compile(source);
+  assert.ok(compiled.ok,compiled.message);
+  const module=new WebAssembly.Module(compiled.wasm);
+  for(let i=0;i<2;i++){
+    const instance=new WebAssembly.Instance(module,{});
+    assert.equal(instance.exports.main(),1n);
+    assert.equal(instance.exports.memory.buffer.byteLength,65536);
+    assert.throws(()=>instance.exports.memory.grow(1),RangeError,
+      'compiler guest memory must have min=max=1 Wasm page');
+    assert.equal(instance.exports.memory.buffer.byteLength,65536);
+  }
+});
+
 check('class/heap-exact-capacity-and-per-instance-reset', () => {
   const sourceFor = count => 'define class Unit as\n int value: 1\nend\n' +
     'pub fnc main(): int {\n for (let i = 0; i < ' + count + '; i++) do\n' +

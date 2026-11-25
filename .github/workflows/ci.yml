@@ -40,7 +40,7 @@ jobs:
         run: node tests/conformance.mjs
 
       - name: Test asynchronous actor lifecycle, cancellation, and protocol races
-        run: node --test tests/actor-lifecycle.test.mjs tests/actor-import-contract.test.mjs
+        run: node --test tests/actor-lifecycle.test.mjs tests/actor-import-contract.test.mjs tests/run-watchdog.test.mjs
       - name: Real Chromium browser and worker E2E
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
