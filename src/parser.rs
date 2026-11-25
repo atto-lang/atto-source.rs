@@ -198,6 +198,8 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
         "List" | "list" => Some("List"),
         "Array" | "array" => Some("Array"),
         "Tuple" | "tuple" => Some("Tuple"),
+        "Pair" | "pair" => Some("Pair"),
+        "Entry" | "entry" => Some("Entry"),
         _ => None,
     }
 }
@@ -282,10 +284,11 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
-        Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
-            !arms.is_empty()
-                && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
-                && guard_failure_exits(other),
+        Some(Stmt::If {
+            arms,
+            otherwise: Some(other),
+            ..
+        }) => !arms.is_empty() && arms.iter().all(|(_, branch)| guard_failure_exits(branch)) && guard_failure_exits(other),
         _ => false,
     }
 }
@@ -404,7 +407,7 @@ impl Parser {
         let pos = self.pos();
         match self.peek().clone() {
             Tok::Ident(s) => {
-                if matches!(s.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List") {
+                if matches!(s.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List" | "Pair" | "Entry") {
                     self.factory_shadowing.push((s.clone(), pos));
                 }
                 if is_reserved(&s) {
@@ -427,7 +430,9 @@ impl Parser {
         matches!(
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
-        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || collection_type_name(w).is_some())
+        ) || self
+            .word_at(n)
+            .is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || collection_type_name(w).is_some())
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -446,7 +451,12 @@ impl Parser {
                 let builtin = collection_type_name(n).expect("guarded builtin");
                 // Parse complete nested type arguments even in the syntax-only
                 // browser profile; never misread '<' as an expression comparison.
-                let generic = self.eat(&Tok::Lt);
+                // Bracketed positional tuple type arguments are an accepted
+                // spelling; the formatter should canonicalize Tuple[...] to
+                // Tuple<...>. Brackets do not change runtime type identity.
+                let bracket_tuple = builtin == "Tuple" && self.eat(&Tok::LBracket);
+                let generic = bracket_tuple || self.eat(&Tok::Lt);
+                let closing = if bracket_tuple { Tok::RBracket } else { Tok::Gt };
                 let mut args = Vec::new();
                 // A closed Record's sole generic argument is a *type-level row*,
                 // not a list of homogeneous value parameters. Serialize labels
@@ -458,30 +468,38 @@ impl Parser {
                     if !self.eat(&Tok::RBrace) {
                         loop {
                             if fields.len() >= MAX_PARAMS {
-                                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                                    "closed Record type exceeds the field limit"));
+                                return Err(Diagnostic::new(
+                                    self.pos(),
+                                    "E_SOURCE_LIMIT",
+                                    "closed Record type exceeds the field limit",
+                                ));
                             }
                             let at = self.pos();
                             let label = match self.peek().clone() {
                                 Tok::Ident(name) | Tok::Str(name) => name,
-                                _ => return Err(Diagnostic::new(at, "E_TYPE",
-                                    "closed Record type needs a static field label; open rows are not yet supported")),
+                                _ => {
+                                    return Err(Diagnostic::new(
+                                        at,
+                                        "E_TYPE",
+                                        "closed Record type needs a static field label; open rows are not yet supported",
+                                    ))
+                                }
                             };
                             self.advance();
                             self.expect(Tok::Colon, "':' after Record type field")?;
                             let field_type = self.parse_type()?;
                             let type_spelling = match field_type {
-                                Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) =>
-                                    self.type_names[i as usize].0.clone(),
+                                Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
                                 other => other.name().to_string(),
                             };
                             if fields.iter().any(|(name, _)| *name == label) {
-                                return Err(Diagnostic::new(at, "E_DUPLICATE",
-                                    "duplicate closed Record type field"));
+                                return Err(Diagnostic::new(at, "E_DUPLICATE", "duplicate closed Record type field"));
                             }
                             fields.push((label, type_spelling));
                             if self.eat(&Tok::Comma) {
-                                if self.eat(&Tok::RBrace) { break; }
+                                if self.eat(&Tok::RBrace) {
+                                    break;
+                                }
                             } else {
                                 self.expect(Tok::RBrace, "'}' after Record type fields")?;
                                 break;
@@ -490,46 +508,60 @@ impl Parser {
                     }
                     self.expect(Tok::Gt, "'>' after closed Record type")?;
                     fields.sort_by(|a, b| a.0.cmp(&b.0));
-                    let row = fields.into_iter().map(|(label, ty)| {
-                        let mut hex = String::with_capacity(label.len() * 2);
-                        for byte in label.as_bytes() {
-                            write!(&mut hex, "{byte:02x}")
-                                .expect("writing to a String cannot fail");
-                        }
-                        format!("{hex}:{ty}")
-                    }).collect::<Vec<_>>().join(",");
+                    let row = fields
+                        .into_iter()
+                        .map(|(label, ty)| {
+                            let mut hex = String::with_capacity(label.len() * 2);
+                            for byte in label.as_bytes() {
+                                write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+                            }
+                            format!("{hex}:{ty}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
                     closed_row = Some(format!("{{{row}}}"));
                 } else if generic {
-                    if *self.peek() == Tok::Gt {
-                        return Err(Diagnostic::new(self.pos(), "E_TYPE_ARITY",
-                            format!("{builtin} does not accept an empty generic argument list")));
+                    if *self.peek() == closing {
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_TYPE_ARITY",
+                            format!("{builtin} does not accept an empty generic argument list"),
+                        ));
                     }
                     loop {
                         if args.len() >= MAX_PARAMS {
-                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                                "collection type exceeds the maximum generic argument count"));
+                            return Err(Diagnostic::new(
+                                self.pos(),
+                                "E_SOURCE_LIMIT",
+                                "collection type exceeds the maximum generic argument count",
+                            ));
                         }
                         let ty = self.parse_type()?;
                         let spelling = match ty {
-                            Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) =>
-                                self.type_names[i as usize].0.clone(),
+                            Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
                             other => other.name().to_string(),
                         };
                         args.push(spelling);
-                        if !self.eat(&Tok::Comma) { break; }
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
                     }
-                    self.expect(Tok::Gt, "'>' to close collection type arguments")?;
+                    self.expect(closing.clone(), "closing delimiter for collection type arguments")?;
                 }
                 let correct_arity = match builtin {
                     "Record" => !generic || closed_row.is_some(),
                     "Array" | "List" => !generic || args.len() == 1,
                     "Map" => !generic || args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
+                    "Pair" | "Entry" => generic && args.len() == 2,
                     _ => unreachable!(),
                 };
                 if !correct_arity {
-                    return Err(Diagnostic::new(pos, "E_TYPE_ARITY",
-                        format!("incorrect number of generic type arguments for {builtin}")));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_TYPE_ARITY",
+                        format!("incorrect number of generic type arguments for {builtin}"),
+                    ));
                 }
                 // Internal type identity only. It never authorizes a host object
                 // or bypasses checked guest allocation and ownership.
@@ -557,31 +589,43 @@ impl Parser {
                 if *self.peek() != Tok::RParen {
                     loop {
                         if params.len() >= MAX_PARAMS {
-                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                                "callable signature exceeds maximum parameter count"));
+                            return Err(Diagnostic::new(
+                                self.pos(),
+                                "E_SOURCE_LIMIT",
+                                "callable signature exceeds maximum parameter count",
+                            ));
                         }
                         let arg_pos = self.pos();
                         let arg = self.parse_type()?;
                         if !matches!(arg, Type::Int | Type::Bool | Type::Float | Type::Str) {
-                            return Err(Diagnostic::new(arg_pos, "E_UNSUPPORTED_TYPE",
-                                "callable parameter must be a non-void scalar type"));
+                            return Err(Diagnostic::new(
+                                arg_pos,
+                                "E_UNSUPPORTED_TYPE",
+                                "callable parameter must be a non-void scalar type",
+                            ));
                         }
                         params.push(arg);
-                        if !self.eat(&Tok::Comma) { break; }
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
                     }
                 }
                 self.expect(Tok::RParen, "')' after callable parameters")?;
                 self.expect(Tok::Arrow, "'->' before callable result type")?;
                 let result_pos = self.pos();
                 let result = self.parse_type()?;
-                if !matches!(result,
-                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
-                    return Err(Diagnostic::new(result_pos, "E_UNSUPPORTED_TYPE",
-                        "callable return type must be scalar or void"));
+                if !matches!(result, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
+                    return Err(Diagnostic::new(
+                        result_pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "callable return type must be scalar or void",
+                    ));
                 }
-                let spelling = format!("fnc({})->{}",
+                let spelling = format!(
+                    "fnc({})->{}",
                     params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
-                    result.name());
+                    result.name()
+                );
                 // Identical contracts have identical Type identity across
                 // declarations, regardless of whitespace and type aliases.
                 let id = match self.type_names.iter().position(|(n, _)| *n == spelling) {
@@ -597,8 +641,13 @@ impl Parser {
                 match inner {
                     Type::Int => Type::OptionInt,
                     Type::ResultIntStr => Type::OptionResultIntStr,
-                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
+                    _ => {
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_UNSUPPORTED_TYPE",
+                            "browser ADT admits only Option<int> and Option<Result<int,string>>",
+                        ))
+                    }
                 }
             }
             "Generator" => {
@@ -606,8 +655,11 @@ impl Parser {
                 let inner = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Generator item type")?;
                 if inner != Type::Int {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "the browser generator frontend currently recognizes only Generator<int>"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "the browser generator frontend currently recognizes only Generator<int>",
+                    ));
                 }
                 Type::GeneratorInt
             }
@@ -618,11 +670,14 @@ impl Parser {
                 let bad = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Result types")?;
                 if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "browser ADT v1 admits only Result<int,string>",
+                    ));
                 }
                 Type::ResultIntStr
-            },
+            }
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
@@ -651,8 +706,31 @@ impl Parser {
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
+        // T? is shorthand for Option<T>. Only Option<int> currently
+        // has a concrete scalar ADT guest ABI; Option<string>/Option<bool>
+        // remain static types and fail closed at executable guest lowering.
+        let ty = if self.eat(&Tok::Question) {
+            match ty {
+                Type::Int => Type::OptionInt,
+                Type::Void => return Err(Diagnostic::new(pos, "E_TYPE", "void? is not a valid value type")),
+                other => {
+                    let element = match other {
+                        Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
+                        _ => other.name().to_string(),
+                    };
+                    let spelling = format!("@builtin/Option<{element}>");
+                    let index = match self.type_names.iter().position(|(name, _)| name == &spelling) {
+                        Some(i) => i as u32,
+                        None => self.type_name(spelling, pos),
+                    };
+                    Type::Named(index)
+                }
+            }
+        } else {
+            ty
+        };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
-            return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
+            return Err(unsupported(self.pos(), "generic and union types"));
         }
         self.leave();
         Ok(ty)
@@ -748,8 +826,11 @@ impl Parser {
         }
         for (name, pos) in &self.factory_shadowing {
             if self.factories_seen.iter().any(|factory| factory == name) {
-                return Err(Diagnostic::new(*pos, "E_RESERVED",
-                    format!("builtin factory '{name}.of' cannot be shadowed by a user declaration")));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_RESERVED",
+                    format!("builtin factory '{name}.of' cannot be shadowed by a user declaration"),
+                ));
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
@@ -773,7 +854,6 @@ impl Parser {
         })
     }
 
-
     /// Browser-only single-worker state profile; class instances cannot cross
     /// guest Wasm memories. This does not provide a cross-worker RW lock.
     fn parse_state_container(&mut self, public: bool) -> R<ClassDecl> {
@@ -788,25 +868,43 @@ impl Parser {
                 return Err(self.expected("'end' to close state container"));
             }
             if fields.len() >= 128 || methods.len() >= 64 {
-                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "protected state fields (128) or methods (64) exceed Java reference budget"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SOURCE_LIMIT",
+                    "protected state fields (128) or methods (64) exceed Java reference budget",
+                ));
             }
             if self.eat_word("state") {
-                if seen { return Err(Diagnostic::new(self.pos(), "E_DUPLICATE", "duplicate state {} block")); }
+                if seen {
+                    return Err(Diagnostic::new(self.pos(), "E_DUPLICATE", "duplicate state {} block"));
+                }
                 seen = true;
                 self.expect(Tok::LBrace, "'{' after state")?;
                 while !self.eat(&Tok::RBrace) {
-                    if *self.peek() == Tok::Eof { return Err(self.expected("'}' after state fields")); }
+                    if *self.peek() == Tok::Eof {
+                        return Err(self.expected("'}' after state fields"));
+                    }
                     if fields.len() >= 128 {
-                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "protected state field budget exceeded (128)"));
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_SOURCE_LIMIT",
+                            "protected state field budget exceeded (128)",
+                        ));
                     }
                     if !self.eat_word("let") {
-                        return Err(Diagnostic::new(self.pos(), "E_STATE",
-                            "protected state fields must start with let, as in Java"));
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_STATE",
+                            "protected state fields must start with let, as in Java",
+                        ));
                     }
                     let parsed = self.parse_type_first_field(false, FieldMode::ActorState)?;
                     if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
-                        return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
-                            "Worker-local state container admits only owned int/bool fields"));
+                        return Err(Diagnostic::new(
+                            parsed.field.pos,
+                            "E_UNSUPPORTED_TYPE",
+                            "Worker-local state container admits only owned int/bool fields",
+                        ));
                     }
                     if fields.iter().any(|f: &Field| f.name == parsed.field.name) {
                         return Err(Diagnostic::new(parsed.field.pos, "E_DUPLICATE", "duplicate state field"));
@@ -816,39 +914,64 @@ impl Parser {
                 continue;
             }
             if !seen {
-                return Err(Diagnostic::new(self.pos(), "E_STATE",
-                    "protected state {} schema must precede instance methods"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_STATE",
+                    "protected state {} schema must precede instance methods",
+                ));
             }
             let method_public = self.eat_word("pub");
             self.eat_word("fnc");
             self.eat_word("method");
             if self.is_word("handle_state") {
-                return Err(Diagnostic::new(self.pos(), "E_STATE",
-                    "handle_state is compiler-owned and cannot be overridden"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_STATE",
+                    "handle_state is compiler-owned and cannot be overridden",
+                ));
             }
             if *self.peek_at(1) != Tok::LParen {
-                return Err(Diagnostic::new(self.pos(), "E_STATE",
-                    "state container supports only a state {} block and instance methods"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_STATE",
+                    "state container supports only a state {} block and instance methods",
+                ));
             }
             self.state_method = true;
             let result = self.parse_method(method_public, false);
             self.state_method = false;
             let method = result?;
             if method.params.iter().any(|p| p.name == "s") {
-                return Err(Diagnostic::new(method.pos, "E_STATE_BORROW",
-                    "parameter s would shadow the critical lease binder"));
+                return Err(Diagnostic::new(
+                    method.pos,
+                    "E_STATE_BORROW",
+                    "parameter s would shadow the critical lease binder",
+                ));
             }
             if methods.iter().any(|m: &Method| m.name == method.name) {
                 return Err(Diagnostic::new(method.pos, "E_DUPLICATE", "duplicate state method"));
             }
             methods.push(method);
         }
-        if !seen { return Err(Diagnostic::new(pos, "E_STATE", "define state requires state {}")); }
-        if fields.is_empty() {
-            return Err(Diagnostic::new(pos, "E_STATE", "protected state requires at least one scalar field"));
+        if !seen {
+            return Err(Diagnostic::new(pos, "E_STATE", "define state requires state {}"));
         }
-        Ok(ClassDecl { name, pos, public, state_container: true,
-            fields, ctor: None, methods })
+        if fields.is_empty() {
+            return Err(Diagnostic::new(
+                pos,
+                "E_STATE",
+                "protected state requires at least one scalar field",
+            ));
+        }
+        Ok(ClassDecl {
+            name,
+            pos,
+            public,
+            state_container: true,
+            fields,
+            ctor: None,
+            methods,
+        })
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
@@ -1300,12 +1423,18 @@ impl Parser {
         let ret = self.parse_return_spec()?;
         self.parse_effect_clauses()?;
         if is_pure && is_generator {
-            return Err(Diagnostic::new(pos, "E_PURE",
-                "pure generator effects require verified continuation semantics"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_PURE",
+                "pure generator effects require verified continuation semantics",
+            ));
         }
         if is_generator && ret != Type::GeneratorInt {
-            return Err(Diagnostic::new(pos, "E_TYPE",
-                "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_TYPE",
+                "a 'fnc *gen' declaration must return Generator<int> in this frontend stage",
+            ));
         }
         self.in_generator = is_generator;
         let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
@@ -1349,10 +1478,15 @@ impl Parser {
             loop {
                 let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
                 if ty != "Error" {
-                    return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                        format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+                    return Err(Diagnostic::new(
+                        ty_pos,
+                        "E_TYPE",
+                        format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'"),
+                    ));
                 }
-                if !self.eat(&Tok::Comma) { break; }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
             }
             self.expect(Tok::RParen, "')' to close the effect clause")?;
             // `throws(Error), raises(Error)`: a comma may separate clauses.
@@ -1373,8 +1507,11 @@ impl Parser {
             self.expect(Tok::LParen, "'(' after 'catch'")?;
             let (ty, ty_pos) = self.ident("the caught Error type")?;
             if ty != "Error" {
-                return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                    "this browser slice catches only the built-in Error"));
+                return Err(Diagnostic::new(
+                    ty_pos,
+                    "E_TYPE",
+                    "this browser slice catches only the built-in Error",
+                ));
             }
             let (binder, _) = self.ident("a catch binding name")?;
             self.expect(Tok::RParen, "')' after the catch binding")?;
@@ -1385,7 +1522,11 @@ impl Parser {
         if self.is_word("catch") {
             return Err(unsupported(self.pos(), "multiple catch clauses"));
         }
-        let finally = if self.eat_word("finally") { Some(self.parse_block()?) } else { None };
+        let finally = if self.eat_word("finally") {
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
         if catch.is_none() && finally.is_none() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "'try' requires a 'catch' or 'finally' clause"));
         }
@@ -1401,7 +1542,11 @@ impl Parser {
         if !self.eat(&Tok::Pipe) {
             loop {
                 if params.len() >= MAX_PARAMS {
-                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many recovery factory parameters"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        "too many recovery factory parameters",
+                    ));
                 }
                 let ty = self.parse_type()?;
                 let (name, p) = self.ident("a recovery factory parameter name")?;
@@ -1409,7 +1554,9 @@ impl Parser {
                     return Err(Diagnostic::new(p, "E_DUPLICATE", format!("duplicate parameter '{name}'")));
                 }
                 params.push((name, ty, p));
-                if self.eat(&Tok::Pipe) { break; }
+                if self.eat(&Tok::Pipe) {
+                    break;
+                }
                 self.expect(Tok::Comma, "',' or '|' after a factory parameter")?;
             }
         }
@@ -1419,7 +1566,11 @@ impl Parser {
         self.expect(Tok::Comma, "',' between the error and cursor parameters")?;
         let (cursor, cursor_pos) = self.ident("the recovery cursor parameter")?;
         if cursor == err || params.iter().any(|(n, ..)| *n == err || *n == cursor) {
-            return Err(Diagnostic::new(cursor_pos, "E_DUPLICATE", "recovery parameter names must be distinct"));
+            return Err(Diagnostic::new(
+                cursor_pos,
+                "E_DUPLICATE",
+                "recovery parameter names must be distinct",
+            ));
         }
         self.expect(Tok::Pipe, "'|' after the recovery cursor")?;
         self.expect(Tok::Arrow, "'->' before the recovery handler body")?;
@@ -1433,7 +1584,14 @@ impl Parser {
         }
         let args = self.parse_args()?;
         self.terminator()?;
-        Ok(Stmt::Recover { params, err, cursor, body, args, pos })
+        Ok(Stmt::Recover {
+            params,
+            err,
+            cursor,
+            body,
+            args,
+            pos,
+        })
     }
 
     fn parse_param(&mut self) -> R<Param> {
@@ -1480,8 +1638,11 @@ impl Parser {
             // positions, symbol interning or nesting-budget state.
             let explicit_comma = self.eat(&Tok::ColonColon);
             if explicit_comma && *self.peek() == Tok::LBrace {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "'::' requires a comma/end body, not a brace block"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "'::' requires a comma/end body, not a brace block",
+                ));
             }
             // The pinned website also uses '::' as an optional header
             // separator before explicit semicolon/return statements. Until
@@ -1503,8 +1664,11 @@ impl Parser {
             return self.parse_erlang_body(ret);
         }
         if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "a ': Type ->' callable body must open with '{'"));
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_SYNTAX",
+                "a ': Type ->' callable body must open with '{'",
+            ));
         }
         self.parse_block()
     }
@@ -1524,22 +1688,31 @@ impl Parser {
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut body = Vec::new();
             if self.is_word("end") {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "explicit/end callable bodies require a statement"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "explicit/end callable bodies require a statement",
+                ));
             }
             while !self.is_word("end") {
                 if *self.peek() == Tok::Eof {
                     return Err(self.expected("'end'"));
                 }
                 if *self.peek() == Tok::Comma {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "explicit/end callable bodies cannot contain comma-separated items"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SYNTAX",
+                        "explicit/end callable bodies cannot contain comma-separated items",
+                    ));
                 }
                 let start = self.i;
                 body.push(self.parse_stmt()?);
                 if self.i == start {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "explicit/end body statement did not consume source"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SYNTAX",
+                        "explicit/end body statement did not consume source",
+                    ));
                 }
             }
             self.expect_word("end")?;
@@ -1563,22 +1736,23 @@ impl Parser {
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out: Vec<Stmt> = Vec::new();
             if self.is_word("end") {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "Erlang-style callable bodies require at least one item"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "Erlang-style callable bodies require at least one item",
+                ));
             }
             while !self.is_word("end") {
                 if *self.peek() == Tok::Eof {
                     return Err(self.expected("'end'"));
                 }
                 if *self.peek() == Tok::Comma {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "empty item in Erlang-style callable body"));
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "empty item in Erlang-style callable body"));
                 }
                 let start = self.i;
                 let stmt = self.parse_stmt()?;
                 if self.i == start {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "callable body did not consume a statement"));
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "callable body did not consume a statement"));
                 }
                 // Ordinary statements consume the comma in terminator().
                 // Compound statements like if/fi leave the comma for us.
@@ -1586,10 +1760,12 @@ impl Parser {
                 if !consumed_comma && !self.is_word("end") {
                     self.expect(Tok::Comma, "',' between Erlang-style body items")?;
                 }
-                if self.is_word("end") &&
-                    (consumed_comma || (self.i > 0 && self.toks[self.i - 1].tok == Tok::Comma)) {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "trailing comma in Erlang-style callable body"));
+                if self.is_word("end") && (consumed_comma || (self.i > 0 && self.toks[self.i - 1].tok == Tok::Comma)) {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SYNTAX",
+                        "trailing comma in Erlang-style callable body",
+                    ));
                 }
                 out.push(stmt);
             }
@@ -1683,8 +1859,11 @@ impl Parser {
             if *self.peek() == Tok::Eof {
                 return Err(self.expected("'end'"));
             }
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "Erlang-style callable body items require ',' or 'end', not ';' or newline"));
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_SYNTAX",
+                "Erlang-style callable body items require ',' or 'end', not ';' or newline",
+            ));
         }
         if self.eat(&Tok::Semi) {
             return Ok(());
@@ -1713,8 +1892,11 @@ impl Parser {
         // Contiguous yield* is a dedicated token, not multiplication.
         if *self.peek() == Tok::YieldStar {
             if !self.in_generator {
-                return Err(Diagnostic::new(pos, "E_YIELD",
-                    "'yield*' is only valid inside a 'fnc *gen' generator"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_YIELD",
+                    "'yield*' is only valid inside a 'fnc *gen' generator",
+                ));
             }
             self.advance();
             let source = self.parse_expr()?;
@@ -1989,7 +2171,6 @@ impl Parser {
         }
     }
 
-
     /// The Java/LLVM compound-keyword contract requires exactly adjacent
     /// ASCII critical-read / critical-write, not spaced subtraction tokens.
     /// The lexer intentionally keeps '-' separate for arithmetic; this
@@ -1999,23 +2180,30 @@ impl Parser {
         self.expect_word("critical")?;
         if self.peek() != &Tok::Minus {
             if read_only {
-                return Err(Diagnostic::new(keyword_pos, "E_SYNTAX",
-                    "critical-read must use one contiguous compound keyword"));
+                return Err(Diagnostic::new(
+                    keyword_pos,
+                    "E_SYNTAX",
+                    "critical-read must use one contiguous compound keyword",
+                ));
             }
             return Ok(true); // bare critical is the exclusive write alias
         }
         let minus_pos = self.pos();
-        if minus_pos.line != keyword_pos.line ||
-            minus_pos.col != keyword_pos.col + 8 {
-            return Err(Diagnostic::new(minus_pos, "E_SYNTAX",
-                "critical-read / critical-write must not contain whitespace around '-'"));
+        if minus_pos.line != keyword_pos.line || minus_pos.col != keyword_pos.col + 8 {
+            return Err(Diagnostic::new(
+                minus_pos,
+                "E_SYNTAX",
+                "critical-read / critical-write must not contain whitespace around '-'",
+            ));
         }
         self.advance();
         let suffix_pos = self.pos();
-        if suffix_pos.line != minus_pos.line ||
-            suffix_pos.col != minus_pos.col + 1 {
-            return Err(Diagnostic::new(suffix_pos, "E_SYNTAX",
-                "critical-read / critical-write must not contain whitespace around '-'"));
+        if suffix_pos.line != minus_pos.line || suffix_pos.col != minus_pos.col + 1 {
+            return Err(Diagnostic::new(
+                suffix_pos,
+                "E_SYNTAX",
+                "critical-read / critical-write must not contain whitespace around '-'",
+            ));
         }
         if self.eat_word("read") {
             return Ok(false);
@@ -2023,8 +2211,11 @@ impl Parser {
         if self.eat_word("write") && !read_only {
             return Ok(true);
         }
-        Err(Diagnostic::new(suffix_pos, "E_SYNTAX",
-            "expected a contiguous critical-read or critical-write state mode"))
+        Err(Diagnostic::new(
+            suffix_pos,
+            "E_SYNTAX",
+            "expected a contiguous critical-read or critical-write state mode",
+        ))
     }
 
     /// A lexical, non-suspending state loan. Syntactic admission is deliberately
@@ -2033,8 +2224,11 @@ impl Parser {
     fn parse_state_critical_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
         if self.state_binder.is_some() {
-            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                "nested critical scopes cannot mint a second state loan"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_STATE_BORROW",
+                "nested critical scopes cannot mint a second state loan",
+            ));
         }
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
@@ -2043,13 +2237,17 @@ impl Parser {
         // requests an exclusive write ticket from the trusted Worker host.
         // Reads are accepted only as nonescaping by-value s.field projections.
         if !write {
-            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                "critical-read is by-value s.field only; block scopes cannot request a write lease"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_STATE_BORROW",
+                "critical-read is by-value s.field only; block scopes cannot request a write lease",
+            ));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, _) = self.ident("state lease binder")?;
-        if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "this browser profile uses the binder s")); }
+        if binder != "s" {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW", "this browser profile uses the binder s"));
+        }
         self.expect(Tok::Pipe, "'|' after lease binder")?;
         self.expect(Tok::Arrow, "'->' after lease binder")?;
         self.state_binder = Some(binder);
@@ -2059,10 +2257,14 @@ impl Parser {
         for stmt in &body {
             match stmt {
                 Stmt::FieldAssign { target, value, .. }
-                    if write && matches!(target.kind, ExprKind::SelfRef)
-                        && Self::pure_state_value(value) => {}
-                _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                    "critical block permits only pure state assignments (no calls, return, await or escapes)")),
+                    if write && matches!(target.kind, ExprKind::SelfRef) && Self::pure_state_value(value) => {}
+                _ => {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_STATE_BORROW",
+                        "critical block permits only pure state assignments (no calls, return, await or escapes)",
+                    ))
+                }
             }
         }
         self.expect(Tok::RParen, "')' after critical scope")?;
@@ -2084,24 +2286,32 @@ impl Parser {
     /// A single by-value immutable state projection, not a reference loan.
     fn parse_state_critical_read(&mut self) -> R<ExprKind> {
         if self.state_binder.is_some() {
-            return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
-                "critical-read cannot nest inside an active critical state write"));
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_STATE_BORROW",
+                "critical-read cannot nest inside an active critical state write",
+            ));
         }
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
         if self.parse_state_critical_mode(true)? {
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "critical-read must be immutable"));
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "critical-read must be immutable"));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, _) = self.ident("state lease binder")?;
-        if binder != "s" { return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
-            "this browser profile uses the binder s")); }
+        if binder != "s" {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_STATE_BORROW",
+                "this browser profile uses the binder s",
+            ));
+        }
         self.expect(Tok::Pipe, "'|' after lease binder")?;
         self.expect(Tok::Arrow, "'->' after lease binder")?;
         let (projector, pos) = self.ident("s.field state projection")?;
-        if projector != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "critical-read requires s.field")); }
+        if projector != "s" {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW", "critical-read requires s.field"));
+        }
         self.expect(Tok::Dot, "'.' in s.field")?;
         let (field, _) = self.ident("state field")?;
         self.expect(Tok::RParen, "')' after critical-read")?;
@@ -2141,7 +2351,7 @@ impl Parser {
             && (matches!(self.peek_at(1), Tok::Ident(_))
                 || ((matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
                     || self.word_at(0).is_some_and(|w| collection_type_name(w).is_some()))
-                    && *self.peek_at(1) == Tok::Lt))
+                    && matches!(self.peek_at(1), Tok::Lt | Tok::LBracket)))
         {
             // Recognize generic type-first bindings without treating
             // 'Option' as a variable name and '<' as a comparison.
@@ -2153,8 +2363,11 @@ impl Parser {
             (name, None)
         };
         if self.state_method && name == "s" {
-            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                "a local named s would shadow the critical lease binder"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_STATE_BORROW",
+                "a local named s would shadow the critical lease binder",
+            ));
         }
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
@@ -2167,7 +2380,38 @@ impl Parser {
             ));
         }
         self.advance();
-        let init = self.parse_expr()?;
+        let mut init = self.parse_expr()?;
+        // In an explicitly typed Pair/Entry binding, K => V is the
+        // contextual, arity-two constructor shorthand. Do not reinterpret
+        // a map entry, lambda arrow, or unrelated expression as a pair.
+        if self.eat(&Tok::FatArrow) {
+            let is_product = ty
+                .and_then(|type_| match type_ {
+                    Type::Named(i) => self.type_names.get(i as usize).map(|(name, _)| name.as_str()),
+                    _ => None,
+                })
+                .and_then(|name| {
+                    if name.starts_with("@builtin/Pair<") {
+                        Some("Pair")
+                    } else if name.starts_with("@builtin/Entry<") {
+                        Some("Entry")
+                    } else {
+                        None
+                    }
+                });
+            let Some(product) = is_product else {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_TYPE",
+                    "'=>' creates a Pair or Entry only with an explicit Pair<K,V>/Entry<K,V> context",
+                ));
+            };
+            let rhs = self.parse_expr()?;
+            init = Expr {
+                pos: init.pos,
+                kind: ExprKind::Call(format!("@builtin/{product}.of"), vec![init, rhs]),
+            };
+        }
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
@@ -2181,13 +2425,15 @@ impl Parser {
         self.expect_word("guard")?;
         let predicate = self.parse_cond_head()?;
         if *self.peek() != Tok::LBrace {
-            return Err(Diagnostic::new(self.pos(), "E_GUARD",
-                "guard requires a braced failure branch"));
+            return Err(Diagnostic::new(self.pos(), "E_GUARD", "guard requires a braced failure branch"));
         }
         let failure = self.parse_block()?;
         if !guard_failure_exits(&failure) {
-            return Err(Diagnostic::new(pos, "E_GUARD",
-                "guard failure branch must exit the enclosing function on every path"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_GUARD",
+                "guard failure branch must exit the enclosing function on every path",
+            ));
         }
         Ok(Stmt::If {
             arms: vec![(
@@ -2383,18 +2629,17 @@ impl Parser {
             // The guard sees a pattern binding only after that pattern
             // matches. A guarded catch-all does not prove exhaustiveness.
             // The existing match type checker enforces these properties.
-            let guard = if self.eat_word("when") {
-                Some(self.parse_expr()?)
-            } else {
-                None
-            };
+            let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
             self.expect(Tok::Arrow, "'->' in a return match arm")?;
             let braced = *self.peek() == Tok::LBrace;
             let body = if braced {
                 let body = self.parse_block()?;
                 if !guard_failure_exits(&body) {
-                    return Err(Diagnostic::new(apos, "E_RETURN",
-                        "braced return match arm must return or throw on every path"));
+                    return Err(Diagnostic::new(
+                        apos,
+                        "E_RETURN",
+                        "braced return match arm must return or throw on every path",
+                    ));
                 }
                 body
             } else {
@@ -2413,8 +2658,11 @@ impl Parser {
             if braced {
                 self.eat(&Tok::Comma);
             } else if !self.eat(&Tok::Comma) && !self.is_word("end") {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "expected ',' between return match value arms"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "expected ',' between return match value arms",
+                ));
             }
         }
         self.expect_word("end")?;
@@ -2455,8 +2703,11 @@ impl Parser {
                 "None" => {
                     self.advance();
                     if *self.peek() == Tok::LParen {
-                        return Err(Diagnostic::new(self.pos(), "E_ARITY",
-                            "None is a zero-payload variant; write 'on None'"));
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_ARITY",
+                            "None is a zero-payload variant; write 'on None'",
+                        ));
                     }
                     Ok(Pattern::Adt(w, None))
                 }
@@ -2466,7 +2717,7 @@ impl Parser {
                     let (name, _) = self.ident("a payload binding name")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
                     Ok(Pattern::Adt(w, Some(name)))
-                },
+                }
                 "_" => {
                     self.advance();
                     Ok(Pattern::Wild)
@@ -2674,7 +2925,10 @@ impl Parser {
             self.grow(1)?;
             links += 1;
             args.insert(0, c);
-            c = Expr { kind: ExprKind::Call(name, args), pos };
+            c = Expr {
+                kind: ExprKind::Call(name, args),
+                pos,
+            };
         }
         self.height -= links;
         match self.peek() {
@@ -2720,7 +2974,10 @@ impl Parser {
             left = Expr {
                 kind: ExprKind::Ternary(
                     Box::new(left),
-                    Box::new(Expr { kind: ExprKind::Bool(true), pos }),
+                    Box::new(Expr {
+                        kind: ExprKind::Bool(true),
+                        pos,
+                    }),
                     Box::new(right),
                 ),
                 pos,
@@ -2747,7 +3004,10 @@ impl Parser {
                 kind: ExprKind::Ternary(
                     Box::new(left),
                     Box::new(right),
-                    Box::new(Expr { kind: ExprKind::Bool(false), pos }),
+                    Box::new(Expr {
+                        kind: ExprKind::Bool(false),
+                        pos,
+                    }),
                 ),
                 pos,
             };
@@ -2883,9 +3143,7 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
-                && *self.peek_at(1) == Tok::Bang =>
-            {
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share") && *self.peek_at(1) == Tok::Bang => {
                 let action = match s.as_str() {
                     "borrow" => OwnershipOp::Borrow,
                     "copy" => OwnershipOp::Copy,
@@ -2900,12 +3158,18 @@ impl Parser {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
                 }
                 let inner = self.parse_unary()?;
-                return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
-            },
+                return Ok(Expr {
+                    kind: ExprKind::Ownership(action, mutable, Box::new(inner)),
+                    pos,
+                });
+            }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
-                return Ok(Expr { kind: ExprKind::Trap(Box::new(inner)), pos });
+                return Ok(Expr {
+                    kind: ExprKind::Trap(Box::new(inner)),
+                    pos,
+                });
             }
             _ => return self.parse_postfix(),
         };
@@ -2942,35 +3206,41 @@ impl Parser {
         Ok(args)
     }
 
-
     /// Canonical Record.of fields are static labels, not dynamic arguments.
     /// Checked Record allocation and shape validation remain in later passes.
     fn parse_record_of_args(&mut self) -> R<Vec<(String, Expr)>> {
         self.expect(Tok::LParen, "'(' after Record.of")?;
         let mut fields = Vec::new();
-        if self.eat(&Tok::RParen) { return Ok(fields); }
+        if self.eat(&Tok::RParen) {
+            return Ok(fields);
+        }
         loop {
             if fields.len() >= MAX_PARAMS {
-                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                    "too many Record.of fields"));
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many Record.of fields"));
             }
             let at = self.pos();
             let name = match (self.peek().clone(), self.peek_at(1)) {
                 (Tok::Ident(s), Tok::Colon | Tok::Assign) => s,
                 (Tok::Str(s), Tok::Colon) => s,
-                _ => return Err(Diagnostic::new(at, "E_UNSUPPORTED",
-                    "Record.of requires static field=value or quoted field: value; dynamic keys/spreads forbidden")),
+                _ => {
+                    return Err(Diagnostic::new(
+                        at,
+                        "E_UNSUPPORTED",
+                        "Record.of requires static field=value or quoted field: value; dynamic keys/spreads forbidden",
+                    ))
+                }
             };
             self.advance(); // name
             self.advance(); // ':' or '='
             if fields.iter().any(|(prior, _): &(String, Expr)| *prior == name) {
-                return Err(Diagnostic::new(at, "E_DUPLICATE",
-                    format!("duplicate Record.of field '{name}'")));
+                return Err(Diagnostic::new(at, "E_DUPLICATE", format!("duplicate Record.of field '{name}'")));
             }
             let value = self.parse_expr()?;
             fields.push((name, value));
             if self.eat(&Tok::Comma) {
-                if self.eat(&Tok::RParen) { break; }
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
             } else {
                 self.expect(Tok::RParen, "')' after Record.of fields")?;
                 break;
@@ -2980,45 +3250,122 @@ impl Parser {
     }
 
     /// Map.of supports either Entry-arrow or alternating key/value arguments.
-    /// Guest Map allocation remains explicitly unsupported until implemented.
+    /// General-purpose runtime Map allocation and hashing are still restricted.
     fn parse_map_of_args(&mut self) -> R<Vec<(Expr, Expr)>> {
         self.expect(Tok::LParen, "'(' after Map.of")?;
         let mut entries: Vec<(Expr, Expr)> = Vec::new();
-        if self.eat(&Tok::RParen) { return Ok(entries); }
+        if self.eat(&Tok::RParen) {
+            return Ok(entries);
+        }
         let mut arrow_form: Option<bool> = None;
         loop {
             if entries.len() >= MAX_PARAMS / 2 {
-                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                    "too many Map.of pairs"));
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many Map.of pairs"));
             }
             let key = self.parse_expr()?;
             let arrow = self.eat(&Tok::FatArrow);
             if arrow_form.is_some_and(|prior| prior != arrow) {
-                return Err(Diagnostic::new(key.pos, "E_FACTORY_ARITY",
-                    "Map.of cannot mix Entry-arrow and alternating key/value pairs"));
+                return Err(Diagnostic::new(
+                    key.pos,
+                    "E_FACTORY_ARITY",
+                    "Map.of cannot mix Entry-arrow and alternating key/value pairs",
+                ));
             }
             arrow_form = Some(arrow);
             if !arrow && !self.eat(&Tok::Comma) {
-                return Err(Diagnostic::new(self.pos(), "E_FACTORY_ARITY",
-                    "Map.of positional arguments require alternating key/value pairs"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_FACTORY_ARITY",
+                    "Map.of positional arguments require alternating key/value pairs",
+                ));
             }
             let value = self.parse_expr()?;
             if let Some(key_id) = constant_map_key(&key) {
-                if entries.iter().any(|(prev, _)| constant_map_key(prev).as_deref()
-                    == Some(key_id.as_str())) {
-                    return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
-                        "duplicate constant Map.of key"));
+                if entries
+                    .iter()
+                    .any(|(prev, _)| constant_map_key(prev).as_deref() == Some(key_id.as_str()))
+                {
+                    return Err(Diagnostic::new(key.pos, "E_DUPLICATE", "duplicate constant Map.of key"));
                 }
             }
             entries.push((key, value));
             if self.eat(&Tok::Comma) {
-                if self.eat(&Tok::RParen) { break; }
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
             } else {
                 self.expect(Tok::RParen, "')' after Map.of pairs")?;
                 break;
             }
         }
         Ok(entries)
+    }
+
+    /// Map.of_entries<K,V>(k => v, ...) only accepts Entry syntax, never
+    /// alternating flat Map.of(k,v,...) or an implicit Pair. The explicit
+    /// scalar K/V witness is retained in the compiler-owned call identity.
+    /// No runtime Entry object is fabricated merely for this constructor.
+    fn parse_map_of_entries_args(&mut self) -> R<Vec<(Expr, Expr)>> {
+        self.expect(Tok::LParen, "'(' after Map.of_entries<K,V>")?;
+        let mut pairs = Vec::new();
+        if self.eat(&Tok::RParen) {
+            return Ok(pairs);
+        }
+        loop {
+            if pairs.len() >= MAX_PARAMS / 2 {
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SOURCE_LIMIT",
+                    "Map.of_entries entry count exceeds source budget",
+                ));
+            }
+            let left = self.parse_expr()?;
+            let (key, value) = if self.eat(&Tok::FatArrow) {
+                let value = self.parse_expr()?;
+                (left, value)
+            } else {
+                match left {
+                    Expr {
+                        kind: ExprKind::Call(factory, args),
+                        pos: _,
+                    } if factory == "@builtin/Entry.of" && args.len() == 2 => {
+                        let mut args = args.into_iter();
+                        (args.next().expect("checked Entry arity"), args.next().expect("checked Entry arity"))
+                    }
+                    Expr {
+                        kind: ExprKind::Call(factory, _),
+                        pos,
+                    } if factory == "@builtin/Pair.of" => {
+                        return Err(Diagnostic::new(pos, "E_TYPE", "Map.of_entries accepts Entry<K,V>, not Pair<K,V>"));
+                    }
+                    other => {
+                        return Err(Diagnostic::new(
+                            other.pos,
+                            "E_FACTORY_ARITY",
+                            "Map.of_entries expects key => value or Entry.of(key,value)",
+                        ))
+                    }
+                }
+            };
+            if let Some(key_id) = constant_map_key(&key) {
+                if pairs
+                    .iter()
+                    .any(|(earlier, _)| constant_map_key(earlier).as_deref() == Some(key_id.as_str()))
+                {
+                    return Err(Diagnostic::new(key.pos, "E_DUPLICATE", "duplicate Map.of_entries constant key"));
+                }
+            }
+            pairs.push((key, value));
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+            } else {
+                self.expect(Tok::RParen, "')' after Map.of_entries elements")?;
+                break;
+            }
+        }
+        Ok(pairs)
     }
 
     fn parse_postfix(&mut self) -> R<Expr> {
@@ -3041,9 +3388,7 @@ impl Parser {
                 Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
                 Tok::Colon if depth == 0 => return true,
                 Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
-                Tok::Ident(w) if depth == 0 && matches!(
-                    w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
-                ) => return false,
+                Tok::Ident(w) if depth == 0 && matches!(w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else") => return false,
                 _ => {}
             }
         }
@@ -3093,20 +3438,76 @@ impl Parser {
                     }
                     self.advance();
                     let member = match self.peek().clone() {
-                        Tok::Ident(m) if !is_reserved(&m) ||
-                            (m == "of" && *self.peek_at(1) == Tok::LParen &&
-                                matches!(&e.kind, ExprKind::Var(base) if
-                                    matches!(base.as_str(), "Record" | "Map" | "Tuple" | "Array" | "List"))) => m,
+                        Tok::Ident(m)
+                            if !is_reserved(&m)
+                                || (m == "of"
+                                    && *self.peek_at(1) == Tok::LParen
+                                    && matches!(&e.kind, ExprKind::Var(base) if
+                                    matches!(base.as_str(), "Record" | "Map" | "Tuple" | "Array" | "List" | "Pair" | "Entry"))) =>
+                        {
+                            m
+                        }
                         _ => return Err(self.expected("a member name after '.'")),
                     };
                     self.advance();
                     self.grow(1)?;
                     *chain += 1;
-                    if *self.peek() == Tok::LParen {
+                    if member == "of_entries" && matches!(&e.kind, ExprKind::Var(base) if base == "Map") {
+                        // Unlike Map.of, this factory REQUIRES an explicit
+                        // typed Entry<K,V> witness at the call site.
+                        self.expect(Tok::Lt, "'<' after Map.of_entries")?;
+                        let key_pos = self.pos();
+                        let key_type = self.parse_type()?;
+                        self.expect(Tok::Comma, "',' between Map.of_entries key and value types")?;
+                        let value_pos = self.pos();
+                        let value_type = self.parse_type()?;
+                        self.expect(Tok::Gt, "'>' after Map.of_entries types")?;
+                        let key = match key_type {
+                            Type::Int => "int",
+                            Type::Bool => "bool",
+                            Type::Str => "string",
+                            _ => {
+                                return Err(Diagnostic::new(
+                                    key_pos,
+                                    "E_MAP_KEY",
+                                    "Map.of_entries keys require int, bool or string type",
+                                ))
+                            }
+                        };
+                        let value = match value_type {
+                            Type::Int => "int",
+                            Type::Bool => "bool",
+                            Type::Str => "string",
+                            Type::Float => "float",
+                            _ => {
+                                return Err(Diagnostic::new(
+                                    value_pos,
+                                    "E_UNSUPPORTED_TYPE",
+                                    "bounded Map.of_entries values require scalar int, bool, string or float type",
+                                ))
+                            }
+                        };
+                        let entries = self.parse_map_of_entries_args()?;
+                        let mut args = Vec::with_capacity(entries.len().saturating_mul(2));
+                        for (k, v) in entries {
+                            args.push(k);
+                            args.push(v);
+                        }
+                        if !self.factories_seen.contains(&"Map") {
+                            self.factories_seen.push("Map");
+                        }
+                        e = Expr {
+                            kind: ExprKind::Call(format!("@builtin/Map.of_entries<{key},{value}>"), args),
+                            pos: dot,
+                        };
+                    } else if *self.peek() == Tok::LParen {
                         let builtin = match &e.kind {
-                            ExprKind::Var(base) if member == "of"
-                                && matches!(base.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List") =>
-                                Some(base.clone()),
+                            ExprKind::Var(base)
+                                if member == "of"
+                                    && matches!(base.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List" | "Pair" | "Entry") =>
+                            {
+                                Some(base.clone())
+                            }
                             _ => None,
                         };
                         if let Some(name) = builtin {
@@ -3116,6 +3517,7 @@ impl Parser {
                                 "Tuple" => ExprKind::Tuple(self.parse_args()?),
                                 "Array" => ExprKind::Call("@builtin/Array.of".into(), self.parse_args()?),
                                 "List" => ExprKind::Call("@builtin/List.of".into(), self.parse_args()?),
+                                "Pair" | "Entry" => ExprKind::Call(format!("@builtin/{name}.of"), self.parse_args()?),
                                 _ => unreachable!(),
                             };
                             let symbol = match name.as_str() {
@@ -3124,12 +3526,14 @@ impl Parser {
                                 "Tuple" => "Tuple",
                                 "Array" => "Array",
                                 "List" => "List",
+                                "Pair" => "Pair",
+                                "Entry" => "Entry",
                                 _ => unreachable!(),
                             };
                             if !self.factories_seen.contains(&symbol) {
                                 self.factories_seen.push(symbol);
                             }
-                            e = Expr {kind, pos: dot};
+                            e = Expr { kind, pos: dot };
                         } else {
                             let args = self.parse_args()?;
                             e = Expr {
@@ -3158,13 +3562,16 @@ impl Parser {
                         kind: ExprKind::Index(Box::new(e), Box::new(key)),
                         pos: bracket,
                     };
-                },
+                }
                 Tok::Question if !self.question_opens_ternary() => {
                     let question = self.pos();
                     self.advance();
                     self.grow(1)?;
                     *chain += 1;
-                    e = Expr { kind: ExprKind::Propagate(Box::new(e)), pos: question };
+                    e = Expr {
+                        kind: ExprKind::Propagate(Box::new(e)),
+                        pos: question,
+                    };
                 }
                 Tok::Question => break, // true ternary: parsed by parse_ternary
 
@@ -3197,7 +3604,10 @@ impl Parser {
                 // (e.g. my.types.Response). After '.', the token is never
                 // parsed as a control-flow keyword.
                 let part = match self.peek().clone() {
-                    Tok::Ident(part) => { self.advance(); part }
+                    Tok::Ident(part) => {
+                        self.advance();
+                        part
+                    }
                     _ => return Err(self.expected("a qualified type name")),
                 };
                 name.push('.');
@@ -3207,7 +3617,9 @@ impl Parser {
                 name.push('<');
                 loop {
                     name.push_str(&self.parse_lambda_type()?);
-                    if !self.eat(&Tok::Comma) { break; }
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
                     name.push(',');
                 }
                 self.expect(Tok::Gt, "'>' after lambda type arguments")?;
@@ -3232,17 +3644,24 @@ impl Parser {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
                 }
                 params.push(name);
-                if self.eat(&Tok::Pipe) { break; }
+                if self.eat(&Tok::Pipe) {
+                    break;
+                }
                 self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
             }
         }
         let mut return_type = if self.eat(&Tok::Colon) {
             Some(self.parse_lambda_type()?)
-        } else { None };
+        } else {
+            None
+        };
         if self.eat(&Tok::FatArrow) {
             if return_type.is_some() {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "use ':' rather than combining a return annotation with '=>'"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "use ':' rather than combining a return annotation with '=>'",
+                ));
             }
             return_type = Some(self.parse_lambda_type()?);
             self.expect(Tok::Arrow, "'->' after legacy '=>' return type")?;
@@ -3288,8 +3707,11 @@ impl Parser {
                 Some(self.parse_expr()?)
             };
             if !self.eat(&Tok::Semi) {
-                return Err(Diagnostic::new(self.pos(), "E_SEMICOLON",
-                    "a braceless lambda return requires ';' before its closing delimiter"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SEMICOLON",
+                    "a braceless lambda return requires ';' before its closing delimiter",
+                ));
             }
             LambdaBody::Statement(Box::new(Stmt::Return(value, pos)))
         } else {
@@ -3307,8 +3729,12 @@ impl Parser {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "array literal exceeds 1024 elements"));
                 }
                 items.push(self.parse_expr()?);
-                if !self.eat(&Tok::Comma) { break; }
-                if *self.peek() == Tok::RBracket { break; }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                if *self.peek() == Tok::RBracket {
+                    break;
+                }
             }
             self.expect(Tok::RBracket, "']' after array items")?;
         }
@@ -3328,57 +3754,71 @@ impl Parser {
         let mut record_mode = None::<bool>;
         loop {
             if record.len() + map.len() >= 1024 {
-                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                    "brace literal exceeds 1024 entries"));
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "brace literal exceeds 1024 entries"));
             }
-            let named_field = matches!(self.peek(), Tok::Ident(_) | Tok::Str(_))
-                && *self.peek_at(1) == Tok::Colon;
+            let named_field = matches!(self.peek(), Tok::Ident(_) | Tok::Str(_)) && *self.peek_at(1) == Tok::Colon;
             if named_field {
                 if record_mode == Some(false) {
-                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix record ':' entries and map '=>' entries"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_LITERAL_KIND",
+                        "cannot mix record ':' entries and map '=>' entries",
+                    ));
                 }
                 record_mode = Some(true);
                 let (name, at) = match self.advance() {
-                    Token { tok: Tok::Ident(name), pos } |
-                    Token { tok: Tok::Str(name), pos } => (name, pos),
+                    Token {
+                        tok: Tok::Ident(name),
+                        pos,
+                    }
+                    | Token { tok: Tok::Str(name), pos } => (name, pos),
                     _ => unreachable!(),
                 };
                 self.expect(Tok::Colon, "':' after record field")?;
                 if record.iter().any(|(existing, _): &(String, Expr)| existing == &name) {
-                    return Err(Diagnostic::new(at, "E_DUPLICATE",
-                        format!("duplicate record field '{name}'")));
+                    return Err(Diagnostic::new(at, "E_DUPLICATE", format!("duplicate record field '{name}'")));
                 }
                 let value = self.parse_expr()?;
                 record.push((name, value));
             } else {
                 if record_mode == Some(true) {
-                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix record ':' entries and map '=>' entries"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_LITERAL_KIND",
+                        "cannot mix record ':' entries and map '=>' entries",
+                    ));
                 }
                 record_mode = Some(false);
                 let key = self.parse_expr()?;
                 if !self.eat(&Tok::FatArrow) {
-                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "expected ':' for a record field or '=>' for a map entry"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_LITERAL_KIND",
+                        "expected ':' for a record field or '=>' for a map entry",
+                    ));
                 }
                 let value = self.parse_expr()?;
                 // Constant duplicate keys are definite mistakes. Dynamically
                 // computed keys need checked equality/hash rules at runtime.
                 if let Some(fingerprint) = constant_map_key(&key) {
-                    if map.iter().any(|(prior, _)| constant_map_key(prior).as_deref() ==
-                        Some(fingerprint.as_str())) {
-                        return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
-                            "duplicate constant map key"));
+                    if map
+                        .iter()
+                        .any(|(prior, _)| constant_map_key(prior).as_deref() == Some(fingerprint.as_str()))
+                    {
+                        return Err(Diagnostic::new(key.pos, "E_DUPLICATE", "duplicate constant map key"));
                     }
                 }
                 map.push((key, value));
             }
             if self.eat(&Tok::Comma) {
-                if self.eat(&Tok::RBrace) { break; }
+                if self.eat(&Tok::RBrace) {
+                    break;
+                }
                 continue;
             }
-            if self.eat(&Tok::RBrace) { break; }
+            if self.eat(&Tok::RBrace) {
+                break;
+            }
             // The lexer tracks newlines via positions rather than tokens.
             // A subsequent entry can start on the following line; same-line
             // entries need commas. At most one entry is parsed per iteration.
@@ -3413,22 +3853,67 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
+                // Parenthesized named fields form a closed Record, distinct
+                // from positional tuples and grouping. '=' is field syntax
+                // here, never an assignment expression.
+                if matches!(self.peek(), Tok::Ident(_) | Tok::Str(_)) && *self.peek_at(1) == Tok::Assign {
+                    let mut fields: Vec<(String, Expr)> = Vec::new();
+                    loop {
+                        if fields.len() >= 1024 {
+                            return Err(Diagnostic::new(
+                                self.pos(),
+                                "E_SOURCE_LIMIT",
+                                "named Record tuple exceeds 1024 fields",
+                            ));
+                        }
+                        let at = self.pos();
+                        let label = match self.advance().tok {
+                            Tok::Ident(label) | Tok::Str(label) => label,
+                            _ => return Err(self.expected("a static Record field label")),
+                        };
+                        self.expect(Tok::Assign, "'=' after named Record tuple field")?;
+                        if fields.iter().any(|(known, _)| *known == label) {
+                            return Err(Diagnostic::new(at, "E_DUPLICATE", "duplicate named Record tuple field"));
+                        }
+                        let value = self.parse_expr()?;
+                        fields.push((label, value));
+                        if self.eat(&Tok::Comma) {
+                            if self.eat(&Tok::RParen) {
+                                break;
+                            }
+                        } else {
+                            self.expect(Tok::RParen, "')' after named Record tuple")?;
+                            break;
+                        }
+                    }
+                    return Ok(Expr {
+                        kind: ExprKind::Record(fields),
+                        pos,
+                    });
+                }
                 if self.eat(&Tok::RParen) {
-                    return Ok(Expr { kind: ExprKind::Tuple(Vec::new()), pos });
+                    return Ok(Expr {
+                        kind: ExprKind::Tuple(Vec::new()),
+                        pos,
+                    });
                 }
                 let first = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
                 if self.eat(&Tok::Comma) {
                     let mut items = vec![first];
                     while *self.peek() != Tok::RParen {
                         if items.len() >= 1024 {
-                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                                "tuple literal exceeds 1024 elements"));
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "tuple literal exceeds 1024 elements"));
                         }
                         items.push(self.parse_expr()?);
-                        if !self.eat(&Tok::Comma) { break; }
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
                     }
                     self.expect(Tok::RParen, "')' after tuple elements")?;
-                    return Ok(Expr { kind: ExprKind::Tuple(items), pos });
+                    return Ok(Expr {
+                        kind: ExprKind::Tuple(items),
+                        pos,
+                    });
                 }
                 self.expect(Tok::RParen, "')'")?;
                 return Ok(Expr { kind: first.kind, pos });
@@ -3448,8 +3933,11 @@ impl Parser {
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
                 "self" => {
                     if self.state_method {
-                        return Err(Diagnostic::new(pos, "E_STATE_ACCESS",
-                            "state fields are sealed; use a critical state lease"));
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_STATE_ACCESS",
+                            "state fields are sealed; use a critical state lease",
+                        ));
                     }
                     self.advance();
                     ExprKind::SelfRef
@@ -3495,8 +3983,7 @@ impl Parser {
                 }
                 _ if self.state_binder.as_deref() == Some(s.as_str()) => {
                     if *self.peek_at(1) != Tok::Dot {
-                        return Err(Diagnostic::new(pos, "E_ESCAPE",
-                            "state borrow cannot escape or be passed by value"));
+                        return Err(Diagnostic::new(pos, "E_ESCAPE", "state borrow cannot escape or be passed by value"));
                     }
                     self.advance();
                     ExprKind::SelfRef

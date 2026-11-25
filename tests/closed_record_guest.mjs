@@ -61,7 +61,27 @@ const positives=[
  ['pub fnc main(): int {val t=Tuple.of(40,true,"ok");return t[0];}',40n,''],
  ['pub fnc main(): int {val a=Array.of(20,22);return a[0]+a[1];}',42n,''],
  ['pub fnc main(): int {val l=List.of("Atto","Lima");stdio.println(l[0]);return 42;}',42n,'Atto\n'],
- ['pub fnc main(): int {val xs=List.of(20,22);return xs[0]+xs[1];}',42n,'']
+ ['pub fnc main(): int {val xs=List.of(20,22);return xs[0]+xs[1];}',42n,''],
+ ['pub fnc main(): int {val m=Map.of("a",40,"b",2);return m["a"]+m["b"];}',42n,''],
+ ['pub fnc main(): int {val m=Map.of("a"=>40,"b"=>2);return m["b"]+m["a"];}',42n,''],
+ ['pub fnc main(): int {val m=Map.of(true,40,false,2);return m[true]+m[false];}',42n,''],
+ ['pub fnc main(): int {let Map<string,int> m={"x"=>42};return m["x"];}',42n,''],
+ ['pub fnc main(): int {val pair=Tuple.of(10,20);val values=Array.of(1,2,3);val names=List.of("Atto","Lima");val scores=Map.of("a",10,"b",20);val item=Record.of(name="Atto",count=3);return values[0]+pair[1];}',21n,''],
+ ['pub fnc main(): int {val List<int> xs=[];val Map<int,string> m={};return 42;}',42n,''],
+ ['pub fnc main(): int {val Array<string> xs=[];return 42;}',42n,''],
+ ['pub fnc main(): int {val Record r=(abc="foo",xyz=true,foo=5);return r.foo;}',5n,''],
+ ['pub fnc main(): int {val Pair<int,bool> p=5=>true;val Entry<int,bool> e=40=>true;return p.first+e.key-3;}',42n,''],
+ ['pub fnc main(): int {val Pair<int,bool> p=Pair.of(40,true);val Entry<int,bool> e=Entry.of(2,false);return p.first+e.key;}',42n,''],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(5=>true,8=>false,9=>true);return m[5]?42:0;}',42n,''],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(Entry.of(5,true),Entry.of(8,false));return m[8]?0:42;}',42n,''],
+ ['pub fnc main(): int {const m=Map.of_entries<string,int>("a"=>40,"b"=>2);return m["a"]+m["b"];}',42n,''],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>();return 42;}',42n,''],
+ ['pub fnc main(): int {const m=Map.of_entries<int,int>(1=>40,Entry.of(2,2));return m[1]+m[2];}',42n,''],
+ ['pub fnc main(): int {const m=Map.of_entries<int,int>(1=>10,2=>20,3=>30,4=>40);return m[4]+m[1]-8;}',42n,''],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true);return m[5]?42:0;}',42n,''],
+
+ ['define struct Point as int x; int y; end define struct Offset as int x; int y; end pub fnc main(): int {val Point p=Point{y:2,x:40};val Offset o=Offset{x:2,y:0};return p.x+o.x;}',42n,'']
+
 ];
 const negatives=[
  ['pub fnc main(): int {val Record<{a:int,b:bool}> x=Record.of(a=42);return x.a;}','E_NO_FIELD'],
@@ -70,12 +90,10 @@ const negatives=[
  ['pub fnc main(): int {val Record<{items:Array<int>}> x=Record.of(items=Array.of());return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:42}; let string key="x"; return r[key];}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:42}; return r["missing"]; }','E_NO_FIELD'],
- ['pub fnc main(): int {let Map<string,int> m={"x"=>42}; return m["x"]; }','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:1,"x":2}; return 0; }','E_DUPLICATE'],
  ['pub fnc main(): int {const Record r={x:42}; return r.x;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val r=Record.of(name=1,"name":2);return 0;}','E_DUPLICATE'],
  ['pub fnc main(): int {val m=Map.of("a",1,"b");return 0;}','E_FACTORY_ARITY'],
- ['pub fnc main(): int {val m=Map.of("a",1);return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val a=Array.of();return 0;}','E_TYPE_INFERENCE'],
  ['pub fnc main(): int {val a=Array.of(1,2);return a[2];}','E_INDEX_BOUNDS'],
  ['pub fnc main(): int {val t=Tuple.of(10);return t[-1];}','E_INDEX_BOUNDS'],
@@ -83,7 +101,32 @@ const negatives=[
  ['pub fnc main(): int {val a=Array.of(1,2);val writer=borrow! mut a;return 0;}','E_BORROW'],
  ['pub fnc main(): int {val t=Tuple.of();return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val l=List.of(10,20);return l[2];}','E_INDEX_BOUNDS'],
- ['pub fnc main(): int {val l=List.of(10,20);val writer=borrow! mut l;return 0;}','E_BORROW']
+ ['pub fnc main(): int {val l=List.of(10,20);val writer=borrow! mut l;return 0;}','E_BORROW'],
+ ['pub fnc main(): int {val m=Map.of("a",1);return m["missing"];}', 'E_UNSUPPORTED'],
+ ['pub fnc main(): int {val m=Map.of("a",1);val writer=borrow! mut m;return 0;}', 'E_BORROW'],
+ ['pub fnc main(): int {val m=Map.of(0,1,-0,2);return 0;}', 'E_DUPLICATE'],
+ ['pub fnc main(): int {val Tuple[int?,string?,bool?] xs=(None,None,None);return 0;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {val Pair<int,bool> p=Entry.of(5,true);return 0;}','E_TYPE'],
+ ['pub fnc main(): int {val Entry<int,bool> e=Pair.of(5,true);return 0;}','E_TYPE'],
+ ['pub fnc main(): int {val Pair<int,bool> p=5=>42;return 0;}','E_TYPE'],
+ ['pub fnc main(): int {val List<int> xs=[1,"bad"];return 0;}','E_TYPE'],
+ ['pub fnc main(): int {val Map<int,string> xs={"a"=>"bad"};return 0;}','E_TYPE'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(5,true);return 0;}','E_FACTORY_ARITY'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(Pair.of(5,true));return 0;}','E_TYPE'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(5=>true,5=>false);return 0;}','E_DUPLICATE'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>("5"=>true);return 0;}','E_TYPE'],
+ ['pub fnc main(): int {const m=Map.of_entries<float,bool>(5.0=>true);return 0;}','E_MAP_KEY'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(5=>true,Entry.of(5,false));return 0;}','E_DUPLICATE'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(Entry.of(5));return 0;}','E_FACTORY_ARITY'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(1=>true,2=>false,3=>true,4=>false,5=>true);return 0;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(5=>true);return m[8]?1:0;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true);val int key=5;return m[key]?1:0;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(0=>true,-0=>false);return 0;}','E_DUPLICATE'],
+ ['pub fnc main(): int {val Map<int,string> m=Map.of_entries<int,bool>(5=>true);return 0;}','E_TYPE'],
+
+ ['define struct First as int x; end define struct Second as int x; end pub fnc main(): int {val x=infer struct{x:42};return 0;}','E_AMBIGUOUS_MEMBER'],
+ ['define struct Point as int x; int y; end pub fnc main(): int {val p=Point{x:42};return 0;}','E_SHAPE']
+
 ];
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{

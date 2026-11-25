@@ -81,11 +81,10 @@ fn array_and_list_of_keep_distinct_inferred_types() {
 }
 
 #[test]
-fn map_and_uninferred_factories_fail_closed_while_list_and_array_execute() {
-    rejected(
-        r#"pub fnc main(): int { val m = Map.of("a",1); return 0; }"#,
-        "E_UNSUPPORTED",
-    );
+fn all_nonempty_scalar_factories_execute_and_uninferred_empty_reject() {
+    let map = compile(r#"pub fnc main(): int { val m = Map.of("a",1); return m["a"]; }"#)
+        .expect("bounded, statically keyed scalar Map.of guest is now implemented");
+    assert!(map.starts_with(b"\0asm\x01\0\0\0"));
     let array = compile(r#"pub fnc main(): int { val a = Array.of(1,2,3); return a[0]; }"#)
         .expect("bounded scalar Array.of guest is now implemented");
     assert!(array.starts_with(b"\0asm\x01\0\0\0"));
