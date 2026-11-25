@@ -8,6 +8,7 @@
 // usage: node tests/fuzz-exec.mjs [mutants-per-fixture=300] [seed=99]
 import { readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { classifyTimeout } from './fuzz-timeout-classifier.mjs';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 
@@ -33,10 +34,10 @@ parentPort.on('message', wasm => {
   try { inst.exports.main(); parentPort.postMessage({ ok: true }); }
   catch (e) { parentPort.postMessage({ ok: false, pc: inst.exports.panic_code.value, range: e instanceof RangeError, msg: String(e) }); }
 });`;
-function run(wasm) {
+function run(wasm, budgetMs = 300) {
   return new Promise(res => {
     const w = new Worker(workerSrc, { eval: true });
-    const t = setTimeout(() => { w.terminate(); res({ timeout: true }); }, 300);
+    const t = setTimeout(() => { w.terminate(); res({ timeout: true }); }, budgetMs);
     w.on('message', m => { clearTimeout(t); w.terminate(); res(m); });
     w.on('error', e => { clearTimeout(t); w.terminate(); res({ ok: false, msg: 'worker ' + e }); });
     w.postMessage(wasm);
@@ -52,6 +53,8 @@ const bad = [];
 // Preserve exact accepted mutant sources and their RNG state when a worker
 // exceeds its deadline. A timeout is *not* a soundness or liveness pass.
 const timeoutRepros = [];
+let expectedNonterminating = 0;
+let unexpectedTimeouts = 0;
 const dir = join(here, 'fixtures/pass');
 for (const name of readdirSync(dir).filter(n => n.endsWith('.atto')).sort()) {
   const toks = tokenize(readFileSync(join(dir, name), 'utf8'));
@@ -78,13 +81,29 @@ for (const name of readdirSync(dir).filter(n => n.endsWith('.atto')).sort()) {
     const r = await run(w);
     if (r.timeout) {
       timeouts++;
-      timeoutRepros.push({
+      // An additional fixed-budget replay classifies the original 300ms
+      // timeout without mistaking timeout recovery for a liveness proof.
+      const replay = await run(w, 3000);
+      const replayResult = replay.timeout ? 'timeout_3000ms' :
+        replay.ok ? 'completed_3000ms' :
+        'trap_3000ms';
+      const repro = {
         fixture: name, case_index: k, initial_seed: initialSeed,
-        rng_before_mutation: mutantSeed,
+        per_fixture: perFixture, rng_before_mutation: mutantSeed,
         source_sha256: createHash('sha256').update(src).digest('hex'),
         wasm_sha256: createHash('sha256').update(w).digest('hex'),
+        replay_budget_ms: 3000, replay_result: replayResult,
+        replay_diagnostic: !replay.timeout && !replay.ok ? String(replay.msg) : null,
         source: src,
-      });
+      };
+      repro.classification = classifyTimeout(repro);
+      timeoutRepros.push(repro);
+      if (repro.classification.status === 'expected_nonterminating_mutant') {
+        expectedNonterminating++;
+      } else {
+        unexpectedTimeouts++;
+        bad.push(['UNCLASSIFIED_TIMEOUT', replayResult, src]);
+      }
     } else if (!r.ok) {
       if (r.pc === 1 || r.pc === 3 || r.range) panics++;
       else bad.push(['UNSOUND_TRAP', r.msg, src]);
@@ -99,9 +118,14 @@ if (timeouts) {
       timeout_ms: 300, cases: timeoutRepros }, null, 2) + '\n');
   console.log('TIMEOUT_REPROS dist/mutation-timeout-repros.json');
   for (const c of timeoutRepros.slice(0, 5)) {
-    console.log('TIMEOUT_CASE', c.fixture, c.case_index, c.source_sha256);
+    console.log('TIMEOUT_CASE', c.fixture, c.case_index, c.source_sha256,
+      'REPLAY', c.replay_result, 'CLASSIFIED', c.classification.status);
   }
 }
-console.log(JSON.stringify({ total, accepted, timeouts, panics, bad: bad.length }));
+console.log(JSON.stringify({
+  total, accepted, timeouts,
+  expected_nonterminating_mutants: expectedNonterminating,
+  unclassified_timeouts: unexpectedTimeouts, panics, bad: bad.length,
+}));
 for (const b of bad.slice(0, 5)) console.log(b[0], b[1], '\n' + b[2] + '\n-----');
 process.exit(bad.length ? 1 : 0);

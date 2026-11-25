@@ -209,11 +209,12 @@ fn typed_lowerer_revalidates_critical_lease_invariants_even_for_imported_headers
     assert!(!headers.state_uses[0].mutation);
     assert!(!headers.state_uses[0].exclusive);
     headers.state_uses[0].mutation = true;
-    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_READONLY");
+    // A forged source fact fails integrity revalidation before type checking.
+    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_SEALED");
     headers.state_uses[0].mutation = false;
     headers.state_uses[0].exclusive = true;
     headers.receivers[0].mutable = false;
-    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_MUTABILITY");
+    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_SEALED");
 }
 
 #[test]
@@ -872,4 +873,275 @@ fn unproved_return_expression_never_certifies_complete_ownership() {
     assert_eq!(m.receiver_borrows[0].exit_edges.len(),1);
     assert!(!m.receiver_borrows[0].exit_edges[0].runtime_cleanup_proven);
     assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn state_cleanup_records_read_lease_normal_edge_without_backend_proof() {
+    use atto_compiler::target_cleanup::{
+        LeaseCleanupExit,StateLeaseMode,require_backend_cleanup_proof
+    };
+    let src=r#"
+declare actor Counter;
+define actor Counter as val int count = 4; end
+mtd (Counter self) read_count(): int {
+    return self.handle_state(critical-read |s| -> s.count);
+}
+"#;
+    let typed_module=typed(src).unwrap();
+    let plan=&typed_module.receiver_cleanup[0];
+    assert_eq!(plan.leases.len(),1);
+    let region=&plan.leases[0];
+    assert_eq!(region.receiver,0);
+    assert_eq!(region.lease,0);
+    assert_eq!(region.mode,StateLeaseMode::SharedRead);
+    assert!(!region.checked_arithmetic);
+    assert_eq!(region.cleanup.len(),1);
+    assert_eq!(region.cleanup[0].exit,LeaseCleanupExit::Normal);
+    assert!(!region.cleanup[0].backend_release_proven);
+    assert!(!plan.backend_cleanup_proven);
+    assert_eq!(require_backend_cleanup_proof(plan).unwrap_err().code,"E_UNSUPPORTED");
+    assert!(!typed_module.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn state_cleanup_write_lease_requires_distinct_panic_release_obligation() {
+    use atto_compiler::target_cleanup::{
+        LeaseCleanupExit,StateLeaseMode,require_backend_cleanup_proof
+    };
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) increment(int delta): void {
+    self.handle_state(critical-write |s| -> {
+        s.count = s.count + delta;
+    });
+}
+"#;
+    let typed_module=typed(src).unwrap();
+    let region=&typed_module.receiver_cleanup[0].leases[0];
+    assert_eq!(region.mode,StateLeaseMode::ExclusiveWrite);
+    assert!(region.checked_arithmetic);
+    assert_eq!(region.cleanup.len(),2);
+    assert_eq!(region.cleanup[0].exit,LeaseCleanupExit::Normal);
+    assert_eq!(region.cleanup[1].exit,LeaseCleanupExit::CheckedPanic);
+    assert!(region.cleanup.iter().all(|edge|!edge.backend_release_proven));
+    assert_ne!(region.cleanup[0].pos,region.cleanup[1].pos);
+    assert_eq!(require_backend_cleanup_proof(&typed_module.receiver_cleanup[0])
+        .unwrap_err().code,"E_UNSUPPORTED");
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn multiple_state_lease_callbacks_are_separate_cleanup_regions() {
+    use atto_compiler::target_cleanup::StateLeaseMode;
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) twice(): void {
+    self.handle_state(critical-read |s| -> s.count);
+    self.handle_state(critical-write |t| -> { t.count = 1; });
+}
+"#;
+    let m=typed(src).unwrap();
+    let p=&m.receiver_cleanup[0];
+    assert_eq!(p.leases.len(),2);
+    assert_eq!(p.leases[0].lease,0);
+    assert_eq!(p.leases[1].lease,1);
+    assert_eq!(p.leases[0].mode,StateLeaseMode::SharedRead);
+    assert_eq!(p.leases[1].mode,StateLeaseMode::ExclusiveWrite);
+    assert_eq!(p.leases[0].cleanup.len(),1);
+    assert_eq!(p.leases[1].cleanup.len(),1);
+    assert!(p.leases[0].normal_end_pos != p.leases[1].normal_end_pos);
+    assert!(!m.receivers[0].body_lowered);
+}
+
+#[test]
+fn branch_and_loop_inside_critical_callback_require_executable_cleanup_proof() {
+    let prefix=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> {
+"#;
+    for callback in [
+        "if true { s.count = 1; } else { s.count = 2; }",
+        "while true { s.count = s.count + 1; }",
+        "for i in values { s.count = 1; }",
+        "loop { s.count = s.count + 1; }",
+        "match 1 over 1 -> { s.count = 1; } end",
+    ] {
+        let source=format!("{prefix} {callback} }}); }}");
+        rejects(&source,"E_BORROW");
+    }
+}
+
+#[test]
+fn actor_state_cleanup_contract_is_distinct_from_lexical_local_borrow() {
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(ActorRef<Counter> peer): void {
+    { val alias = rt borrow peer; }
+    self.handle_state(critical-write |s| -> { s.count = 1; });
+}
+"#;
+    let m=typed(src).unwrap();
+    assert_eq!(m.receiver_borrows[0].loans,1);
+    assert_eq!(m.receiver_borrows[0].closed_regions.len(),1);
+    assert_eq!(m.receiver_cleanup[0].leases.len(),1);
+    assert!(m.receiver_cleanup[0].leases[0].cleanup
+        .iter().all(|edge|!edge.backend_release_proven));
+    assert!(!m.receivers[0].body_lowered);
+}
+
+#[test]
+fn lease_free_receiver_has_no_state_unlock_obligation_but_cannot_emit() {
+    use atto_compiler::target_cleanup::require_backend_cleanup_proof;
+    let src="declare actor Foo;
+        mtd (Foo self) identity(int n): int { return n; }";
+    let m=typed(src).unwrap();
+    assert_eq!(m.receiver_cleanup[0].leases.len(),0);
+    assert!(require_backend_cleanup_proof(&m.receiver_cleanup[0]).is_ok());
+    assert!(!m.receivers[0].body_lowered,
+        "vacuous lock-cleanup proof cannot authorize receiver codegen");
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn forged_frontend_flags_can_never_authorize_actor_lease_cleanup() {
+    use atto_compiler::target_cleanup::require_backend_cleanup_proof;
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> { s.count = s.count + 1; });
+}
+"#;
+    let mut plan=typed(src).unwrap().receiver_cleanup.remove(0);
+    assert_eq!(plan.leases.len(),1);
+    assert_eq!(plan.leases[0].cleanup.len(),2);
+    // These are externally mutable facts, NOT actual generated release code.
+    plan.backend_cleanup_proven=true;
+    for edge in &mut plan.leases[0].cleanup {
+        edge.backend_release_proven=true;
+    }
+    assert_eq!(require_backend_cleanup_proof(&plan).unwrap_err().code,"E_UNSUPPORTED");
+    plan.leases[0].cleanup.clear();
+    assert_eq!(require_backend_cleanup_proof(&plan).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn imported_receiver_bodies_cannot_omit_or_duplicate_cleanup_requirements() {
+    let source="declare actor Counter;
+        mtd (Counter self) first(): void { }
+        mtd (Counter self) second(): void { }";
+    let original=parse_target_declarations(&lex(source).unwrap()).unwrap();
+    assert_eq!(original.receiver_bodies.len(),2);
+    let mut missing=original.clone();
+    missing.receiver_bodies.pop();
+    assert_eq!(lower_target_signatures(&missing).unwrap_err().code,"E_SEALED");
+    let mut swapped=original.clone();
+    swapped.receiver_bodies.swap(0,1);
+    assert_eq!(lower_target_signatures(&swapped).unwrap_err().code,"E_SEALED");
+    let mut duplicated=original;
+    duplicated.receiver_bodies[1].receiver=0;
+    assert_eq!(lower_target_signatures(&duplicated).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_state_effects_must_match_actual_lease_regions() {
+    let source=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) write_now(): void {
+    self.handle_state(critical-write |s| -> { s.count = 1; });
+}
+"#;
+    let original=parse_target_declarations(&lex(source).unwrap()).unwrap();
+    assert!(original.receiver_effects[0].reads_state);
+    assert!(original.receiver_effects[0].writes_state);
+    let mut forged=original.clone();
+    forged.receiver_effects[0].reads_state=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.receiver_effects[0].writes_state=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn raw_cleanup_planning_must_deny_nested_actor_acquisitions() {
+    use atto_compiler::target_cleanup::plan_receiver_cleanup;
+    use atto_compiler::target_syntax::ReceiverBodyTokens;
+    let fake=ReceiverBodyTokens{
+        receiver:0,
+        tokens:lex("{ self.handle_state(critical-write |s| -> { self.handle_state(critical-read |t| -> t.count); }); }").unwrap(),
+    };
+    assert_eq!(plan_receiver_cleanup(&fake).unwrap_err().code,"E_BORROW");
+}
+
+
+#[test]
+fn imported_source_facts_cannot_hide_invalid_state_rhs_or_reads() {
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> { s.count = true; });
+}
+"#;
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert!(!original.state_uses.is_empty());
+    assert_eq!(original.state_assignments.len(),1);
+    // The complete source has an actual bool-to-int error.
+    assert_eq!(lower_target_signatures(&original).unwrap_err().code,"E_TYPE");
+    let mut dropped=original.clone();
+    dropped.state_assignments.clear();
+    assert_eq!(lower_target_signatures(&dropped).unwrap_err().code,"E_SEALED");
+    let mut dropped=original.clone();
+    dropped.state_uses.clear();
+    assert_eq!(lower_target_signatures(&dropped).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.state_assignments[0].rhs=lex("1").unwrap().into_iter()
+        .filter(|tok| tok.tok != atto_compiler::lexer::Tok::Eof).collect();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_source_facts_cannot_hide_invalid_returns_or_nominal_calls() {
+    let src="declare actor Worker; mtd (Worker self) result(): int { return true; }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert_eq!(original.receiver_returns.len(),1);
+    assert_eq!(lower_target_signatures(&original).unwrap_err().code,"E_TYPE");
+    let mut forged=original;
+    forged.receiver_returns.clear();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+
+    let src="declare actor Worker;
+        mtd (Worker self) helper(): void {}
+        mtd (Worker self) caller(): void { self.helper(); }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert_eq!(original.receiver_calls.len(),1);
+    assert!(lower_target_signatures(&original).is_ok());
+    let mut forged=original.clone();
+    forged.receiver_calls.clear();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.receiver_calls[0].arguments.push(vec![]);
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_source_facts_cannot_clear_panic_effects_or_splice_receiver_bodies() {
+    let src="declare actor Worker; mtd (Worker self) arithmetic(): void { 1 + 2; }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert!(original.receiver_effects[0].may_panic);
+    let mut forged=original.clone();
+    forged.receiver_effects[0].may_panic=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    let extra=lex("{ }").unwrap();
+    forged.receiver_bodies[0].tokens.extend(extra.into_iter()
+        .filter(|tok| tok.tok != atto_compiler::lexer::Tok::Eof));
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
 }
