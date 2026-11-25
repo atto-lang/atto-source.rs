@@ -421,3 +421,54 @@ fn physical_declaration_provenance_never_grants_private_authority() {
     let q=verify(MANIFEST,&changed).unwrap();
     assert_eq!(q.declaration_source(&get).unwrap_err().code,"E_IMPORT_PATH");
 }
+
+#[test]
+fn authenticated_class_metadata_uses_source_visibility_and_nominal_identity() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as pub int value: 42; end define class Hidden as int value: 0; end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let mut scope=Scope::new();
+    p.bind_package(&mut scope,Some("p")).unwrap();
+    let target=scope.resolve_export("p.model.Item",p.view()).unwrap();
+    assert_eq!(target.kind,Kind::Class);
+    assert_eq!(p.declaration_source(&target).unwrap(),"src/model/types.atto");
+    let leaves=atto_compiler::import_tree::parse(&atto_compiler::lexer::lex("import class p.model.Item as Data;").unwrap(),1).unwrap().0;
+    atto_compiler::import_tree::bind(&mut scope,&leaves,&[p.view()]).unwrap();
+    let identity=scope.resolve_nominal("Data",p.view()).unwrap();
+    assert_eq!(identity,scope.resolve_nominal("p.model.Item",p.view()).unwrap());
+    assert_eq!(scope.resolve_export("p.model.Hidden",p.view()).unwrap_err().code,"E_PRIVATE");
+    let bad=atto_compiler::import_tree::parse(&atto_compiler::lexer::lex("import p.model.{class Item as Good, class Hidden};").unwrap(),1).unwrap().0;
+    assert_eq!(atto_compiler::import_tree::bind(&mut scope,&bad,&[p.view()]).unwrap_err().code,"E_PRIVATE");
+    assert_eq!(scope.resolve("Good").unwrap_err().code,"E_UNBOUND");
+    let source="import pkg '@org/project/package' as p; pub fnc main(): int { return 42; }";
+    assert_eq!(compile_registry_guest(source,&[&p]).unwrap_err().code,"E_UNSUPPORTED");
+    let l=lock(&manifest,&inputs);
+    let digest=hex_digest(l.as_bytes());
+    inputs.last_mut().unwrap().source="use namespace model; pub define class Item as pub int value: 41; end";
+    assert_eq!(error(FrozenRegistry::verify("@org/project/package",&manifest,&l,&digest,&inputs)),"E_LOCK_HASH");
+    let q=verify(&manifest,&inputs).unwrap();
+    let mut other=Scope::new();
+    q.bind_package(&mut other,Some("q")).unwrap();
+    assert_ne!(identity,other.resolve_nominal("q.model.Item",q.view()).unwrap());
+}
+
+#[test]
+fn authenticated_class_metadata_rejects_invalid_and_mixed_units() {
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:""});
+    for source in [
+        "use namespace model; pub define class Item as pub int value: 42;",
+        "use namespace model; pub define class Item as pub int value: true; end",
+        "use namespace model; pub define class Item as pub int value: 42; end define class Item as int value: 0; end",
+        "use namespace model; pub define class Item as pub int value: 42; end pub fnc f(): int { return 42; }",
+        "use namespace model; pub define class Item as pub int value: 42; end define enum State as Ready end",
+        "use namespace model; pub define class __atto_fake as int value: 0; end",
+    ] {
+        inputs.last_mut().unwrap().source=source;
+        assert!(verify(&manifest,&inputs).is_err(),"{source}");
+    }
+}

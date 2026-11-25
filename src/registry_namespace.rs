@@ -97,7 +97,9 @@ pub struct FrozenRegistry {
     view: ExportView,
     // Owned, verified source bytes; cannot be replaced after verification.
     sources: BTreeMap<String,(String,String)>,
-    // Physical owner of every admitted function or literal, from pinned bytes.
+    // Class-only namespaces admitted for static identity, not executable ABI.
+    class_metadata: BTreeMap<String,String>,
+    // Physical owner of each admitted declaration, from pinned bytes.
     declaration_sources: BTreeMap<String,String>,
     literals: BTreeMap<String,Vec<crate::lexer::Tok>>,
     mixed_functions: BTreeMap<String,Vec<crate::lexer::Token>>,
@@ -116,6 +118,7 @@ impl FrozenRegistry {
         let mut namespaces = BTreeSet::new();
         let mut verified_sources = BTreeMap::new();
         let mut declaration_sources = BTreeMap::new();
+        let mut class_metadata = BTreeMap::new();
         let mut literals = BTreeMap::new();
         let mut mixed_functions = BTreeMap::new();
         // Nested namespace parents must be declared independently. For now
@@ -185,6 +188,38 @@ impl FrozenRegistry {
                 combined
             };
             view.add(ns, ns, Kind::Namespace, true)?;
+            // The first source-backed nominal lane is deliberately isolated:
+            // one class-only file, ordinary class AST visibility, no imports,
+            // no state containers, and no external ABI or executable claim.
+            let is_word = |i:usize,w:&str| matches!(normalized.get(i).map(|t|&t.tok),Some(Tok::Ident(s)) if s==w);
+            let at = end + usize::from(is_word(end,"pub"));
+            if matching.len()==1 && is_word(at,"define") && is_word(at+1,"class") {
+                let mut body=normalized[end..].to_vec();
+                let ast=crate::parser::Parser::new(body.clone()).parse_program()?;
+                if ast.classes.is_empty() || !ast.funcs.is_empty() || !ast.enums.is_empty()
+                    || !ast.actors.is_empty() || ast.actor_interface.is_some()
+                    || ast.classes.iter().any(|c|c.state_container) {
+                    return Err(err("E_UNSUPPORTED","registry nominal metadata requires a class-only source unit"));
+                }
+                // Check the real source with a synthetic entry, but do not
+                // generate or expose an executable from this metadata lane.
+                body.pop();
+                body.extend(lexer::lex("pub fnc main(): int { return 0; }")?);
+                let checked_ast=crate::parser::Parser::new(body).parse_program()?;
+                let checked=crate::check::check(&checked_ast)?;
+                if !checked.imports.is_empty(){
+                    return Err(err("E_UNSUPPORTED","nominal metadata cannot request host imports"));
+                }
+                for class in ast.classes {
+                    let path=format!("{ns}.{}",class.name);
+                    view.add(&path,&path,Kind::Class,class.public)?;
+                    declaration_sources.insert(path,file.to_string());
+                }
+                class_metadata.insert(ns.clone(),source.to_string());
+                namespaces.insert(ns.clone());
+                directories.insert(dir.clone(),ns.clone());
+                continue;
+            }
             if let Some(provider)=crate::const_import_link::registry_provider(&normalized,end)?{
                 for (name,(public,value)) in provider.literals {
                     let path=format!("{ns}.{name}");
@@ -228,7 +263,7 @@ impl FrozenRegistry {
                 .ok_or_else(|| err("E_MANIFEST", "subpath targets undeclared namespace directory"))?;
             subpaths.insert(sub,target.clone());
         }
-        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, declaration_sources, literals, mixed_functions })
+        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, class_metadata, declaration_sources, literals, mixed_functions })
     }
 
     pub fn view(&self) -> &ExportView { &self.view }
@@ -484,6 +519,9 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
     let mut modules=BTreeMap::new();
     let mut linked=Vec::new();
     for p in admitted.values() {
+        if !p.class_metadata.is_empty() {
+            return Err(err("E_UNSUPPORTED","external class metadata has no checked executable ABI yet"));
+        }
         for (ns,(file,body)) in &p.sources {
             if modules.len()>=64 { return Err(err("E_SOURCE_LIMIT","too many linked registry namespaces")); }
             let owner=format!("__atto_registry_{}",modules.len());
