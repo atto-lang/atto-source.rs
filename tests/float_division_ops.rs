@@ -27,3 +27,24 @@ fn explicit_float_division_cannot_implicitly_narrow() {
         assert_eq!(error.code, "E_TYPE", "{source}: {error}");
     }
 }
+
+#[test]
+fn named_integer_operations_emit_wasm_and_reject_invalid_arguments() {
+    for source in [
+        "pub fnc main(): int { return Integer.rem(-7, 3); }",
+        "pub fnc main(): int { return Integer.mod(-7, -3); }",
+        "pub fnc main(): int { return Integer.rem(-9223372036854775808, -1); }",
+        "pub fnc main(): int { return Integer.mod(-1, -9223372036854775808); }",
+    ] {
+        let guest = compile(source).unwrap_or_else(|e| panic!("named integer operation: {e}"));
+        assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
+    }
+    for source in [
+        "pub fnc main(): int { return Integer.rem(true, 3); }",
+        "pub fnc main(): int { return Integer.mod(7); }",
+        "pub fnc main(): int { return Integer.rem(7, 3, 1); }",
+        "pub fnc main(): int { return Integer.unknown(7, 3); }",
+    ] {
+        assert!(compile(source).is_err(), "{source}");
+    }
+}
