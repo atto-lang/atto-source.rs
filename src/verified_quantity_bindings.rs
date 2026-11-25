@@ -1,7 +1,7 @@
 //! Typed source slice for immutable i64 quantity bindings and earlier private helpers.
 //! Units are checked structurally before erasure into the scalar Wasm IR.
 //! No refinement predicates, dynamic conversion, FFI, imports or exported quantity ABI.
-use super::{Parser, Unit, Value, error, convert, R};
+use super::{Parser, Unit, Value, error, convert, attach, R};
 use crate::ast::{BinOp, Type};
 use crate::check::{TE, TExpr, TFunc, TProgram, TStmt};
 use crate::diag::Pos;
@@ -147,6 +147,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
 fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
     let pos = p.token().pos;
     let mut value: Value = p.literal(min)?;
+    value = p.attach_postfix(value, pos)?;
     if p.take(Tok::Dot) {
         if min || value.unit == Unit::scalar() {
             return Err(p.err("E_UNSUPPORTED", "conversion requires ordinary quantity literal"));
@@ -163,6 +164,14 @@ fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
     Ok(Checked { unit: value.unit, ir: int(TExpr::I64(number)) })
 }
 fn atom(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
+    let pos = p.token().pos;
+    let mut value = atom_base(p, locals, funcs, depth)?;
+    while let Some(unit) = p.explicit_unit()? {
+        value.unit = attach(&value.unit, unit, pos)?;
+    }
+    Ok(value)
+}
+fn atom_base(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
     if depth > 48 || p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "typed quantity expression budget")); }
     p.budget -= 1;
     if p.take(Tok::Minus) {
@@ -216,6 +225,11 @@ fn expr(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, precedence: u8, 
             _ => unreachable!(),
         };
         left = Checked { unit, ir: int(TExpr::Bin(op,Box::new(left.ir),Box::new(right.ir))) };
+    }
+    if precedence == 0 && p.word("as") {
+        let pos = p.token().pos;
+        let name = p.name()?;
+        left.unit = attach(&left.unit, p.lookup(&name)?, pos)?;
     }
     Ok(left)
 }
