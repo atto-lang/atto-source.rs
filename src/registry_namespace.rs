@@ -97,6 +97,7 @@ pub struct FrozenRegistry {
     view: ExportView,
     // Owned, verified source bytes; cannot be replaced after verification.
     sources: BTreeMap<String,(String,String)>,
+    literals: BTreeMap<String,Vec<crate::lexer::Tok>>,
 }
 impl FrozenRegistry {
     pub fn verify(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
@@ -111,6 +112,7 @@ impl FrozenRegistry {
         let mut directories = BTreeMap::new();
         let mut namespaces = BTreeSet::new();
         let mut verified_sources = BTreeMap::new();
+        let mut literals = BTreeMap::new();
         // Nested namespace parents must be declared independently. For now
         // overlapping source directories are forbidden, even if pinned.
         for (ns, dir) in &parsed.namespaces {
@@ -127,14 +129,32 @@ impl FrozenRegistry {
             if matching.next().is_some() || file[dir.len()..].contains('/') {
                 return Err(err("E_UNSUPPORTED", "namespace profile requires exactly one direct pinned file per directory"));
             }
-            let (declared, functions) = crate::import_link::registry_function_exports(source, Path::new(file))?;
-            if declared != *ns { return Err(err("E_MANIFEST", "source namespace differs from manifest key")); }
-            view.add(ns, ns, Kind::Namespace, true)?;
-            for (function, public) in functions {
-                let path = format!("{ns}.{function}");
-                view.add(&path, &path, Kind::Fnc, public)?;
+            use crate::lexer::{self,Tok};
+            let normalized=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(file)))?;
+            if normalized.iter().any(|t|matches!(&t.tok,Tok::Ident(s) if s.starts_with("__atto_"))){
+                return Err(err("E_RESERVED","compiler-generated identifier in registry source"));
             }
-            verified_sources.insert(ns.clone(), (file.to_string(), source.to_string()));
+            let header=lexer::lex(&format!("use namespace {ns};"))?;
+            let end=header.len()-1;
+            if normalized.len()<=end || normalized[..end].iter().map(|t|&t.tok).ne(header[..end].iter().map(|t|&t.tok)){
+                return Err(err("E_MANIFEST","source namespace differs from manifest key"));
+            }
+            view.add(ns, ns, Kind::Namespace, true)?;
+            if let Some(values)=crate::const_import_link::registry_literal_exports(&normalized,end)?{
+                for (name,(public,value)) in values {
+                    let path=format!("{ns}.{name}");
+                    view.add(&path,&path,Kind::Const,public)?;
+                    literals.insert(path,value);
+                }
+            }else{
+                let (declared,functions)=crate::import_link::registry_function_exports(source,Path::new(file))?;
+                if declared!=*ns {return Err(err("E_MANIFEST","source namespace differs from manifest key"));}
+                for (function,public) in functions {
+                    let path=format!("{ns}.{function}");
+                    view.add(&path,&path,Kind::Fnc,public)?;
+                }
+                verified_sources.insert(ns.clone(),(file.to_string(),source.to_string()));
+            }
             namespaces.insert(ns.clone());
             directories.insert(dir.clone(),ns.clone());
         }
@@ -144,7 +164,7 @@ impl FrozenRegistry {
                 .ok_or_else(|| err("E_MANIFEST", "subpath targets undeclared namespace directory"))?;
             subpaths.insert(sub,target.clone());
         }
-        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources })
+        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, literals })
     }
 
     pub fn view(&self) -> &ExportView { &self.view }
@@ -319,15 +339,17 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             };
             p.bind_package(&mut scope,alias.as_deref()).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
-        } else if import_v2::is_mixed(&tokens,start) {
+        } else if import_v2::is_mixed(&tokens,start)
+            || ((word(tokens.get(start),"const") || word(tokens.get(start),"fnc"))
+                && (start+1..end).any(|j|word(tokens.get(j),"from"))) {
             let (parsed,next)=import_v2::parse_mixed(&tokens,start)?;
             if next!=end+1 { return Err(Diagnostic::new(pos,"E_SYNTAX","invalid import extent")); }
             let Source::Package(name)=&parsed.source else {
                 return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest requires explicit pkg domain"));
             };
             let p=*available.get(name.as_str()).ok_or_else(||Diagnostic::new(pos,"E_UNBOUND","package is not in authenticated snapshot set"))?;
-            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace)) {
-                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function and namespace selectors only"));
+            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace|Kind::Const)) {
+                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function, namespace and literal constant selectors only"));
             }
             scope.bind_mixed(p.view(),&parsed).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
@@ -452,14 +474,32 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 let mut end=i+1;
                 while tokens.get(end).is_some_and(|x|x.tok==Tok::Dot)
                     && matches!(tokens.get(end+1).map(|x|&x.tok),Some(Tok::Ident(_))) { end+=2; }
-                if tokens.get(end).is_none_or(|x|x.tok!=Tok::LParen) {
-                    return Err(Diagnostic::new(t.pos,"E_UNSUPPORTED","registry binding supports direct calls only"));
-                }
                 let reference=path_tokens(&tokens[start..end]).map_err(|d|at(d,t.pos))?;
                 let resolved=scope.resolve(&reference).map_err(|d|at(d,t.pos))?;
                 let p=admitted.values().find(|p|resolved.target.origin==Origin::External(p.id.clone()))
                     .ok_or_else(||Diagnostic::new(t.pos,"E_IMPORT_PATH","resolved origin is not admitted"))?;
                 let target=scope.resolve_export(&reference,p.view()).map_err(|d|at(d,t.pos))?;
+                if target.kind==Kind::Const {
+                    // No mutation, name declaration, borrow, invocation or
+                    // dynamic namespace access. Parenthesize literal tokens
+                    // to preserve expression precedence and signed i64 min.
+                    let mut context=Vec::new();
+                    if start>0 {context.push(tokens[start-1].clone());}
+                    let context_index=context.len();
+                    context.push(t.clone());
+                    if let Some(next)=tokens.get(end){context.push(next.clone());}
+                    if let Some(code)=crate::const_import_link::is_disallowed_reference_context(&context,context_index){
+                        return Err(Diagnostic::new(t.pos,code,"constant used in disallowed context"));
+                    }
+                    let value=p.literals.get(&target.declaration).ok_or_else(||err("E_INTERNAL","verified literal missing"))?;
+                    linked.push(token(Tok::LParen,t.pos));
+                    linked.extend(value.iter().cloned().map(|v|token(v,t.pos)));
+                    linked.push(token(Tok::RParen,t.pos));
+                    i=end;continue;
+                }
+                if tokens.get(end).is_none_or(|x|x.tok!=Tok::LParen) {
+                    return Err(Diagnostic::new(t.pos,"E_UNSUPPORTED","registry binding supports direct calls only"));
+                }
                 if target.kind!=Kind::Fnc { return Err(Diagnostic::new(t.pos,"E_IMPORT_KIND","registry call requires exported function")); }
                 let (ns,member)=target.declaration.rsplit_once('.').ok_or_else(||err("E_INTERNAL","invalid verified function identity"))?;
                 let owner=modules.get(&(p.name.clone(),ns.to_string())).ok_or_else(||err("E_INTERNAL","verified function owner not linked"))?;
