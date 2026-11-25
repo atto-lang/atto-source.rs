@@ -125,10 +125,13 @@ const H_NEG: u32 = 3;
 const H_SHIFT_COUNT: u32 = 4;
 /// Always present: checked signed integer quotient.
 const H_DIV: u32 = 5;
+/// Always present: named signed remainder and Euclidean modulus.
+const H_REM: u32 = 6;
+const H_MOD: u32 = 7;
 /// present only when the program has classes
-const H_ALLOC: u32 = 6;
+const H_ALLOC: u32 = 8;
 // string helpers, present only when the program has string values; they
-// follow H_ALLOC (or H_DIV) at `Layout::str_base + offset`
+// follow H_ALLOC (or H_MOD) at `Layout::str_base + offset`
 const S_BYTES_EQ: u32 = 0;
 const S_EQ: u32 = 1;
 const S_STARTS: u32 = 2;
@@ -816,11 +819,13 @@ impl Emit<'_> {
             TExpr::Builtin(b, x, y) => {
                 self.expr(x);
                 self.expr(y);
-                self.op(match b {
-                    Builtin::And => 0x71,
-                    Builtin::Or => 0x72,
-                    Builtin::Xor => 0x73,
-                });
+                match b {
+                    Builtin::And => self.op(0x71),
+                    Builtin::Or => self.op(0x72),
+                    Builtin::Xor => self.op(0x73),
+                    Builtin::IntRem => self.call(self.l.helper(H_REM)),
+                    Builtin::IntMod => self.call(self.l.helper(H_MOD)),
+                }
             }
             TExpr::Print { value, newline } => {
                 self.expr(value);
@@ -1207,7 +1212,25 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     c.extend_from_slice(&[0x51, 0x20, 1, 0x42, 0x7F, 0x51, 0x71, 0x04, 0x40]);
     panic(&mut c, PANIC_OVERFLOW);
     c.extend_from_slice(&[0x0B, 0x20, 0, 0x20, 1, 0x7F, 0x0B]);
-    v.push((bin, no_locals, c));
+    v.push((bin.clone(), no_locals.clone(), c));
+
+    // Signed remainder does not overflow on MIN % -1. Guard zero explicitly.
+    let mut c = vec![0x20, 1, 0x50, 0x04, 0x40];
+    panic(&mut c, PANIC_DIV_ZERO);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x20, 1, 0x81, 0x0B]);
+    v.push((bin.clone(), no_locals, c));
+
+    // Euclidean modulus: if r < 0 then r + b (b > 0) or r - b (b < 0).
+    // Never negate MIN; both corrections are mathematically in [0, |b|).
+    let mut c = vec![0x20, 1, 0x50, 0x04, 0x40];
+    panic(&mut c, PANIC_DIV_ZERO);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x20, 1, 0x81, 0x21, 2,
+        0x20, 2, 0x42, 0, 0x53, 0x04, I64,
+        0x20, 1, 0x42, 0, 0x55, 0x04, I64,
+        0x20, 2, 0x20, 1, 0x7C, 0x05,
+        0x20, 2, 0x20, 1, 0x7D, 0x0B,
+        0x05, 0x20, 2, 0x0B, 0x0B]);
+    v.push((bin, vec![1, 1, I64], c));
 
     v
 }
