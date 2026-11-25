@@ -97,7 +97,11 @@ enum Kind {
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
+    #[regex(
+        r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*",
+        logos::skip,
+        allow_greedy = true
+    )]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -232,8 +236,8 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
                 "execution domain '{}' is reserved and not lowered by this backend; no implicit CPU fallback",
                 token.text
             )
-        } else if (opens_block && (token.text == "task" || token.text == "nb"))
-            || opens_task_scope {
+        } else if (opens_block && (token.text == "task" || token.text == "nb")) || opens_task_scope
+        {
             "execution task requires scheduler-aware Future lowering; no implicit inline execution"
                 .into()
         } else {

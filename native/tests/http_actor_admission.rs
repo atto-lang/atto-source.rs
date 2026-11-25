@@ -69,7 +69,9 @@ fn unicode_line_separators_cannot_hide_http_actor_after_comment() {
              pub fnc main(): int {{ return http(); }}"
         );
         assert!(frontend::parse(&valid).is_ok(), "separator: {separator:?}");
-        assert!(!compile(&valid).expect("valid http identifier source").is_empty());
+        assert!(!compile(&valid)
+            .expect("valid http identifier source")
+            .is_empty());
     }
 }
 
