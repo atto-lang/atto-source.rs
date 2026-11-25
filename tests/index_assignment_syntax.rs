@@ -1,5 +1,6 @@
-//! Parser admission only: typed indexed lvalues remain deliberately
-//! unlowered until Map/Record mutability, layout and ownership are proven.
+//! Indexed lvalues remain a typed AST until compiler checking.
+//! Scalar closed Record writes are executable; Map writes and Struct
+//! indexing stay fail-closed until their separate ownership/runtime gates.
 use atto_compiler::{ast::{ExprKind, Stmt}, compile, lexer, parser::Parser};
 
 fn parse(src: &str) -> atto_compiler::ast::Program {
@@ -26,9 +27,9 @@ fn record_index_assignment_preserves_receiver_key_and_rhs_ast() {
 }
 
 #[test]
-fn record_nonidentifier_quoted_key_is_not_rewritten_into_member() {
+fn quoted_map_key_is_not_rewritten_into_record_member() {
     let p = parse(r#"pub fnc main(): int {
-        let mut Record record = {"content-type": 1};
+        let mut Map<string,int> record = {"content-type": 1};
         record["content-type"] = 7;
         return 0;
     }"#);
@@ -57,20 +58,26 @@ fn nominal_struct_is_not_granted_index_write_authority() {
           p["foo"] = 3;
           return 0;
         }"#;
-    let p = parse(src);
-    assert!(matches!(&p.funcs[0].body[1], Stmt::IndexAssign { .. }));
-    let error = compile(src).expect_err("unverified Struct lvalue must fail closed");
+    // The ordinary parser intentionally rejects bare 'define struct' before
+    // the nominal-lowering pass: use the complete compiler pipeline here.
+    let error = compile(src).expect_err("nominal Struct index must fail closed");
     assert_eq!(error.code, "E_UNSUPPORTED");
 }
 
 #[test]
-fn all_unlowered_index_writes_produce_no_guest_wasm() {
+fn unlowered_dynamic_map_and_computed_record_writes_produce_no_guest_wasm() {
+    // A closed Record static field has been admitted in #409, but these
+    // unrelated operations MUST keep rejecting instead of inheriting storage.
+    let compiled_record = compile(
+        r#"pub fnc main(): int { let mut Record r = {foo:1}; r["foo"] = 3; return r.foo; }"#
+    ).expect("owned closed Record static field writes have checked guest lowering");
+    assert!(compiled_record.starts_with(b"\0asm\x01\0\0\0"));
+
     for src in [
-        r#"pub fnc main(): int { let mut Record r = {foo:1}; r["foo"] = 3; return r.foo; }"#,
         r#"pub fnc main(): int { let mut Map<string,int> m = {"foo" => 1}; m["foo"] = 3; return 0; }"#,
         r#"pub fnc main(): int { let mut Record r = {foo:1}; let string key="foo"; r[key] = 3; return 0; }"#,
     ] {
-        let err = compile(src).expect_err("indexed write needs verified checked guest lowering");
+        let err = compile(src).expect_err("dynamic map/computed Record write must not emit guest");
         assert_eq!(err.code, "E_UNSUPPORTED", "{src}: {err}");
     }
 }

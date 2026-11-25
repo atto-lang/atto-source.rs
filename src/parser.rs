@@ -8,6 +8,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use std::collections::BTreeSet;
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
@@ -459,7 +460,7 @@ impl Parser {
                         args.push(spelling);
                         if !self.eat(&Tok::Comma) { break; }
                     }
-                    self.expect(Tok::Gt, "'>' to close collection type arguments")?;
+                    self.expect_type_close("'>' to close collection type arguments")?;
                 }
                 let correct_arity = match builtin {
                     "Record" => !generic,
@@ -533,7 +534,7 @@ impl Parser {
             "Option" => {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Option payload")?;
+                self.expect_type_close("'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
                     Type::ResultIntStr => Type::OptionResultIntStr,
@@ -544,7 +545,7 @@ impl Parser {
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
                 let inner = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Generator item type")?;
+                self.expect_type_close("'>' after Generator item type")?;
                 if inner != Type::Int {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "the browser generator frontend currently recognizes only Generator<int>"));
@@ -556,7 +557,7 @@ impl Parser {
                 let good = self.parse_type()?;
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Result types")?;
+                self.expect_type_close("'>' after Result types")?;
                 if good != Type::Int || bad != Type::Str {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "browser ADT v1 admits only Result<int,string>"));
@@ -577,7 +578,7 @@ impl Parser {
             "ActorRef" => {
                 self.expect(Tok::Lt, "'<' after ActorRef")?;
                 let (actor, apos) = self.ident("an actor name")?;
-                self.expect(Tok::Gt, "'>'")?;
+                self.expect_type_close("'>'")?;
                 Type::NamedRef(self.type_name(actor, apos))
             }
             "ActorMail" => {
@@ -596,6 +597,22 @@ impl Parser {
         }
         self.leave();
         Ok(ty)
+    }
+
+    /// In a type annotation the lexical '>=' may terminate generic args
+    /// immediately before a binding initializer: `Map<K,V>={}`.
+    /// Split only in type position; ordinary expression '>=' remains Ge.
+    /// Preserve '=' as the next token at its own source column, rather than
+    /// skipping an initializer or inventing a general '<' comparison parse.
+    fn expect_type_close(&mut self, description: &str) -> R<()> {
+        if *self.peek() == Tok::Ge {
+            let next = &mut self.toks[self.i];
+            next.tok = Tok::Assign;
+            next.pos.col = next.pos.col.saturating_add(1);
+            Ok(())
+        } else {
+            self.expect(Tok::Gt, description)
+        }
     }
 
     fn type_name(&mut self, name: String, pos: Pos) -> u32 {
@@ -1120,7 +1137,7 @@ impl Parser {
         }
         self.advance();
         let payload = self.parse_type()?;
-        self.expect(Tok::Gt, "'>'")?;
+        self.expect_type_close("'>'")?;
         let (mail, _) = self.ident("a mail parameter name")?;
         if *self.peek() == Tok::Comma {
             return Err(Diagnostic::new(
@@ -1676,6 +1693,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Bind {
                     kind: BindKind::Const,
+                    referent_mutable: false,
                     name,
                     ty: Some(ty),
                     init,
@@ -2066,18 +2084,12 @@ impl Parser {
         } else {
             return Err(self.expected("'val', 'const' or 'let'"));
         };
-        // Java Parser.parseReferentMutability: `const mut` / `let mut` request a
-        // mutable referent (no effect on scalar values); `val` already means
-        // `const mut`, so `val mut` is a duplicate qualifier.
-        if self.is_word("mut") {
-            if kind == BindKind::Val {
-                return Err(Diagnostic::new(
-                    self.pos(),
-                    "E_SYNTAX",
-                    "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier",
-                ));
-            }
-            self.advance();
+        // Referent mutation is independent of binding rebinding.
+        // `val mut` and `let mut` are both legal; neither bypasses ownership.
+        let referent_mutable = self.eat_word("mut");
+        if kind == BindKind::Const && referent_mutable {
+            return Err(Diagnostic::new(pos, "E_CONST_MUT_TARGET",
+                "const mut is not supported for the scalar/Record guest profile"));
         }
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a variable name")?;
@@ -2114,7 +2126,7 @@ impl Parser {
         }
         self.advance();
         let init = self.parse_expr()?;
-        Ok(Stmt::Bind { kind, name, ty, init, pos })
+        Ok(Stmt::Bind { kind, referent_mutable, name, ty, init, pos })
     }
 
     /// A guard is an else-free early-exit check. Its failure branch runs only
@@ -2476,6 +2488,7 @@ impl Parser {
             let init = self.parse_expr()?;
             Some(Box::new(Stmt::Bind {
                 kind: BindKind::Let,
+                referent_mutable: false,
                 name,
                 ty: Some(ty),
                 init,
@@ -2869,11 +2882,15 @@ impl Parser {
         let mut args = Vec::new();
         if *self.peek() != Tok::RParen {
             loop {
-                if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                    return Err(unsupported(self.pos(), "named arguments"));
+                if matches!(self.peek(), Tok::Ident(_))
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon)
+                {
+                    return Err(unsupported(self.pos(),
+                        "named callable arguments require checked parameter resolution (f(foo=1)); use f((foo=1)) to pass a Record"));
                 }
                 if *self.peek() == Tok::Dot {
-                    return Err(unsupported(self.pos(), "spread arguments"));
+                    return Err(unsupported(self.pos(),
+                        "explicit Record-to-named-argument expansion needs checked callable parameter and ownership resolution"));
                 }
                 args.push(self.parse_expr()?);
                 if args.len() > MAX_PARAMS {
@@ -3150,7 +3167,9 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
-    /// A brace literal is either a record (colon fields) or a map (fat arrows).
+    /// Identifier-colon entries construct Records. Quoted-string-colon and
+    /// expression-fat-arrow entries construct Maps. Quote delimiters do not
+    /// erase the Map/Record distinction, even for identifier-like strings.
     /// Empty braces remain unresolved until contextual typing. Never treat
     /// expression braces as statement blocks or silently coerce mixed entries.
     fn parse_brace_literal(&mut self) -> R<ExprKind> {
@@ -3160,27 +3179,32 @@ impl Parser {
         }
         let mut record = Vec::new();
         let mut map = Vec::new();
+        // Bound duplicate detection by O(n log n) rather than repeatedly
+        // scanning all prior fields/keys for untrusted guest source.
+        let mut seen_record_names = BTreeSet::<String>::new();
+        let mut seen_constant_map_keys = BTreeSet::<String>::new();
         let mut record_mode = None::<bool>;
         loop {
             if record.len() + map.len() >= 1024 {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
                     "brace literal exceeds 1024 entries"));
             }
-            let named_field = matches!(self.peek(), Tok::Ident(_) | Tok::Str(_))
+            let identifier_field = matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
                 && *self.peek_at(1) == Tok::Colon;
-            if named_field {
+            let quoted_map_key = matches!(self.peek(), Tok::Str(_))
+                && *self.peek_at(1) == Tok::Colon;
+            if identifier_field {
                 if record_mode == Some(false) {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix record ':' entries and map '=>' entries"));
+                        "cannot mix identifier Record fields with quoted or expression Map entries"));
                 }
                 record_mode = Some(true);
                 let (name, at) = match self.advance() {
-                    Token { tok: Tok::Ident(name), pos } |
-                    Token { tok: Tok::Str(name), pos } => (name, pos),
+                    Token { tok: Tok::Ident(name), pos } => (name, pos),
                     _ => unreachable!(),
                 };
                 self.expect(Tok::Colon, "':' after record field")?;
-                if record.iter().any(|(existing, _): &(String, Expr)| existing == &name) {
+                if !seen_record_names.insert(name.clone()) {
                     return Err(Diagnostic::new(at, "E_DUPLICATE",
                         format!("duplicate record field '{name}'")));
                 }
@@ -3189,20 +3213,32 @@ impl Parser {
             } else {
                 if record_mode == Some(true) {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix record ':' entries and map '=>' entries"));
+                        "cannot mix identifier Record fields with quoted or expression Map entries"));
                 }
                 record_mode = Some(false);
-                let key = self.parse_expr()?;
-                if !self.eat(&Tok::FatArrow) {
-                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "expected ':' for a record field or '=>' for a map entry"));
-                }
+                let key = if quoted_map_key {
+                    // Preserve decoded UTF-8 as a Map key expression, never
+                    // as a structurally named Record field.
+                    let key_pos = self.pos();
+                    let decoded = match self.advance().tok {
+                        Tok::Str(decoded) => decoded,
+                        _ => unreachable!(),
+                    };
+                    self.expect(Tok::Colon, "':' after quoted Map key")?;
+                    Expr { kind: ExprKind::Str(decoded), pos: key_pos }
+                } else {
+                    let key = self.parse_expr()?;
+                    if !self.eat(&Tok::FatArrow) {
+                        return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                            "expected '=>' for expression Map key"));
+                    }
+                    key
+                };
                 let value = self.parse_expr()?;
                 // Constant duplicate keys are definite mistakes. Dynamically
                 // computed keys need checked equality/hash rules at runtime.
                 if let Some(fingerprint) = constant_map_key(&key) {
-                    if map.iter().any(|(prior, _)| constant_map_key(prior).as_deref() ==
-                        Some(fingerprint.as_str())) {
+                    if !seen_constant_map_keys.insert(fingerprint) {
                         return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
                             "duplicate constant map key"));
                     }
@@ -3230,6 +3266,49 @@ impl Parser {
         }
     }
 
+    /// Parenthesized identifier-named Record literal. This is the same
+    /// closed structural Record AST as {foo: 1}, never a tuple or a call.
+    /// The source-order field inventory and static shape checks are shared.
+    fn parse_named_record_parens(&mut self, pos: Pos) -> R<Expr> {
+        let mut fields: Vec<(String, Expr)> = Vec::new();
+        let mut seen = BTreeSet::<String>::new();
+        loop {
+            if fields.len() >= 1024 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "parenthesized Record exceeds 1024 fields"));
+            }
+            let at = self.pos();
+            let name = match self.peek().clone() {
+                Tok::Ident(name) if !is_reserved(&name) => name,
+                _ => return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                    "parenthesized Record fields require identifier=expression; use {...} for quoted labels")),
+            };
+            self.advance();
+            self.expect(Tok::Assign, "'=' after named Record field")?;
+            if !seen.insert(name.clone()) {
+                return Err(Diagnostic::new(at, "E_DUPLICATE",
+                    format!("duplicate Record field '{name}'")));
+            }
+            let value = self.parse_expr()?;
+            fields.push((name, value));
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+                if !matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
+                    || *self.peek_at(1) != Tok::Assign
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                        "cannot mix named Record fields and positional Tuple items; expected field=value"));
+                }
+                continue;
+            }
+            self.expect(Tok::RParen, "')' after parenthesized Record")?;
+            break;
+        }
+        Ok(Expr { kind: ExprKind::Record(fields), pos })
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -3250,6 +3329,20 @@ impl Parser {
                 self.advance();
                 if self.eat(&Tok::RParen) {
                     return Ok(Expr { kind: ExprKind::Tuple(Vec::new()), pos });
+                }
+                // Only identifier '=' selects named-Record grammar.
+                // EqEq never selects this branch; parentheses otherwise
+                // preserve the Tuple/grouping grammar unchanged.
+                if matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
+                    && *self.peek_at(1) == Tok::Assign
+                {
+                    return self.parse_named_record_parens(pos);
+                }
+                if matches!(self.peek(), Tok::Str(_))
+                    && *self.peek_at(1) == Tok::Assign
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                        "quoted Record field names require brace syntax: {\"label\": value}"));
                 }
                 let first = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
                 if self.eat(&Tok::Comma) {

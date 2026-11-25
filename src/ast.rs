@@ -215,6 +215,9 @@ pub enum BindKind {
 pub enum Stmt {
     Bind {
         kind: BindKind,
+        /// Independent permission to mutate an owned referent, not binding rebinding.
+        /// Canonical: val/let are readonly; val mut/let mut are writable.
+        referent_mutable: bool,
         name: String,
         ty: Option<Type>,
         init: Expr,

@@ -60,7 +60,7 @@ pub fn lower(input: &Program) -> R<Program> {
             .collect::<BTreeMap<String, Type>>();
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
-            if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
+            if let Stmt::Bind { kind, name, ty, init, pos, .. } = &stmt {
                 if let ExprKind::Lambda { params, .. } = &init.kind {
                     if direct.is_some() {
                         return Err(error(*pos, "E_UNSUPPORTED",
@@ -128,7 +128,7 @@ pub fn lower(input: &Program) -> R<Program> {
                     // inside a shadowing block. Values are immutable scalars.
                     for c in &captures {
                         body.push(Stmt::Bind {
-                            kind: BindKind::Val, name: c.snapshot.clone(),
+                            kind: BindKind::Val, referent_mutable: false, name: c.snapshot.clone(),
                             ty: Some(c.ty),
                             init: Expr { kind: ExprKind::Var(c.source.clone()), pos: *pos },
                             pos: *pos,
