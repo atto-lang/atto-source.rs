@@ -45,6 +45,7 @@ pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
 pub mod units;
+mod verified_quantities;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;
@@ -114,11 +115,19 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    compile_prelexed(lexer::lex(source)?, logical_path)
+    let tokens = lexer::lex(source)?;
+    if let Some(lowered) = verified_quantities::lower(source, &tokens)? {
+        return compile_prelexed(lexer::lex(&lowered)?, logical_path);
+    }
+    compile_prelexed(tokens, logical_path)
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    if verified_quantities::has_declarations(&tokens) {
+        return Err(Diagnostic::new(tokens[0].pos, "E_UNSUPPORTED",
+            "linked quantity declarations need compiler-resolved nominal identities"));
+    }
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
