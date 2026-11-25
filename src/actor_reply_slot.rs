@@ -112,7 +112,11 @@ impl<T> ReplyRegistry<T> {
     /// Staging is invisible to callers until successful turn completion.
     pub fn stage(&mut self, t: &Ticket, value: T, now: u64) -> Result<(), SlotFault> {
         let s = self.current(t)?;
-        if now >= s.deadline { return Err(SlotFault::AlreadySettled); }
+        if matches!(s.phase, Phase::Settled(_)) { return Err(SlotFault::AlreadySettled); }
+        if now >= s.deadline {
+            self.settle(t, ReplyOutcome::Failure(ReplyFailure::TimedOut))?;
+            return Err(SlotFault::AlreadySettled);
+        }
         match s.phase {
             Phase::Open => { s.phase = Phase::Staged(value); Ok(()) }
             Phase::Staged(_) => Err(SlotFault::AlreadyStaged),

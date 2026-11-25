@@ -254,3 +254,21 @@ fn foreign_failure_does_not_settle_local_request() {
     assert_eq!(a.collect(ra), Ok(ReplyOutcome::Failure(ReplyFailure::Cancelled)));
     assert_eq!(b.collect(rb), Ok(ReplyOutcome::Failure(ReplyFailure::Cancelled)));
 }
+
+#[test]
+fn late_or_settled_delivery_cannot_expire_unrelated_slots() {
+    let mut m: UnaryMailbox<i64, i64> = UnaryMailbox::new(2, 2, 1);
+    let a = m.admit(1, 1, 10, 1).unwrap();
+    let b = m.admit(2, 1, 20, 1).unwrap();
+    let da = m.next(1).unwrap();
+    let db = m.next(1).unwrap();
+    assert_eq!(m.stage(&da, 99, 20), Err(SlotFault::AlreadySettled));
+    assert_eq!(m.poll(&a), Ok(Some(&ReplyOutcome::Failure(ReplyFailure::TimedOut))));
+    assert_eq!(m.poll(&b), Ok(None));
+    assert_eq!(m.stage(&da, 99, 21), Err(SlotFault::AlreadySettled));
+    assert_eq!(m.poll(&b), Ok(None));
+    assert_eq!(m.expire(21), 1);
+    assert_eq!(m.complete(db, 21), Err(SlotFault::AlreadySettled));
+    assert_eq!(m.collect(a), Ok(ReplyOutcome::Failure(ReplyFailure::TimedOut)));
+    assert_eq!(m.collect(b), Ok(ReplyOutcome::Failure(ReplyFailure::TimedOut)));
+}

@@ -75,10 +75,7 @@ impl<M, R> UnaryMailbox<M, R> {
     /// A return value and respond_with use the same write-once staging gate.
     pub fn stage(&mut self, delivery: &Delivery<M>, response: R,
         now: u64) -> Result<(), SlotFault> {
-        // Reject foreign or stale permits before any expiry side effects.
-        self.reply.poll(&delivery.reply_permit)?;
-        // Deadline must be enforced at staging, not only at the timer tick.
-        self.reply.expire(now);
+        // Staging checks only its own authenticated slot and settles its deadline.
         self.reply.stage(&delivery.reply_permit, response, now)
     }
 

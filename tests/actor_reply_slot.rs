@@ -130,3 +130,19 @@ fn retired_generations_cannot_go_backward() {
     assert_eq!(l.retire_actor(8), Err(Fault::Stale));
     assert_eq!(l.retire_actor(10), Ok(0));
 }
+
+#[test]
+fn late_stage_settles_exactly_one_timeout_without_timer() {
+    let mut l = ReplyRegistry::new(2, 1);
+    let a = l.admit(1, 10, 1).unwrap();
+    let b = l.admit(2, 10, 1).unwrap();
+    l.stage(&a, 1, 2).unwrap();
+    assert_eq!(l.stage(&a, 2, 10), Err(Fault::AlreadySettled));
+    assert_eq!(l.completed_count(), 1);
+    assert_eq!(l.poll(&b), Ok(None));
+    assert_eq!(l.stage(&a, 3, 11), Err(Fault::AlreadySettled));
+    assert_eq!(l.completed_count(), 1);
+    assert_eq!(l.receive(&a), Ok(Outcome::Failure(Failure::TimedOut)));
+    assert_eq!(l.expire(11), 1);
+    assert_eq!(l.receive(&b), Ok(Outcome::Failure(Failure::TimedOut)));
+}
