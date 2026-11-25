@@ -750,6 +750,12 @@ fn qualify_bound_modules(source: &str, aliases: &BTreeMap<String, String>) -> R<
 /// Root '+' and local './' imports both resolve within the supplied file map.
 /// Cyclic edges, duplicate module identities and re-exports fail closed.
 pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
+    crate::compile(&prepare_linked(entry_path, units)?)
+}
+
+// Internal graph admission and deterministic source lowering. This is not
+// a typed program or complete compiler semantic verification.
+pub(crate) fn prepare_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<String> {
     if units.is_empty() || units.len() > MAX_UNITS {
         return Err(err(Pos::default(), "E_SOURCE_LIMIT", "invalid linked source-unit count"));
     }
@@ -893,5 +899,5 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
         ));
     }
     let _entry_namespace = hdr.namespace;
-    crate::compile(&linked)
+    Ok(linked)
 }

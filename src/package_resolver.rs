@@ -535,6 +535,25 @@ pub fn compile_locked_snapshot(
     expected_lock_sha256: &str,
     inputs: &[SnapshotSource<'_>],
 ) -> R<Vec<u8>> {
+    let prepared = prepare_locked_snapshot(entry, manifest, lockfile, expected_lock_sha256, inputs)?;
+    crate::compile(&prepared.linked)
+}
+
+/// Internal authenticated graph and lowered source, never a verified artifact.
+/// Keep source closure checks on the same path for clean and cache-candidate builds.
+pub(crate) struct PreparedLockedSnapshot {
+    pub(crate) linked: String,
+}
+pub(crate) fn prepare_locked_snapshot(
+    entry: &str,
+    manifest: &str,
+    lockfile: &str,
+    expected_lock_sha256: &str,
+    inputs: &[SnapshotSource<'_>],
+) -> R<PreparedLockedSnapshot> {
+    if manifest.len() > MAX_MANIFEST || lockfile.len() > MAX_MANIFEST * 4 {
+        return Err(error("E_LOCK", "snapshot manifest or lock exceeds budget"));
+    }
     if !linker::path_ok(entry) {
         return Err(error("E_IMPORT_PATH", "snapshot entry path is not canonical"));
     }
@@ -610,7 +629,7 @@ pub fn compile_locked_snapshot(
             package: &identity,
         })
         .collect();
-    linker::compile_linked(entry, &units)
+    Ok(PreparedLockedSnapshot { linked: linker::prepare_linked(entry, &units)? })
 }
 
 

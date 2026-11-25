@@ -36,3 +36,5 @@ jobs:
           cargo test --lib compiler_artifact_receipt::tests:: -- --nocapture
           cargo test --lib compiler_artifact_store::tests:: -- --nocapture
           cargo test --lib secure_fs::tests:: -- --nocapture
+          cargo test --test package_resolver -- --nocapture
+          cargo test --test multihop_linker -- --nocapture
