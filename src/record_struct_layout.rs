@@ -151,25 +151,15 @@ impl LayoutInterner {
         for (index, (name, _)) in canonical.iter().enumerate() {
             slots.insert(name.clone(), index);
         }
-        let source_to_slot = source_fields
-            .iter()
-            .map(|(name, _)| slots[name.as_str()])
-            .collect();
+        let source_to_slot = source_fields.iter().map(|(name, _)| slots[name.as_str()]).collect();
         let shape_id = self.intern(ShapeKind::Record, canonical)?;
-        Ok(InternedLayout {
-            shape_id,
-            source_to_slot,
-        })
+        Ok(InternedLayout { shape_id, source_to_slot })
     }
 
     /// Abstract static Struct layout planning. This does NOT parse, construct
     /// or lower a user Struct. Field order is fixed at declaration order,
     /// and distinct qualified names are always nominally distinct.
-    pub fn nominal_struct(
-        &mut self,
-        qualified_name: &str,
-        declared: &[FieldType],
-    ) -> Result<InternedLayout, Error> {
+    pub fn nominal_struct(&mut self, qualified_name: &str, declared: &[FieldType]) -> Result<InternedLayout, Error> {
         if qualified_name.is_empty() || qualified_name.len() > 1024 {
             return Err(Error::InvalidStructName);
         }
@@ -206,11 +196,7 @@ impl LayoutInterner {
             return Err(Error::TooManyShapes);
         }
         let id = self.shapes.len();
-        let field_to_slot = fields
-            .iter()
-            .enumerate()
-            .map(|(i, (name, _))| (name.clone(), i))
-            .collect();
+        let field_to_slot = fields.iter().enumerate().map(|(i, (name, _))| (name.clone(), i)).collect();
         self.shapes.push(Shape {
             kind,
             fields,
@@ -223,8 +209,7 @@ impl LayoutInterner {
 
 fn valid_identifier(s: &str) -> bool {
     let mut bytes = s.bytes();
-    matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')) && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 fn validate_fields(fields: &[FieldType], is_struct: bool) -> Result<(), Error> {
@@ -237,9 +222,7 @@ fn validate_fields(fields: &[FieldType], is_struct: bool) -> Result<(), Error> {
         if is_struct && !valid_identifier(name) {
             return Err(Error::InvalidStructField);
         }
-        name_bytes = name_bytes
-            .checked_add(name.len())
-            .ok_or(Error::TooManyNameBytes)?;
+        name_bytes = name_bytes.checked_add(name.len()).ok_or(Error::TooManyNameBytes)?;
         if name_bytes > MAX_LAYOUT_NAME_BYTES {
             return Err(Error::TooManyNameBytes);
         }
@@ -262,9 +245,7 @@ fn validate_resolved_type(root: &LiteralType) -> Result<(), Error> {
         }
         remaining -= 1;
         match next {
-            LiteralType::Bottom | LiteralType::OpenRecord | LiteralType::AnyTuple => {
-                return Err(Error::UnresolvedType)
-            }
+            LiteralType::Bottom | LiteralType::OpenRecord | LiteralType::AnyTuple => return Err(Error::UnresolvedType),
             LiteralType::Record(fields) => {
                 if fields.len() > MAX_STATIC_FIELDS {
                     return Err(Error::TooManyFields);
@@ -273,8 +254,8 @@ fn validate_resolved_type(root: &LiteralType) -> Result<(), Error> {
                     pending.push(child);
                 }
             }
-            LiteralType::Array(t) | LiteralType::List(t) => pending.push(t),
-            LiteralType::Map(k, v) => {
+            LiteralType::Array(t) | LiteralType::List(t) | LiteralType::Option(t) => pending.push(t),
+            LiteralType::Map(k, v) | LiteralType::Pair(k, v) | LiteralType::Entry(k, v) => {
                 pending.push(k);
                 pending.push(v);
             }

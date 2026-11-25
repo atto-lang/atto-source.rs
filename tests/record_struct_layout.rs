@@ -6,8 +6,7 @@ use atto_compiler::{
     lexer,
     parser::Parser,
     record_struct_layout::{
-        decide_access, Error, FieldDecision, FieldType, LayoutInterner, ShapeKind,
-        MAX_LAYOUT_NAME_BYTES, MAX_STATIC_FIELDS,
+        decide_access, Error, FieldDecision, FieldType, LayoutInterner, ShapeKind, MAX_LAYOUT_NAME_BYTES, MAX_STATIC_FIELDS,
     },
 };
 
@@ -30,10 +29,7 @@ fn closed_record_type_identity_ignores_source_field_order() {
     .unwrap();
     assert_eq!(values.len(), 2);
     assert_eq!(values[0].value.ty, values[1].value.ty);
-    assert_eq!(
-        values[0].value.ty,
-        T::Record(vec![named("a", T::Int), named("z", T::Bool)])
-    );
+    assert_eq!(values[0].value.ty, T::Record(vec![named("a", T::Int), named("z", T::Bool)]));
     // Source-order child evaluation is preserved; only layout slots differ.
     assert_eq!(values[0].value.children[0].ty, T::Bool);
     assert_eq!(values[0].value.children[1].ty, T::Int);
@@ -44,12 +40,8 @@ fn closed_record_type_identity_ignores_source_field_order() {
 #[test]
 fn equivalent_record_permutations_intern_one_static_shape() {
     let mut layouts = LayoutInterner::new();
-    let a = layouts
-        .closed_record(&[named("z", T::Bool), named("a", T::Int)])
-        .unwrap();
-    let b = layouts
-        .closed_record(&[named("a", T::Int), named("z", T::Bool)])
-        .unwrap();
+    let a = layouts.closed_record(&[named("z", T::Bool), named("a", T::Int)]).unwrap();
+    let b = layouts.closed_record(&[named("a", T::Int), named("z", T::Bool)]).unwrap();
     assert_eq!(a.shape_id, b.shape_id);
     assert_eq!(a.source_to_slot, vec![1, 0]);
     assert_eq!(b.source_to_slot, vec![0, 1]);
@@ -64,15 +56,10 @@ fn equivalent_record_permutations_intern_one_static_shape() {
 
 #[test]
 fn quoted_utf8_record_fields_are_static_but_not_struct_identifiers() {
-    let values =
-        bindings(r#"let Record headers = {"content-type": "text/plain", status_code: 200};"#)
-            .unwrap();
+    let values = bindings(r#"let Record headers = {"content-type": "text/plain", status_code: 200};"#).unwrap();
     assert_eq!(
         values[0].value.ty,
-        T::Record(vec![
-            named("content-type", T::String),
-            named("status_code", T::Int),
-        ])
+        T::Record(vec![named("content-type", T::String), named("status_code", T::Int),])
     );
     let mut registry = LayoutInterner::new();
     let p = registry
@@ -83,14 +70,8 @@ fn quoted_utf8_record_fields_are_static_but_not_struct_identifiers() {
         ])
         .unwrap();
     assert_eq!(p.source_to_slot, vec![1, 0, 2]);
-    assert_eq!(
-        registry.shape(p.shape_id).unwrap().slot("content-type"),
-        Some(0)
-    );
-    assert_eq!(
-        registry.shape(p.shape_id).unwrap().slot("über field"),
-        Some(2)
-    );
+    assert_eq!(registry.shape(p.shape_id).unwrap().slot("content-type"), Some(0));
+    assert_eq!(registry.shape(p.shape_id).unwrap().slot("über field"), Some(2));
     assert_eq!(
         registry.nominal_struct("app::Header", &[named("content-type", T::String),]),
         Err(Error::InvalidStructField)
@@ -103,18 +84,12 @@ fn map_and_open_record_do_not_pretend_to_be_fixed_slot_records() {
     assert_eq!(decide_access(&ty, "a"), FieldDecision::StaticSlot(0));
     assert_eq!(decide_access(&ty, "b"), FieldDecision::StaticSlot(1));
     assert_eq!(decide_access(&ty, "absent"), FieldDecision::Missing);
-    assert_eq!(
-        decide_access(&T::OpenRecord, "a"),
-        FieldDecision::CheckOpenShape
-    );
+    assert_eq!(decide_access(&T::OpenRecord, "a"), FieldDecision::CheckOpenShape);
     assert_eq!(
         decide_access(&T::Map(Box::new(T::String), Box::new(T::Int)), "a"),
         FieldDecision::RuntimeMapKey
     );
-    assert_eq!(
-        decide_access(&T::Int, "a"),
-        FieldDecision::NotFieldContainer
-    );
+    assert_eq!(decide_access(&T::Int, "a"), FieldDecision::NotFieldContainer);
 }
 
 #[test]
@@ -138,9 +113,7 @@ fn nominal_structs_are_distinct_despite_identical_field_types() {
 #[test]
 fn a_nominal_struct_cannot_change_schema_under_the_same_identity() {
     let mut layouts = LayoutInterner::new();
-    layouts
-        .nominal_struct("pkg::Header", &[named("status", T::Int)])
-        .unwrap();
+    layouts.nominal_struct("pkg::Header", &[named("status", T::Int)]).unwrap();
     assert_eq!(
         layouts.nominal_struct("pkg::Header", &[named("status", T::Bool),]),
         Err(Error::ChangedNominalDefinition)
@@ -155,18 +128,12 @@ fn duplicates_and_unresolved_types_are_rejected_not_guessed() {
         layouts.closed_record(&[named("a", T::Int), named("a", T::Bool),]),
         Err(Error::DuplicateField)
     );
-    assert_eq!(
-        layouts.closed_record(&[named("a", T::Bottom),]),
-        Err(Error::UnresolvedType)
-    );
+    assert_eq!(layouts.closed_record(&[named("a", T::Bottom),]), Err(Error::UnresolvedType));
     assert_eq!(
         layouts.closed_record(&[named("rows", T::Array(Box::new(T::OpenRecord))),]),
         Err(Error::UnresolvedType)
     );
-    assert_eq!(
-        layouts.closed_record(&[named("tuple", T::AnyTuple),]),
-        Err(Error::UnresolvedType)
-    );
+    assert_eq!(layouts.closed_record(&[named("tuple", T::AnyTuple),]), Err(Error::UnresolvedType));
     assert!(layouts.is_empty());
 }
 
@@ -183,12 +150,7 @@ fn no_unicode_normalization_or_implicit_case_folding() {
 
 #[test]
 fn duplicate_bare_and_quoted_labels_fail_at_parser_boundary() {
-    assert_eq!(
-        bindings(r#"let Record r = {name: 1, "name": 2};"#)
-            .unwrap_err()
-            .code,
-        "E_DUPLICATE"
-    );
+    assert_eq!(bindings(r#"let Record r = {name: 1, "name": 2};"#).unwrap_err().code, "E_DUPLICATE");
 }
 
 #[test]
@@ -197,18 +159,10 @@ fn no_excessive_static_shape_or_field_allocation() {
     let a = registry.closed_record(&[named("id", T::Int)]).unwrap();
     let again = registry.closed_record(&[named("id", T::Int)]).unwrap();
     assert_eq!(a.shape_id, again.shape_id);
-    assert_eq!(
-        registry.closed_record(&[named("other", T::Int)]),
-        Err(Error::TooManyShapes)
-    );
+    assert_eq!(registry.closed_record(&[named("other", T::Int)]), Err(Error::TooManyShapes));
 
-    let many: Vec<FieldType> = (0..MAX_STATIC_FIELDS + 1)
-        .map(|i| named(&format!("f{i}"), T::Int))
-        .collect();
-    assert_eq!(
-        LayoutInterner::new().closed_record(&many),
-        Err(Error::TooManyFields)
-    );
+    let many: Vec<FieldType> = (0..MAX_STATIC_FIELDS + 1).map(|i| named(&format!("f{i}"), T::Int)).collect();
+    assert_eq!(LayoutInterner::new().closed_record(&many), Err(Error::TooManyFields));
 
     let huge = "x".repeat(MAX_LAYOUT_NAME_BYTES + 1);
     assert_eq!(
@@ -228,8 +182,7 @@ fn closed_scalar_record_is_executable_but_unresolved_record_layout_stays_blocked
     assert_eq!(wasm, atto_compiler::compile(code).unwrap());
 
     let unsupported = "fnc main(): int {let Record r = {children: [1,2]}; return 0;}";
-    let err = atto_compiler::compile(unsupported)
-        .expect_err("nested unverified Record allocation must produce no guest");
+    let err = atto_compiler::compile(unsupported).expect_err("nested unverified Record allocation must produce no guest");
     assert_eq!(err.code, "E_UNSUPPORTED");
 }
 
@@ -272,8 +225,7 @@ fn existing_declared_struct_guest_constructor_uses_checked_fixed_fields() {
             return p.x + p.y;
         }
     "#;
-    let bytes = atto_compiler::compile(source)
-        .expect("restricted declared Struct uses checked nominal class lowering");
+    let bytes = atto_compiler::compile(source).expect("restricted declared Struct uses checked nominal class lowering");
     assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(bytes, atto_compiler::compile(source).unwrap());
 }
