@@ -91,6 +91,22 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     compile_inner(source, None)
 }
 
+/// Experimental fail-closed strict profile: only file-local immutable
+/// signed-i64 quantities and refinements are supported. No fallback, imports,
+/// proof-dependent check elimination, or whole-language safety certification.
+pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    let pos = Pos { line: 1, col: 1 };
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
+    }
+    let tokens = lexer::lex(source)?;
+    match verified_quantities::lower_mode(source, &tokens, true)? {
+        Some(lowered @ verified_quantities::Lowered::Typed(_)) => compile_quantity(lowered, None),
+        _ => Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED",
+            "strict verification currently supports only typed quantity programs")),
+    }
+}
+
 /// Compile with a caller-supplied logical, package-relative source file path.
 /// Required when the source declares `use default namespace[(N)];`.
 pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
