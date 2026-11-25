@@ -102,14 +102,11 @@ to recheck would allow a cancelled actor to become draining/closing again
 and could permit an invalid done acknowledgement to change observable state.
 
 A single source-owned strict guest-import validator now runs in both the
-compiler worker and the child actor worker. Import entries must use the
-exact module name atto, one of the seven explicit capability names, kind
-function, and at most one occurrence per name (no alias slots). More than
-seven imports is rejected. This is *name/kind/uniqueness* validation; it
-does not prove the binary matches the exact expected function-signature
-types. The compiler-produced guest remains provenance-pinned, and any
-future untrusted guest loader must additionally validate typed ABI
-signatures before use.
+compiler worker and the child actor worker. Import entries must use the exact module name atto, one of the seven
+explicit capability names, kind function, and at most one occurrence per
+name (no alias slots). More than seven imports is rejected. The subsequent
+Stage 3+++ gate also validates all declared function signatures from the
+exact source bytes; compiler-produced guests remain provenance-pinned.
 
 Regression gates cover cancellation between a ready resolution and its
 scheduled drain microtask, between a reply resolution and the awaiting
@@ -119,6 +116,79 @@ Node tests construct actual valid Wasm modules containing duplicate,
 foreign, global, memory and table capability imports; Chromium tests inject
 malformed Wasm import modules into a real child worker and require rejection
 before actor instantiation. These tests are not full tenant-isolation proof.
+
+## Stage 3+++ exact Wasm ABI signature gate
+
+The parent compiler Worker and child actor Worker now validate the **raw
+Wasm guest bytes** against the exact canonical Atto host import function
+signatures, in addition to the existing module/name/kind/uniqueness gates.
+A caller cannot validate a different Module object's import metadata while
+instantiating another binary. The validator first calls the native browser
+WebAssembly decoder and then reads the bounded core Wasm type/import
+sections, resolving each function import's type index. It accepts
+custom sections without treating their contents as core import metadata.
+The supported scalar profile allows only i32 and i64 function types.
+
+Exact type contracts (function parameters -> result):
+
+- print_i64: (i64) -> void
+- print_bool: (i32) -> void
+- print_str: (i32, i32) -> void
+- print_newline: () -> void
+- actor_spawn: (i32) -> i32
+- actor_send: (i32, i64) -> i32
+- actor_join: (i32) -> void
+
+A mismatched function type fails closed with E_ACTOR_IMPORT_SIGNATURE
+before any guest instantiation, including when a function has an allowed
+name but different stack argument/result types. Node tests construct
+real valid Wasm binaries for all seven positive types, altered arguments,
+altered result types, custom sections, malicious typed aliases, and raw
+buffer offset views. Real Chromium tests instantiate dedicated actor
+Workers with deliberately wrong scalar ABI imports and check rejection.
+
+This establishes **the declared import function ABI**, not full sandboxing:
+memory limits, arbitrary Wasm exports, dynamic resource capabilities,
+untrusted host JavaScript, tenant process isolation, general async
+suspension and per-actor heap/stack enforcement remain separate gates.
+
+## Stage 4a — independent browser watchdog and bounded output
+
+The page owns a per-run watchdog independent of the compiler Web Worker
+and of every actor Worker. If compiled guest `main()` enters a synchronous
+noncooperative infinite loop, its blocked worker can be terminated after a
+5,000 ms parent deadline without blocking the browser page event loop.
+Timeout, success, worker errors and cancellation are terminal, single-winner
+events; late/queued results after termination cannot turn a failed run into a
+successful one. A new run allocates a fresh Worker and Wasm instance.
+The parent validates response shapes and rejects oversized success output.
+
+The browser worker bounds aggregate `stdio` and actor-result output to
+16,384 UTF-16 code units per run. No more than 4 actor child Workers may
+spawn; each actor admits 32 queued i64 messages. Externally supplied
+host-originated decimal i64 payload strings must have no more than 20
+characters, rejecting oversized untrusted values before BigInt parsing.
+Wasm guest class memory is already one fixed min=max 64-KiB page; the
+class bump allocator fails closed on exhaustion. Browser and compiler
+tests assert that the guest memory cannot grow.
+
+Each child actor has a 2,000 ms per-message deadline enforced by the parent
+worker and terminates on timeout. A non-cooperative actor's Wasm loop cannot
+resolve `get_done()` just because the parent terminates its Worker.
+The independent page watchdog remains a final fallback if the parent
+compiler worker itself stops responding. These checks are not OS-level
+resource isolation, CPU accounting, memory RSS limits, or general safe-point
+instrumentation: the compiler does **not** yet inject `rt cooperate` or
+128/512-iteration reduction polls. Those require a separate compiler MIR
+instrumentation and runtime protocol milestone and cross-backend proof.
+
+Added deterministic Node cases test exactly-once timeout/success/error,
+cancel-before-queued-reply, malformed/oversized responses, cleanup and
+independent run sessions. Real Chromium executes a compiler-generated
+infinite main loop, a dedicated actor stuck in `receive`, output
+exhaustion, oversized host payload and memory.grow denial, plus recovery
+after each fault. This CI is source-owned/private and confers no right
+to promote artifacts to the public playground or GitHub Pages.
 
 ## Evidence requirements and deferred semantics
 

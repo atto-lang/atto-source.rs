@@ -10,6 +10,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/run-watchdog.mjs',[new URL('./browser/run-watchdog.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-lifecycle.mjs',[new URL('./browser/actor-lifecycle.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-import-contract.mjs',[new URL('./browser/actor-import-contract.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
@@ -389,15 +390,28 @@ try{
     const name=s=>{const bytes=[...utf8.encode(s)];return [...leb(bytes.length),...bytes]};
     const sec=(id,v)=>[id,...leb(v.length),...v];
     function guest(specs){
-      let imports=[];
-      for(const spec of specs){
+      let imports=[], types=[];
+      const signatures={
+        actor_send:{params:[127,126],results:[127]},
+        actor_join:{params:[127],results:[]},
+        actor_spawn:{params:[127],results:[127]},
+        print_i64:{params:[126],results:[]},
+        print_bool:{params:[127],results:[]},
+        print_str:{params:[127,127],results:[]},
+        print_newline:{params:[],results:[]},
+      };
+      for(let i=0;i<specs.length;i++){
+        const spec=specs[i], baseline=signatures[spec.field]||signatures.actor_send;
+        const params=spec.params||baseline.params, results=spec.results||baseline.results;
+        types.push(96,...leb(params.length),...params,...leb(results.length),...results);
         imports.push(...name(spec.module||'atto'),...name(spec.field||'actor_send'));
         if(spec.kind==='global')imports.push(3,127,0);
-        else imports.push(0,0);
+        else imports.push(0,...leb(i));
       }
       const bytes=new Uint8Array([
         0,97,115,109,1,0,0,0,
-        ...sec(1,[1,96,0,0]),...sec(2,[...leb(specs.length),...imports])
+        ...sec(1,[...leb(specs.length),...types]),
+        ...sec(2,[...leb(specs.length),...imports])
       ]);
       if(!WebAssembly.validate(bytes))throw new Error('invalid test Wasm fixture');
       return bytes;
@@ -420,16 +434,100 @@ try{
       duplicate:await invalid_import([{field:'actor_send'},{field:'actor_send'}]),
       wrong_kind:await invalid_import([{field:'actor_send',kind:'global'}]),
       foreign_module:await invalid_import([{module:'env',field:'actor_send'}]),
+      send_wrong_param:await invalid_import([{field:'actor_send',params:[126]}]),
+      send_wrong_order:await invalid_import([{field:'actor_send',params:[126,127]}]),
+      join_wrong_result:await invalid_import([{field:'actor_join',results:[127]}]),
+      print_wrong_param:await invalid_import([{field:'print_bool',params:[126]}]),
     };
   })()`);
   assert.deepEqual(guestImportAttacks,{
     duplicate:'E_ACTOR_IMPORT_DUPLICATE',
     wrong_kind:'E_ACTOR_IMPORT_KIND',
     foreign_module:'E_ACTOR_IMPORT_NAME',
+    send_wrong_param:'E_ACTOR_IMPORT_SIGNATURE',
+    send_wrong_order:'E_ACTOR_IMPORT_SIGNATURE',
+    join_wrong_result:'E_ACTOR_IMPORT_SIGNATURE',
+    print_wrong_param:'E_ACTOR_IMPORT_SIGNATURE',
   });
   console.log('PASS browser: child rejects duplicate actor capability imports');
   console.log('PASS browser: child rejects wrong-kind global imports');
   console.log('PASS browser: child rejects foreign namespace capability imports');
+  console.log('PASS browser: child rejects mismatched actor_send parameter count');
+  console.log('PASS browser: child rejects swapped actor_send parameter types');
+  console.log('PASS browser: child rejects actor_join returning a value');
+  console.log('PASS browser: child rejects print_bool accepting i64');
+
+
+  // A runaway main() executes synchronously inside a dedicated compiler
+  // worker. The independent page timer MUST remain responsive and be the
+  // only finalizer; no late worker result may replace its terminal timeout.
+  const runawayMain='pub fnc main(): int { loop { } return 0; }';
+  await evaluate("(()=>{let e=document.querySelector('#source');e.value="+JSON.stringify(runawayMain)+";document.querySelector('#run').click()})()");
+  await sleep(150);
+  assert.equal(await evaluate("(()=>{document.title='parent-alive';return document.title})()"),
+    'parent-alive','runaway guest cannot freeze parent browser event loop');
+  const watchdogResult=await until(async()=>{
+    const result=await evaluate("document.querySelector('#result').textContent");
+    return result==='E_TIMEOUT'?result:null;
+  },'real compiler-worker infinite main watchdog');
+  assert.equal(watchdogResult,'E_TIMEOUT');
+  assert.equal(await evaluate("document.querySelector('#run').disabled"),false);
+  assert.equal(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),'main() -> 42');
+  console.log('PASS browser: infinite synchronous main is terminated by independent page watchdog');
+  console.log('PASS browser: watchdog termination releases button and next guest executes');
+
+  const runawayActor=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { loop { } return msg; }',
+    'end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  val accepted = worker.send(41);',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  assert.equal(await run(runawayActor,'E_ACTOR_TIMEOUT'),'E_HOST: E_ACTOR_TIMEOUT');
+  assert.equal(await run('pub fnc main(): int { return 43; }','main() -> 43'),'main() -> 43');
+  console.log('PASS browser: runaway receive terminates child actor without false get_done success');
+  console.log('PASS browser: child timeout does not poison subsequent compiler/actor runs');
+
+  const excessiveOutput=[
+    'pub fnc main(): int {',
+    '  for (let i = 0; i < 6000; i++) do',
+    '    stdio.println(i);',
+    '  done',
+    '  return 42;',
+    '}',
+  ].join('\n');
+  assert.equal(await run(excessiveOutput,'E_OUTPUT_LIMIT'),'E_OUTPUT_LIMIT');
+  assert.equal(await run('pub fnc main(): int { return 44; }','main() -> 44'),'main() -> 44');
+  console.log('PASS browser: guest output quota rejects excessive stdout without success');
+  console.log('PASS browser: output quota failure preserves next-run isolation');
+
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'9'.repeat(1000)}]");
+  const largeHostPayload=await run(actorExample,'E_MESSAGE_TYPE');
+  assert.match(largeHostPayload,/E_MESSAGE_TYPE/);
+  await evaluate("window.__attoActorMessages=undefined");
+  console.log('PASS browser: oversized external scalar string rejected before BigInt conversion');
+
+  // Guest Wasm memory emitted by the compiler has min=max=1 page; growing it
+  // would bypass the guest-private heap quota and must be impossible.
+  const memoryCheck=await evaluate(`(async()=>{
+    const raw=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
+    const api=new WebAssembly.Instance(new WebAssembly.Module(raw),{}).exports;
+    const source='define class Unit as int value: 1 end '+
+      'pub fnc main(): int { val item = new Unit(); return item.value; }';
+    const bytes=new TextEncoder().encode(source);
+    new Uint8Array(api.memory.buffer,api.input_ptr(),bytes.length).set(bytes);
+    if(api.compile(bytes.length)!==0)throw new Error('memory probe compile failed');
+    const wasm=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+    const guest=new WebAssembly.Instance(new WebAssembly.Module(wasm),{}).exports;
+    if(guest.memory.buffer.byteLength!==65536)throw new Error('incorrect initial memory');
+    try{guest.memory.grow(1);return 'MEMORY_GROW_UNEXPECTEDLY_SUCCEEDED'}
+    catch(e){return e instanceof RangeError?'MEMORY_GROW_DENIED':e.name}
+  })()`);
+  assert.equal(memoryCheck,'MEMORY_GROW_DENIED');
+  console.log('PASS browser: compiler guest memory is fixed one-page and cannot grow');
 
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));

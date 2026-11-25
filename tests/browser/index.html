@@ -4,16 +4,27 @@
 <textarea id="source" rows="5" cols="70">pub fnc main(): int { return 6 * 7; }</textarea>
 <button id="run">Compile and run</button><pre id="result">Ready</pre>
 <script type="module">
+
+import { BrowserRunSession } from './run-watchdog.mjs';
 const editor=document.querySelector('#source'),out=document.querySelector('#result'),button=document.querySelector('#run');
-let last=0;
+let active=null;
 button.addEventListener('click',()=>{
-  const id=++last;
-  const worker=new Worker('/worker.mjs',{type:'module'});
+  if(active?.state==='running')return;
   button.disabled=true;out.textContent='Compiling';
-  const timer=setTimeout(()=>{worker.terminate();if(id===last){out.textContent='E_TIMEOUT';button.disabled=false}},5000);
-  worker.onmessage=event=>{clearTimeout(timer);worker.terminate();if(id!==last)return;out.textContent=event.data.ok?event.data.stdout+'main() -> '+event.data.value:event.data.error;button.disabled=false};
-  worker.onerror=()=>{clearTimeout(timer);worker.terminate();if(id===last){out.textContent='E_WORKER';button.disabled=false}};
-  worker.postMessage({source:editor.value,actorMessages:window.__attoActorMessages});
+  try {
+    const worker=new Worker('/worker.mjs',{type:'module'});
+    active=new BrowserRunSession(
+      worker,
+      {source:editor.value,actorMessages:window.__attoActorMessages},
+      result=>{
+        out.textContent=result.ok?result.stdout+'main() -> '+result.value:result.error;
+        button.disabled=false;
+      }
+    );
+  } catch {
+    button.disabled=false;
+    out.textContent='E_WORKER_START';
+  }
 });
 window.__attoReady=true;
 </script>
