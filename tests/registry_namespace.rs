@@ -727,3 +727,43 @@ fn external_class_application_helpers_pass_and_return_nominal_objects() {
         assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
     }
 }
+
+#[test]
+fn external_class_lexical_read_loans_require_read_only_receiver_proof() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\nother = \"src/other/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    for (path,source) in [
+        ("src/model/types.atto","use namespace model; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } pub update(): int { self.value = 0; return self.value; } hidden(): int { return self.value; } end"),
+        ("src/other/types.atto","use namespace other; pub define class Item as private int value: 20; pub answer(int y): int { return self.value+y; } end"),
+    ]{inputs.push(SnapshotSource{path,source});}
+    let p=verify(&manifest,&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import class p.model.Item as Data; ";
+    for (i,body) in [
+        "val a: Data = new Data(); val b: Data = borrow! a; return b.answer(1)+a.answer(1);",
+        "val a: Data = new Data(); const b: p.model.Item = borrow! a; val c: Data = borrow! a; return b.answer(1)+c.answer(1);",
+    ].iter().enumerate(){
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        let wasm=compile_registry_guest(&source,&[&p]).unwrap_or_else(|d|panic!("{source}: {d}"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-class-loan-{i}.wasm")),wasm).unwrap();
+        }
+    }
+    for (body,code) in [
+        ("val a: Data = new Data(); val b: Data = borrow! a; return b.update();","E_BORROW"),
+        ("val a: Data = new Data(); val b: Data = borrow! a; return a.update();","E_BORROW"),
+        ("val a: Data = new Data(); val b: Data = borrow! a; return b.hidden();","E_PRIVATE"),
+        ("val a: Data = new Data(); val b: Data = borrow! a; return b.value;","E_PRIVATE"),
+        ("val a: Data = new Data(); val b: Data = borrow! mut a; return b.answer(22);","E_BORROW"),
+        ("val a: Data = new Data(); val b: Data = borrow! a; val c: Data = borrow! b; return c.answer(22);","E_BORROW"),
+        ("val a: Data = new Data(); val b: p.other.Item = borrow! a; return b.answer(22);","E_TYPE"),
+        ("val a: Data = borrow! a; return a.answer(22);","E_BORROW"),
+    ]{
+        let source=format!("{prefix}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
+    }
+    for arg in ["a","b"] {
+        let source=format!("{prefix}fnc read(item: Data): int {{ return item.answer(22); }} pub fnc main(): int {{ val a: Data = new Data(); val b: Data = borrow! a; return read({arg}); }}");
+        assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,"E_BORROW");
+    }
+}
