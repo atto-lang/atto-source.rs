@@ -1,14 +1,31 @@
 //! Non-executable scoped Record field preflight.
 //! Never turns an indexed Record/Map expression into a guest allocation/read.
 use std::collections::BTreeMap;
-use crate::ast::{Expr, ExprKind, Program, Stmt, Param};
+use crate::ast::{BinOp, Expr, ExprKind, Program, Stmt, Param, UnOp};
 use crate::collection_types::{annotation, inferred, matches_expected, static_record_field_type,
     LiteralType as Ty, MAX_LITERAL_DEPTH};
 use crate::diag::{Diagnostic, Pos};
 
 type R<T> = Result<T, Diagnostic>;
+// Ordinary scalar expression chains have a larger bounded AST budget than
+// recursively nested collection literals. collection_types::inferred still
+// enforces MAX_LITERAL_DEPTH for actual collection nesting.
+const MAX_SCOPE_EXPR_DEPTH: usize = MAX_LITERAL_DEPTH;
+const MAX_SCOPE_OP_LINKS: usize = 1024;
 fn err(at: Pos, code: &'static str, msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(at, code, msg)
+}
+// Prove that the retained fields can be duplicated without manufacturing
+// aliases of unique mutable storage. This conservative frontend profile
+// admits only immutable scalars, tuples and recursively scalar Records.
+fn retain_safe(ty: &Ty, depth: usize) -> bool {
+    if depth >= MAX_LITERAL_DEPTH { return false; }
+    match ty {
+        Ty::Int | Ty::Bool | Ty::Float | Ty::String => true,
+        Ty::Record(fields) => fields.iter().all(|(_, t)| retain_safe(t, depth + 1)),
+        Ty::Tuple(items) => items.iter().all(|t| retain_safe(t, depth + 1)),
+        _ => false,
+    }
 }
 fn is_collection(ty: &Ty) -> bool {
     matches!(ty, Ty::Record(_) | Ty::OpenRecord | Ty::Map(_,_) |
@@ -61,19 +78,75 @@ impl<'a> Scope<'a> {
         }
     }
     fn expression(&self, e: &Expr, expected: Option<&Ty>, depth: usize) -> R<Option<Ty>> {
-        if depth >= MAX_LITERAL_DEPTH {
-            return Err(err(e.pos,"E_NESTING","scoped type expression nesting exceeded"));
+        if depth >= MAX_SCOPE_EXPR_DEPTH {
+            return Err(err(e.pos,"E_NESTING","scoped expression nesting exceeded"));
         }
         let ty = match &e.kind {
+            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) |
+            ExprKind::Str(_) => Some(inferred(e, None, depth)?.ty),
             ExprKind::Var(name) => self.local(name).and_then(|v| v.actual.clone()),
-            ExprKind::Member(base, field) => {
-                match self.expression(base,None,depth+1)? {
-                    Some(t @ (Ty::Record(_) | Ty::OpenRecord)) =>
-                        Some(static_record_field_type(&t,field,e.pos)?),
-                    Some(Ty::Map(_, _)) => return Err(err(e.pos,"E_TYPE",
-                        "Map keys cannot be accessed as Record dot-fields")),
-                    _ => None,
+            ExprKind::With(base, updates) => {
+                let original = match self.expression(base,None,depth + 1)? {
+                    Some(Ty::Record(fields)) => fields,
+                    Some(Ty::OpenRecord) => return Err(err(e.pos,"E_WITH_OPEN_RECORD",
+                        "with needs a proven closed Record shape; narrow open Record first")),
+                    Some(_) => return Err(err(e.pos,"E_WITH_TYPE",
+                        "with requires a closed structural Record in this compiler profile")),
+                    None => return Err(err(e.pos,"E_WITH_UNRESOLVED",
+                        "with receiver type cannot be proved statically")),
+                };
+                let mut fields: BTreeMap<String, Ty> = original.iter().cloned().collect();
+                let mut seen = std::collections::BTreeSet::new();
+                for (name, update) in updates {
+                    if !seen.insert(name.clone()) {
+                        return Err(err(update.pos,"E_DUPLICATE",
+                            format!("duplicate with update field '{name}'")));
+                    }
+                    let updated = self.expression(update,None,depth + 1)?
+                        .ok_or_else(|| err(update.pos,"E_WITH_TYPE",
+                            format!("with field '{name}' requires a statically known type")))?;
+                    if !retain_safe(&updated, depth + 1) {
+                        return Err(err(update.pos,"E_WITH_OWNERSHIP",
+                            "with cannot implicitly share a mutable or unresolved updated field"));
+                    }
+                    fields.insert(name.clone(),updated);
                 }
+                for (name, retained) in &original {
+                    if !seen.contains(name) && !retain_safe(retained,depth + 1) {
+                        return Err(err(e.pos,"E_WITH_OWNERSHIP",
+                            format!("retained field '{name}' lacks verified Copy/share ownership")));
+                    }
+                }
+                let result = Ty::Record(fields.into_iter().collect());
+                let _checked_static_layout = crate::layout_plan::record(&result,e.pos)?;
+                Some(result)
+            },
+            ExprKind::Member(_, _) => {
+                // The parser deliberately accepts 240-link member chains.
+                // Walk their left spine iteratively so the extra collection
+                // preflight does not reject well-formed expressions or crash
+                // with a deep recursive Rust call stack.
+                let mut links=Vec::new();
+                let mut current=e;
+                while let ExprKind::Member(base,field)=&current.kind {
+                    if links.len()>=MAX_SCOPE_OP_LINKS {
+                        return Err(err(current.pos,"E_NESTING",
+                            "member chain exceeds scoped preflight link budget"));
+                    }
+                    links.push((field.as_str(),current.pos));
+                    current=base;
+                }
+                let mut ty=self.expression(current,None,depth+1)?;
+                for (field,pos) in links.into_iter().rev() {
+                    ty=match ty {
+                        Some(t @ (Ty::Record(_) | Ty::OpenRecord)) =>
+                            Some(static_record_field_type(&t,field,pos)?),
+                        Some(Ty::Map(_, _)) => return Err(err(pos,"E_TYPE",
+                            "Map keys cannot be accessed as Record dot-fields")),
+                        _=>None,
+                    }
+                }
+                ty
             }
             ExprKind::Index(base,key) => {
                 match self.expression(base,None,depth+1)? {
@@ -98,12 +171,61 @@ impl<'a> Scope<'a> {
                 }
                 Some(ty)
             }
-            ExprKind::Ownership(_,_,x) | ExprKind::Unary(_,x) | ExprKind::Trap(x) |
+            // The parser represents the signed minimum as unary minus over
+            // the special i64::MAX+1 token. The inner token is intentionally
+            // invalid on its own; typecheck the complete negative literal.
+            ExprKind::Unary(UnOp::Neg,x) if matches!(&x.kind,ExprKind::Int(None)) =>
+                Some(Ty::Int),
+            ExprKind::Unary(op,x) => {
+                let inner=self.expression(x,None,depth+1)?;
+                match (op,inner) {
+                    (UnOp::Neg | UnOp::Plus,Some(Ty::Int)) => {
+                        if matches!(&x.kind, ExprKind::Int(_)) {
+                            Some(inferred(e,None,depth)?.ty)
+                        } else { Some(Ty::Int) }
+                    },
+                    (UnOp::Neg | UnOp::Plus,Some(Ty::Float)) => Some(Ty::Float),
+                    (UnOp::Not,Some(Ty::Bool)) => Some(Ty::Bool),
+                    _ => None,
+                }
+            }
+            ExprKind::Ownership(_,_,x) | ExprKind::Trap(x) |
             ExprKind::Propagate(x) => { self.expression(x,None,depth+1)?; None }
-            ExprKind::Binary(_,a,b) => {
-                self.expression(a,None,depth+1)?;
-                self.expression(b,None,depth+1)?;
-                None
+            ExprKind::Binary(_,_,_) => {
+                // Operator chains are left-associated and may be much longer
+                // than a nested collection literal. An explicit worklist
+                // preserves the parser's 250+ scalar-chain acceptance without
+                // growing the Rust checker stack or relaxing literal bounds.
+                let mut links=Vec::new();
+                let mut current=e;
+                while let ExprKind::Binary(op,left,right)=&current.kind {
+                    if links.len()>=MAX_SCOPE_OP_LINKS {
+                        return Err(err(current.pos,"E_NESTING",
+                            "scoped operator chain exceeds the checked link budget"));
+                    }
+                    links.push((*op,right.as_ref()));
+                    current=left.as_ref();
+                }
+                let mut result=self.expression(current,None,depth+1)?;
+                for (op,rhs) in links.into_iter().rev() {
+                    let right=self.expression(rhs,None,depth+1)?;
+                    result=match (op,result,right) {
+                        (BinOp::Add | BinOp::Sub | BinOp::Mul,Some(Ty::Int),Some(Ty::Int)) =>
+                            Some(Ty::Int),
+                        (BinOp::Add | BinOp::Sub | BinOp::Mul,
+                            Some(Ty::Int | Ty::Float),Some(Ty::Float)) |
+                        (BinOp::Add | BinOp::Sub | BinOp::Mul,
+                            Some(Ty::Float),Some(Ty::Int)) => Some(Ty::Float),
+                        (BinOp::Add,Some(Ty::String),Some(Ty::String)) => Some(Ty::String),
+                        (BinOp::Eq | BinOp::Ne,Some(Ty::Int),Some(Ty::Int)) |
+                        (BinOp::Eq | BinOp::Ne,Some(Ty::Bool),Some(Ty::Bool)) |
+                        (BinOp::Eq | BinOp::Ne,Some(Ty::String),Some(Ty::String)) => Some(Ty::Bool),
+                        (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
+                            Some(Ty::Int),Some(Ty::Int)) => Some(Ty::Bool),
+                        _ => None,
+                    };
+                }
+                result
             }
             ExprKind::Ternary(c,a,b) => {
                 self.expression(c,None,depth+1)?;
@@ -117,13 +239,43 @@ impl<'a> Scope<'a> {
                     Some(Ty::OpenRecord)
                 } else { None }
             }
+            // Browser's existing And/Or/Xor bool-pack ABI accepts an array
+            // spelling as a *call argument* only. It never allocates a general
+            // Array value. Visit item expressions without asking the collection
+            // literal inference pass to invent a runtime array ABI. The normal
+            // typed call checker still validates booleans and rejects effects.
+            ExprKind::Call(name,args) if matches!(name.as_str(),"And"|"Or"|"Xor") => {
+                for arg in args {
+                    if let ExprKind::Array(items)=&arg.kind {
+                        for item in items {
+                            self.expression(item,Some(&Ty::Bool),depth+1)?;
+                        }
+                    } else { self.expression(arg,None,depth+1)?; }
+                }
+                None
+            }
             ExprKind::Call(_,args) | ExprKind::New(_,args) => {
                 for arg in args {self.expression(arg,None,depth+1)?;}
                 None
             }
-            ExprKind::MethodCall(recv,_,args) => {
-                self.expression(recv,None,depth+1)?;
-                for arg in args {self.expression(arg,None,depth+1)?;}
+            ExprKind::MethodCall(_,_,_) => {
+                // Likewise, method-chain receivers can be hundreds of links
+                // deep. The ordinary class checker owns method return typing.
+                // This pass only visits arguments for nested collection errors.
+                let mut frames=Vec::new();
+                let mut current=e;
+                while let ExprKind::MethodCall(recv,_,args)=&current.kind {
+                    if frames.len()>=MAX_SCOPE_OP_LINKS {
+                        return Err(err(current.pos,"E_NESTING",
+                            "method chain exceeds scoped preflight link budget"));
+                    }
+                    frames.push(args.as_slice());
+                    current=recv;
+                }
+                self.expression(current,None,depth+1)?;
+                for args in frames.into_iter().rev() {
+                    for arg in args {self.expression(arg,None,depth+1)?;}
+                }
                 None
             }
             // Scalars, regular class members and lambdas still belong to the
