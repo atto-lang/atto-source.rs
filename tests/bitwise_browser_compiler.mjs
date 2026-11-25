@@ -66,25 +66,48 @@ const boundaryGuest = new WebAssembly.Instance(new WebAssembly.Module(boundarySh
 assert.equal(boundaryGuest.exports.main(), -9223372036854775808n);
 assert.equal(boundaryGuest.exports.panic_code.value, 0);
 
-// The same wasm32-hosted compiler must lower signed i64 division to f64,
-// not silently truncate the quotient and not emit an int-returning guest.
-const divisionSource = `fnc half(int numerator, int denominator): float {
+// The native and wasm32-hosted compilers must preserve checked integer division
+// and keep explicit floating division distinct.
+const divisionSource = `fnc half(float numerator, float denominator): float {
   return numerator / denominator;
 }
 pub fnc main(): int {
-  if half(5, 2) eq 2.5 then return 42; fi
+  if half(5.0, 2.0) eq 2.5 then
+    if -7 / 3 eq -2 then return 42; fi
+  fi
   return 1;
 }`;
 const division = compile(divisionSource);
-assert.equal(division.ok, true, division.diagnostic || 'int/int -> float compile');
+assert.equal(division.ok, true, division.diagnostic || 'checked quotient compile');
 const divisionModule = new WebAssembly.Module(division.guest);
 assert.deepEqual(WebAssembly.Module.imports(divisionModule), []);
 const divisionGuest = new WebAssembly.Instance(divisionModule, { atto: {} });
-assert.equal(divisionGuest.exports.main(), 42n, 'integer division is floating');
+assert.equal(divisionGuest.exports.main(), 42n);
 assert.equal(divisionGuest.exports.panic_code.value, 0);
 
-const rejectedTruncation = compile('pub fnc main(): int { return 5 / 2; }');
-assert.equal(rejectedTruncation.ok, false, 'float result must not narrow to int');
+for (const [source, result] of [
+  ['pub fnc main(): int { return 5 / 2; }', 2n],
+  ['pub fnc main(): int { return -5 / 2; }', -2n],
+  ['pub fnc main(): int { return 9007199254740993 / 1; }', 9007199254740993n],
+]) {
+  const compiled = compile(source);
+  assert.equal(compiled.ok, true, compiled.diagnostic);
+  const guest = new WebAssembly.Instance(new WebAssembly.Module(compiled.guest), {});
+  assert.equal(guest.exports.main(), result);
+  assert.equal(guest.exports.panic_code.value, 0);
+}
+for (const [source, code] of [
+  ['fnc q(int d): int { return 7 / d; } pub fnc main(): int { return q(0); }', 2],
+  ['fnc q(int d): int { return -9223372036854775808 / d; } pub fnc main(): int { return q(-1); }', 1],
+]) {
+  const compiled = compile(source);
+  assert.equal(compiled.ok, true, compiled.diagnostic);
+  const guest = new WebAssembly.Instance(new WebAssembly.Module(compiled.guest), {});
+  assert.throws(() => guest.exports.main(), WebAssembly.RuntimeError);
+  assert.equal(guest.exports.panic_code.value, code, 'provisional terminal fault ABI');
+}
+const rejectedTruncation = compile('pub fnc main(): int { return 5.0 / 2.0; }');
+assert.equal(rejectedTruncation.ok, false, 'explicit float result must not narrow to int');
 assert.match(rejectedTruncation.diagnostic, /E_TYPE|E_RETURN_TYPE/);
 
 const rejectedShift = compile('pub fnc main(): int { return 1 <<< 64; }');
@@ -148,4 +171,4 @@ for (const [src, expected] of [
   assert.equal(failure.ok, false, 'negative source cannot return a Wasm artifact');
   assert.ok(failure.diagnostic.includes(expected), failure.diagnostic);
 }
-console.log('PASS website bitwise Wasm guest, native bytes, floating division, checked shifts and source rejection');
+console.log('PASS website bitwise Wasm guest, native bytes, checked integer and explicit floating division, checked shifts and source rejection');
