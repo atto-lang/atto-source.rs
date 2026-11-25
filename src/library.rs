@@ -125,6 +125,7 @@ fn find(layer: Layer, unit: &str, os: TargetOs) -> Option<&'static Unit> {
 
 struct LibImport {
     binding: String,
+    member: Option<String>,
     aliases: Vec<String>,
     v2: bool,
     selector: String,
@@ -269,6 +270,7 @@ fn parse_builtin_clause(body: &[Token]) -> R<Option<LibImport>> {
         }
         return Ok(Some(LibImport {
             binding: unit.to_string(),
+            member: None,
             aliases,
             v2,
             selector,
@@ -281,12 +283,76 @@ fn parse_builtin_clause(body: &[Token]) -> R<Option<LibImport>> {
     Ok(None)
 }
 
+/// Resolve tree leaves against the compiler-owned flat unit catalog, never
+/// against external files or caller-supplied declarations. The existing
+/// module lowerer independently enforces function visibility at calls.
+fn builtin_tree(tokens: &[Token], start: usize, end: usize) -> R<Option<Vec<LibImport>>> {
+    use crate::import_v2::Kind;
+    let body=&tokens[start+1..end];
+    if body.iter().any(|t| ident(Some(t))==Some("from")) {return Ok(None);}
+    let typed=matches!(ident(body.first()),Some("fnc"|"namespace"|"class"|"module"|"const"|"actor"|"enum"|"trait"|"interface"|"type"));
+    let root=if typed {1}else{0};
+    if !matches!(ident(body.get(root)),Some("core"|"alloc"|"std")) {return Ok(None);}
+    let is_tree=body.iter().any(|t| t.tok==Tok::LBrace)
+        || body.get(root+4).is_some_and(|_|body.get(root+3).is_some_and(|t|t.tok==Tok::Dot))
+        || (typed && ident(body.first())!=Some("namespace"));
+    if !is_tree {return Ok(None);}
+    let pos=tokens[start].pos;
+    let (leaves,next)=crate::import_tree::parse(tokens,start+1)?;
+    if next!=end+1 {return Err(err(pos,"E_SYNTAX","invalid builtin tree extent"));}
+    let mut out=Vec::new();
+    for leaf in leaves {
+        let parts:Vec<_>=leaf.path.split('.').collect();
+        if !(2..=3).contains(&parts.len()) {
+            return Err(err(pos,"E_IMPORT","builtin tree requires registered flat library unit"));
+        }
+        let selector=format!("{}.{}",parts[0],parts[1]);
+        let (layer,name)=normalize(&selector).ok_or_else(||err(pos,"E_IMPORT","invalid builtin tree selector"))?;
+        let unit=find(layer,name,target_os()).ok_or_else(||err(pos,"E_IMPORT","unknown builtin tree unit"))?;
+        let member=if parts.len()==3 {
+            if leaf.group_self || leaf.kind.is_some_and(|k|k!=Kind::Fnc) || leaf.binding.contains('.') {
+                return Err(err(pos,"E_IMPORT_KIND","builtin function leaf kind or alias mismatch"));
+            }
+            let t=lexer::lex(unit.source)?;
+            let mut depth=0usize;
+            let mut found=None;
+            for (i,x) in t.iter().enumerate(){
+                match x.tok {
+                    Tok::LBrace=>depth+=1,
+                    Tok::RBrace=>depth=depth.saturating_sub(1),
+                    _=>{}
+                }
+                if depth==0 && ident(Some(x))==Some("fnc") && ident(t.get(i+1))==Some(parts[2]){
+                    found=Some(i>0 && ident(t.get(i-1))==Some("pub"));
+                    break;
+                }
+            }
+            match found{
+                Some(true)=>{},
+                Some(false)=>return Err(err(pos,"E_PRIVATE","private builtin function")),
+                None=>return Err(err(pos,"E_UNBOUND","unknown builtin function")),
+            }
+            Some(parts[2].to_string())
+        }else{
+            if leaf.kind.is_some_and(|k|k!=Kind::Namespace){
+                return Err(err(pos,"E_IMPORT_KIND","builtin unit is a namespace"));
+            }
+            None
+        };
+        out.push(LibImport{binding:name.to_string(),member,aliases:vec![leaf.binding],v2:true,selector,pos,start:0,end:0});
+    }
+    Ok(Some(out))
+}
+
 /// Syntax tooling uses the same classifier as the executable builtin lane.
 /// The return value includes only lexical bindings, never runtime objects.
 pub(crate) fn builtin_bindings(tokens: &[Token], start: usize) -> R<Option<(Vec<String>, usize)>> {
     let mut end = start;
     while tokens.get(end).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) { end += 1; }
     let Some(body) = tokens.get(start..end) else { return Ok(None); };
+    if tokens.get(end).is_some_and(|t|t.tok==Tok::Semi) {
+        if let Some(imports)=builtin_tree(tokens,start,end)? {return Ok(Some((imports.into_iter().flat_map(|i|i.aliases).collect(),end+1)));}
+    }
     // Preserve legacy syntax-only external and typed symbol admission. An
     // explicit pkg domain is never a builtin, even for reserved spellings.
     // The executable dispatcher independently rejects unsupported resolution.
@@ -324,7 +390,9 @@ fn library_imports(source: &str) -> R<Vec<LibImport>> {
         if toks.get(j).map(|t| &t.tok) != Some(&Tok::Semi) {
             return Err(err(toks[start_tok].pos, "E_SYNTAX", "unterminated import"));
         }
-        if let Some(mut imp) = parse_builtin_clause(&toks[start_tok..j])? {
+        let imports=if let Some(tree)=builtin_tree(&toks,start_tok,j)? {tree}
+            else {parse_builtin_clause(&toks[start_tok..j])?.into_iter().collect()};
+        for mut imp in imports {
             imp.start = byte_offset(source, imp.pos);
             imp.end = byte_offset(source, toks[j].pos) + 1;
             out.push(imp);
@@ -423,7 +491,7 @@ fn reserved_layer_name(selector: &str) -> &'static str {
 /// Reject shadowing, runtime namespace values, and mixed linker domains until
 /// the full lexical export graph can represent them.
 // Parse a complete contextual define alias declaration with no I/O.
-fn parse_alias_declaration(tokens: &[Token], i: usize) -> R<(String, String, Pos, usize)> {
+pub(crate) fn parse_alias_declaration(tokens: &[Token], i: usize) -> R<(String, String, Pos, usize)> {
     let pos = tokens[i].pos;
     let start = i + 2;
     let mut end = start;
@@ -495,7 +563,7 @@ fn alias_header_preflight(source: &str) -> R<Option<Pos>> {
 }
 
 fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str, String)]) -> R<String> {
-    let mut aliases = BTreeMap::<Vec<String>, String>::new();
+    let mut aliases = BTreeMap::<Vec<String>, (String,Option<String>)>::new();
     let mut protected = BTreeSet::<String>::new();
     for (_, name, _) in units { protected.insert((*name).to_string()); }
     for imp in imports {
@@ -505,7 +573,7 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
             if aliases.keys().any(|prior| prior.starts_with(&parts) || parts.starts_with(prior)) {
                 return Err(err(imp.pos, "E_DUPLICATE", "duplicate or overlapping builtin binding"));
             }
-            aliases.insert(parts, imp.binding.clone());
+            aliases.insert(parts, (imp.binding.clone(),imp.member.clone()));
         }
     }
     let tokens = lexer::lex(source)?;
@@ -560,8 +628,8 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
             for alias in &imp.aliases {
                 scope.bind_verified(alias, Tier::Deliberate, Target {
                     origin: Origin::Builtin(identity.clone()),
-                    declaration: name.to_string(),
-                    kind: Kind::Namespace,
+                    declaration: imp.member.as_ref().map_or_else(||name.to_string(),|m|format!("{name}.{m}")),
+                    kind: if imp.member.is_some(){Kind::Fnc}else{Kind::Namespace},
                 })?;
             }
         }
@@ -573,7 +641,7 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
                 return Err(err(pos, "E_IMPORT_KIND", "namespace alias must resolve to admitted builtin"));
             }
             protected.insert(name.clone());
-            aliases.insert(vec![name], target.declaration);
+            aliases.insert(vec![name], (target.declaration,None));
         }
     }
     while i < tokens.len() {
@@ -587,18 +655,23 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
             return Err(err(token.pos, "E_UNSUPPORTED", "namespace binding cannot be a runtime object member"));
         }
         let mut matched = None;
-        for (parts, unit) in &aliases {
+        for (parts, (unit,member)) in &aliases {
             if parts[0] != name { continue; }
             let n = parts.len();
-            if parts.iter().enumerate().all(|(j,p)| ident(tokens.get(i + j*2)) == Some(p.as_str())
-                && (j == 0 || tokens.get(i + j*2 - 1).is_some_and(|t| t.tok == Tok::Dot)))
-                && tokens.get(i + n*2 - 1).is_some_and(|t| t.tok == Tok::Dot)
+            if !parts.iter().enumerate().all(|(j,p)| ident(tokens.get(i + j*2)) == Some(p.as_str())
+                && (j == 0 || tokens.get(i + j*2 - 1).is_some_and(|t| t.tok == Tok::Dot))) {continue;}
+            if let Some(member)=member {
+                if tokens.get(i+n*2-1).is_some_and(|t|t.tok==Tok::LParen) {
+                    matched=Some((n,format!("{unit}.{member}"),true));break;
+                }
+            }else if tokens.get(i + n*2 - 1).is_some_and(|t| t.tok == Tok::Dot)
                 && ident(tokens.get(i + n*2)).is_some()
-                && tokens.get(i + n*2 + 1).is_some_and(|t| t.tok == Tok::LParen)
-            { matched = Some((n, unit)); break; }
+                && tokens.get(i + n*2 + 1).is_some_and(|t| t.tok == Tok::LParen) {
+                matched=Some((n,unit.clone(),false));break;
+            }
         }
-        let (n, unit) = matched.ok_or_else(|| err(token.pos, "E_UNSUPPORTED",
-            "unbound, shadowed or non-call builtin namespace reference"))?;
+        let (n, unit, direct) = matched.ok_or_else(|| err(token.pos, "E_UNSUPPORTED",
+            "unbound, shadowed or non-call builtin static reference"))?;
         let last = &tokens[i + (n-1)*2];
         let start = *offsets.get(&(token.pos.line, token.pos.col))
             .ok_or_else(|| err(token.pos, "E_INTERNAL", "missing import alias source offset"))?;
@@ -618,7 +691,7 @@ fn rewrite_v2(source: &str, imports: &[LibImport], units: &[(Layer, &'static str
             else { for _ in 0..ch.len_utf8() { replacement.push(' '); } }
         }
         edits.push((start, end, replacement));
-        i += n*2 + 1;
+        i += if direct {n*2-1}else{n*2+1};
     }
     let mut result = source.to_string();
     for (start, end, replacement) in edits.into_iter().rev() {

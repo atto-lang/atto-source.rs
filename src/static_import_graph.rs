@@ -13,6 +13,8 @@ fn err(code: &'static str, msg: &str) -> Diagnostic {
     Diagnostic::new(Pos::default(), code, msg)
 }
 
+pub(crate) fn valid_component(s: &str) -> bool { ident(s) }
+
 fn ident(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.is_ascii()
         && s.as_bytes().first().is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
@@ -89,6 +91,8 @@ impl PackageId {
         { return Err(err("E_IMPORT_PATH", "invalid pinned canonical package identity")); }
         Ok(Self { name: name.into(), version: version.into(), digest: digest.into() })
     }
+    pub(crate) fn digest(&self) -> &str { &self.digest }
+
     pub fn suffixes(&self) -> Vec<String> {
         let parts: Vec<_> = self.name[1..].split('/').map(|p| p.replace('-', "_")).collect();
         (0..parts.len()).rev().map(|i| parts[i..].join(".")).filter(|p| path(p)).collect()
@@ -122,6 +126,10 @@ pub struct Scope { bindings: Vec<Binding> }
 
 impl Scope {
     pub fn new() -> Self { Self::default() }
+
+    pub(crate) fn has_root(&self, name: &str) -> bool {
+        self.bindings.iter().any(|b| b.name.split('.').next() == Some(name))
+    }
 
     fn insert(&mut self, name: &str, tier: Tier, target: Target) -> R<()> {
         if !path(name) { return Err(err("E_IMPORT_PATH", "invalid static binding path")); }
@@ -203,6 +211,15 @@ impl Scope {
         view.lookup(&key)
     }
 
+    /// Resolve only in the uniquely selected origin's authenticated view.
+    pub fn resolve_in_views(&self, reference: &str, views: &[&ExportView]) -> R<Target> {
+        let resolved = self.resolve(reference)?;
+        let mut matching = views.iter().filter(|v| v.origin == resolved.target.origin);
+        let view = matching.next().ok_or_else(|| err("E_UNBOUND", "missing authenticated export view"))?;
+        if matching.next().is_some() { return Err(err("E_AMBIGUOUS", "duplicate authenticated export view")); }
+        self.resolve_export(reference, view)
+    }
+
     /// Resolve a nominal declaration identity, not its runtime layout or ABI.
     /// General type aliases are intentionally excluded until their expansion
     /// rules are checked. The authenticated package digest is part of identity.
@@ -214,7 +231,7 @@ impl Scope {
         Ok(NominalId(target))
     }
 
-    /// Create a namespace const after resolution of a checked namespace node.
+    /// Create a namespace alias after resolution of a checked namespace node.
     /// Chains of already resolved constants work; forward/cyclic references
     /// fail closed pending a separate graph-wide alias topological pass.
     pub fn namespace_alias(&mut self, alias: &str, target: Target) -> R<()> {

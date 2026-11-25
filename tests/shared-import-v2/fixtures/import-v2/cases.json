@@ -172,6 +172,395 @@
           false
         ]
       ]
+    },
+    "contextual-root": {
+      "identity": "@foo/bar/baz",
+      "namespace": "network.http",
+      "exports": [
+        [
+          "network",
+          "namespace",
+          true
+        ],
+        [
+          "network.http",
+          "namespace",
+          true
+        ],
+        [
+          "network.http.utils",
+          "namespace",
+          true
+        ],
+        [
+          "network.config",
+          "namespace",
+          true
+        ],
+        [
+          "network.http.client",
+          "namespace",
+          true
+        ],
+        [
+          "common",
+          "namespace",
+          true
+        ],
+        [
+          "config",
+          "namespace",
+          true
+        ]
+      ]
+    },
+    "frozen-literal-root": {
+      "identity": "@org/project/package",
+      "exports": [
+        [
+          "limits",
+          "namespace",
+          true
+        ],
+        [
+          "limits.MAX",
+          "const",
+          true
+        ],
+        [
+          "limits.READY",
+          "const",
+          true
+        ],
+        [
+          "limits.LOW",
+          "const",
+          true
+        ],
+        [
+          "limits.LABEL",
+          "const",
+          true
+        ],
+        [
+          "limits.SECRET",
+          "const",
+          false
+        ],
+        [
+          "http",
+          "namespace",
+          true
+        ],
+        [
+          "http.get",
+          "fnc",
+          true
+        ]
+      ],
+      "literalValues": {
+        "limits.MAX": {
+          "type": "int",
+          "value": 41
+        },
+        "limits.READY": {
+          "type": "bool",
+          "value": true
+        },
+        "limits.LOW": {
+          "type": "int",
+          "value": "-9223372036854775808"
+        },
+        "limits.LABEL": {
+          "type": "string",
+          "value": "ready"
+        },
+        "limits.SECRET": {
+          "type": "int",
+          "value": 99
+        }
+      }
+    },
+    "contextual-public-guest-root": {
+      "identity": "@org/project/package",
+      "namespace": "network.http",
+      "exports": [
+        [
+          "network",
+          "namespace",
+          true
+        ],
+        [
+          "network.http",
+          "namespace",
+          true
+        ],
+        [
+          "network.http.get",
+          "fnc",
+          true
+        ],
+        [
+          "network.http.secret",
+          "fnc",
+          false
+        ],
+        [
+          "network.http.utils",
+          "namespace",
+          true
+        ],
+        [
+          "network.http.utils.get",
+          "fnc",
+          true
+        ],
+        [
+          "network.config",
+          "namespace",
+          true
+        ],
+        [
+          "network.config.get",
+          "fnc",
+          true
+        ],
+        [
+          "common",
+          "namespace",
+          true
+        ],
+        [
+          "common.get",
+          "fnc",
+          true
+        ]
+      ]
+    },
+    "mixed-literal-provider": {
+      "identity": "@org/project/package",
+      "exports": [
+        [
+          "http",
+          "namespace",
+          true
+        ],
+        [
+          "http.LIMIT",
+          "const",
+          true
+        ],
+        [
+          "http.OFFSET",
+          "const",
+          false
+        ],
+        [
+          "http.get",
+          "fnc",
+          true
+        ],
+        [
+          "http.answer",
+          "fnc",
+          true
+        ]
+      ],
+      "literalValues": {
+        "http.LIMIT": {
+          "type": "int",
+          "value": 41
+        },
+        "http.OFFSET": {
+          "type": "int",
+          "value": 1
+        }
+      }
+    },
+    "multifile-root": {
+      "identity": "@org/project/package",
+      "exports": [
+        [
+          "service",
+          "namespace",
+          true
+        ],
+        [
+          "service.CAP",
+          "const",
+          true
+        ],
+        [
+          "service.OFFSET",
+          "const",
+          false
+        ],
+        [
+          "service.inc",
+          "fnc",
+          true
+        ],
+        [
+          "service.answer",
+          "fnc",
+          true
+        ]
+      ],
+      "files": {
+        "src/service/constants.atto": "use namespace service; define pub const int CAP = 41;",
+        "src/service/functions.atto": "use namespace service; define const int OFFSET = 1; pub fnc inc(int x): int { return x+OFFSET; } pub fnc answer(): int { return inc(CAP); }"
+      },
+      "literalValues": {
+        "service.CAP": {
+          "type": "int",
+          "value": 41
+        },
+        "service.OFFSET": {
+          "type": "int",
+          "value": 1
+        }
+      }
+    },
+    "nominal-root": {
+      "identity": "@org/project/nominal",
+      "exports": [
+        [
+          "model",
+          "namespace",
+          true
+        ],
+        [
+          "model.Item",
+          "class",
+          true
+        ],
+        [
+          "model.State",
+          "enum",
+          true
+        ],
+        [
+          "model.Worker",
+          "actor",
+          true
+        ],
+        [
+          "model.Hidden",
+          "class",
+          false
+        ],
+        [
+          "model.Alias",
+          "type",
+          true
+        ],
+        [
+          "model.read",
+          "fnc",
+          true
+        ]
+      ]
+    },
+    "cross-class-roots": {
+      "identities": [
+        "@org/project/nominal",
+        "@other/project/nominal"
+      ],
+      "exports": [
+        [
+          "model",
+          "namespace",
+          true
+        ],
+        [
+          "model.Item",
+          "class",
+          true
+        ],
+        [
+          "model.Hidden",
+          "class",
+          false
+        ],
+        [
+          "model.read",
+          "fnc",
+          true
+        ],
+        [
+          "other",
+          "namespace",
+          true
+        ],
+        [
+          "other.Item",
+          "class",
+          true
+        ]
+      ]
+    },
+    "nominal-kind-matrix": {
+      "identities": [
+        "@org/project/nominal",
+        "@other/project/nominal"
+      ],
+      "exports": [
+        [
+          "model",
+          "namespace",
+          true
+        ],
+        [
+          "model.Item",
+          "class",
+          true
+        ],
+        [
+          "model.State",
+          "enum",
+          true
+        ],
+        [
+          "model.Worker",
+          "actor",
+          true
+        ],
+        [
+          "model.Alias",
+          "type",
+          true
+        ],
+        [
+          "model.read",
+          "fnc",
+          true
+        ],
+        [
+          "model.HiddenItem",
+          "class",
+          false
+        ],
+        [
+          "model.HiddenState",
+          "enum",
+          false
+        ],
+        [
+          "model.HiddenWorker",
+          "actor",
+          false
+        ],
+        [
+          "model.HiddenAlias",
+          "type",
+          false
+        ],
+        [
+          "model.Hiddenread",
+          "fnc",
+          false
+        ]
+      ]
     }
   },
   "cases": [
@@ -3229,6 +3618,1660 @@
       },
       "reference": "a.get",
       "fixture": "http-roots"
+    },
+    {
+      "id": "tree-v2-source-late",
+      "stage": "resolution",
+      "source": "import p.net.http.get as fetch;\nimport pkg '@foo/bar/baz' as p;",
+      "reference": "fetch",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http.get"
+      }
+    },
+    {
+      "id": "tree-v2-deep-self",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.{net.{http.{self as h, fnc get as fetch},tcp.{connect}}};",
+      "reference": "h",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http"
+      }
+    },
+    {
+      "id": "tree-v2-typed-leaf",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{class Request as Req, fnc get as fetch};",
+      "reference": "Req",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http.Request"
+      }
+    },
+    {
+      "id": "tree-v2-mixed-alias",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{self as h};\ndefine alias h as math;",
+      "reference": "math.get",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http.get"
+      }
+    },
+    {
+      "id": "tree-v2-trailing-nested",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.{net.{http.{get,},tcp.{connect,},},};",
+      "reference": "connect",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.tcp.connect"
+      }
+    },
+    {
+      "id": "tree-v2-inferred-kind",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.Request as Req;",
+      "reference": "Req",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http.Request"
+      }
+    },
+    {
+      "id": "tree-v2-negative-typed-prefix",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport fnc p.net.http.{get};",
+      "reference": "get",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "typed group prefix",
+        "code": "E_SYNTAX",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-self-child",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{self.get};",
+      "reference": "get",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "group self must be terminal",
+        "code": "E_SYNTAX",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-self-dotted-alias",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{self as vendor.h};",
+      "reference": "vendor.h",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "self alias must be simple",
+        "code": "E_SYNTAX",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-group-alias",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{get} as h;",
+      "reference": "h",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "group not aliasable",
+        "code": "E_SYNTAX",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-private-atomic",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{get as fetch, hidden as h};",
+      "reference": "fetch",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private export",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-wrong-kind-atomic",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{get as fetch, fnc Request};",
+      "reference": "fetch",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "wrong kind",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-missing-atomic",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{get as fetch, missing};",
+      "reference": "fetch",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing export",
+        "code": "E_UNBOUND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-too-deep",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.a.b.c.d.e.f.g.h;",
+      "reference": "h",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "path budget",
+        "code": "E_SOURCE_LIMIT",
+        "atomic": true
+      }
+    },
+    {
+      "id": "context-pkg",
+      "stage": "resolution",
+      "source": "import pkg.network.http;",
+      "reference": "http",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "network.http"
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "context-self",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport self.utils;",
+      "reference": "utils",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "network.http.utils"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-super",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport super.config;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "network.config"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-grandparent",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport super.super.common;",
+      "reference": "common",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "common"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-pkg-header",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport pkg.config;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "config"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-negative-headerless-self",
+      "stage": "resolution",
+      "source": "import self.utils;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing source namespace",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "context-negative-headerless-super",
+      "stage": "resolution",
+      "source": "import super.config;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing source namespace",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "context-negative-escape",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport super.super.super.common;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "package root escape",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-negative-nested-context",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport self.super.config;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "invalid contextual component",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "builtin-tree-namespace",
+      "stage": "guest",
+      "source": "import core.{num}; pub fnc main(): int {return num.clamp(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-typed",
+      "stage": "guest",
+      "source": "import core.num.{fnc clamp as bound}; pub fnc main(): int {return bound(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-nested",
+      "stage": "guest",
+      "source": "import core.{num.{clamp as bound,},}; pub fnc main(): int {return bound(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-direct",
+      "stage": "guest",
+      "source": "import fnc core.num.clamp as bound; pub fnc main(): int {return bound(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-self",
+      "stage": "guest",
+      "source": "import core.num.{self as math}; pub fnc main(): int {return math.clamp(42,0,100);}",
+      "expect": {
+        "outcome": "return",
+        "value": 42
+      }
+    },
+    {
+      "id": "builtin-tree-unknown",
+      "stage": "guest",
+      "source": "import core.num.{clamp, absent}; pub fnc main(): int {return 42;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "unknown",
+        "code": "E_UNBOUND"
+      }
+    },
+    {
+      "id": "builtin-tree-wrong-kind",
+      "stage": "guest",
+      "source": "import core.num.{class clamp}; pub fnc main(): int {return 42;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "wrong-kind",
+        "code": "E_IMPORT_KIND"
+      }
+    },
+    {
+      "id": "builtin-tree-duplicate",
+      "stage": "guest",
+      "source": "import core.num.{clamp as a, min as a}; pub fnc main(): int {return 42;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate",
+        "code": "E_DUPLICATE"
+      }
+    },
+    {
+      "id": "builtin-tree-empty",
+      "stage": "guest",
+      "source": "import core.num.{}; pub fnc main(): int {return 42;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "empty",
+        "code": "E_SYNTAX"
+      }
+    },
+    {
+      "id": "builtin-tree-no-leak",
+      "stage": "guest",
+      "source": "import core.num.{clamp as bound}; pub fnc main(): int {return num.clamp(42,0,100);}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "no-leak"
+      }
+    },
+    {
+      "id": "builtin-tree-runtime-value",
+      "stage": "guest",
+      "source": "import core.num.{clamp as bound}; pub fnc main(): int {return bound;}",
+      "expect": {
+        "outcome": "reject",
+        "reason": "runtime-value"
+      }
+    },
+    {
+      "id": "registry-literal-qualified",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.limits.MAX",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.MAX"
+      }
+    },
+    {
+      "id": "registry-literal-typed",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import const limits.MAX as cap from pkg '@org/project/package';",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.MAX"
+      }
+    },
+    {
+      "id": "registry-literal-mixed",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import [const limits.MAX as cap, fnc http.get as inc] from pkg '@org/project/package';",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.MAX"
+      }
+    },
+    {
+      "id": "registry-literal-tree",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{const MAX as cap, const READY};",
+      "reference": "READY",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.READY"
+      }
+    },
+    {
+      "id": "registry-literal-alias",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\ndefine alias p.limits as l;",
+      "reference": "l.LOW",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.LOW"
+      }
+    },
+    {
+      "id": "registry-literal-string",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport const p.limits.LABEL as label;",
+      "reference": "label",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.LABEL"
+      }
+    },
+    {
+      "id": "registry-literal-function-mixed",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import [const limits.MAX as cap, fnc http.get as inc] from pkg '@org/project/package';",
+      "reference": "inc",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.get"
+      }
+    },
+    {
+      "id": "registry-literal-inferred-tree",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{MAX as cap};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "limits.MAX"
+      }
+    },
+    {
+      "id": "registry-literal-negative-private",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.limits.SECRET",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private constant",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport fnc p.limits.MAX;",
+      "reference": "MAX",
+      "expect": {
+        "outcome": "reject",
+        "reason": "constant is not a function",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-function-as-const",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport const p.http.get;",
+      "reference": "get",
+      "expect": {
+        "outcome": "reject",
+        "reason": "function is not a constant",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-namespace-as-const",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport const p.limits;",
+      "reference": "limits",
+      "expect": {
+        "outcome": "reject",
+        "reason": "namespace is not a constant",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-const-alias",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\ndefine alias p.limits.MAX as a;",
+      "reference": "a",
+      "expect": {
+        "outcome": "reject",
+        "reason": "constant is not a namespace",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-atomic",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{MAX as cap, SECRET as secret};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-missing",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{MAX as cap, ABSENT};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "unknown leaf",
+        "code": "E_UNBOUND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "registry-literal-negative-dup",
+      "stage": "resolution",
+      "fixture": "frozen-literal-root",
+      "source": "import pkg '@org/project/package' as p;\nimport p.limits.{MAX as cap, LOW as cap};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate leaf",
+        "code": "E_DUPLICATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "context-public-pkg",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "import pkg.network.http;",
+      "reference": "http.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "network.http.get"
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "context-public-self",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport self.utils;",
+      "reference": "utils.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "network.http.utils.get"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-parent",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport super.config as cfg;",
+      "reference": "cfg.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "network.config.get"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-grandparent",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport super.super.common;",
+      "reference": "common.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "common.get"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-group",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport self.{utils as u, get as answer};",
+      "reference": "answer",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "network.http.get"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-negative-private",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport self.secret;",
+      "reference": "secret",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private authority not established by header",
+        "code": "E_PRIVATE",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-negative-private-atomic",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport self.{get as answer, secret};",
+      "reference": "answer",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-negative-escape",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "use namespace network.http;\nimport super.super.super.common;",
+      "reference": "common",
+      "expect": {
+        "outcome": "reject",
+        "reason": "package root escape",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-public-negative-headerless",
+      "stage": "resolution",
+      "fixture": "contextual-public-guest-root",
+      "source": "import self.utils;",
+      "reference": "utils",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing source namespace",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "mixed-provider-limit",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.http.LIMIT",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.LIMIT"
+      }
+    },
+    {
+      "id": "mixed-provider-call",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.http.get",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.get"
+      }
+    },
+    {
+      "id": "mixed-provider-typed",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import [const http.LIMIT as cap, fnc http.get as inc] from pkg '@org/project/package';",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.LIMIT"
+      }
+    },
+    {
+      "id": "mixed-provider-alias",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\ndefine alias p.http as h;",
+      "reference": "h.LIMIT",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.LIMIT"
+      }
+    },
+    {
+      "id": "mixed-provider-tree",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\nimport p.http.{self as h, fnc answer};",
+      "reference": "answer",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "http.answer"
+      }
+    },
+    {
+      "id": "mixed-provider-negative-private",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\n",
+      "reference": "p.http.OFFSET",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private constant",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "mixed-provider-negative-atomic",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\nimport p.http.{LIMIT as cap, OFFSET as secret};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private constant",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "mixed-provider-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\nimport p.http.{fnc LIMIT};",
+      "reference": "LIMIT",
+      "expect": {
+        "outcome": "reject",
+        "reason": "literal is not a function",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "mixed-provider-negative-alias-value",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\ndefine alias p.http.LIMIT as l;",
+      "reference": "l",
+      "expect": {
+        "outcome": "reject",
+        "reason": "literal is not a namespace",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "mixed-provider-negative-collision",
+      "stage": "resolution",
+      "fixture": "mixed-literal-provider",
+      "source": "import pkg '@org/project/package' as p;\nimport p.http.{LIMIT as value, get as value};",
+      "reference": "value",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate binding",
+        "code": "E_DUPLICATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-public-constant",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\n",
+      "reference": "multi.service.CAP",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.CAP"
+      }
+    },
+    {
+      "id": "multifile-public-function",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\n",
+      "reference": "multi.service.answer",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.answer"
+      }
+    },
+    {
+      "id": "multifile-mixed",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import [const service.CAP as cap, fnc service.inc as inc] from pkg '@org/project/package';",
+      "reference": "inc",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.inc"
+      }
+    },
+    {
+      "id": "multifile-tree",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport multi.service.{const CAP as cap, fnc answer};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.CAP"
+      }
+    },
+    {
+      "id": "multifile-alias",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\ndefine alias multi.service as service_alias;",
+      "reference": "service_alias.answer",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/package",
+        "declaration": "service.answer"
+      }
+    },
+    {
+      "id": "multifile-negative-private",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\n",
+      "reference": "multi.service.OFFSET",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private constant",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-negative-atomic",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport multi.service.{CAP as cap, OFFSET as hidden};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport fnc multi.service.CAP;",
+      "reference": "CAP",
+      "expect": {
+        "outcome": "reject",
+        "reason": "constant is not function",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-negative-duplicate",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport multi.service.{CAP as x, inc as x};",
+      "reference": "x",
+      "expect": {
+        "outcome": "reject",
+        "reason": "duplicate binding",
+        "code": "E_DUPLICATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "multifile-negative-missing",
+      "stage": "resolution",
+      "fixture": "multifile-root",
+      "source": "import pkg '@org/project/package' as multi;\nimport multi.service.{CAP as cap, missing};",
+      "reference": "cap",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing leaf rejects group",
+        "code": "E_UNBOUND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\n",
+      "reference": "p.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-class-alias",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import class [model.Item as Data] from pkg '@org/project/nominal';",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-enum-tree",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport enum p.model.State as Status;",
+      "reference": "Status",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-actor-tree",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport actor p.model.Worker as Job;",
+      "reference": "Job",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-namespace-alias",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\ndefine alias p.model as m;",
+      "reference": "m.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-mixed-kind",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import [class model.Item as Data, enum model.State as Status, actor model.Worker as Job] from pkg '@org/project/nominal';",
+      "reference": "Status",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-negative-private",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport class p.model.Hidden as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private nominal declaration",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport enum p.model.Item as State;",
+      "reference": "State",
+      "expect": {
+        "outcome": "reject",
+        "reason": "class is not enum",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport p.model.{class Item as Data, class Hidden};",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-type-as-class",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport class p.model.Alias as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "type alias is not class",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-first",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "p.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-second",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "q.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-namespace",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\n",
+      "reference": "p.other.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "other.Item"
+      }
+    },
+    {
+      "id": "cross-class-alias-first",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class p.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-alias-second",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class q.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-namespace-alias",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\ndefine alias q.model as m;",
+      "reference": "m.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "cross-class-ambiguous",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal';\nimport pkg '@other/project/nominal';",
+      "reference": "nominal.model.Item",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_AMBIGUOUS",
+        "reason": "distinct packages share a natural suffix",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-private",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class q.model.Hidden as H;",
+      "reference": "H",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_PRIVATE",
+        "reason": "private external class",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-wrong-kind",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport fnc p.model.Item as F;",
+      "reference": "F",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_IMPORT_KIND",
+        "reason": "class is not function",
+        "atomic": true
+      }
+    },
+    {
+      "id": "cross-class-duplicate",
+      "stage": "resolution",
+      "fixture": "cross-class-roots",
+      "source": "import pkg '@org/project/nominal' as p;\nimport pkg '@other/project/nominal' as q;\nimport class p.model.Item as Data;\nimport class q.model.Item as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "code": "E_DUPLICATE",
+        "reason": "two distinct explicit class bindings",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-class-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-matrix-class-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{class Item as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-matrix-class-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [class model.Item as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-matrix-class-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-matrix-class-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport class right.model.HiddenItem as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-class-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport enum left.model.Item as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-class-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{class Item as Selected, class HiddenItem as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.State",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{enum State as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [enum model.State as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.State",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport enum right.model.HiddenState as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport actor left.model.State as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-enum-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{enum State as Selected, enum HiddenState as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.Worker",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{actor Worker as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [actor model.Worker as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.Worker",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport actor right.model.HiddenWorker as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport type left.model.Worker as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-actor-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{actor Worker as Selected, actor HiddenWorker as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-type-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.Alias",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Alias"
+      }
+    },
+    {
+      "id": "nominal-matrix-type-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{type Alias as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.Alias"
+      }
+    },
+    {
+      "id": "nominal-matrix-type-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [type model.Alias as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Alias"
+      }
+    },
+    {
+      "id": "nominal-matrix-type-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.Alias",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Alias"
+      }
+    },
+    {
+      "id": "nominal-matrix-type-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport type right.model.HiddenAlias as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-type-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport fnc left.model.Alias as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-type-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{type Alias as Selected, type HiddenAlias as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-left-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\n",
+      "reference": "left.model.read",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.read"
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-right-tree",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{fnc read as Selected};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@other/project/nominal",
+        "declaration": "model.read"
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-mixed-from",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import [fnc model.read as Selected] from pkg '@org/project/nominal';",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.read"
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-alias-chain",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\ndefine alias left.model as m;\ndefine alias mm = m;",
+      "reference": "mm.read",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.read"
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-private",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport fnc right.model.Hiddenread as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private declaration is not exported",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport class left.model.read as Selected;",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "requested declaration kind must match",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-matrix-fnc-group-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-kind-matrix",
+      "source": "import pkg '@org/project/nominal' as left;\nimport pkg '@other/project/nominal' as right;\nimport right.model.{fnc read as Selected, fnc Hiddenread as Denied};",
+      "reference": "Selected",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private second leaf rejects complete selection",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
     }
   ]
 }
