@@ -717,3 +717,40 @@ fn frozen_generic_instances_share_executable_but_not_nominal_identity() {
         assert!(p.compile_guest_instances(&bad).is_err(),"{bad}");
     }
 }
+
+
+#[test]
+fn generic_packages_isolate_same_named_specializations_and_aliases() {
+    use atto_compiler::registry_namespace::{FrozenGenericClass,compile_frozen_generic_packages};
+    let ma="[package]\nname = \"@a/project/pkg\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let mb=ma.replace("@a/project/pkg","@b/project/pkg");
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } pub fnc echo(T value): T { return value; } pub fnc tag(): int { return 20; } end";
+    let other=body.replace("return 20;","return 22;");
+    let a=[SnapshotSource{path:"src/models/container.atto",source:body}];
+    let b=[SnapshotSource{path:"src/models/container.atto",source:&other}];
+    let la=lock(ma,&a);
+    let lb=lock(&mb,&b);
+    let pa=FrozenGenericClass::verify("@a/project/pkg",ma,&la,&hex_digest(la.as_bytes()),&a).unwrap();
+    let pb=FrozenGenericClass::verify("@b/project/pkg",&mb,&lb,&hex_digest(lb.as_bytes()),&b).unwrap();
+    let prefix="import [class models.Container as A] from pkg '@a/project/pkg'; import [class models.Container as Again] from pkg '@a/project/pkg'; import [class models.Container as B] from pkg '@b/project/pkg'; ";
+    let guest=format!("{prefix}pub fnc main(): int {{ val a: A[int] = Again[int].new(); val b = B[int].new(); val flag = B[bool].new(); if flag.echo(true) then return a.echo(a.tag())+b.echo(b.tag()); fi return 0; }}");
+    let wasm=compile_frozen_generic_packages(&guest,&[&pa,&pb]).unwrap();
+    assert!(wasm.starts_with(b"\0asm"));
+    assert_eq!(wasm,compile_frozen_generic_packages(&guest,&[&pb,&pa]).unwrap());
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-generic-packages-0.wasm"),wasm).unwrap();
+    }
+    for root in [
+        "val a: A[int] = B[int].new(); return 42;",
+        "val a: A[int] = Again[bool].new(); return 42;",
+        "val a = A[int].new(); return a.echo(false);",
+        "val a = B[int].new(); return a.echo(true);",
+        "val a = new A[int](); return 42;",
+        "val a = __atto_generic_class_0_int.__atto_sealed_newable_factory(); return 42;",
+    ]{
+        let bad=format!("{prefix}pub fnc main(): int {{ {root} }}");
+        assert!(compile_frozen_generic_packages(&bad,&[&pa,&pb]).is_err(),"{bad}");
+    }
+    assert_eq!(compile_frozen_generic_packages(&guest,&[&pa,&pa,&pb]).unwrap_err().code,"E_DUPLICATE");
+    assert_eq!(compile_frozen_generic_packages(&guest,&[&pa]).unwrap_err().code,"E_UNBOUND");
+}
