@@ -121,9 +121,6 @@ fn numeric_tokens_inside_nested_comments_do_not_create_functions() {
     let source = "/* 1__0 /* -9__0 */ ignored */ pub fnc main(): int { return 4_2; }";
     let parsed = frontend::parse(source).unwrap();
     assert_eq!(parsed.functions.len(), 1);
-    assert_eq!(
-        parsed.functions[0].expression,
-        frontend::Expr::Integer(42)
-    );
+    assert_eq!(parsed.functions[0].expression, frontend::Expr::Integer(42));
     assert!(!compile(source).unwrap().is_empty());
 }

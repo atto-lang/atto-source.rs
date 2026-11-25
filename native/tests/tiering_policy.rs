@@ -1,13 +1,16 @@
 use oreslang_source_rs::profile::BuildProfile;
 use oreslang_source_rs::ref_layout::LayoutKind;
 use oreslang_source_rs::tiering::{
-    recommend_layout, DeploymentTarget, ExecutionPlan, LayoutEvidence, OptimizationMode,
-    PlanError, TraceCounters, TraceEvent, TrustLevel, TypeShape,
+    recommend_layout, DeploymentTarget, ExecutionPlan, LayoutEvidence, OptimizationMode, PlanError,
+    TraceCounters, TraceEvent, TrustLevel, TypeShape,
 };
 
 #[test]
 fn native_trusted_jit_request_is_admitted_as_a_policy_only() {
-    for target in [DeploymentTarget::NativeServer, DeploymentTarget::NativeDesktop] {
+    for target in [
+        DeploymentTarget::NativeServer,
+        DeploymentTarget::NativeDesktop,
+    ] {
         let plan = ExecutionPlan::admit(
             target,
             BuildProfile::Dev,
@@ -184,7 +187,11 @@ fn layout_ratio_avoids_overflow_near_u64_max() {
 fn lane_admission_rejects_zero_nonpowers_and_oversized_lanes() {
     for lanes in [0, 1, 3, 65, usize::MAX] {
         assert_eq!(
-            recommend_layout(TypeShape::InvertedClass, LayoutEvidence::default(), Some(lanes)),
+            recommend_layout(
+                TypeShape::InvertedClass,
+                LayoutEvidence::default(),
+                Some(lanes)
+            ),
             Err(PlanError::InvalidVectorLanes)
         );
     }

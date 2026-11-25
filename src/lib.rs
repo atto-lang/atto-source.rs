@@ -46,10 +46,18 @@ pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
 pub mod const_import_link;
 pub mod import_link;
+pub mod import_v2;
+pub mod import_tree;
+pub mod static_import_graph;
+/// Checked physical layout metadata; does not admit guest reference operations.
+pub mod ref_layout;
+pub mod layout_plan;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
+/// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
+pub mod registry_namespace;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;
@@ -108,7 +116,7 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    let source = library::expand(source)?;
+    let source = library::expand_for_file_linker(source)?;
     // Bounded relative-file scalar `import const` can substitute only
     // verified literal values, before the existing checker and guest emitter.
     // Full package and environment-backed initialization still fail closed.
