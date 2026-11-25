@@ -114,6 +114,7 @@ pub(crate) fn path_ok(path: &str) -> bool {
         })
 }
 fn package_ok(package: &str) -> bool {
+    if package.starts_with('@') { return crate::package_resolver::scoped_identity_ok(package); }
     !package.is_empty()
         && package.len() <= 128
         && package.is_ascii()
@@ -247,6 +248,57 @@ fn header(source: &str, file: &str) -> R<Header> {
         imports,
         body: erase(source.to_string(), spans),
     })
+}
+
+/// Validate a provider's declared namespace using the same header grammar
+/// as the actual linker, not just the filename or manifest label.
+pub(crate) fn declared_namespace(source: &str, file: &str) -> R<Option<String>> {
+    Ok(header(source, file)?.namespace)
+}
+
+/// Resolve explicitly selected local manifest exports into canonical source
+/// edges. Raw bytes are authenticated by the caller before this rewrite.
+/// This bounded lane supports one natural namespace binding per clause;
+/// external dependencies and arbitrary aliasing remain fail-closed.
+pub(crate) fn resolve_manifest_imports(source: &str, file: &str,
+    manifest: &crate::package_resolver::PackageManifest) -> R<String> {
+    let raw = lexer::lex(source)?;
+    crate::namespace::normalize(&raw, Some(std::path::Path::new(file)))?;
+    let mut i = 0;
+    if word(&raw, 0, "use") {
+        i = raw.iter().position(|t| t.tok == Tok::Semi)
+            .ok_or_else(|| err(raw[0].pos, "E_SYNTAX", "missing namespace semicolon"))? + 1;
+    }
+    let mut edits = Vec::new();
+    while word(&raw, i, "import") {
+        let end = raw[i..].iter().position(|t| matches!(t.tok, Tok::Semi | Tok::Eof))
+            .map(|n| i + n).ok_or_else(|| err(raw[i].pos, "E_SYNTAX", "missing import terminator"))?;
+        if raw[end].tok != Tok::Semi {
+            return Err(err(raw[i].pos, "E_SYNTAX", "missing import semicolon"));
+        }
+        if word(&raw, i + 1, "namespace") && word(&raw, i + 3, "from") && word(&raw, i + 4, "pkg") {
+            let name = ident(&raw, i + 2)?;
+            let selector = match raw.get(i + 5).map(|t| &t.tok) {
+                Some(Tok::Str(s)) if end == i + 6 => s,
+                _ => return Err(err(raw[i].pos, "E_SYNTAX", "expected one quoted manifest package selector")),
+            };
+            let target = manifest.select_local_namespace(selector, &name)?;
+            let (start, finish) = span(source, &raw, i, end)?;
+            let original = &source[start..finish];
+            let mut replacement = format!("import namespace {name} from \"+{target}\";");
+            for _ in original.bytes().filter(|b| *b == b'\n') { replacement.push('\n'); }
+            edits.push((start, finish, replacement));
+        }
+        i = end + 1;
+    }
+    let mut result = source.to_string();
+    for (start, end, replacement) in edits.into_iter().rev() {
+        result.replace_range(start..end, &replacement);
+    }
+    if result.len() > crate::SOURCE_CAP {
+        return Err(err(Pos::default(), "E_SOURCE_LIMIT", "resolved manifest source exceeds byte budget"));
+    }
+    Ok(result)
 }
 
 fn imported_module(imp: &Import, dependency: &LinkUnit<'_>, entry_package: &str) -> R<String> {
