@@ -55,10 +55,12 @@ pub enum Import {
     StateRegister,
     StateEnter,
     StateLeave,
+    TraceSpanBegin,
+    TraceSpanEnd,
 }
 
 impl Import {
-    pub const ALL: [Import; 10] = [
+    pub const ALL: [Import; 12] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -69,6 +71,8 @@ impl Import {
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
+        Import::TraceSpanBegin,
+        Import::TraceSpanEnd,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -82,6 +86,8 @@ impl Import {
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
+            Import::TraceSpanBegin => "trace_span_begin",
+            Import::TraceSpanEnd => "trace_span_end",
         }
     }
 }
@@ -135,6 +141,9 @@ pub enum TExpr {
     Ternary(Box<TE>, Box<TE>, Box<TE>),
     Call(u32, Vec<TE>),
     Builtin(Builtin, Box<TE>, Box<TE>),
+    /// Compiler-owned telemetry span imports. Source cannot refer to the token.
+    TraceSpanBegin { offset: u32, len: u32 },
+    TraceSpanEnd { token: u32 },
     /// `stdio.print` / `stdio.println` of an int or bool value
     Print {
         value: Box<TE>,
@@ -479,6 +488,7 @@ struct FnCx<'a> {
     unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// > 0 while checking an isolated defer/recover body.
     cleanup_depth: u32,
+    telemetry_aliases: Vec<String>,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
     /// Non-escaping error-view binder; only explicitly admitted read-only
@@ -1555,6 +1565,7 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
         | TExpr::CollectionAlloc(_)
+        | TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. }
         | TExpr::Spawn(_) => EscapeEffects::default(),
         TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
@@ -1991,6 +2002,11 @@ fn ctor_init_stmts(
                 ctor_init_stmts(body, &mut nested, fields, true)?;
                 true
             }
+            Stmt::UsingTelemetry { body, .. } => {
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
             Stmt::Try { body, catch, finally, .. } => {
                 // Exception edges / cleanup order are not yet part of the
                 // constructor CFG. Inspect all reads but do not allow
@@ -2108,6 +2124,7 @@ fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
             Stmt::Return(Some(expr), _) => constructor_self_expr(expr, captured)?,
             Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::StateWrite { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::UsingTelemetry { body, .. }
             | Stmt::Block(body) => constructor_self_stmts(body, captured)?,
             Stmt::Try { body, catch, finally, .. } => {
                 constructor_self_stmts(body, captured)?;
@@ -2323,7 +2340,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-        TExpr::AdtPropagate { .. } => false,
+        TExpr::AdtPropagate { .. } |
+        TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. } => false,
     }
 }
 
@@ -2456,6 +2474,7 @@ impl<'a> FnCx<'a> {
             data,
             unwind: None,
             cleanup_depth: 0,
+            telemetry_aliases: Vec::new(),
             recover_cursor: None,
             recover_error: None,
             trace: None,
@@ -2604,6 +2623,10 @@ impl<'a> FnCx<'a> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        if self.telemetry_aliases.iter().any(|alias| alias == name) {
+            return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
+                format!("opaque span alias '{name}' cannot be shadowed")));
+        }
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
         }
@@ -2712,6 +2735,7 @@ impl<'a> FnCx<'a> {
                 Stmt::While { .. } | Stmt::Loop { .. } | Stmt::For { .. } | Stmt::ForIn { .. }
                 | Stmt::Break(_) | Stmt::Continue(_) => Some("loops (needs canonical fixed-point analysis)"),
                 Stmt::Try { .. } | Stmt::Defer { .. } | Stmt::Recover { .. }
+                | Stmt::UsingTelemetry { .. }
                 | Stmt::Throw(..) | Stmt::Raise(..) => Some("unwind, cleanup or failure statement"),
                 Stmt::StateWrite { .. } | Stmt::Yield(..) | Stmt::YieldFrom(..) =>
                     Some("protected state or generator statement"),
@@ -2815,6 +2839,8 @@ impl<'a> FnCx<'a> {
                 let msg = self.guest_error_message(error, "raise", *pos)?;
                 TStmt::Raise(msg)
             }
+            Stmt::UsingTelemetry { operation, alias, body, pos } =>
+                self.telemetry_scope(operation, alias, body, *pos)?,
             Stmt::Try { body, catch, finally, pos } => {
                 self.unwind_frame(*pos, "try")?;
                 let saved = self.temp(Type::Bool, *pos)?;
@@ -3071,6 +3097,43 @@ impl<'a> FnCx<'a> {
             Stmt::Block(b) => TStmt::Block(self.scoped(b)?),
             Stmt::Match { subject, arms, pos } => self.match_stmt(subject, arms, *pos)?,
         })
+    }
+
+    fn telemetry_scope(&mut self, operation: &str, alias: &str, body: &[Stmt], pos: Pos) -> R<TStmt> {
+        self.unwind_frame(pos, "using telemetry.span")?;
+        if self.lookup(alias).is_some() || self.telemetry_aliases.iter().any(|a| a == alias)
+            || alias == "self"
+        {
+            return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
+                format!("span alias '{alias}' shadows an active binding")));
+        }
+
+        let token = self.temp(Type::Int, pos)?;
+        let saved = self.temp(Type::Bool, pos)?;
+        let (offset, len) = self.string(operation, pos)?;
+        self.imports.extend([Import::TraceSpanBegin, Import::TraceSpanEnd]);
+        // The existing finally lowering cannot branch out of a protected
+        // region to an enclosing loop. Loops inside the scope remain valid.
+        let loops = std::mem::replace(&mut self.loops, 0);
+        self.telemetry_aliases.push(alias.to_owned());
+        let body = self.scoped(body);
+        self.telemetry_aliases.pop();
+        self.loops = loops;
+
+        // Begin before entering the unwind region, then reuse the same
+        // return/throw/raise cleanup path as an ordinary verified finally.
+        Ok(TStmt::Block(vec![
+            TStmt::Set(token, TE { e: TExpr::TraceSpanBegin { offset, len }, ty: Type::Int }),
+            TStmt::Try {
+                saved,
+                body: body?,
+                catch: None,
+                finally: Some(vec![TStmt::Expr(TE {
+                    e: TExpr::TraceSpanEnd { token }, ty: Type::Void,
+                })]),
+                pos,
+            },
+        ]))
     }
 
     /// `match`: the subject is evaluated once into a temp; arms are tried in
@@ -3865,6 +3928,20 @@ impl<'a> FnCx<'a> {
     }
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
+        let reference = match &e.kind {
+            ExprKind::Var(name) | ExprKind::Call(name, _) => Some(name),
+            ExprKind::Member(base, _) | ExprKind::MethodCall(base, _, _) => match &base.kind {
+                ExprKind::Var(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = reference {
+            if self.telemetry_aliases.iter().any(|alias| alias == name) {
+                return Err(Diagnostic::new(e.pos, "E_TELEMETRY_ALIAS",
+                    format!("opaque span alias '{name}' cannot be used as a guest value")));
+            }
+        }
         if let Some(tr) = self.trace.as_mut() {
             // straight-line-v1 allowlist: every other expression form has
             // ownership effects (receivers, captures, branches, actors) that
