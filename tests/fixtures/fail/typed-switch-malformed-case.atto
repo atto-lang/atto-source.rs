@@ -1,0 +1,7 @@
+// expect-error: E_SYNTAX
+pub fnc main(): int {
+    return switch<int> true over
+        case true : -> 42,
+        default : int -> 0,
+    end;
+}

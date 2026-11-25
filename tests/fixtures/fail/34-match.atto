@@ -1,10 +1,8 @@
-// expect-error: E_UNSUPPORTED
-// java: accepts
+// expect-error: E_SYNTAX
+// Malformed result annotation must fail closed even in legacy no-over switch.
 pub fnc main(): int {
-  val x = 1;
-  switch x
-    case 1 -> { return 1; }
+  switch 1
+    case 1 : -> { return 42; }
     default -> { return 0; }
   end
-  return 2;
 }

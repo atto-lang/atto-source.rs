@@ -1,0 +1,8 @@
+// expect-error: E_MATCH
+pub fnc main(): int {
+    return switch<int> 1 over
+        case 1 : int -> 41,
+        case 1 : int -> 42,
+        default : int -> 0,
+    end;
+}

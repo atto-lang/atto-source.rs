@@ -1,0 +1,13 @@
+// expect-exit: 42
+fnc nested(): Option<Result<int,string>> { return Some(Ok(41)); }
+pub fnc main(): int {
+    return switch<int> nested() over
+        case None : int -> 0,
+        case Some(value) : int -> {
+            return switch<int> value over
+                case Err(message) : int -> -3,
+                case Ok(n) : int -> n + 1,
+            end;
+        },
+    end;
+}

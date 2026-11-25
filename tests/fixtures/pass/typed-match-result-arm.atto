@@ -1,0 +1,10 @@
+// expect-exit: 42
+// java: rejects
+// Optional arm result annotations are checked, not merely parsed.
+fnc result(): Result<int,string> { return Ok(41); }
+pub fnc main(): int {
+    return match<int> result() over
+        on Err(error) : int -> -3,
+        on Ok(value) : int -> value + 1,
+    end;
+}

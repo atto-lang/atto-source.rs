@@ -1,0 +1,15 @@
+// expect-exit: 42
+// A whole-value arm binding must exist before its guard calls another function.
+fnc value(): Option<int> { return Some(42); }
+fnc present(Option<int> candidate): bool {
+  match candidate over
+    on Some(n) -> { return true; }
+    on None -> { return false; }
+  end
+}
+pub fnc main(): int {
+  match value() over
+    on whole when present(whole) -> { return 42; }
+    on _ -> { return 0; }
+  end
+}
