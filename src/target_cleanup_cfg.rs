@@ -62,6 +62,14 @@ fn fail(pos: Pos, why: &'static str) -> Diagnostic {
     Diagnostic::new(pos, "E_CLEANUP", why)
 }
 
+fn before(a: Pos, b: Pos) -> bool {
+    (a.line, a.col) < (b.line, b.col)
+}
+
+fn within(pos: Pos, begin: Pos, end: Pos) -> bool {
+    !before(pos, begin) && !before(end, pos)
+}
+
 /// Verify each concrete three-instruction cleanup path, and verify the set
 /// includes exactly one normal/cancel path per lease and exactly one checked
 /// panic path when the callback contains potentially trapping arithmetic.
@@ -118,7 +126,18 @@ pub fn lower_verified_cleanup_cfg(
     }
     let mut paths = Vec::new();
     let mut expected = Vec::new();
+    let mut last_end: Option<Pos> = None;
     for (id,lease) in plan.leases.iter().enumerate() {
+        // Even for an experimental CFG, source locations must describe
+        // sequential, non-overlapping acquisitions. Public frontend plans
+        // cannot claim two concurrent locks as separate lexical callbacks.
+        if lease.acquire_pos.line == 0 || lease.acquire_pos.col == 0
+            || !before(lease.acquire_pos, lease.normal_end_pos)
+            || last_end.is_some_and(|end| !before(end, lease.acquire_pos)) {
+            return Err(fail(lease.acquire_pos,
+                "lease regions must have valid, ordered, non-overlapping spans"));
+        }
+        last_end = Some(lease.normal_end_pos);
         if lease.lease != id || lease.receiver != plan.receiver {
             return Err(fail(lease.acquire_pos, "lease identity is inconsistent"));
         }
@@ -129,12 +148,14 @@ pub fn lower_verified_cleanup_cfg(
             return Err(fail(lease.acquire_pos, "missing normal cleanup obligation"));
         };
         if normal.lease != id || normal.exit != LeaseCleanupExit::Normal
+            || normal.pos != lease.normal_end_pos
             || normal.backend_release_proven {
             return Err(fail(lease.acquire_pos, "invalid normal lease cleanup obligation"));
         }
         if lease.checked_arithmetic {
             let panic = &lease.cleanup[1];
             if panic.lease != id || panic.exit != LeaseCleanupExit::CheckedPanic
+                || !within(panic.pos, lease.acquire_pos, lease.normal_end_pos)
                 || panic.backend_release_proven {
                 return Err(fail(lease.acquire_pos, "invalid checked-panic cleanup obligation"));
             }
@@ -207,10 +228,29 @@ pub mod native_experiment {
             Self { value:RwLock::new(initial),releases:AtomicUsize::new(0) }
         }
         /// Only experimental Rust code calls this, NOT emitted Atto receiver code.
-        pub fn with_shared<R>(&self, cfg:&VerifiedCleanupCfg, lease:usize,
-            f:impl FnOnce(i64)->R) -> Result<R,&'static str> {
+        /// Fixed read operation with no user callback. The only local
+        /// observable exit after acquisition is normal return; unlike an
+        /// arbitrary callback this does not require a panic cleanup edge.
+        pub fn read_snapshot(&self, cfg:&VerifiedCleanupCfg,
+            lease:usize) -> Result<i64,&'static str> {
             if !cfg.permits(lease,StateLeaseMode::SharedRead,CleanupExit::Normal) {
                 return Err("unverified shared-read cleanup path");
+            }
+            let guard=SharedGuard {
+                lock:Some(self.value.read().unwrap_or_else(|err|err.into_inner())),
+                releases:&self.releases,
+            };
+            Ok(**guard.lock.as_ref().expect("live read lease"))
+        }
+
+        /// Arbitrary native callbacks can panic, even when their Rust body
+        /// looks pure. They require both the normal AND unwind cleanup paths.
+        /// This does not authorize callbacks in the generated Atto backend.
+        pub fn with_shared<R>(&self, cfg:&VerifiedCleanupCfg, lease:usize,
+            f:impl FnOnce(i64)->R) -> Result<R,&'static str> {
+            if !cfg.permits(lease,StateLeaseMode::SharedRead,CleanupExit::Normal)
+                || !cfg.permits(lease,StateLeaseMode::SharedRead,CleanupExit::CheckedPanic) {
+                return Err("shared callback requires verified normal and panic cleanup paths");
             }
             let guard=SharedGuard {
                 lock:Some(self.value.read().unwrap_or_else(|err|err.into_inner())),
