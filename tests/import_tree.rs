@@ -64,3 +64,31 @@ fn contextual_roots_are_namespace_paths_not_filesystem_traversal(){
         ("pkg..hidden",None),("pkg.__atto_hidden",None),("self.super.config",Some("network.http")),
     ]{assert!(contextual_path(src,current).is_err(),"{src}");}
 }
+
+#[test]
+fn contextual_parent_cannot_erase_invalid_source_namespace() {
+    for current in ["network.", "network.__atto_hidden", "network.super", "network.bad-name",
+                    "a.b.c.d.e.f.g.h.i", "network..http"] {
+        let e=contextual_path("super.config",Some(current)).unwrap_err();
+        assert_eq!(e.code,"E_IMPORT_PATH","{current}");
+    }
+    for src in ["pkg", "self", "super", "super.super", "pkg.a.b.c.d.e.f.g.h"] {
+        assert_eq!(contextual_path(src,Some("network.http")).unwrap_err().code,"E_IMPORT_PATH","{src}");
+    }
+    assert_eq!(contextual_path("super.super.shared",Some("network.http")).unwrap(),"shared");
+    assert_eq!(contextual_path("pkg.a.b.c.d.e.f.g",None).unwrap(),"a.b.c.d.e.f.g");
+}
+#[test]
+fn direct_tree_binding_api_checks_budget_before_resolution() {
+    let (mut scope,view)=graph();
+    assert_eq!(bind(&mut scope,&[],&[&view]).unwrap_err().code,"E_SYNTAX");
+    let mut oversized=Vec::new();
+    for i in 0..257 {
+        oversized.push(atto_compiler::import_tree::Leaf {
+            path:"p.net.http.get".into(),binding:format!("f{i}"),kind:Some(Kind::Fnc),
+            explicit_alias:true,group_self:false
+        });
+    }
+    assert_eq!(bind(&mut scope,&oversized,&[&view]).unwrap_err().code,"E_SOURCE_LIMIT");
+    assert_eq!(scope.resolve("f0").unwrap_err().code,"E_UNBOUND");
+}
