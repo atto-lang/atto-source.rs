@@ -157,21 +157,21 @@ impl Scope {
         self.insert(alias, Tier::Explicit, target)
     }
 
-    /// Batch namespace constants, with forward references and atomic
+    /// Batch namespace aliases, with forward references and atomic
     /// publication. Pending explicit names shadow lower tiers from the
     /// start; never use a lower-tier binding to break an alias cycle.
     /// Interior namespace resolution is restricted to verified views.
     pub fn namespace_aliases(&mut self, declarations: &[(&str, &str)], views: &[&ExportView]) -> R<()> {
-        if declarations.len() > LIMIT { return Err(err("E_SOURCE_LIMIT", "too many namespace constants")); }
+        if declarations.len() > LIMIT { return Err(err("E_SOURCE_LIMIT", "too many namespace aliases")); }
         let mut staged = self.clone();
         let mut pending = BTreeMap::new();
         for &(name, reference) in declarations {
             if !ident(name) || !path(reference) {
-                return Err(err("E_IMPORT_PATH", "invalid namespace constant declaration"));
+                return Err(err("E_IMPORT_PATH", "invalid namespace alias declaration"));
             }
             if pending.insert(name, reference).is_some() || staged.bindings.iter()
                 .any(|b| b.name == name && b.tier == Tier::Explicit) {
-                return Err(err("E_DUPLICATE", "duplicate namespace constant"));
+                return Err(err("E_DUPLICATE", "duplicate namespace alias"));
             }
         }
         while !pending.is_empty() {
@@ -186,11 +186,11 @@ impl Scope {
                     staged.resolve_export(reference, view)?
                 };
                 if !namespace(target.kind) {
-                    return Err(err("E_IMPORT_KIND", "namespace constant requires namespace"));
+                    return Err(err("E_IMPORT_KIND", "namespace alias requires namespace"));
                 }
                 ready.push((name, target));
             }
-            if ready.is_empty() { return Err(err("E_IMPORT_CYCLE", "cyclic namespace constants")); }
+            if ready.is_empty() { return Err(err("E_IMPORT_CYCLE", "cyclic namespace aliases")); }
             for (name, target) in ready {
                 staged.namespace_alias(name, target)?;
                 pending.remove(name);
