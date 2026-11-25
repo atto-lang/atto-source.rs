@@ -18,6 +18,9 @@ type R<T> = Result<T, Diagnostic>;
 const MAX_FIELDS: usize = 8;
 const MAX_SHAPES: usize = 48;
 const MAX_EXPR_DEPTH: usize = 48;
+/// Ordinary scalar expression chains are bounded by the parser, not the
+/// much smaller nesting budget for newly constructed Record values.
+const MAX_PROJECTION_DEPTH: usize = 512;
 const PREFIX: &str = "__atto_shape_with_";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +30,25 @@ struct Shape(Vec<(String, Type)>);
 enum Value {
     Scalar(Type),
     Record(Shape),
+    Unknown,
+}
+
+type Frames = Vec<BTreeMap<String, Value>>;
+
+fn flatten(frames: &Frames) -> BTreeMap<String, Value> {
+    let mut visible = BTreeMap::new();
+    for frame in frames {
+        for (name, value) in frame {
+            visible.insert(name.clone(), value.clone());
+        }
+    }
+    visible
+}
+
+fn field_slot(shape: &Shape, field: &str, pos: Pos) -> R<String> {
+    shape.0.iter().position(|(name, _)| name == field)
+        .map(|index| format!("f{index}"))
+        .ok_or_else(|| err(pos,"E_NO_FIELD",format!("Record has no field '{field}'")))
 }
 
 fn err(pos: Pos, code: &'static str, what: impl Into<String>) -> Diagnostic {
@@ -39,12 +61,55 @@ fn is_scalar(t: Type) -> bool {
 
 fn expression(kind: ExprKind, pos: Pos) -> Expr { Expr { kind, pos } }
 
-fn name_eligible(s: &str) -> bool {
-    let mut cs = s.chars();
-    cs.next().is_some_and(|c| c.is_alphabetic() || c == '_')
-        && cs.all(|c| c.is_alphanumeric() || c == '_')
-        && !crate::parser::is_reserved(s)
-        && s.len() <= 64
+const MAX_KEY_BYTES: usize = 128;
+
+// Scan using an explicit worklist. This is a cheap proof that ordinary
+// arithmetic/calls are untouched by Record-specific reconstruction, even
+// when a Record happens to be in scope.
+fn has_record_projection(e: &Expr, env: &BTreeMap<String, Value>) -> bool {
+    let mut stack=vec![e];
+    while let Some(expr)=stack.pop() {
+        match &expr.kind {
+            ExprKind::Member(base,_) => {
+                if matches!(&base.kind,ExprKind::Var(name)
+                    if matches!(env.get(name),Some(Value::Record(_)))) {
+                    return true;
+                }
+                stack.push(base);
+            }
+            ExprKind::Index(base,key) => {
+                if matches!(&base.kind,ExprKind::Var(name)
+                    if matches!(env.get(name),Some(Value::Record(_)))) {
+                    return true;
+                }
+                stack.push(base);
+                stack.push(key);
+            }
+            ExprKind::Unary(_,value) | ExprKind::Trap(value) |
+            ExprKind::Propagate(value) | ExprKind::Ownership(_,_,value) =>
+                stack.push(value),
+            ExprKind::Binary(_,left,right) => {stack.push(left);stack.push(right);}
+            ExprKind::Ternary(c,a,b) => {stack.push(c);stack.push(a);stack.push(b);}
+            ExprKind::Call(_,args) | ExprKind::New(_,args) |
+            ExprKind::Array(args) | ExprKind::Tuple(args) =>
+                stack.extend(args.iter()),
+            ExprKind::MethodCall(base,_,args) => {
+                stack.push(base);stack.extend(args.iter());
+            }
+            ExprKind::With(base,items) => {
+                stack.push(base);
+                for (_,v) in items {stack.push(v);}
+            }
+            ExprKind::Record(items) => {
+                for (_,v) in items {stack.push(v);}
+            }
+            ExprKind::Map(items) => {
+                for (k,v) in items {stack.push(k);stack.push(v);}
+            }
+            _=>{}
+        }
+    }
+    false
 }
 
 fn initializer(ty: Type, pos: Pos) -> Expr {
@@ -84,9 +149,8 @@ impl Lower {
             return Err(err(pos, "E_UNSUPPORTED", "guest Record needs 1..8 scalar fields"));
         }
         for (field, ty) in &shape.0 {
-            if !name_eligible(field) {
-                return Err(err(pos, "E_UNSUPPORTED",
-                    format!("guest Record field '{field}' needs an identifier-safe name; quoted labels remain static-only")));
+            if field.len() > MAX_KEY_BYTES {
+                return Err(err(pos, "E_SOURCE_LIMIT", "guest Record label exceeds 128 UTF-8 bytes"));
             }
             if !is_scalar(*ty) {
                 return Err(err(pos, "E_WITH_OWNERSHIP",
@@ -94,17 +158,17 @@ impl Lower {
             }
         }
         let name = format!("{PREFIX}record_{}", self.shapes.len());
-        let fields = shape.0.iter().map(|(field,ty)| Field {
-            name: field.clone(), pos, ty: *ty, public: true,
+        let fields = shape.0.iter().enumerate().map(|(index,(_,ty))| Field {
+            name: format!("f{index}"), pos, ty: *ty, public: true,
             mode: FieldMode::Constructor, init: initializer(*ty,pos),
         }).collect::<Vec<_>>();
         let mut params = Vec::new();
         let mut body = Vec::new();
-        for (index,(field,ty)) in shape.0.iter().enumerate() {
+        for (index,(_,ty)) in shape.0.iter().enumerate() {
             let parameter = format!("{PREFIX}arg_{index}");
             params.push(Param {name:parameter.clone(),ty:*ty,mutable:false,pos});
             body.push(Stmt::FieldAssign {
-                target: expression(ExprKind::SelfRef,pos), field:field.clone(),
+                target: expression(ExprKind::SelfRef,pos), field:format!("f{index}"),
                 value: expression(ExprKind::Var(parameter),pos),pos,
             });
         }
@@ -142,6 +206,15 @@ impl Lower {
                 _ => return Err(err(e.pos,"E_UNSUPPORTED",
                     "guest Record projections need a statically known local receiver")),
             },
+            ExprKind::Index(recv,key) => match (&recv.kind,&key.kind) {
+                (ExprKind::Var(name),ExprKind::Str(field)) => match env.get(name) {
+                    Some(Value::Record(shape)) => shape.0.iter()
+                        .find(|(n,_)|n==field).map(|(_,ty)|*ty)
+                        .ok_or_else(||err(e.pos,"E_NO_FIELD",format!("Record has no field '{field}'")))?,
+                    _=>return Err(err(e.pos,"E_UNSUPPORTED","guest indexed Record field needs a known local receiver")),
+                },
+                _=>return Err(err(e.pos,"E_RECORD_KEY","guest Record bracket key must be a static string")),
+            },
             ExprKind::Unary(op, inner) => {
                 if *op == UnOp::Neg && matches!(&inner.kind,ExprKind::Int(None)) {
                     Type::Int
@@ -175,6 +248,74 @@ impl Lower {
         };
         Ok(ty)
     }
+
+    /// Convert source field labels, including punctuation and UTF-8 names,
+    /// to canonical private offsets after the structural checker has run.
+    fn rewrite_expr(&self, e: Expr, env: &BTreeMap<String,Value>, depth: usize) -> R<Expr> {
+        // Non-Record programs must never be reinterpreted by this optional
+        // lowering pass: preserve their original AST and diagnostics exactly.
+        if !env.values().any(|v|matches!(v,Value::Record(_))) ||
+            !has_record_projection(&e,env) {
+            return Ok(e);
+        }
+        if depth > MAX_PROJECTION_DEPTH {
+            return Err(err(e.pos,"E_NESTING","guest Record projection too deep"));
+        }
+        let pos=e.pos;
+        let n=depth+1;
+        let kind=match e.kind {
+            ExprKind::Member(base,field) => {
+                if let ExprKind::Var(ref name)=base.kind {
+                    if let Some(Value::Record(shape))=env.get(name) {
+                        return Ok(expression(ExprKind::Member(base,field_slot(shape,&field,pos)?),pos));
+                    }
+                }
+                ExprKind::Member(Box::new(self.rewrite_expr(*base,env,n)?),field)
+            }
+            ExprKind::Index(base,key) => {
+                if let ExprKind::Var(ref name)=base.kind {
+                    if let Some(Value::Record(shape))=env.get(name) {
+                        let ExprKind::Str(ref field)=key.kind else {
+                            return Err(err(key.pos,"E_RECORD_KEY",
+                                "guest Record key must be a compile-time string"));
+                        };
+                        return Ok(expression(ExprKind::Member(
+                            base,field_slot(shape,field,pos)?),pos));
+                    }
+                }
+                ExprKind::Index(Box::new(self.rewrite_expr(*base,env,n)?),
+                    Box::new(self.rewrite_expr(*key,env,n)?))
+            }
+            ExprKind::Unary(op,v) => ExprKind::Unary(op,
+                Box::new(self.rewrite_expr(*v,env,n)?)),
+            ExprKind::Binary(op,a,b) => ExprKind::Binary(op,
+                Box::new(self.rewrite_expr(*a,env,n)?),
+                Box::new(self.rewrite_expr(*b,env,n)?)),
+            ExprKind::Ternary(c,a,b) => ExprKind::Ternary(
+                Box::new(self.rewrite_expr(*c,env,n)?),
+                Box::new(self.rewrite_expr(*a,env,n)?),
+                Box::new(self.rewrite_expr(*b,env,n)?)),
+            ExprKind::Call(name,args) => ExprKind::Call(name,
+                args.into_iter().map(|x|self.rewrite_expr(x,env,n)).collect::<R<Vec<_>>>()?),
+            ExprKind::New(name,args) => ExprKind::New(name,
+                args.into_iter().map(|x|self.rewrite_expr(x,env,n)).collect::<R<Vec<_>>>()?),
+            ExprKind::MethodCall(base,name,args) => ExprKind::MethodCall(
+                Box::new(self.rewrite_expr(*base,env,n)?),name,
+                args.into_iter().map(|x|self.rewrite_expr(x,env,n)).collect::<R<Vec<_>>>()?),
+            ExprKind::Ownership(op,mutable,v) => ExprKind::Ownership(
+                op,mutable,Box::new(self.rewrite_expr(*v,env,n)?)),
+            ExprKind::Propagate(v) => ExprKind::Propagate(
+                Box::new(self.rewrite_expr(*v,env,n)?)),
+            ExprKind::Trap(v) => ExprKind::Trap(
+                Box::new(self.rewrite_expr(*v,env,n)?)),
+            ExprKind::Record(_) | ExprKind::With(_,_) =>
+                return Err(err(pos,"E_UNSUPPORTED",
+                    "nested Record expression needs checked statement-level construction")),
+            other => other,
+        };
+        Ok(expression(kind,pos))
+    }
+
     fn temporary(&mut self, pre: &mut Vec<Stmt>, init: Expr, ty: Option<Type>) -> Expr {
         let pos=init.pos;
         let name=self.fresh();
@@ -200,7 +341,8 @@ impl Lower {
                     let ty=self.inferred_scalar(&value,env,0)?;
                     // A source-order temporary prevents canonical field sorting
                     // from reordering or duplicating any initializer.
-                    let temp=self.temporary(&mut pre,value,Some(ty));
+                    let rewritten=self.rewrite_expr(value,env,0)?;
+                    let temp=self.temporary(&mut pre,rewritten,Some(ty));
                     slots.insert(field,(ty,temp));
                 }
                 let shape=Shape(slots.iter().map(|(name,(ty,_))|(name.clone(),*ty)).collect());
@@ -214,7 +356,9 @@ impl Lower {
                         Some(Value::Record(shape)) =>
                             (Vec::new(),expression(ExprKind::Var(name),base.pos),shape.clone()),
                         Some(Value::Scalar(_))=>return Err(err(pos,"E_WITH_TYPE","with receiver is not a Record")),
-                        None=>return Err(err(pos,"E_WITH_UNRESOLVED","with needs a known source Record")),
+                        Some(Value::Unknown) | None =>
+                            return Err(err(pos,"E_WITH_UNRESOLVED",
+                                "with receiver needs a verified local closed Record shape")),
                     },
                     other => self.lower_record(expression(other,base.pos),env,depth+1)?,
                 };
@@ -232,14 +376,16 @@ impl Lower {
                         return Err(err(value.pos,"E_DUPLICATE","duplicate with update field"));
                     }
                     let ty=self.inferred_scalar(&value,env,0)?;
-                    let temp=self.temporary(&mut pre,value,Some(ty));
+                    let rewritten=self.rewrite_expr(value,env,0)?;
+                    let temp=self.temporary(&mut pre,rewritten,Some(ty));
                     updated.insert(field,(ty,temp));
                 }
                 let mut merged=BTreeMap::<String,(Type,Expr)>::new();
                 for (field,ty) in &original.0 {
                     if !updated.contains_key(field) {
                         merged.insert(field.clone(),(*ty,expression(
-                            ExprKind::Member(Box::new(receiver.clone()),field.clone()),pos)));
+                            ExprKind::Member(Box::new(receiver.clone()),
+                                field_slot(&original,field,pos)?),pos)));
                     }
                 }
                 for (field,pair) in updated { merged.insert(field,pair); }
@@ -255,55 +401,144 @@ impl Lower {
                 "guest with source must be a known Record local or closed Record/with expression")),
         }
     }
-    fn lower_func(&mut self, f: &mut Func, type_names:&[(String,Pos)]) -> R<()> {
-        let mut env=BTreeMap::<String,Value>::new();
-        for param in &f.params {
-            if is_scalar(param.ty) {env.insert(param.name.clone(),Value::Scalar(param.ty));}
-        }
+    /// A nested lexical frame never exposes its bindings to outer statements.
+    fn nested(&mut self, body: Vec<Stmt>, frames: &mut Frames,
+              type_names: &[(String,Pos)]) -> R<Vec<Stmt>> {
+        frames.push(BTreeMap::new());
+        let result=self.lower_statements(body,frames,type_names);
+        frames.pop();
+        result
+    }
+
+    fn lower_statements(&mut self, body: Vec<Stmt>, frames: &mut Frames,
+        type_names: &[(String,Pos)]) -> R<Vec<Stmt>>
+    {
         let mut transformed=Vec::new();
-        for stmt in std::mem::take(&mut f.body) {
+        for stmt in body {
+            let env=flatten(frames);
             match stmt {
-                Stmt::Bind {kind,name,ty,init,pos} => {
-                    if matches!(init.kind,ExprKind::Record(_) | ExprKind::With(_,_)) {
+                Stmt::Bind{kind,name,ty,init,pos} => {
+                    if matches!(&init.kind,ExprKind::Record(_) | ExprKind::With(_,_)) {
                         if kind == BindKind::Const {
                             return Err(err(pos,"E_CONST",
                                 "runtime heap-allocated Record cannot initialize compile-time const"));
                         }
-                        let (mut pre, expr,shape)=self.lower_record(init,&env,0)?;
+                        let (mut pre,expr,shape)=self.lower_record(init,&env,0)?;
                         if let Some(t)=ty {
-                            let built_in=match t {
+                            let builtin=match t {
                                 Type::Named(i)=>type_names.get(i as usize)
                                     .is_some_and(|(name,_)|name=="@builtin/Record"),
                                 _=>false,
                             };
-                            if !built_in {
+                            if !builtin {
                                 return Err(err(pos,"E_TYPE",
                                     "executable Record requires an unannotated or Record-typed binding"));
                             }
                         }
                         transformed.append(&mut pre);
-                        // The static preflight already checked the source's
-                        // Record annotation; guest representation is private.
-                        transformed.push(Stmt::Bind {kind,name:name.clone(),ty:None,init:expr,pos});
-                        env.insert(name,Value::Record(shape));
+                        transformed.push(Stmt::Bind{
+                            kind,name:name.clone(),ty:None,init:expr,pos});
+                        frames.last_mut().unwrap().insert(name,Value::Record(shape));
                     } else {
-                        if let Some(t)=ty {
-                            if is_scalar(t) {env.insert(name.clone(),Value::Scalar(t));}
-                        } else if let Ok(t)=self.inferred_scalar(&init,&env,0) {
-                            env.insert(name.clone(),Value::Scalar(t));
-                        }
-                        transformed.push(Stmt::Bind {kind,name,ty,init,pos});
+                        let value=match ty {
+                            Some(t) if is_scalar(t) => Value::Scalar(t),
+                            Some(_) => Value::Unknown,
+                            None => self.inferred_scalar(&init,&env,0)
+                                .map(Value::Scalar).unwrap_or(Value::Unknown),
+                        };
+                        transformed.push(Stmt::Bind {
+                            kind,name:name.clone(),ty,
+                            init:self.rewrite_expr(init,&env,0)?,pos,
+                        });
+                        // Even an unknown new binding shadows an outer Record
+                        // and cannot inherit its field layout.
+                        frames.last_mut().unwrap().insert(name,value);
                     }
                 }
-                // Complex flow is still admitted by the ordinary compiler,
-                // but Record/with expressions in it remain fail-closed unless
-                // a later shape-aware CFG lowering proves their lifetime.
-                other => transformed.push(other),
+                Stmt::Assign{name,value,pos} => {
+                    if let Some(Value::Record(old_shape))=env.get(&name) {
+                        if !matches!(&value.kind,ExprKind::Record(_)|ExprKind::With(_,_)) {
+                            return Err(err(pos,"E_WITH_TYPE",
+                                "Record reassignment needs statically checked reconstruction"));
+                        }
+                        let (mut pre,expr,shape)=self.lower_record(value,&env,0)?;
+                        if &shape!=old_shape {
+                            return Err(err(pos,"E_TYPE",
+                                "Record reassignment must preserve its static shape"));
+                        }
+                        transformed.append(&mut pre);
+                        transformed.push(Stmt::Assign{name,value:expr,pos});
+                    } else {
+                        transformed.push(Stmt::Assign{name,
+                            value:self.rewrite_expr(value,&env,0)?,pos});
+                    }
+                }
+                Stmt::Block(body) => {
+                    transformed.push(Stmt::Block(self.nested(body,frames,type_names)?));
+                }
+                Stmt::StateWrite{body,pos} => {
+                    transformed.push(Stmt::StateWrite{
+                        body:self.nested(body,frames,type_names)?,pos});
+                }
+                Stmt::If{arms,otherwise,pos} => {
+                    let mut checked_arms=Vec::new();
+                    for (condition,body) in arms {
+                        let condition=self.rewrite_expr(condition,&env,0)?;
+                        let mut branch=frames.clone();
+                        let body=self.nested(body,&mut branch,type_names)?;
+                        checked_arms.push((condition,body));
+                    }
+                    let otherwise=if let Some(body)=otherwise {
+                        let mut branch=frames.clone();
+                        Some(self.nested(body,&mut branch,type_names)?)
+                    } else {None};
+                    transformed.push(Stmt::If{arms:checked_arms,otherwise,pos});
+                }
+                Stmt::While{cond,body,pos} => {
+                    let cond=self.rewrite_expr(cond,&env,0)?;
+                    let mut branch=frames.clone();
+                    let body=self.nested(body,&mut branch,type_names)?;
+                    transformed.push(Stmt::While{cond,body,pos});
+                }
+                Stmt::Loop{body,pos} => {
+                    let mut branch=frames.clone();
+                    let body=self.nested(body,&mut branch,type_names)?;
+                    transformed.push(Stmt::Loop{body,pos});
+                }
+                Stmt::Return(Some(value),pos) => transformed.push(
+                    Stmt::Return(Some(self.rewrite_expr(value,&env,0)?),pos)),
+                Stmt::Expr(value) => transformed.push(
+                    Stmt::Expr(self.rewrite_expr(value,&env,0)?)),
+                Stmt::Throw(value,pos) => transformed.push(
+                    Stmt::Throw(self.rewrite_expr(value,&env,0)?,pos)),
+                Stmt::Raise(value,pos) => transformed.push(
+                    Stmt::Raise(self.rewrite_expr(value,&env,0)?,pos)),
+                Stmt::FieldAssign{target,field,value,pos} => transformed.push(
+                    Stmt::FieldAssign {
+                        target:self.rewrite_expr(target,&env,0)?,
+                        field,value:self.rewrite_expr(value,&env,0)?,pos,
+                    }),
+                // Other control-flow remains in the original typed checker.
+                // No speculative field offset is invented in these forms.
+                other=>transformed.push(other),
             }
         }
-        f.body=transformed;
+        Ok(transformed)
+    }
+
+    fn lower_func(&mut self, f: &mut Func, type_names:&[(String,Pos)]) -> R<()> {
+        let mut params=BTreeMap::new();
+        for param in &f.params {
+            params.insert(param.name.clone(),if is_scalar(param.ty) {
+                Value::Scalar(param.ty)
+            } else { Value::Unknown });
+        }
+        let mut frames=vec![params];
+        f.body=self.lower_statements(std::mem::take(&mut f.body),
+            &mut frames,type_names)?;
         Ok(())
     }
+
 }
 
 /// Rewrite only flat closed Records to real constructor/field access IR.
