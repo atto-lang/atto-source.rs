@@ -313,8 +313,8 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             // Actual parsed file declarations, not caller-supplied export metadata.
             // The existing trusted loader authorizes the canonical relative path.
             let mut view = ExportView::new(Origin::Local(requested.clone()));
-            for (name, public) in &file.funcs { view.add(name, name, Kind::Fnc, *public)?; }
-            Scope::new().bind_mixed(&view, typed)?;
+            for (name, public) in &file.funcs { view.add(name, name, Kind::Fnc, *public).map_err(|mut d| { d.pos = imp.pos; d })?; }
+            Scope::new().bind_mixed(&view, typed).map_err(|mut d| { d.pos = imp.pos; d })?;
         }
         let mut add = |local: String, export: Option<String>| -> R<()> {
             if root_names.contains(&local) || bound.contains_key(&local) {
