@@ -196,3 +196,58 @@ The test host's actor import is **not** part of the current published
 playground's grant list. No release of actor-capable compiler bytes or
 public site changes is authorized without the source, playground and
 Pages release gates.
+
+## Actor mailbox admission: restricted Result<void, SendError> (private only)
+
+On the actor-runtime development branch, `worker.send(int)` returns a
+**typed admission result**, currently only `Result<void, SendError>`.
+`Ok(())` means the bounded host mailbox accepted the message *synchronously*
+during guest execution. `Err(Full)` means capacity 2 was reached;
+`Err(Closed)` means the mailbox is closed. Neither `Ok` nor `close()`
+confirms handler completion. `worker.close()` returns `bool` (true only
+on the first close) and stops further sends while preserving admitted FIFO
+messages for delivery.
+
+The limited `Result<void, SendError>` supports `is_ok()`, `is_err()`,
+`is_full()` and `is_closed()`. It is not the general generic `Result`
+runtime and does not yet support `match`, `?`, `map_err`, or transport
+of class pointers, handles or borrowed values. The current browser actor
+test host runs admitted queues after the synchronous guest `main()` returns,
+in separate worker/guest instances; it does not establish canonical
+production scheduler fairness or `get_done()` semantics.
+
+The new guest imports `atto.actor_send(i32,i64)->i32` (status 0=Ok,
+1=Full, 2=Closed) and `atto.actor_close(i32)->i32` (bool), both prohibited
+inside `receive` until capability and supervision checks exist. These
+imports are *not* granted by the public playground or previously shipped
+compiler. Compilation rejects all non-int send payloads and unsupported
+generic Result types with no guest code.
+
+## Private browser-worker lifecycle proof (host only)
+
+The actor lifecycle test host, not the language compiler, owns an explicit
+per-actor state machine: `STARTING -> READY -> DRAINING -> FINISHED/CLOSED`,
+with exceptional terminal states `FAILED` and `TERMINATED`. The actor
+must acknowledge a `shutdown` request after processing all prior work
+before the host records `FINISHED` or `CLOSED`. A forced worker termination,
+unexpected failure, timeout, or guest-main panic is never mislabelled as
+a normal completion.
+
+The private harness returns `actorCompletions` (one terminal record per
+actor, `handle`, `actorId`, `state`, `reason`, `admitted`,
+`delivered`, `externalDelivered`, `dropped`), using an idempotent
+terminal transition. This is a **host evidence envelope**, not an AttoLang
+`get_done()` future, promise, acknowledgement of each message, or
+canonical supervisor priority CONTROL channel. No guest `await` is
+introduced. The existing finite guest-run scope implicitly shuts down
+open actors after draining; explicit `close()` prevents further sends,
+preserves already admitted messages, and yields `CLOSED` only after the
+child's actual shutdown acknowledgement.
+
+Pure lifecycle state-machine conformance and real Chromium child-worker
+tests cover normal drain, idle actor termination, explicit close, worker
+panic, host-forced termination, guest-main panic, initialization failure, failed shutdown ACK, invalid
+transfers, resource cleanup and exactly-once terminal evidence. **No claim is made
+for a real concurrent-producer scheduler, OS-enforced tenant isolation,
+actor arena reclamation, separate guaranteed guest stacks, backend parity,
+or language-level completion/supervision yet.**

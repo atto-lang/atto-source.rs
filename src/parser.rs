@@ -401,6 +401,17 @@ impl Parser {
             "int" => Type::Int,
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
+            "Result" => {
+                // Narrow built-in result for send admission only. All other
+                // generic Result instantiations still fail closed.
+                if !self.eat(&Tok::Lt) || !self.eat_word("void")
+                    || !self.eat(&Tok::Comma) || !self.eat_word("SendError")
+                    || !self.eat(&Tok::Gt) {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "only Result<void,SendError> is admitted for actor send"));
+                }
+                Type::SendResult
+            }
             n if UNSUPPORTED_TYPES.contains(&n) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -1377,8 +1388,13 @@ impl Parser {
                         }
                     }
                     self.advance();
-                    let (field, _) = self.ident("a class field")?;
-                    e = Expr { kind: ExprKind::Field(Box::new(e), field), pos };
+                    let (field, _) = self.ident("a member")?;
+                    if *self.peek() == Tok::LParen {
+                        let args = self.parse_call_args()?;
+                        e = Expr { kind: ExprKind::MethodCall(Box::new(e), field, args), pos };
+                    } else {
+                        e = Expr { kind: ExprKind::Field(Box::new(e), field), pos };
+                    }
                     continue;
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),

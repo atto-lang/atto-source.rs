@@ -12,6 +12,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { ActorLifecycle } from './browser/actor-lifecycle.mjs';
 
 const here = new URL('.', import.meta.url).pathname;
 const compilerPath = process.argv[2] || join(here, '../target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -585,7 +586,7 @@ check('actor/fail-closed-ownership-and-handler',()=>{
     ['define actor Worker as end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
     ['define class Point as int x: 2 end\npub fnc main(): int { val w = spawn Point(); return 0; }','E_SPAWN_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(1); return 0; }','E_ARITY'],
-    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_UNSUPPORTED'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\ndefine class Point as int x: 1 end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { rt take w; return 0; }','E_UNSUPPORTED'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); return w; }','E_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { stdio.println(msg); return msg; } end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
@@ -595,6 +596,143 @@ check('actor/fail-closed-ownership-and-handler',()=>{
     assert.equal(r.ok,false,src);
     assert.equal(r.code,expected,r.message);
     assert.equal('wasm' in r,false,'failed actor program must never emit guest bytes');
+  }
+});
+
+
+check('actor/send-result-and-closed-admission-guest',()=>{
+  const source=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg + 1; }',
+    'end',
+    'pub fnc main(): int {',
+    '  val w = spawn Worker();',
+    '  val a: Result<void, SendError> = w.send(41);',
+    '  val b = w.send(42);',
+    '  val full = w.send(43);',
+    '  val closed = w.close();',
+    '  val after = w.send(44);',
+    '  if a.is_ok() , b.is_ok() , full.is_full() , closed , after.is_closed() , after.is_err() then',
+    '    return 42;',
+    '  else',
+    '    return 0;',
+    '  fi',
+    '}',
+  ].join('\n');
+  const result=compile(source);
+  assert.ok(result.ok,result.message);
+  const module=new WebAssembly.Module(result.wasm);
+  const imports=WebAssembly.Module.imports(module).map(i=>i.name);
+  assert.ok(imports.includes('actor_spawn'));
+  assert.ok(imports.includes('actor_send'));
+  assert.ok(imports.includes('actor_close'));
+  const seen=[];let closed=false;
+  const atto={
+    actor_spawn:id=>{assert.equal(id,0);return 1},
+    actor_send:(handle,value)=>{
+      assert.equal(handle,1);assert.equal(typeof value,'bigint');
+      if(closed)return 2;
+      if(seen.length===2)return 1;
+      seen.push(value);return 0;
+    },
+    actor_close:handle=>{assert.equal(handle,1);closed=true;return 1},
+  };
+  const instance=new WebAssembly.Instance(module,{atto});
+  assert.equal(instance.exports.main(),42n);
+  assert.deepEqual(seen,[41n,42n]);
+});
+check('actor/send-fails-closed-on-non-scalar-transfer',()=>{
+  const prefix=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg; }',
+    'end',
+    'define class Point as',
+    '  int x: 1',
+    'end',
+  ].join('\n')+'\n';
+  for(const statement of [
+    'val w = spawn Worker(); val obj = new Point(); val result = w.send(obj);',
+    'val w = spawn Worker(); val other = spawn Worker(); val result = w.send(other);',
+    'val w = spawn Worker(); val result = w.send(true);',
+    'val w = spawn Worker(); val result = w.send();',
+    'val w = spawn Worker(); val result = w.send(1,2);',
+    'val w = spawn Worker(); val result: Result<int, SendError> = w.send(1);',
+  ]){
+    const response=compile(prefix+'pub fnc main(): int { '+statement+' return 0; }');
+    assert.equal(response.ok,false,statement);
+    assert.equal('wasm' in response,false,'invalid send must never create guest code');
+  }
+});
+
+
+check('actor/lifecycle-normal-drain-and-idempotent-completion',()=>{
+  const actor=new ActorLifecycle(1,0,2);
+  assert.equal(actor.send(41n),0);
+  assert.equal(actor.send(42n),0);
+  assert.equal(actor.send(43n),1,'bounded mailbox refuses third message');
+  assert.equal(actor.close(),true);
+  assert.equal(actor.close(),false,'close is idempotent');
+  assert.equal(actor.send(43n),2,'closed mailbox rejects even after full');
+  actor.ready();
+  actor.draining();
+  assert.throws(()=>actor.complete('FINISHED'),/E_ACTOR_NOT_DRAINED/);
+  assert.equal(actor.dequeue(),41n);
+  actor.acknowledged();
+  assert.equal(actor.dequeue(),42n);
+  actor.acknowledged();
+  assert.equal(actor.dequeue(),null);
+  assert.equal(actor.complete('CLOSED','E_ACTOR_SHUTDOWN_ACK'),true);
+  assert.equal(actor.complete('FAILED','late panic'),false);
+  assert.equal(actor.complete('TERMINATED','double stop'),false);
+  assert.equal(actor.completionCount,1);
+  assert.deepEqual([actor.completion.state,actor.completion.admitted,
+    actor.completion.delivered,actor.completion.dropped],['CLOSED',2,2,0]);
+  assert.equal(actor.send(99n),2);
+});
+check('actor/lifecycle-failure-drops-and-seals-once',()=>{
+  const actor=new ActorLifecycle(3,2,2);
+  actor.ready();actor.draining();
+  assert.equal(actor.send(1n),0);
+  assert.equal(actor.send(2n),0);
+  assert.equal(actor.dequeue(),1n);
+  assert.equal(actor.complete('FAILED','E_ACTOR_PANIC_1'),true);
+  assert.equal(actor.complete('CLOSED','late shutdown'),false);
+  assert.equal(actor.completionCount,1);
+  assert.equal(actor.completion.dropped,2,'in-flight and queued messages are counted');
+  assert.equal(actor.completion.delivered,0,'admission is not execution');
+  assert.equal(actor.send(3n),2,'failed actor cannot reopen admission');
+  assert.throws(()=>actor.acknowledged(),/E_ACTOR_STATE/);
+});
+check('actor/lifecycle-typed-admission-and-invalid-transitions',()=>{
+  const actor=new ActorLifecycle(1,0);
+  assert.throws(()=>actor.send({pointer:1}),/E_MESSAGE_TYPE/);
+  assert.throws(()=>actor.send(9223372036854775808n),/E_MESSAGE_TYPE/);
+  assert.throws(()=>actor.draining(),/E_ACTOR_STATE/);
+  assert.throws(()=>actor.dequeue(),/E_ACTOR_STATE/);
+  assert.throws(()=>actor.complete('UNKNOWN'),/E_ACTOR_STATE/);
+  actor.ready();
+  assert.throws(()=>actor.ready(),/E_ACTOR_STATE/);
+  actor.draining();
+  assert.equal(actor.complete('FINISHED','E_ACTOR_SHUTDOWN_ACK'),true);
+  assert.equal(actor.complete('FINISHED'),false);
+  assert.equal(actor.completionCount,1);
+});
+
+check('actor/lifecycle-async-get_done-remains-fail-closed',()=>{
+  const prelude=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg; }',
+    'end',
+  ].join('\n')+'\n';
+  for(const statement of [
+    'val w = spawn Worker(); val completion = w.get_done();',
+    'val w = spawn Worker(); await w.get_done();',
+  ]){
+    const r=compile(prelude+'pub fnc main(): int { '+statement+' return 0; }');
+    assert.equal(r.ok,false,statement);
+    assert.equal(r.code,'E_UNSUPPORTED',r.message);
+    assert.equal('wasm' in r,false,
+      'get_done must not pretend to be a blocking synchronous guest operation');
   }
 });
 
