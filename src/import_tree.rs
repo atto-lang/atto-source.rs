@@ -128,7 +128,7 @@ pub fn contextual_path(path:&str,current:Option<&str>)->R<String>{
         base.truncate(base.len()-count);tail.drain(..count-1);
     }
     base.extend(tail);
-    if base.is_empty() || base.len()>DEPTH || base.iter().any(|p| !crate::static_import_graph::valid_component(p)){
+    if base.is_empty() || base.len()>DEPTH || base.iter().any(|p| matches!(*p,"pkg"|"self"|"super") || !crate::static_import_graph::valid_component(p)){
         return Err(Diagnostic::new(Pos::default(),"E_IMPORT_PATH","invalid contextual namespace path"));
     }
     Ok(base.join("."))
