@@ -113,16 +113,38 @@ impl Parser<'_> {
     }
     // The existing ColonColon token stays unchanged. Only consume it in
     // this quantity expression context; ordinary callable headers are untouched.
-    fn explicit_unit(&mut self) -> R<Option<Unit>> {
-        if !self.take(Tok::ColonColon) { return Ok(None); }
+    fn checked_scalar_cast(&self, source: &Unit, name: &str, pos: Pos) -> R<Unit> {
+        if !matches!(name, "int" | "i64") {
+            return Err(error(pos, "E_UNSUPPORTED_CAST", "quantity profile supports only signed-i64 identity casts"));
+        }
+        if *source != Unit::scalar() {
+            return Err(error(pos, "E_UNIT_ERASURE", "scalar cast cannot erase units"));
+        }
+        Ok(Unit::scalar())
+    }
+    fn cast_or_legacy_unit(&self, source: &Unit, name: &str, pos: Pos) -> R<Unit> {
+        if matches!(name, "int" | "i64") {
+            self.checked_scalar_cast(source, name, pos)
+        } else {
+            attach(source, self.lookup(name)?, pos)
+        }
+    }
+    fn postfix_unit(&mut self, source: &Unit, pos: Pos) -> R<Option<Unit>> {
+        let unit_only = self.token().tok == Tok::Dot
+            && self.tokens.get(self.at + 1).is_some_and(|t| t.tok == Tok::Lt);
+        if unit_only { self.at += 1; }
+        else if !self.take(Tok::ColonColon) { return Ok(None); }
+        if self.budget == 0 { return Err(self.err("E_UNIT_LIMIT", "quantity postfix budget")); }
+        self.budget -= 1;
         self.expect(Tok::Lt)?;
         let name = self.name()?;
         self.expect(Tok::Gt)?;
-        self.lookup(&name).map(Some)
+        if unit_only { attach(source, self.lookup(&name)?, pos).map(Some) }
+        else { self.cast_or_legacy_unit(source, &name, pos).map(Some) }
     }
     fn attach_postfix(&mut self, mut value: Value, pos: Pos) -> R<Value> {
-        while let Some(unit) = self.explicit_unit()? {
-            value.unit = attach(&value.unit, unit, pos)?;
+        while let Some(unit) = self.postfix_unit(&value.unit, pos)? {
+            value.unit = unit;
         }
         Ok(value)
     }
@@ -191,10 +213,17 @@ impl Parser<'_> {
         if depth > 64 || self.budget == 0 { return Err(self.err("E_UNIT_LIMIT", "quantity expression budget")); }
         self.budget -= 1;
         let pos = self.token().pos;
+        if self.take(Tok::Lt) {
+            let name = self.name()?;
+            self.expect(Tok::Gt)?;
+            let mut v = self.atom(depth + 1)?;
+            v.unit = self.checked_scalar_cast(&v.unit, &name, pos)?;
+            return Ok(v);
+        }
         if self.take(Tok::Minus) {
             if self.token().tok == Tok::Int(None) {
                 let mut v = self.literal(true)?;
-                if self.token().tok == Tok::Dot { return Err(self.err("E_UNSUPPORTED", "signed minimum postfix preview not supported")); }
+                if self.token().tok == Tok::Dot && !self.tokens.get(self.at + 1).is_some_and(|t| t.tok == Tok::Lt) { return Err(self.err("E_UNSUPPORTED", "signed minimum conversion preview not supported")); }
                 v.number = Ok(i64::MIN);
                 return self.attach_postfix(v, pos);
             }
@@ -284,7 +313,7 @@ impl Parser<'_> {
         if precedence == 0 && self.word("as") {
             let pos = self.token().pos;
             let name = self.name()?;
-            left.unit = attach(&left.unit, self.lookup(&name)?, pos)?;
+            left.unit = self.cast_or_legacy_unit(&left.unit, &name, pos)?;
         }
         Ok(left)
     }

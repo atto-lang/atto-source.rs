@@ -3122,6 +3122,13 @@ impl Parser {
         Ok(left)
     }
 
+    // All explicit cast spellings use the same checked AST node.
+    // The signed-i64 spelling aliases the existing int carrier at cast sites.
+    fn parse_cast_target(&mut self) -> R<Type> {
+        if self.eat_word("i64") { return Ok(Type::Int); }
+        self.parse_type()
+    }
+
     pub fn parse_expr(&mut self) -> R<Expr> {
         self.enter()?;
         let saved = self.cond;
@@ -3138,7 +3145,7 @@ impl Parser {
                 } else {
                     break;
                 };
-                let want = self.parse_type()?;
+                let want = if is_cast { self.parse_cast_target()? } else { self.parse_type()? };
                 if want == Type::Void {
                     return Err(Diagnostic::new(pos, "E_TYPE", "a value expression cannot be ascribed void"));
                 }
@@ -3505,6 +3512,15 @@ impl Parser {
 
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
+        if self.eat(&Tok::Lt) {
+            let want = self.parse_cast_target()?;
+            self.expect(Tok::Gt, "'>' after prefix cast type")?;
+            if want == Type::Void {
+                return Err(Diagnostic::new(pos, "E_TYPE", "a value expression cannot be cast to void"));
+            }
+            let inner = self.parse_unary()?;
+            return Ok(Expr { kind: ExprKind::Ascribe(Box::new(inner), want, true), pos });
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
@@ -3645,6 +3661,19 @@ impl Parser {
         let mut e = self.parse_primary()?;
         loop {
             match self.peek() {
+                Tok::ColonColon if *self.peek_at(1) == Tok::Lt => {
+                    let cast = self.pos();
+                    self.advance();
+                    self.advance();
+                    let want = self.parse_cast_target()?;
+                    self.expect(Tok::Gt, "'>' after postfix cast type")?;
+                    if want == Type::Void {
+                        return Err(Diagnostic::new(cast, "E_TYPE", "a value expression cannot be cast to void"));
+                    }
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr { kind: ExprKind::Ascribe(Box::new(e), want, true), pos: cast };
+                }
                 Tok::LParen => {
                     let name = match &e.kind {
                         ExprKind::Var(n) => n.clone(),
