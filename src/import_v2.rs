@@ -15,6 +15,7 @@ pub struct Selection {
     pub kind: Kind,
     pub path: String,
     pub binding: String,
+    pub explicit_alias: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source { Builtin(String), Local(String), Package(String) }
@@ -83,13 +84,14 @@ impl Cursor<'_> {
     fn selector(&mut self, kind: Kind, out: &mut Vec<Selection>) -> R<()> {
         if out.len() >= MAX_ITEMS { return Err(self.err("E_SOURCE_LIMIT", "too many mixed import selectors")); }
         let parts = self.path()?;
-        let binding = if self.word("as") {
+        let explicit_alias = self.word("as");
+        let binding = if explicit_alias {
             if kind == Kind::Namespace { self.path()?.join(".") } else { self.ident()? }
         } else if kind == Kind::Namespace { parts.join(".") } else { parts.last().unwrap().clone() };
         if out.iter().any(|s| s.binding == binding) {
             return Err(self.err("E_DUPLICATE", "duplicate mixed import binding"));
         }
-        let selection = Selection { kind, path: parts.join("."), binding };
+        let selection = Selection { kind, path: parts.join("."), binding, explicit_alias };
         if out.iter().any(|s| obstructs(s, &selection)) {
             return Err(self.err("E_DUPLICATE", "non-namespace import obstructs qualified binding"));
         }
@@ -239,7 +241,14 @@ pub fn parse_mixed(tokens: &[Token], start: usize) -> R<(MixedImport, usize)> {
 /// Refuse new forms before legacy library expansion or caller-supplied loading.
 /// The existing legacy linker remains unchanged; the natural-name builtin namespace lane is the new executable candidate.
 /// Mixed lists have a real syntax AST, but not a typed linker yet.
-pub fn preflight(source: &str) -> R<()> {
+pub fn preflight(source: &str) -> R<()> { preflight_with_local(source, false) }
+
+pub(crate) fn local_function_group(import: &MixedImport) -> bool {
+    matches!(&import.source, Source::Local(_)) && import.selectors.iter().all(|s|
+        s.kind == Kind::Fnc && !s.path.contains('.') && !s.binding.contains('.'))
+}
+
+pub(crate) fn preflight_with_local(source: &str, allow_local: bool) -> R<()> {
     if !source.contains("import") { return Ok(()); }
     if source.len() > crate::SOURCE_CAP {
         return Err(Diagnostic::new(Pos::default(), "E_SOURCE_LIMIT", "source exceeds byte limit"));
@@ -250,7 +259,8 @@ pub fn preflight(source: &str) -> R<()> {
         if !matches!(&tokens[i].tok, Tok::Ident(s) if s == "import") { i += 1; continue; }
         let start = i + 1;
         if is_mixed(&tokens, start) {
-            parse_mixed(&tokens, start)?;
+            let (import, end) = parse_mixed(&tokens, start)?;
+            if allow_local && local_function_group(&import) { i = end; continue; }
             return Err(Diagnostic::new(tokens[i].pos, "E_UNSUPPORTED", "mixed import syntax parsed; typed linking is not implemented"));
         }
         // Leave legacy forms to their existing linkers. The builtin
