@@ -251,6 +251,15 @@ fn anonymous_fields(t: &[Token], start: usize, end: usize) -> R<Vec<Field>> {
 }
 fn generics(t: &[Token], index: usize) -> R<(String,String,usize)> {
     let pos=t[index].pos;
+    let pair = word(t,index,"Pair");
+    // Pair<V> is the canonical string-key specialization. Retain the
+    // previous Pair<string,V> spelling as the same nominal specialization.
+    if pair && t.get(index+1).is_some_and(|x| x.tok == Tok::Lt)
+        && t.get(index+3).is_some_and(|x| x.tok == Tok::Gt) {
+        let b = token_name(t,index+2).and_then(scalar).ok_or_else(||
+            error(pos,"E_UNSUPPORTED_TYPE","Pair value type must be scalar in this profile"))?;
+        return Ok(("string".into(),b.into(),index+4));
+    }
     if t.get(index+1).is_none_or(|x| x.tok != Tok::Lt) ||
         t.get(index+3).is_none_or(|x| x.tok != Tok::Comma) ||
         t.get(index+5).is_none_or(|x| x.tok != Tok::Gt) {
@@ -263,6 +272,9 @@ fn generics(t: &[Token], index: usize) -> R<(String,String,usize)> {
     let b=match t.get(index+4).map(|x|&x.tok) {
         Some(Tok::Ident(s))=>scalar(s), _=>None
     }.ok_or_else(|| error(pos,"E_UNSUPPORTED_TYPE","second product type must be scalar"))?;
+    if pair && a != "string" {
+        return Err(error(pos,"E_TYPE","Pair first type argument must be string"));
+    }
     Ok((a.to_owned(),b.to_owned(),index+6))
 }
 fn closing(t:&[Token],open:usize) -> R<usize> {
@@ -306,7 +318,9 @@ fn typed_product(t:&[Token],i:usize,defs:&mut BTreeMap<String,Vec<Field>>)
         if !word(t,after+1,kind) {
             return Err(error(t[i].pos,"E_TYPE","typed product constructor kind must match the annotation"));
         }
-        after+2
+        if t.get(after+2).is_some_and(|x| x.tok == Tok::Dot) && word(t,after+3,"of") {
+            after+4
+        } else { after+2 }
     };
     let close=closing(t,open)?;
     if t.get(close+1).is_none_or(|x| x.tok != Tok::Semi) {
@@ -332,6 +346,66 @@ fn typed_product(t:&[Token],i:usize,defs:&mut BTreeMap<String,Vec<Field>>)
     Ok(Some((out,close+2)))
 }
 
+// This pre-parser is not a general name resolver. Only infer unqualified
+// source-local Pair.of in a program without competing Pair declarations,
+// aliases, parameters or qualified access. Unknown forms stay unadmitted.
+fn pair_factory(t: &[Token], i: usize) -> bool {
+    word(t,i,"Pair") && t.get(i+1).is_some_and(|x| x.tok == Tok::Dot)
+        && word(t,i+2,"of")
+}
+fn pair_factory_guard(t: &[Token]) -> R<()> {
+    if !t.iter().enumerate().any(|(i,_)| pair_factory(t,i)) { return Ok(()); }
+    for (i, token) in t.iter().enumerate() {
+        if !word(t,i,"Pair") { continue; }
+        let prior = i.checked_sub(1).and_then(|p|t.get(p)).map(|x|&x.tok);
+        let factory = pair_factory(t,i) && !matches!(prior,Some(Tok::Dot | Tok::ColonColon));
+        let annotation = matches!(prior,Some(Tok::Colon))
+            && t.get(i+1).is_some_and(|x|x.tok==Tok::Lt);
+        if !factory && !annotation {
+            return Err(error(token.pos,"E_UNSUPPORTED",
+                "Pair.of requires an unambiguous source-local builtin; competing Pair reference"));
+        }
+    }
+    Ok(())
+}
+fn inferred_pair(t: &[Token], i: usize, defs: &mut BTreeMap<String,Vec<Field>>)
+    -> R<Option<(Vec<Token>,usize)>>
+{
+    if !word(t,i,"val") || token_name(t,i+1).is_none()
+        || t.get(i+2).is_none_or(|x|x.tok!=Tok::Assign)
+        || !pair_factory(t,i+3) { return Ok(None); }
+    let open=i+6;
+    let close=closing(t,open)?;
+    if t.get(close+1).is_none_or(|x|x.tok!=Tok::Semi) {
+        return Err(error(t[close].pos,"E_SYNTAX","Pair binding requires semicolon"));
+    }
+    // Deliberately bounded inference: string literal plus scalar literal.
+    // Typed Pair<V> bindings can instead use checked runtime expressions.
+    let args=&t[open+1..close];
+    if args.len()!=3 || args[1].tok!=Tok::Comma {
+        return Err(error(t[open].pos,"E_UNSUPPORTED_TYPE",
+            "inferred Pair.of requires two scalar literal arguments; use explicit Pair<V> for expressions"));
+    }
+    if !matches!(&args[0].tok,Tok::Str(_)) {
+        return Err(error(args[0].pos,"E_TYPE","Pair first argument must be string"));
+    }
+    let b=literal_type(&args[2].tok).ok_or_else(||error(args[2].pos,"E_UNSUPPORTED_TYPE",
+        "inferred Pair value must be a scalar literal in this profile"))?;
+    let cls=synthetic_name("pair","string",b);
+    if defs.len()>=MAX_SHAPES && !defs.contains_key(&cls) {
+        return Err(error(t[i].pos,"E_SOURCE_LIMIT","too many generic product specializations"));
+    }
+    defs.entry(cls.clone()).or_insert_with(||vec![
+        Field{name:"first".into(),ty:"string".into()},
+        Field{name:"second".into(),ty:b.into()},
+    ]);
+    let mut out=t[i..i+3].to_vec();
+    out.push(Token{tok:Tok::Ident("new".into()),pos:t[open].pos});
+    out.push(Token{tok:Tok::Ident(cls),pos:t[open].pos});
+    out.extend_from_slice(&t[open..=close+1]);
+    Ok(Some((out,close+2)))
+}
+
 /// Lower exactly source-local immutable two-field scalar products through
 /// checked class constructors, preserving real runtime allocations and field
 /// reads. Not executable for arbitrary structural/collection operations.
@@ -348,6 +422,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         (word(&t,i,"Tuple")||word(&t,i,"Pair")||word(&t,i,"Entry"))) {
         return Ok(t);
     }
+    pair_factory_guard(&t)?;
     let mut declared=BTreeMap::<String,Decl>::new();
     let mut first=Vec::new();
     let mut i=0;
@@ -374,6 +449,9 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     let mut out=Vec::new();
     i=0;
     while i<first.len() {
+        if let Some((product,next))=inferred_pair(&first,i,&mut synthetic)? {
+            out.extend(product);i=next;continue;
+        }
         if let Some((product,next))=typed_product(&first,i,&mut synthetic)? {
             out.extend(product);i=next;continue;
         }
