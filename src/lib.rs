@@ -131,8 +131,23 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     compile_prelexed(lexer::lex(source)?, logical_path)
 }
 
+/// Opt-in single-source durable scalar entry ABI v1. The ordinary browser
+/// main ABI and all existing compiler entry points are unchanged.
+pub fn compile_durable_scalar(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            "durable scalar source exceeds source cap"));
+    }
+    compile_prelexed_mode(lexer::lex(source)?, None, true)
+}
+
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    compile_prelexed_mode(tokens, logical_path, false)
+}
+
+fn compile_prelexed_mode(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>,
+                         durable_scalar: bool) -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
@@ -155,6 +170,10 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
+        if durable_scalar {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_DURABLE_SCALAR_ABI",
+                "collection layout is not the durable scalar entry profile"));
+        }
         let bytes = wasm::emit(&program);
         if bytes.len() > wasm::MAX_OUTPUT {
             return Err(Diagnostic::new(Pos { line: 1, col: 1 },
@@ -360,7 +379,28 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
-    let mut bytes = wasm::emit(&typed);
+    let mut bytes = if durable_scalar {
+        use ast::Type;
+        let bad = || Diagnostic::new(Pos { line: 1, col: 1 }, "E_DURABLE_SCALAR_ABI",
+            "requires a stateless, import-free scalar module with durable_transition(int,int,int)->int");
+        if !typed.imports.is_empty() || !typed.globals.is_empty() ||
+            !typed.actors.is_empty() || !typed.generators.is_empty() ||
+            !typed.data.is_empty() || typed.heap || typed.strings || typed.guest_eh ||
+            typed.raise_tag || typed.catch_depth ||
+            typed.funcs.iter().any(|f| !matches!(f.ret, Type::Int | Type::Bool | Type::Void) ||
+                f.params.iter().chain(f.locals.iter()).any(|t| !matches!(t, Type::Int | Type::Bool))) {
+            return Err(bad());
+        }
+        let mut candidates = typed.funcs.iter().enumerate().filter(|(_, f)| f.name == "durable_transition");
+        let (idx, entry) = candidates.next().ok_or_else(bad)?;
+        if candidates.next().is_some() || entry.params.as_slice() != [Type::Int; 3] ||
+            entry.ret != Type::Int {
+            return Err(bad());
+        }
+        wasm::emit_durable_scalar(&typed, idx as u32)
+    } else {
+        wasm::emit(&typed)
+    };
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
