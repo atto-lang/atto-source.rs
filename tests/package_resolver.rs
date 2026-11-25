@@ -510,3 +510,95 @@ fn locked_snapshot_authenticates_manifest_before_resolving_namespace() {
     let drift = NAMESPACE_MANIFEST.replace("src/a/b/c.atto", "src/a/b/other.atto");
     assert_eq!(compile_locked_snapshot("src/main.atto", &drift, &lock, &trusted, &sources).unwrap_err().code, "E_LOCK_HASH");
 }
+
+#[test]
+fn shorthand_and_explicit_namespace_imports_are_byte_identical() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/network/http/namespace.atto", "use namespace http; pub fnc answer(): int { return 42; }");
+    let mut expected = None;
+    for kind in ["namespace ", ""] {
+        for selector in ["@org/project/package", "@org/project/package/network/http"] {
+            for quote in ["'", "\""] {
+                f.write("src/main.atto", &format!("import {kind}http from pkg {quote}{selector}{quote}; pub fnc main(): int {{ return http.answer(); }}"));
+                let bytes = compile_package(f.root(), "src/main.atto").unwrap();
+                if let Some(ref prior) = expected { assert_eq!(&bytes, prior); }
+                else { expected = Some(bytes); }
+            }
+        }
+    }
+}
+
+#[test]
+fn manifest_namespace_lists_support_both_spellings_and_order_independence() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/network/http/namespace.atto", "use namespace http; pub fnc answer(): int { return 20; }");
+    f.write("src/a/b/c.atto", "use namespace c; pub fnc answer(): int { return 22; }");
+    f.write("src/network/http/unrelated.atto", "not valid source");
+    let mut expected = None;
+    for clause in [
+        "import namespace http, c from pkg '@org/project/package';",
+        "import http, c from pkg '@org/project/package';",
+        "import c, http from pkg '@org/project/package';",
+        "import http from pkg '@org/project/package/network/http'; import namespace c from pkg '@org/project/package/a/b/c';",
+    ] {
+        f.write("src/main.atto", &format!("{clause} pub fnc main(): int {{ return http.answer() + c.answer(); }}"));
+        let bytes = compile_package(f.root(), "src/main.atto").unwrap();
+        assert!(bytes.starts_with(b"\0asm"));
+        if let Some(ref prior) = expected {
+            // Ordering may affect emitted function layout; explicit and
+            // shorthand in the same order must nevertheless be identical.
+            if clause == "import http, c from pkg '@org/project/package';" { assert_eq!(&bytes, prior); }
+        } else { expected = Some(bytes); }
+    }
+}
+
+#[test]
+fn shorthand_manifest_imports_fail_closed_on_wrong_kind_scope_or_selector() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/network/http/namespace.atto", "use namespace http; pub fnc answer(): int { return 42; } fnc secret(): int { return 7; }");
+    for (clause, code) in [
+        ("import missing from pkg '@org/project/package';", "E_UNBOUND"),
+        ("import HTTP from pkg '@org/project/package';", "E_UNBOUND"),
+        ("import http from pkg '@org/project/package/src/network/http';", "E_UNBOUND"),
+        ("import http from pkg '@org/project/package/../network/http';", "E_UNBOUND"),
+        ("import http from pkg '@org/project/package/network/http/';", "E_UNBOUND"),
+        ("import http from pkg '@org/project/packageevil';", "E_UNSUPPORTED"),
+        ("import http from pkg '@other/project/package';", "E_UNSUPPORTED"),
+        ("import http from pkg 'https://example.test/package';", "E_UNSUPPORTED"),
+        ("import fnc http from pkg '@org/project/package';", "E_UNSUPPORTED"),
+        ("import const http from pkg '@org/project/package';", "E_UNSUPPORTED"),
+        ("import http as web from pkg '@org/project/package';", "E_UNSUPPORTED"),
+        ("import http, http from pkg '@org/project/package';", "E_DUPLICATE"),
+        ("import http, from pkg '@org/project/package';", "E_SYNTAX"),
+        ("import namespace from pkg '@org/project/package';", "E_SYNTAX"),
+        ("import http from pkg '@org/project/package' junk;", "E_SYNTAX"),
+    ] {
+        f.write("src/main.atto", &format!("{clause} pub fnc main(): int {{ return 0; }}"));
+        rejects(f.root(), "src/main.atto", code);
+    }
+    for kind in ["namespace ", ""] {
+        f.write("src/main.atto", &format!("import {kind}http from pkg '@org/project/package/network/http'; pub fnc main(): int {{ return http.secret(); }}"));
+        assert!(compile_package(f.root(), "src/main.atto").is_err());
+    }
+}
+
+#[test]
+fn manifest_shorthand_snapshot_requires_original_hashes_and_exact_reachability() {
+    use atto_compiler::package_resolver::{compile_locked_snapshot, SnapshotSource};
+    let main = "import http from pkg '@org/project/package/network/http'; pub fnc main(): int { return http.answer(); }";
+    let provider = "use namespace http; pub fnc answer(): int { return 42; }";
+    let path = "src/network/http/namespace.atto";
+    let lock = format!("[lock]\nmanifest_sha256=\"{}\"\n[files]\n\"src/main.atto\"=\"{}\"\n\"{path}\"=\"{}\"\n",
+        hex_digest(NAMESPACE_MANIFEST.as_bytes()), hex_digest(main.as_bytes()), hex_digest(provider.as_bytes()));
+    let trusted = hex_digest(lock.as_bytes());
+    let inputs = [SnapshotSource { path: "src/main.atto", source: main }, SnapshotSource { path, source: provider }];
+    assert!(compile_locked_snapshot("src/main.atto", NAMESPACE_MANIFEST, &lock, &trusted, &inputs).is_ok());
+    let rewritten = "import namespace http from \"+src/network/http/namespace.atto\"; pub fnc main(): int { return http.answer(); }";
+    let changed = [SnapshotSource { path: "src/main.atto", source: rewritten }, inputs[1]];
+    assert_eq!(compile_locked_snapshot("src/main.atto", NAMESPACE_MANIFEST, &lock, &trusted, &changed).unwrap_err().code, "E_LOCK_HASH");
+    let changed = [inputs[0], SnapshotSource { path, source: "use namespace http; pub fnc answer(): int { return 0; }" }];
+    assert_eq!(compile_locked_snapshot("src/main.atto", NAMESPACE_MANIFEST, &lock, &trusted, &changed).unwrap_err().code, "E_LOCK_HASH");
+}
