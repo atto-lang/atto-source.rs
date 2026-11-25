@@ -2,6 +2,7 @@
 //! HOST_ONLY until the actor mailbox, scheduler and Wasm guest ABI use it.
 //! Caller serializes mutation at the actor runtime's admission boundary.
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyFailure { MissingReply, HandlerFailed, Cancelled, TimedOut, ActorRetired }
@@ -11,19 +12,31 @@ pub enum ReplyOutcome<T> { Value(T), Failure(ReplyFailure) }
 pub enum SlotFault { Full, Stale, AlreadyStaged, AlreadySettled, NotSettled, InvalidDeadline }
 
 /// Private correlation evidence, not a guest payload or remote authentication.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Ticket {
+    registry: Arc<()>,
     index: usize,
     generation: u64,
     caller_incarnation: u64,
     callee_incarnation: u64,
 }
+impl PartialEq for Ticket {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.registry, &other.registry)
+            && self.index == other.index
+            && self.generation == other.generation
+            && self.caller_incarnation == other.caller_incarnation
+            && self.callee_incarnation == other.callee_incarnation
+    }
+}
+impl Eq for Ticket {}
 impl Ticket {
     /// Create one separate dispatcher permit for a trusted, in-process
     /// mailbox admission. This is NOT a public Clone implementation and
     /// is never serialized to untrusted guest code.
     pub(crate) fn for_dispatch(&self) -> Self {
         Self {
+            registry: Arc::clone(&self.registry),
             index: self.index,
             generation: self.generation,
             caller_incarnation: self.caller_incarnation,
@@ -47,6 +60,9 @@ impl<T> Slot<T> {
 }
 /// Fixed-size reply registry; callers must synchronize admission/settlement.
 pub struct ReplyRegistry<T> {
+    // A process-local authority, retained by tickets even after registry drop.
+    // Incarnations and slot counters are scoped to this allocation.
+    identity: Arc<()>,
     slots: Vec<Slot<T>>,
     callee_incarnation: u64,
     completed_order: VecDeque<usize>,
@@ -55,6 +71,7 @@ impl<T> ReplyRegistry<T> {
     pub fn new(capacity: usize, callee_incarnation: u64) -> Self {
         assert!(capacity > 0);
         Self {
+            identity: Arc::new(()),
             slots: (0..capacity).map(|_| Slot::new()).collect(),
             callee_incarnation, completed_order: VecDeque::with_capacity(capacity),
         }
@@ -75,11 +92,13 @@ impl<T> ReplyRegistry<T> {
         slot.callee_incarnation = self.callee_incarnation;
         slot.deadline = deadline;
         Ok(Ticket {
+            registry: Arc::clone(&self.identity),
             index, generation: slot.generation, caller_incarnation,
             callee_incarnation: self.callee_incarnation,
         })
     }
     fn current(&mut self, t: &Ticket) -> Result<&mut Slot<T>, SlotFault> {
+        if !Arc::ptr_eq(&self.identity, &t.registry) { return Err(SlotFault::Stale); }
         let slot = self.slots.get_mut(t.index).ok_or(SlotFault::Stale)?;
         if slot.generation != t.generation ||
             slot.caller_incarnation != t.caller_incarnation ||
@@ -159,6 +178,7 @@ impl<T> ReplyRegistry<T> {
         Ok(count)
     }
     pub fn poll(&self, t: &Ticket) -> Result<Option<&ReplyOutcome<T>>, SlotFault> {
+        if !Arc::ptr_eq(&self.identity, &t.registry) { return Err(SlotFault::Stale); }
         let slot = self.slots.get(t.index).ok_or(SlotFault::Stale)?;
         if slot.generation != t.generation ||
             slot.caller_incarnation != t.caller_incarnation ||
