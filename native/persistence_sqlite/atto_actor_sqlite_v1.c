@@ -105,33 +105,65 @@ void atto_actor_db_close(atto_actor_db *db) {
 }
 void atto_actor_free(void *ptr) { free(ptr); }
 
-int atto_actor_activate(atto_actor_db *store, const char *actor_id, uint64_t *new_epoch) {
-    if (!store || !new_epoch || !id_ok(actor_id)) return ATTO_ACTOR_STORE_INVALID;
-    *new_epoch=0;
-    sqlite3 *db=store->conn;
-    if (!sql_exec(db,"BEGIN IMMEDIATE;")) return ATTO_ACTOR_STORE_IO;
+/* Internal helpers require exclusive ownership of the connection and an
+ * already-open writer transaction. Only callers commit or roll back. */
+static int rotate_epoch(sqlite3 *db,const char *actor_id,uint64_t *next) {
     sqlite3_stmt *st=NULL;
-    if (!prep(db,"SELECT epoch FROM atto_actor_epochs WHERE actor_id=?1;",&st)) return abort_tx(db,ATTO_ACTOR_STORE_IO);
-    (void)bind_id(st,actor_id);
+    if (!prep(db,"SELECT epoch FROM atto_actor_epochs WHERE actor_id=?1;",&st)) return ATTO_ACTOR_STORE_IO;
+    if (!bind_id(st,actor_id)) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_IO;}
     int rc=sqlite3_step(st);
     sqlite3_int64 epoch=0;
     if (rc==SQLITE_ROW) {
         epoch=sqlite3_column_int64(st,0);
-        if (epoch<1 || epoch==INT64_MAX) {sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_RESOURCE);}
+        if (sqlite3_column_type(st,0)!=SQLITE_INTEGER || epoch<1) {
+            sqlite3_finalize(st);return ATTO_ACTOR_STORE_CORRUPT;
+        }
+        if (epoch==INT64_MAX) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_RESOURCE;}
         epoch++;
     } else if (rc==SQLITE_DONE) { epoch=1; }
-    else {sqlite3_finalize(st);return abort_tx(db,ATTO_ACTOR_STORE_IO);}
+    else {sqlite3_finalize(st);return ATTO_ACTOR_STORE_IO;}
     sqlite3_finalize(st);
     if (!prep(db,"INSERT INTO atto_actor_epochs(actor_id,epoch) VALUES(?1,?2) "
                  "ON CONFLICT(actor_id) DO UPDATE SET epoch=excluded.epoch;",&st))
-        return abort_tx(db,ATTO_ACTOR_STORE_IO);
-    (void)bind_id(st,actor_id);
-    (void)sqlite3_bind_int64(st,2,epoch);
+        return ATTO_ACTOR_STORE_IO;
+    if (!bind_id(st,actor_id) || sqlite3_bind_int64(st,2,epoch)!=SQLITE_OK) {
+        sqlite3_finalize(st);return ATTO_ACTOR_STORE_IO;
+    }
     rc=sqlite3_step(st);
     sqlite3_finalize(st);
-    if (rc!=SQLITE_DONE) return abort_tx(db,ATTO_ACTOR_STORE_IO);
+    if (rc!=SQLITE_DONE) return ATTO_ACTOR_STORE_IO;
+    *next=(uint64_t)epoch;
+    return ATTO_ACTOR_STORE_OK;
+}
+
+static int check_epoch(sqlite3 *db,const char *actor_id,uint64_t epoch) {
+    sqlite3_stmt *st=NULL;
+    if (!prep(db,"SELECT epoch FROM atto_actor_epochs WHERE actor_id=?1;",&st)) return ATTO_ACTOR_STORE_IO;
+    if (!bind_id(st,actor_id)) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_IO;}
+    int rc=sqlite3_step(st);
+    int result=ATTO_ACTOR_STORE_IO;
+    if (rc==SQLITE_DONE) result=ATTO_ACTOR_STORE_STALE_EPOCH;
+    else if (rc==SQLITE_ROW) {
+        if (sqlite3_column_type(st,0)!=SQLITE_INTEGER || sqlite3_column_int64(st,0)<1)
+            result=ATTO_ACTOR_STORE_CORRUPT;
+        else result=sqlite3_column_int64(st,0)==(sqlite3_int64)epoch?
+            ATTO_ACTOR_STORE_OK:ATTO_ACTOR_STORE_STALE_EPOCH;
+    }
+    sqlite3_finalize(st);
+    return result;
+}
+
+int atto_actor_activate(atto_actor_db *store, const char *actor_id, uint64_t *new_epoch) {
+    if (!new_epoch) return ATTO_ACTOR_STORE_INVALID;
+    *new_epoch=0;
+    if (!store || !id_ok(actor_id)) return ATTO_ACTOR_STORE_INVALID;
+    sqlite3 *db=store->conn;
+    if (!sql_exec(db,"BEGIN IMMEDIATE;")) return ATTO_ACTOR_STORE_IO;
+    uint64_t next=0;
+    int rc=rotate_epoch(db,actor_id,&next);
+    if (rc!=ATTO_ACTOR_STORE_OK) return abort_tx(db,rc);
     if (!sql_exec(db,"COMMIT;")) return abort_tx(db,ATTO_ACTOR_STORE_IO);
-    *new_epoch=(uint64_t)epoch;
+    *new_epoch=next;
     return ATTO_ACTOR_STORE_OK;
 }
 
@@ -148,12 +180,8 @@ int atto_actor_commit(atto_actor_db *store, const char *actor_id, uint64_t epoch
     sqlite3 *db=store->conn;
     if (!sql_exec(db,"BEGIN IMMEDIATE;")) return ATTO_ACTOR_STORE_IO;
     sqlite3_stmt *st=NULL;
-    if (!prep(db,"SELECT epoch FROM atto_actor_epochs WHERE actor_id=?1;",&st)) return abort_tx(db,ATTO_ACTOR_STORE_IO);
-    (void)bind_id(st,actor_id);
-    int rc=sqlite3_step(st);
-    int current=rc==SQLITE_ROW && sqlite3_column_int64(st,0)==(sqlite3_int64)epoch;
-    sqlite3_finalize(st);
-    if (!current) return abort_tx(db,rc==SQLITE_ROW||rc==SQLITE_DONE?ATTO_ACTOR_STORE_STALE_EPOCH:ATTO_ACTOR_STORE_IO);
+    int rc=check_epoch(db,actor_id,epoch);
+    if (rc!=ATTO_ACTOR_STORE_OK) return abort_tx(db,rc);
     /* A normal checkpoint is not a migration or corruption repair. Verify
      * the existing durable row in the same fenced write transaction. */
     unsigned char tag[8];schema_bytes(schema_id,tag);
@@ -205,16 +233,20 @@ int atto_actor_commit(atto_actor_db *store, const char *actor_id, uint64_t epoch
 
 int atto_actor_load(atto_actor_db *store, const char *actor_id, uint64_t schema_id,
                     void **snapshot_out, size_t *snapshot_length_out, uint64_t *sequence_out) {
-    if (!store || !id_ok(actor_id) || !snapshot_out || !snapshot_length_out || !sequence_out)
-        return ATTO_ACTOR_STORE_INVALID;
+    if (!snapshot_out || !snapshot_length_out || !sequence_out) return ATTO_ACTOR_STORE_INVALID;
     *snapshot_out=NULL; *snapshot_length_out=0; *sequence_out=0;
+    if (!store || !id_ok(actor_id)) return ATTO_ACTOR_STORE_INVALID;
     sqlite3_stmt *st=NULL;
     if (!prep(store->conn,"SELECT schema_tag,snapshot,sequence FROM atto_actor_snapshots WHERE actor_id=?1;",&st))
         return ATTO_ACTOR_STORE_IO;
-    (void)bind_id(st,actor_id);
+    if (!bind_id(st,actor_id)) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_IO;}
     int rc=sqlite3_step(st);
     if (rc==SQLITE_DONE) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_ABSENT;}
     if (rc!=SQLITE_ROW) {sqlite3_finalize(st);return ATTO_ACTOR_STORE_IO;}
+    if (sqlite3_column_type(st,0)!=SQLITE_BLOB || sqlite3_column_type(st,1)!=SQLITE_BLOB ||
+        sqlite3_column_type(st,2)!=SQLITE_INTEGER) {
+        sqlite3_finalize(st);return ATTO_ACTOR_STORE_CORRUPT;
+    }
     const void *tag=sqlite3_column_blob(st,0);
     const void *data=sqlite3_column_blob(st,1);
     int tlen=sqlite3_column_bytes(st,0),length=sqlite3_column_bytes(st,1);
@@ -232,4 +264,47 @@ int atto_actor_load(atto_actor_db *store, const char *actor_id, uint64_t schema_
     sqlite3_finalize(st);
     *snapshot_out=copy; *snapshot_length_out=(size_t)length; *sequence_out=(uint64_t)seq;
     return ATTO_ACTOR_STORE_OK;
+}
+
+/* Keep read results private until the transaction's commit succeeds. */
+static int finish_restore(sqlite3 *db,int rc,void *copy,size_t length,uint64_t sequence,
+                          void **out,size_t *len,uint64_t *seq) {
+    if (rc!=ATTO_ACTOR_STORE_OK && rc!=ATTO_ACTOR_STORE_ABSENT) {
+        free(copy);return abort_tx(db,rc);
+    }
+    if (!sql_exec(db,"COMMIT;")) {free(copy);return abort_tx(db,ATTO_ACTOR_STORE_IO);}
+    *out=copy; *len=length; *seq=sequence;
+    return rc;
+}
+
+int atto_actor_activate_and_load(atto_actor_db *store,const char *actor_id,uint64_t schema_id,
+                                 uint64_t *new_epoch,void **out,size_t *len,uint64_t *seq) {
+    if (!new_epoch || !out || !len || !seq) return ATTO_ACTOR_STORE_INVALID;
+    *new_epoch=0; *out=NULL; *len=0; *seq=0;
+    if (!store || !id_ok(actor_id)) return ATTO_ACTOR_STORE_INVALID;
+    sqlite3 *db=store->conn;
+    if (!sql_exec(db,"BEGIN IMMEDIATE;")) return ATTO_ACTOR_STORE_IO;
+    uint64_t epoch=0,sequence=0;
+    size_t length=0;
+    void *copy=NULL;
+    int rc=rotate_epoch(db,actor_id,&epoch);
+    if (rc!=ATTO_ACTOR_STORE_OK) return abort_tx(db,rc);
+    rc=atto_actor_load(store,actor_id,schema_id,&copy,&length,&sequence);
+    rc=finish_restore(db,rc,copy,length,sequence,out,len,seq);
+    if (rc==ATTO_ACTOR_STORE_OK || rc==ATTO_ACTOR_STORE_ABSENT) *new_epoch=epoch;
+    return rc;
+}
+
+int atto_actor_load_fenced(atto_actor_db *store,const char *actor_id,uint64_t epoch,
+                           uint64_t schema_id,void **out,size_t *len,uint64_t *seq) {
+    if (!out || !len || !seq) return ATTO_ACTOR_STORE_INVALID;
+    *out=NULL; *len=0; *seq=0;
+    if (!store || !id_ok(actor_id) || epoch==0 || epoch>INT64_MAX) return ATTO_ACTOR_STORE_INVALID;
+    sqlite3 *db=store->conn;
+    if (!sql_exec(db,"BEGIN IMMEDIATE;")) return ATTO_ACTOR_STORE_IO;
+    int rc=check_epoch(db,actor_id,epoch);
+    if (rc!=ATTO_ACTOR_STORE_OK) return abort_tx(db,rc);
+    void *copy=NULL;size_t length=0;uint64_t sequence=0;
+    rc=atto_actor_load(store,actor_id,schema_id,&copy,&length,&sequence);
+    return finish_restore(db,rc,copy,length,sequence,out,len,seq);
 }
