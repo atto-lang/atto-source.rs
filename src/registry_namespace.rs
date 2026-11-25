@@ -888,7 +888,7 @@ fn lower_sealed_factory(mut tokens: Vec<crate::lexer::Token>) -> R<Vec<crate::le
     }
     tokens.drain(4..4+header.len()-1);
     let mut matches=Vec::new();
-    for spelling in ["pub fnc","pub static fnc"] {
+    for spelling in ["pub","pub fnc","pub static fnc"] {
         for delimiter in [":","->"] {
             let pattern=lexer::lex(&format!("{spelling} new() {delimiter} {class} {{ return new {class}(); }}"))?;
             let pattern=&pattern[..pattern.len()-1];
@@ -994,26 +994,45 @@ impl FrozenGenericClass {
         if tokens.get(..header.len()).is_none_or(|v|v.iter().map(|t|&t.tok).ne(header.iter().map(|t|&t.tok))) {
             return Err(err("E_NEWABLE","generic class needs exactly one parameter and exact self-target witness"));
         }
-        let factory=lexer::lex(&format!("pub fnc new(): {class_name}[{parameter}] {{ return new {class_name}[{parameter}](); }}"))?;
-        let factory=&factory[..factory.len()-1];
         let tail=&tokens[header.len()..];
-        // Restrict the first factory to the leading exact declaration.
-        if tail.get(..factory.len()).is_none_or(|v|v.iter().map(|t|&t.tok).ne(factory.iter().map(|t|&t.tok))) {
-            return Err(err("E_NEWABLE","generic class requires exact leading public zero-arg factory"));
+        // Canonical class-member spelling omits fnc; retain the exact legacy
+        // spelling as a compatibility lane. Both have identical obligations.
+        let mut factory_len=None;
+        for spelling in ["pub","pub fnc","pub static fnc"] {
+            let factory=lexer::lex(&format!("{spelling} new(): {class_name}[{parameter}] {{ return new {class_name}[{parameter}](); }}"))?;
+            let factory=&factory[..factory.len()-1];
+            if tail.get(..factory.len()).is_some_and(|v|v.iter().map(|t|&t.tok).eq(factory.iter().map(|t|&t.tok))) {
+                factory_len=Some(factory.len());
+            }
         }
-        let members=tail[factory.len()..].to_vec();
+        let factory_len=factory_len.ok_or_else(||err("E_NEWABLE","generic class requires exact leading public zero-arg factory"))?;
+        let members=tail[factory_len..].to_vec();
         let mut braces=0usize;
         let mut parens=0usize;
         let mut signature=false;
+        let mut member_start=true;
         for (i,t) in members.iter().enumerate() {
+            // Only inspect a declaration head at a member boundary. In
+            // particular a field initializer call must not open a type site.
+            if member_start && braces==0 && parens==0 {
+                member_start=false;
+                let mut j=i;
+                let word=|k:usize| match members.get(k).map(|t|&t.tok) {
+                    Some(Tok::Ident(n))=>Some(n.as_str()), _=>None,
+                };
+                if matches!(word(j),Some("pub"|"private")) {j+=1;}
+                if word(j)==Some("static") {j+=1;}
+                if matches!(word(j),Some("fnc"|"method")) {j+=1;}
+                signature=word(j).is_some_and(|n| !crate::parser::is_reserved(n)
+                    && !matches!(n,"val"|"let"|"const"|"final"|"mut"|"state"|"end"))
+                    && members.get(j+1).is_some_and(|v|v.tok==Tok::LParen);
+            }
             if let Tok::Ident(n)=&t.tok {
                 if n.starts_with("__atto_") || n==&class_name || matches!(n.as_str(),"Newable"|"new"|"constructor"|"define"|"declare"|"import"|"use"|"external"|"pkg"|"main") {
                     return Err(err("E_UNSUPPORTED","generic class has unsupported member or ambient identifier"));
                 }
-                // Only an explicit top-level fnc header can establish a
-                // generic substitution site. Body calls, field initializers
-                // and nested parentheses must not manufacture type authority.
-                if braces==0 && parens==0 && n=="fnc" {signature=true;}
+                // Substitution sites remain confined to a recognized member
+                // header, never a body call or a field initializer.
                 if n==&parameter {
                     let before=i.checked_sub(1).and_then(|j|members.get(j));
                     let before2=i.checked_sub(2).and_then(|j|members.get(j));
@@ -1045,10 +1064,13 @@ impl FrozenGenericClass {
             }
             match t.tok {
                 Tok::LBrace => {braces+=1; signature=false;}
-                Tok::RBrace => {braces=braces.checked_sub(1).ok_or_else(||err("E_SYNTAX","unmatched generic member brace"))?;}
+                Tok::RBrace => {
+                    braces=braces.checked_sub(1).ok_or_else(||err("E_SYNTAX","unmatched generic member brace"))?;
+                    if braces==0 && parens==0 {member_start=true;}
+                }
                 Tok::LParen => parens+=1,
                 Tok::RParen => {parens=parens.checked_sub(1).ok_or_else(||err("E_SYNTAX","unmatched generic member parenthesis"))?;}
-                Tok::Semi if braces==0 => signature=false,
+                Tok::Semi if braces==0 && parens==0 => {signature=false; member_start=true;},
                 _=>{}
             }
             if braces>128 || parens>128 {return Err(err("E_SOURCE_LIMIT","generic member nesting budget"));}
@@ -1077,7 +1099,7 @@ impl FrozenGenericClass {
             _=>return Err(err("E_UNSUPPORTED","scalar specialization not admitted")),
         };
         let class=&self.class_name;
-        let mut tokens=lexer::lex(&format!("pub define class {class} implements Newable[{class}] as pub fnc new(): {class} {{ return new {class}(); }}"))?;
+        let mut tokens=lexer::lex(&format!("pub define class {class} implements Newable[{class}] as pub new(): {class} {{ return new {class}(); }}"))?;
         tokens.pop();
         for t in &self.members {
             let mut t=t.clone();

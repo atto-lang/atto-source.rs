@@ -552,7 +552,7 @@ fn frozen_class_aliases_preserve_distinct_package_types() {
 fn authenticated_newable_factory_is_sealed_and_exact() {
     use atto_compiler::registry_namespace::FrozenClass;
     let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
-    let body="use namespace models; define pub class Cart implements Newable[Cart] as val int count = 42; pub fnc new(): Cart { return new Cart(); } pub get_count(): int { return self.count; } end";
+    let body="use namespace models; define pub class Cart implements Newable[Cart] as val int count = 42; pub new(): Cart { return new Cart(); } pub get_count(): int { return self.count; } end";
     let inputs=[SnapshotSource{path:"src/models/cart.atto",source:body}];
     let l=lock(manifest,&inputs);
     let digest=hex_digest(l.as_bytes());
@@ -576,7 +576,7 @@ fn authenticated_newable_factory_is_sealed_and_exact() {
         body.replace("implements Newable[Cart] ",""),
         body.replace("Newable[Cart]","Newable[int]"),
         body.replace("new(): Cart","new(): int"),
-        body.replace("pub fnc new","fnc new"),
+        body.replace("pub new","new"),
         body.replace("new(): Cart","new(int x): Cart"),
         body.replace("return new Cart();","return new Other();"),
         body.replace("define pub class","define trait Newable as end define pub class"),
@@ -593,7 +593,7 @@ fn sealed_factory_aliases_keep_package_identity_and_reject_bypass() {
     use atto_compiler::registry_namespace::{FrozenClass,compile_frozen_classes};
     let ma="[package]\nname = \"@a/project/pkg\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
     let mb=ma.replace("@a/project/pkg","@b/project/pkg");
-    let body="use namespace models; define pub class Cart implements Newable[Cart] as val int count = 20; pub fnc new(): Cart { return new Cart(); } pub get_count(): int { return self.count; } end";
+    let body="use namespace models; define pub class Cart implements Newable[Cart] as val int count = 20; pub new(): Cart { return new Cart(); } pub get_count(): int { return self.count; } end";
     let other=body.replace("count = 20","count = 22");
     let a=[SnapshotSource{path:"src/models/cart.atto",source:body}];
     let b=[SnapshotSource{path:"src/models/cart.atto",source:&other}];
@@ -634,7 +634,7 @@ fn frozen_generic_class_source_arity_and_scalar_guests() {
     use atto_compiler::registry_namespace::FrozenGenericClass;
     use atto_compiler::static_import_graph::{ScalarIdentity as S,TypeTerm as T};
     let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
-    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } pub fnc echo(T value): T { return value; } end";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub new(): Container[T] { return new Container[T](); } pub echo(T value): T { return value; } end";
     let inputs=[SnapshotSource{path:"src/models/container.atto",source:body}];
     let l=lock(manifest,&inputs);
     let digest=hex_digest(l.as_bytes());
@@ -673,7 +673,7 @@ fn frozen_generic_class_source_arity_and_scalar_guests() {
         body.replace("Container[T] implements","Container[T,U] implements"),
         body.replace("Newable[Container[T]]","Newable[Container[int]]"),
         body.replace("return value;","return T;"),
-        body.replace("pub fnc echo","val T field = 0; pub fnc echo"),
+        body.replace("pub echo","val T field = 0; pub echo"),
         body.replace("return value;","return 42;"),
     ]{
         let changed=[SnapshotSource{path:"src/models/container.atto",source:&changed}];
@@ -689,7 +689,7 @@ fn frozen_generic_class_source_arity_and_scalar_guests() {
 fn frozen_generic_instances_share_executable_but_not_nominal_identity() {
     use atto_compiler::registry_namespace::FrozenGenericClass;
     let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
-    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } pub fnc echo(T value): T { return value; } end";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub new(): Container[T] { return new Container[T](); } pub echo(T value): T { return value; } end";
     let inputs=[SnapshotSource{path:"src/models/container.atto",source:body}];
     let l=lock(manifest,&inputs);
     let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
@@ -724,7 +724,7 @@ fn generic_packages_isolate_same_named_specializations_and_aliases() {
     use atto_compiler::registry_namespace::{FrozenGenericClass,compile_frozen_generic_packages};
     let ma="[package]\nname = \"@a/project/pkg\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
     let mb=ma.replace("@a/project/pkg","@b/project/pkg");
-    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } pub fnc echo(T value): T { return value; } pub fnc tag(): int { return 20; } end";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub new(): Container[T] { return new Container[T](); } pub echo(T value): T { return value; } pub tag(): int { return 20; } end";
     let other=body.replace("return 20;","return 22;");
     let a=[SnapshotSource{path:"src/models/container.atto",source:body}];
     let b=[SnapshotSource{path:"src/models/container.atto",source:&other}];
@@ -760,7 +760,7 @@ fn generic_packages_isolate_same_named_specializations_and_aliases() {
 fn frozen_generic_instances_preserve_checked_scalar_object_storage() {
     use atto_compiler::registry_namespace::FrozenGenericClass;
     let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
-    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } val int count = 21; val bool ready = true; val string label = \"ok\"; pub fnc echo(T value): T { return value; } pub fnc get_count(): int { return self.count; } pub fnc is_ready(): bool { return self.ready; } pub fnc get_label(): string { return self.label; } end";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub new(): Container[T] { return new Container[T](); } val int count = 21; val bool ready = true; val string label = \"ok\"; pub echo(T value): T { return value; } pub get_count(): int { return self.count; } pub is_ready(): bool { return self.ready; } pub get_label(): string { return self.label; } end";
     let inputs=[SnapshotSource{path:"src/models/container.atto",source:body}];
     let l=lock(manifest,&inputs);
     let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
@@ -785,7 +785,7 @@ fn frozen_generic_instances_preserve_checked_scalar_object_storage() {
         body.replace("val int count = 21;","val int count = false;"),
         body.replace("return value;","return T;"),
         body.replace("return value;","return echo(T value);"),
-        body.replace("pub fnc echo(T value): T","pub fnc echo(T value): T").replace("return value;","val T local = value; return local;"),
+        body.replace("pub echo(T value): T","pub echo(T value): T").replace("return value;","val T local = value; return local;"),
     ]{
         let changed=[SnapshotSource{path:inputs[0].path,source:&changed}];
         let cl=lock(manifest,&changed);
@@ -798,7 +798,7 @@ fn frozen_generic_instances_preserve_checked_scalar_object_storage() {
 fn generic_optional_fields_require_explicit_none_and_checked_payload_identity() {
     use atto_compiler::registry_namespace::FrozenGenericClass;
     let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
-    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub fnc new(): Container[T] { return new Container[T](); } val Option<T> value = None; pub fnc get(): Option<T> { return self.value; } end";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub new(): Container[T] { return new Container[T](); } val Option<T> value = None; pub get(): Option<T> { return self.value; } end";
     let inputs=[SnapshotSource{path:"src/models/container.atto",source:body}];
     let l=lock(manifest,&inputs);
     let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
@@ -835,5 +835,40 @@ fn generic_optional_fields_require_explicit_none_and_checked_payload_identity() 
         let changed=[SnapshotSource{path:inputs[0].path,source:&changed}];
         let cl=lock(manifest,&changed);
         assert!(FrozenGenericClass::verify("@org/project/package",manifest,&cl,&hex_digest(cl.as_bytes()),&changed).is_err());
+    }
+}
+
+
+#[test]
+fn canonical_generic_class_methods_and_legacy_prefix_have_same_checked_behavior() {
+    use atto_compiler::registry_namespace::FrozenGenericClass;
+    let manifest="[package]\nname = \"@org/project/package\"\nversion = \"1.0.0\"\n[namespaces]\nmodels = \"src/models/\"\n";
+    let body="use namespace models; define pub class Container[T] implements Newable[Container[T]] as pub new(): Container[T] { return new Container[T](); } val int count = 21; val bool ready = true; val string label = \"ok\"; echo_private(T value): T { return value; } pub echo(T value): T { return value; } pub get_count(): int { return self.count; } pub is_ready(): bool { return self.ready; } pub get_label(): string { return self.label; } end";
+    let guest="import [class models.Container] from pkg '@org/project/package'; pub fnc main(): int { val a = Container[int].new(); val b = Container[bool].new(); val c = Container[string].new(); if b.echo(b.is_ready()) && c.echo(c.get_label()) == \"ok\" then return a.echo(a.get_count())+b.get_count(); fi return 0; }";
+    let legacy=body.replace("pub new(","pub fnc new(").replace("echo_private(","fnc echo_private(").replace("pub echo(","pub fnc echo(").replace("pub get_count(","pub fnc get_count(").replace("pub is_ready(","pub fnc is_ready(").replace("pub get_label(","pub fnc get_label(");
+    for (i,source) in [body,legacy.as_str()].iter().enumerate() {
+        let inputs=[SnapshotSource{path:"src/models/container.atto",source}];
+        let l=lock(manifest,&inputs);
+        let p=FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+        let wasm=p.compile_guest_instances(guest).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+            std::fs::write(std::path::Path::new(&dir).join(format!("registry-bare-method-{i}.wasm")),wasm).unwrap();
+        }
+        let bad="import [class models.Container] from pkg '@org/project/package'; pub fnc main(): int { val a=Container[int].new(); return a.echo_private(42); }";
+        assert!(p.compile_guest_instances(bad).is_err());
+    }
+    for changed in [
+        body.replace("pub new()","new()"),
+        body.replace("pub new()","pub new(int x)"),
+        body.replace("new Container[T]();","new Other[T]();"),
+        body.replace("pub echo(T value): T","pub echo(T value): int"),
+        body.replace("return value;","return echo(T value);"),
+        body.replace("val int count = 21;","val int count = echo(T value);"),
+        body.replace("pub echo(T value): T { return value; }","pub echo(T value): T { return T; }"),
+    ] {
+        let inputs=[SnapshotSource{path:"src/models/container.atto",source:&changed}];
+        let l=lock(manifest,&inputs);
+        assert!(FrozenGenericClass::verify("@org/project/package",manifest,&l,&hex_digest(l.as_bytes()),&inputs).is_err(),"{changed}");
     }
 }
