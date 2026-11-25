@@ -82,7 +82,8 @@ impl Scope {
             if b.tier == Tier::Explicit && tier == Tier::Explicit && b.name == name {
                 return Err(err("E_DUPLICATE", "duplicate explicit binding"));
             }
-            if b.tier == tier && ((!namespace(b.target.kind) && prefix(&b.name, name))
+            if (b.tier == tier || b.tier == Tier::Explicit || tier == Tier::Explicit)
+                && ((!namespace(b.target.kind) && prefix(&b.name, name))
                 || (!namespace(target.kind) && prefix(name, &b.name))) {
                 return Err(err("E_DUPLICATE", "non-namespace obstructs static binding prefix"));
             }
@@ -130,12 +131,73 @@ impl Scope {
         Ok(Resolved { target: first.target.clone(), remainder: remainder.into() })
     }
 
+    /// Resolve a member against the same verified origin, not another view.
+    /// This bounded lane requires a canonical public declaration path in the
+    /// export view; remapped member trees need the full authenticated graph.
+    pub fn resolve_export(&self, reference: &str, view: &ExportView) -> R<Target> {
+        let resolved = self.resolve(reference)?;
+        if resolved.target.origin != view.origin {
+            return Err(err("E_IMPORT_PATH", "export view does not match selected origin"));
+        }
+        if resolved.remainder.is_empty() { return Ok(resolved.target); }
+        let base = &resolved.target.declaration;
+        if !base.is_empty() && view.lookup(base)? != resolved.target {
+            return Err(err("E_IMPORT_KIND", "canonical namespace view mismatch"));
+        }
+        let key = if base.is_empty() { resolved.remainder }
+            else { format!("{base}.{}", resolved.remainder) };
+        view.lookup(&key)
+    }
+
     /// Create a namespace const after resolution of a checked namespace node.
     /// Chains of already resolved constants work; forward/cyclic references
     /// fail closed pending a separate graph-wide alias topological pass.
     pub fn namespace_alias(&mut self, alias: &str, target: Target) -> R<()> {
         if !namespace(target.kind) { return Err(err("E_IMPORT_KIND", "namespace alias requires namespace or module")); }
         self.insert(alias, Tier::Explicit, target)
+    }
+
+    /// Batch namespace constants, with forward references and atomic
+    /// publication. Pending explicit names shadow lower tiers from the
+    /// start; never use a lower-tier binding to break an alias cycle.
+    /// Interior namespace resolution is restricted to verified views.
+    pub fn namespace_aliases(&mut self, declarations: &[(&str, &str)], views: &[&ExportView]) -> R<()> {
+        if declarations.len() > LIMIT { return Err(err("E_SOURCE_LIMIT", "too many namespace constants")); }
+        let mut staged = self.clone();
+        let mut pending = BTreeMap::new();
+        for &(name, reference) in declarations {
+            if !ident(name) || !path(reference) {
+                return Err(err("E_IMPORT_PATH", "invalid namespace constant declaration"));
+            }
+            if pending.insert(name, reference).is_some() || staged.bindings.iter()
+                .any(|b| b.name == name && b.tier == Tier::Explicit) {
+                return Err(err("E_DUPLICATE", "duplicate namespace constant"));
+            }
+        }
+        while !pending.is_empty() {
+            let mut ready = Vec::new();
+            for (&name, &reference) in &pending {
+                if pending.keys().any(|p| *p == reference || prefix(p, reference)) { continue; }
+                let r = staged.resolve(reference)?;
+                let target = if r.remainder.is_empty() { r.target } else {
+                    let mut matches = views.iter().filter(|v| v.origin == r.target.origin);
+                    let view = matches.next().ok_or_else(|| err("E_UNBOUND", "missing verified namespace view"))?;
+                    if matches.next().is_some() { return Err(err("E_AMBIGUOUS", "duplicate verified namespace view")); }
+                    staged.resolve_export(reference, view)?
+                };
+                if !namespace(target.kind) {
+                    return Err(err("E_IMPORT_KIND", "namespace constant requires namespace"));
+                }
+                ready.push((name, target));
+            }
+            if ready.is_empty() { return Err(err("E_IMPORT_CYCLE", "cyclic namespace constants")); }
+            for (name, target) in ready {
+                staged.namespace_alias(name, target)?;
+                pending.remove(name);
+            }
+        }
+        *self = staged;
+        Ok(())
     }
 
     /// Resolve the entire typed selector list against a verified export view
