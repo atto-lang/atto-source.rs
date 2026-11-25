@@ -1,0 +1,12 @@
+// expect-exit: 84
+define class Cat as
+    pub int extra = 10;
+    pub int foo = 42;
+end
+routine inspect(p: ~ {foo: int}): int {
+    return p.foo;
+}
+pub fnc main(): int {
+    val cat = new Cat();
+    return inspect(cat) + inspect(cat);
+}

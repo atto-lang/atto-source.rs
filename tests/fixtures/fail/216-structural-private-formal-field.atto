@@ -1,0 +1,9 @@
+// expect-error: E_PRIVATE
+define class Secret as
+    int foo = 42;
+end
+fnc inspect(p: {foo: int}): int { return p.foo; }
+pub fnc main(): int {
+    val secret = new Secret();
+    return inspect(secret);
+}

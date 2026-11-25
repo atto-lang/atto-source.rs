@@ -1,0 +1,15 @@
+// expect-exit: 42
+define class Cat as
+    pub bool ignored = true;
+    pub int foo = 42;
+end
+define class Service as
+    pub evaluate(p: {foo: int}): int {
+        return p.foo;
+    }
+end
+pub fnc main(): int {
+    val cat = new Cat();
+    val service = new Service();
+    return service.evaluate(cat);
+}

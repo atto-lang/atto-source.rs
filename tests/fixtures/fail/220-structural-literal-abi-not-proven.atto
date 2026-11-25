@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+fnc inspect(p: {foo: "dog"}): int { return 42; }
+pub fnc main(): int { return 42; }

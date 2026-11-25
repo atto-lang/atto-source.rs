@@ -1,0 +1,5 @@
+// expect-error: E_BORROW
+fnc inspect(p: {foo: int}): int {
+    return p;
+}
+pub fnc main(): int { return 42; }

@@ -161,6 +161,13 @@ pub enum TExpr {
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
+    /// Borrowed address of a proven public scalar field in an ordinary
+    /// source class. Only a checked hidden single-field view may receive it.
+    /// This is i32.add(base, static_field_offset), never a nominal pointer cast.
+    ShapeFieldAddress {
+        obj: Box<TE>,
+        offset: u32,
+    },
     /// ordinary class field read
     FieldGet {
         obj: Box<TE>,
@@ -690,22 +697,107 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
     }
 }
 
-pub fn check(p: &Program) -> R<TProgram> {
-    // Retain the structural marker in the production AST, but DO NOT
-    // silently lower it as a nominal class pointer. A structural formal
-    // requires the proof of a readonly borrowing ABI and a public shape
-    // projection adapter (field offsets can differ between nominal classes).
-    // Perform this gate *before* generated lambdas and signature registration.
-    let marked = p.funcs.iter().flat_map(|f| &f.params)
-        .chain(p.classes.iter().flat_map(|c| c.methods.iter().flat_map(|m| &m.params)))
-        .chain(p.classes.iter().filter_map(|c| c.ctor.as_ref()).flat_map(|c| &c.params))
-        .chain(p.actors.iter().flat_map(|a| a.methods.iter().flat_map(|m| &m.params)))
-        .find(|p| p.structural);
-    if let Some(param) = marked {
-        return Err(Diagnostic::new(param.pos, "E_UNSUPPORTED",
-            "structural formal is parsed, but requires a verified readonly projected-class ABI for structural shapes; nominal class pointer coercion is forbidden"));
+
+/// First executable readonly structural argument ABI: a single public scalar
+/// field is borrowed by ADDRESS, not by copying/casting another class pointer.
+/// The synthetically interned class is an unnameable, one-field read-only view.
+/// Only synchronous calls on local owned class values are admitted in this slice.
+fn lower_single_field_shape_formals(p: &Program) -> R<Program> {
+    let mut out = p.clone();
+    let type_names = p.type_names.clone();
+    let mut shapes: BTreeMap<String, (String, Type, Pos)> = BTreeMap::new();
+    let mut formal = |q: &mut Param| -> R<()> {
+        if !q.structural { return Ok(()); }
+        let Type::Named(name_idx) = q.ty else {
+            return Err(Diagnostic::new(q.pos, "E_UNSUPPORTED",
+                "structural formal needs a verified readonly projected-class ABI"));
+        };
+        let canonical = &type_names[name_idx as usize].0;
+        if !canonical.starts_with("~{") || !canonical.ends_with('}') {
+            return Err(Diagnostic::new(q.pos, "E_UNSUPPORTED",
+                "named structural formal requires a verified readonly projected-class ABI"));
+        }
+        let inner = &canonical[2..canonical.len() - 1];
+        let Some((field, field_ty)) = inner.split_once(':') else {
+            return Err(Diagnostic::new(q.pos, "E_UNSUPPORTED",
+                "structural shape requires a field descriptor"));
+        };
+        // Additional fields, singleton literals, nested shapes and union
+        // alternatives need a multi-field descriptor/lifetime-proof ABI.
+        let ty = match field_ty {
+            "int" => Type::Int,
+            "bool" => Type::Bool,
+            "string" | "String" => Type::Str,
+            "float" | "f64" => Type::Float,
+            _ => return Err(Diagnostic::new(q.pos, "E_UNSUPPORTED",
+                "this readonly projected-field ABI accepts one scalar type field; unions, literals and nested shapes remain fail-closed")),
+        };
+        if field.is_empty() || field.contains(',') || field.contains('{') || field.contains('}') {
+            return Err(Diagnostic::new(q.pos, "E_UNSUPPORTED",
+                "multi-field or nested structural argument needs an owned checked view ABI"));
+        }
+        if q.mutable {
+            return Err(Diagnostic::new(q.pos, "E_BORROW",
+                "structural views cannot be mutable without an exclusive-borrow ABI"));
+        }
+        shapes.entry(canonical.clone()).or_insert((field.to_owned(), ty, q.pos));
+        q.structural = false; // The hidden view has an explicit, checked ABI.
+        Ok(())
+    };
+    for f in &mut out.funcs {
+        if f.is_generator && f.params.iter().any(|q| q.structural) {
+            return Err(Diagnostic::new(f.pos, "E_BORROW",
+                "suspending generators cannot hold a structural field-address loan"));
+        }
+        for q in &mut f.params { formal(q)?; }
     }
-    let lowered = direct_lambda::lower(p)?;
+    for c in &mut out.classes {
+        if c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.structural)) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED",
+                "structural constructor arguments require verified lifetime admission"));
+        }
+        for m in &mut c.methods {
+            for q in &mut m.params { formal(q)?; }
+        }
+    }
+    if let Some(q) = out.actors.iter().flat_map(|a| a.methods.iter().flat_map(|m| &m.params))
+        .find(|q| q.structural) {
+        return Err(Diagnostic::new(q.pos, "E_ISOLATION",
+            "structural argument views cannot cross the actor mailbox boundary"));
+    }
+    for (name, (field, ty, pos)) in shapes {
+        // This hidden class has ONE 8-byte field at offset zero. At a call
+        // boundary the argument is an address of the source class field,
+        // never a cast of a differently laid-out class pointer.
+        let init = match ty {
+            Type::Int => ExprKind::Int(Some(0)),
+            Type::Bool => ExprKind::Bool(false),
+            Type::Str => ExprKind::Str(String::new()),
+            Type::Float => ExprKind::Float(0f64.to_bits()),
+            _ => unreachable!("shape admission permits scalar fields only"),
+        };
+        out.classes.push(ClassDecl {
+            name, pos, public: false, state_container: false,
+            fields: vec![Field {
+                name: field, pos, ty, public: true,
+                mode: FieldMode::Final, init: Expr { kind: init, pos },
+            }],
+            ctor: None, methods: Vec::new(),
+        });
+    }
+    Ok(out)
+}
+
+fn is_borrowed_shape_class(g: &Globals, ty: Type) -> bool {
+    matches!(ty, Type::Class(i)
+        if g.classes[i as usize].name.starts_with("~{"))
+}
+
+pub fn check(p: &Program) -> R<TProgram> {
+    // Source structural intent must remain explicit until this bounded,
+    // audited field-address ABI supplies a real, non-nominal adapter.
+    let projected = lower_single_field_shape_formals(p)?;
+    let lowered = direct_lambda::lower(&projected)?;
     check_lowered(&lowered)
 }
 
@@ -1465,7 +1557,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         // propagation. Keep these explicit when evolving the language.
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
-        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
+        TExpr::FieldGet { .. } | TExpr::ShapeFieldAddress { .. } |
+        TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } => false,
@@ -1528,7 +1621,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
-        TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
+        TExpr::FieldGet { obj, .. } | TExpr::ShapeFieldAddress { obj, .. } |
+        TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
@@ -3101,6 +3195,10 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
+                    if is_borrowed_shape_class(self.g, l.ty) {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            "structural view address cannot escape or be used as a value; read a public field"));
+                    }
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
@@ -3262,7 +3360,54 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            let v = self.consume_expected(a, *want)?;
+            // A structural single-field parameter borrows an ADDRESS of a
+            // public scalar field, without moving the class owner. The source
+            // must be a live, named class local (not a temporary/actor/alias).
+            // This first slice conservatively limits a call to one formal so
+            // later argument evaluation cannot transfer the borrowed owner.
+            let v = if is_borrowed_shape_class(self.g, *want) {
+                if args.len() != 1 {
+                    return Err(Diagnostic::new(a.pos, "E_BORROW",
+                        "multi-argument structural views require source-order lifetime scheduling"));
+                }
+                if !matches!(a.kind, ExprKind::Var(_)) {
+                    return Err(Diagnostic::new(a.pos, "E_BORROW",
+                        "structural projection currently requires a named owned class local"));
+                }
+                let source = self.value(a)?;
+                let Type::Class(source_class) = source.ty else {
+                    return Err(type_err(a.pos, "a structural shape requires a compatible class value"));
+                };
+                if is_borrowed_shape_class(self.g, source.ty) {
+                    return Err(Diagnostic::new(a.pos, "E_BORROW",
+                        "forwarding a borrowed structural view needs an explicit lifetime proof"));
+                }
+                let expected = &self.g.classes[match want { Type::Class(i) => *i, _ => unreachable!() } as usize].fields[0];
+                let actual_class = &self.g.classes[source_class as usize];
+                if actual_class.state_container {
+                    return Err(Diagnostic::new(a.pos, "E_STATE_BORROW",
+                        "sealed actor-state containers never provide structural field loans"));
+                }
+                let field = actual_class.fields.iter().find(|f| f.name == expected.name);
+                let Some(field) = field else {
+                    return Err(type_err(a.pos, format!("structural argument missing public field '{}'", expected.name)));
+                };
+                if !field.public || field.mode == FieldMode::ActorState {
+                    return Err(Diagnostic::new(a.pos, "E_PRIVATE",
+                        "structural borrowing cannot access private or protected fields"));
+                }
+                if field.ty != expected.ty {
+                    return Err(type_err(a.pos, format!(
+                        "structural field '{}' has type {} but expected {}",
+                        field.name, self.tn(field.ty), self.tn(expected.ty))));
+                }
+                TE {
+                    e: TExpr::ShapeFieldAddress { obj: Box::new(source), offset: field.slot },
+                    ty: *want,
+                }
+            } else {
+                self.consume_expected(a, *want)?
+            };
             if v.ty != *want {
                 return Err(type_err(
                     a.pos,
@@ -3301,6 +3446,12 @@ impl<'a> FnCx<'a> {
     fn member(&mut self, base: &Expr, name: &str, pos: Pos) -> R<TE> {
         if let ExprKind::Var(n) = &base.kind {
             if let Some(l) = self.lookup(n) {
+                // An address-only structural view can expose precisely its
+                // checked scalar field, but never its raw address or owner.
+                if is_borrowed_shape_class(self.g, l.ty) {
+                    let obj = TE { e: TExpr::Local(l.slot), ty: l.ty };
+                    return self.field_get(obj, name, pos);
+                }
                 if let Some(payload) = l.mail {
                     return match name {
                         "value" if payload == Type::Bool => Ok(TE {

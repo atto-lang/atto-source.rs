@@ -124,18 +124,16 @@ fn syntax_only_shape_parser_rejects_deeply_nested_or_oversized_types() {
 #[test]
 fn production_compiler_rejects_unlowered_shape_call_abi_before_wasm() {
     for formal in [
-        "{foo: string} p",
         "p: {foo: \"dog\"}",
         "p: {foo: string | int}",
-        "p: ~ {foo: string}",
-        "p: structural {foo: string}",
+        "p: {foo: {bar: bool}}",
     ] {
         let source = format!(
             "pub fnc inspect({formal}): int {{ return 42; }} pub fnc main(): int {{ return 42; }}"
         );
         let error = compile(&source).expect_err("shape ABI not available yet");
         assert_eq!(error.code, "E_UNSUPPORTED", "{formal}: {error}");
-        assert!(error.message.contains("projected-class ABI"), "{formal}: {error}");
+        assert!(error.message.contains("scalar type field") || error.message.contains("ABI"), "{formal}: {error}");
     }
 }
 
@@ -161,8 +159,12 @@ fn production_parser_preserves_anonymous_formals_without_nominal_erasure() {
         assert!(canonical.starts_with("~{"), "{spelling}: {canonical}");
         assert_eq!(canonical,
             &syn::parse_formals(&format!("({spelling})")).unwrap()[0].ty.canonical);
-        let err = compile(&src).expect_err("no projected shape ABI may emit a guest");
-        assert_eq!(err.code, "E_UNSUPPORTED", "{spelling}: {err}");
+        if canonical == "~{foo:string}" {
+            assert!(compile(&src).is_ok(), "{spelling}: verified single-field ABI must compile");
+        } else {
+            let err = compile(&src).expect_err("unsupported shape must not emit guest");
+            assert_eq!(err.code, "E_UNSUPPORTED", "{spelling}: {err}");
+        }
     }
 }
 
@@ -202,13 +204,12 @@ fn production_shape_syntax_validates_fields_before_abi_gate() {
 #[test]
 fn production_routine_and_method_accept_syntax_but_not_unproved_abi() {
     for src in [
-        "routine inspect(p: {foo: string}): int { return 42; } pub fnc main(): int { return 42; }",
         "define class Service as pub evaluate(p: {foo: string | int}): int { return 42; } end pub fnc main(): int { return 42; }",
         "define class Service as pub static fnc evaluate({foo: \"dog\"} p): int { return 42; } end pub fnc main(): int { return 42; }",
     ] {
         let err = compile(src).expect_err("class/record/map projected view ABI not yet proven");
         assert_eq!(err.code, "E_UNSUPPORTED", "{src}: {err}");
-        assert!(err.message.contains("projected-class ABI"));
+        assert!(err.message.contains("scalar type field") || err.message.contains("ABI"));
     }
 }
 
