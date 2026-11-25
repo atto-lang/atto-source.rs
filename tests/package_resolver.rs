@@ -416,3 +416,97 @@ pub fnc main(): int { if slice.valid_range(0, 2, 2) then return 42; fi return 1;
     symlink(f.root().join("core/source.atto"), &original).unwrap();
     rejects(f.root(), "src/main.atto", "E_IMPORT_PATH");
 }
+
+const NAMESPACE_MANIFEST: &str = r#"[package]
+name = "@org/project/package"
+version = "1.0.0"
+
+[namespaces]
+http = "src/network/http/"
+c = "src/a/b/c.atto"
+"nested.tools" = "src/tools.atto"
+
+[exports]
+"a/b/c" = "c"
+"network/http" = "http"
+"#;
+
+#[test]
+fn namespace_manifest_format_has_exact_entries_and_subpaths() {
+    let m = atto_compiler::package_resolver::parse_package_manifest(NAMESPACE_MANIFEST).unwrap();
+    assert_eq!(m.identity(), "@org/project/package@1.0.0");
+    assert_eq!(m.namespace_entry("http").unwrap(), "src/network/http/namespace.atto");
+    assert_eq!(m.namespace_entry("nested.tools").unwrap(), "src/tools.atto");
+    assert_eq!(m.exported_subpath("a/b/c").unwrap(), ("c", "src/a/b/c.atto"));
+    for absent in ["HTTP", "tools", "network/http", "missing"] {
+        assert_eq!(m.namespace_entry(absent).unwrap_err().code, "E_UNBOUND");
+    }
+    assert!(m.exported_subpath("src/a/b/c").is_err());
+}
+
+#[test]
+fn namespace_manifest_rejects_traversal_duplicates_and_dangling_exports() {
+    use atto_compiler::package_resolver::parse_package_manifest;
+    let head = "[package]\nname=\"@org/project/package\"\nversion=\"1.0.0\"\n";
+    for tail in [
+        "[namespaces]\nhttp=\"../x.atto\"",
+        "[namespaces]\nhttp=\"src//x.atto\"",
+        "[namespaces]\nhttp=\"/src/x.atto\"",
+        "[namespaces]\nhttp=\"src/../x.atto\"",
+        "[namespaces]\nhttp=\"src\\\\x.atto\"",
+        "[namespaces]\nhttp=\"src/x\"",
+        "[namespaces]\nhttp=\"__atto_builtin/alloc/x.atto\"",
+        "[namespaces]\nhttp=\"core/num.atto\"",
+        "[namespaces]\nhttp=\"src/http/namespace.atto\"\nx=\"src/http/\"",
+        "[namespaces]\nhttp=\"src/x.atto\"\nhttp=\"src/y.atto\"",
+        "[namespaces]\nhttp=\"src/x.atto\"\n[namespaces]",
+        "[namespaces]\nhttp.foo=\"src/x.atto\"",
+        "[namespaces]\n__atto_fake=\"src/x.atto\"",
+        "[namespaces]\nfnc=\"src/x.atto\"",
+        "[namespaces]\nhttp=\"src/x.atto\"\n[exports]\n\"a/b\"=\"missing\"",
+        "[namespaces]\nhttp=\"src/x.atto\"\n[exports]\n\"../x\"=\"http\"",
+        "[namespaces]\nhttp=\"src/x.atto\"\n[exports]\n\"a/b\"=\"http\"\n\"a/b\"=\"http\"",
+        "[namespaces]\nhttp=\"src/x.atto\"\n[unknown]",
+    ] {
+        assert_eq!(parse_package_manifest(&format!("{head}{tail}")).unwrap_err().code, "E_MANIFEST", "{tail}");
+    }
+    for name in ["@org/project", "@org/project/package/extra", "@org//package", "@org/../package"] {
+        assert!(parse_package_manifest(&head.replace("@org/project/package", name)).is_err());
+    }
+}
+
+#[test]
+fn manifest_namespace_selectors_link_exact_provider_without_scanning() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/network/http/namespace.atto", "use namespace http; pub fnc answer(): int { return 42; }");
+    f.write("src/network/http/unrelated.atto", "invalid source must never be discovered");
+    for selector in ["@org/project/package", "@org/project/package/network/http"] {
+        f.write("src/main.atto", &format!("import namespace http from pkg '{selector}'; pub fnc main(): int {{ return http.answer(); }}"));
+        let wasm = compile_package(f.root(), "src/main.atto").unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+    }
+    f.write("src/main.atto", "import namespace http from pkg '@other/project/package'; pub fnc main(): int { return http.answer(); }");
+    rejects(f.root(), "src/main.atto", "E_UNSUPPORTED");
+    f.write("src/main.atto", "import namespace missing from pkg '@org/project/package'; pub fnc main(): int { return 0; }");
+    rejects(f.root(), "src/main.atto", "E_UNBOUND");
+    f.write("src/main.atto", "import namespace http from pkg '@org/project/package'; pub fnc main(): int { return http.answer(); }");
+    f.write("src/network/http/namespace.atto", "use namespace wrong.http; pub fnc answer(): int { return 42; }");
+    rejects(f.root(), "src/main.atto", "E_MANIFEST");
+    f.write("src/network/http/namespace.atto", "use namespace http; fnc answer(): int { return 42; }");
+    rejects(f.root(), "src/main.atto", "E_VISIBILITY");
+}
+
+#[test]
+fn locked_snapshot_authenticates_manifest_before_resolving_namespace() {
+    use atto_compiler::package_resolver::{compile_locked_snapshot, SnapshotSource};
+    let main = "import namespace c from pkg '@org/project/package/a/b/c'; pub fnc main(): int { return c.answer(); }";
+    let provider = "use namespace c; pub fnc answer(): int { return 42; }";
+    let lock = format!("[lock]\nmanifest_sha256=\"{}\"\n[files]\n\"src/main.atto\"=\"{}\"\n\"src/a/b/c.atto\"=\"{}\"\n",
+        hex_digest(NAMESPACE_MANIFEST.as_bytes()), hex_digest(main.as_bytes()), hex_digest(provider.as_bytes()));
+    let trusted = hex_digest(lock.as_bytes());
+    let sources = [SnapshotSource { path: "src/main.atto", source: main }, SnapshotSource { path: "src/a/b/c.atto", source: provider }];
+    assert!(compile_locked_snapshot("src/main.atto", NAMESPACE_MANIFEST, &lock, &trusted, &sources).unwrap().starts_with(b"\0asm"));
+    let drift = NAMESPACE_MANIFEST.replace("src/a/b/c.atto", "src/a/b/other.atto");
+    assert_eq!(compile_locked_snapshot("src/main.atto", &drift, &lock, &trusted, &sources).unwrap_err().code, "E_LOCK_HASH");
+}
