@@ -420,6 +420,46 @@
           "value": 1
         }
       }
+    },
+    "nominal-root": {
+      "identity": "@org/project/nominal",
+      "exports": [
+        [
+          "model",
+          "namespace",
+          true
+        ],
+        [
+          "model.Item",
+          "class",
+          true
+        ],
+        [
+          "model.State",
+          "enum",
+          true
+        ],
+        [
+          "model.Worker",
+          "actor",
+          true
+        ],
+        [
+          "model.Hidden",
+          "class",
+          false
+        ],
+        [
+          "model.Alias",
+          "type",
+          true
+        ],
+        [
+          "model.read",
+          "fnc",
+          true
+        ]
+      ]
     }
   },
   "cases": [
@@ -4446,6 +4486,130 @@
         "outcome": "reject",
         "reason": "missing leaf rejects group",
         "code": "E_UNBOUND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-qualified",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\n",
+      "reference": "p.model.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-class-alias",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import class [model.Item as Data] from pkg '@org/project/nominal';",
+      "reference": "Data",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-enum-tree",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport enum p.model.State as Status;",
+      "reference": "Status",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-actor-tree",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport actor p.model.Worker as Job;",
+      "reference": "Job",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Worker"
+      }
+    },
+    {
+      "id": "nominal-namespace-alias",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\ndefine alias p.model as m;",
+      "reference": "m.Item",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.Item"
+      }
+    },
+    {
+      "id": "nominal-mixed-kind",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import [class model.Item as Data, enum model.State as Status, actor model.Worker as Job] from pkg '@org/project/nominal';",
+      "reference": "Status",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@org/project/nominal",
+        "declaration": "model.State"
+      }
+    },
+    {
+      "id": "nominal-negative-private",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport class p.model.Hidden as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private nominal declaration",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-wrong-kind",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport enum p.model.Item as State;",
+      "reference": "State",
+      "expect": {
+        "outcome": "reject",
+        "reason": "class is not enum",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-atomic",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport p.model.{class Item as Data, class Hidden};",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private leaf rejects group",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "nominal-negative-type-as-class",
+      "stage": "resolution",
+      "fixture": "nominal-root",
+      "source": "import pkg '@org/project/nominal' as p;\nimport class p.model.Alias as Data;",
+      "reference": "Data",
+      "expect": {
+        "outcome": "reject",
+        "reason": "type alias is not class",
+        "code": "E_IMPORT_KIND",
         "atomic": true
       }
     }
