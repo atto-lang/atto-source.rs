@@ -107,7 +107,25 @@ int main(void){
     assert(seq==0);
     recover(db,"actor:1",42,1);
     atto_actor_db *other=NULL;must(atto_actor_db_open(path,&other),0,"second instance open");
-    uint64_t new_epoch=0;must(atto_actor_activate(other,"actor:1",&new_epoch),0,"fence first");assert(new_epoch==epoch+1);
+    uint64_t new_epoch=99;
+    must(atto_actor_activate_and_load(other,"actor:1",SCHEMA+1,&new_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_SCHEMA,"wrong schema revival rolls back epoch");
+    assert(new_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_load_fenced(db,"actor:1",epoch,SCHEMA,&missing,&missing_len,&missing_seq),0,"old owner survives failed activation");
+    assert(missing_len==36 && missing_seq==1 && memcmp(missing,one,36)==0);
+    atto_actor_free(missing);
+    must(atto_actor_activate_and_load(other,"actor:1",SCHEMA,&new_epoch,&missing,&missing_len,&missing_seq),0,"atomic revival");
+    assert(new_epoch==epoch+1 && missing_len==36 && missing_seq==1 && memcmp(missing,one,36)==0);
+    atto_actor_free(missing);
+    must(atto_actor_load_fenced(db,"actor:1",epoch,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_STALE_EPOCH,"old owner cannot restore");
+    assert(missing==NULL && missing_len==0 && missing_seq==0);
+    uint64_t fresh=0;
+    must(atto_actor_activate_and_load(other,"actor:fresh",SCHEMA,&fresh,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_ABSENT,"fresh actor atomic activation");
+    assert(fresh==1 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_load_fenced(other,"actor:fresh",fresh+1,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_STALE_EPOCH,"absence does not bypass fencing");
     must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA,one,sizeof(one),&seq),ATTO_ACTOR_STORE_STALE_EPOCH,"old epoch fenced");
     unsigned char two[36];snapshot(SCHEMA,100,two);
     must(atto_actor_commit(other,"actor:1",new_epoch,1,SCHEMA,two,sizeof(two),&seq),0,"new epoch commit");assert(seq==2);
@@ -130,6 +148,12 @@ int main(void){
     must(atto_actor_load(db,"actor:1",SCHEMA,&missing,&missing_len,&missing_seq),
          ATTO_ACTOR_STORE_CORRUPT,"corrupt row retained for recovery");
     assert(missing==NULL && missing_len==0 && missing_seq==0);
+    uint64_t failed_epoch=99;
+    must(atto_actor_activate_and_load(db,"actor:1",SCHEMA,&failed_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"corrupt restore fails atomically");
+    assert(failed_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_load_fenced(db,"actor:1",new_epoch,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"failed revival did not rotate epoch");
     atto_actor_db_close(db);
     /* Delete test database and journal artifacts from trusted tempdir. */
     char wal[532],shm[532];snprintf(wal,sizeof(wal),"%s-wal",path);snprintf(shm,sizeof(shm),"%s-shm",path);
