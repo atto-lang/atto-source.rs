@@ -615,34 +615,13 @@ impl FrozenClass {
 
     fn verify_inner(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
         inputs: &[SnapshotSource<'_>], sealed_factory: bool) -> R<Self> {
+        let (name,id,ns,tokens)=verified_class_tokens(expected_name,manifest,lock,expected_lock,inputs)?;
+        Self::admit_tokens(name,id,&ns,tokens,sealed_factory)
+    }
+
+    fn admit_tokens(name: String, id: PackageId, ns: &str, mut tokens: Vec<crate::lexer::Token>,
+        sealed_factory: bool) -> R<Self> {
         use crate::lexer::{self, Tok};
-        let sources=verify_registry_snapshot(manifest,lock,expected_lock,inputs)?;
-        let parsed=parse_manifest(manifest)?;
-        let name=parsed.package.get("name").ok_or_else(||err("E_MANIFEST","missing package name"))?;
-        let version=parsed.package.get("version").ok_or_else(||err("E_MANIFEST","missing version"))?;
-        if name!=expected_name {return Err(err("E_LOCK_HASH","pinned package identity differs from requested name"));}
-        let id=PackageId::new(name,version,expected_lock)?;
-        if sources.len()!=1 || parsed.namespaces.len()!=1 || !parsed.exports.is_empty() {
-            return Err(err("E_UNSUPPORTED","single-class profile requires exactly one namespace and source file"));
-        }
-        let (ns,dir)=parsed.namespaces.iter().next().unwrap();
-        let (&file,&source)=sources.iter().next().unwrap();
-        if ns.contains('.') || !file.starts_with(dir.as_str()) || file[dir.len()..].contains('/') {
-            return Err(err("E_MANIFEST","class source must be directly inside its declared namespace"));
-        }
-        let normalized=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(file)))?;
-        let header=lexer::lex(&format!("use namespace {ns};"))?;
-        let end=header.len()-1;
-        if normalized.len()<=end || normalized[..end].iter().map(|t|&t.tok).ne(header[..end].iter().map(|t|&t.tok)) {
-            return Err(err("E_MANIFEST","class namespace differs from manifest key"));
-        }
-        let mut tokens=normalized[end..].to_vec();
-        let word=|i:usize,s:&str| matches!(tokens.get(i).map(|t|&t.tok),Some(Tok::Ident(n)) if n==s);
-        let canonical=word(0,"define") && word(1,"pub") && word(2,"class");
-        if !canonical && !(word(0,"pub") && word(1,"define") && word(2,"class")) {
-            return Err(err("E_PRIVATE","single-class profile requires an explicitly public class"));
-        }
-        if canonical {tokens.swap(0,1);}
         // No ambient source names, host imports, other declarations or
         // package-only field privileges can leak into a merged guest.
         for (i,t) in tokens.iter().enumerate() {
@@ -697,7 +676,7 @@ impl FrozenClass {
         let mut view=ExportView::new(Origin::External(id));
         view.add(ns,ns,Kind::Namespace,true)?;
         view.add(&declaration,&declaration,Kind::Class,true)?;
-        Ok(Self{name:name.clone(),view,declaration,class_name,sealed_factory,tokens})
+        Ok(Self{name,view,declaration,class_name,sealed_factory,tokens})
     }
 
     /// Explicit class selection only; aliases and multi-class layout
@@ -942,4 +921,215 @@ fn lower_factory_calls(tokens: &mut [crate::lexer::Token], class: &str) -> R<()>
         tokens[i].tok=Tok::Ident(SEALED_FACTORY.into());
     }
     Ok(())
+}
+
+
+/// Read the exact authenticated namespace and declaration tokens. Both
+/// ordinary and generic lanes use the original trusted lock, never a
+/// manufactured lock over compiler-generated specialization bytes.
+fn verified_class_tokens(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
+    inputs: &[SnapshotSource<'_>]) -> R<(String,PackageId,String,Vec<crate::lexer::Token>)> {
+        use crate::lexer::{self, Tok};
+        let sources=verify_registry_snapshot(manifest,lock,expected_lock,inputs)?;
+        let parsed=parse_manifest(manifest)?;
+        let name=parsed.package.get("name").ok_or_else(||err("E_MANIFEST","missing package name"))?;
+        let version=parsed.package.get("version").ok_or_else(||err("E_MANIFEST","missing version"))?;
+        if name!=expected_name {return Err(err("E_LOCK_HASH","pinned package identity differs from requested name"));}
+        let id=PackageId::new(name,version,expected_lock)?;
+        if sources.len()!=1 || parsed.namespaces.len()!=1 || !parsed.exports.is_empty() {
+            return Err(err("E_UNSUPPORTED","single-class profile requires exactly one namespace and source file"));
+        }
+        let (ns,dir)=parsed.namespaces.iter().next().unwrap();
+        let (&file,&source)=sources.iter().next().unwrap();
+        if ns.contains('.') || !file.starts_with(dir.as_str()) || file[dir.len()..].contains('/') {
+            return Err(err("E_MANIFEST","class source must be directly inside its declared namespace"));
+        }
+        let normalized=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(file)))?;
+        let header=lexer::lex(&format!("use namespace {ns};"))?;
+        let end=header.len()-1;
+        if normalized.len()<=end || normalized[..end].iter().map(|t|&t.tok).ne(header[..end].iter().map(|t|&t.tok)) {
+            return Err(err("E_MANIFEST","class namespace differs from manifest key"));
+        }
+        let mut tokens=normalized[end..].to_vec();
+        let word=|i:usize,s:&str| matches!(tokens.get(i).map(|t|&t.tok),Some(Tok::Ident(n)) if n==s);
+        let canonical=word(0,"define") && word(1,"pub") && word(2,"class");
+        if !canonical && !(word(0,"pub") && word(1,"define") && word(2,"class")) {
+            return Err(err("E_PRIVATE","single-class profile requires an explicitly public class"));
+        }
+        if canonical {tokens.swap(0,1);}
+
+    Ok((name.clone(),id,ns.clone(),tokens))
+}
+
+/// One source-derived, unconstrained generic class template. Only scalar
+/// method signatures and the exact sealed self-target factory are admitted.
+/// No generic fields, nested generic arguments or general specialization.
+pub struct FrozenGenericClass {
+    name: String,
+    id: PackageId,
+    namespace: String,
+    declaration: String,
+    class_name: String,
+    parameter: String,
+    members: Vec<crate::lexer::Token>,
+    view: ExportView,
+}
+
+impl FrozenGenericClass {
+    pub fn verify(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
+        inputs: &[SnapshotSource<'_>]) -> R<Self> {
+        use crate::lexer::{self,Tok};
+        let (name,id,namespace,tokens)=verified_class_tokens(expected_name,manifest,lock,expected_lock,inputs)?;
+        let ident=|i:usize|match tokens.get(i).map(|t|&t.tok) {
+            Some(Tok::Ident(n)) if !crate::parser::is_reserved(n) && !n.starts_with("__atto_")=>Ok(n.clone()),
+            _=>Err(err("E_TYPE","generic class requires an ordinary identifier")),
+        };
+        let class_name=ident(3)?;
+        let parameter=ident(5)?;
+        if class_name==parameter || matches!(parameter.as_str(),"int"|"bool"|"float"|"string"|"Newable") || class_name=="Newable" {
+            return Err(err("E_TYPE","generic parameter conflicts with class or builtin"));
+        }
+        let header=lexer::lex(&format!("pub define class {class_name}[{parameter}] implements Newable[{class_name}[{parameter}]] as"))?;
+        let header=&header[..header.len()-1];
+        if tokens.get(..header.len()).is_none_or(|v|v.iter().map(|t|&t.tok).ne(header.iter().map(|t|&t.tok))) {
+            return Err(err("E_NEWABLE","generic class needs exactly one parameter and exact self-target witness"));
+        }
+        let factory=lexer::lex(&format!("pub fnc new(): {class_name}[{parameter}] {{ return new {class_name}[{parameter}](); }}"))?;
+        let factory=&factory[..factory.len()-1];
+        let tail=&tokens[header.len()..];
+        // Restrict the first factory to the leading exact declaration.
+        if tail.get(..factory.len()).is_none_or(|v|v.iter().map(|t|&t.tok).ne(factory.iter().map(|t|&t.tok))) {
+            return Err(err("E_NEWABLE","generic class requires exact leading public zero-arg factory"));
+        }
+        let members=tail[factory.len()..].to_vec();
+        for (i,t) in members.iter().enumerate() {
+            if let Tok::Ident(n)=&t.tok {
+                if n.starts_with("__atto_") || n==&class_name || matches!(n.as_str(),"Newable"|"new"|"constructor"|"define"|"declare"|"import"|"use"|"external"|"pkg"|"main") {
+                    return Err(err("E_UNSUPPORTED","generic class has unsupported member or ambient identifier"));
+                }
+                if n==&parameter {
+                    let before=i.checked_sub(1).and_then(|j|members.get(j));
+                    let before2=i.checked_sub(2).and_then(|j|members.get(j));
+                    let after=members.get(i+1);
+                    let parameter_type=before.is_some_and(|v|matches!(v.tok,Tok::LParen|Tok::Comma))
+                        && matches!(after.map(|v|&v.tok),Some(Tok::Ident(_)))
+                        && members.get(i+2).is_some_and(|v|matches!(v.tok,Tok::Comma|Tok::RParen));
+                    let result_type=before.is_some_and(|v|matches!(v.tok,Tok::Colon|Tok::Arrow))
+                        && before2.is_some_and(|v|v.tok==Tok::RParen)
+                        && after.is_some_and(|v|v.tok==Tok::LBrace);
+                    if !(parameter_type || result_type) {
+                        return Err(err("E_UNSUPPORTED","generic parameter permitted only in scalar method signature"));
+                    }
+                }
+            }
+        }
+        let declaration=format!("{namespace}.{class_name}");
+        let mut view=ExportView::new(Origin::External(id.clone()));
+        view.add(&namespace,&namespace,Kind::Namespace,true)?;
+        view.add_generic(&declaration,&declaration,Kind::Class,true,1)?;
+        let result=Self{name,id,namespace,declaration,class_name,parameter,members,view};
+        // Check every admitted scalar specialization, including unused
+        // methods, before publishing the frozen template.
+        for scalar in [crate::static_import_graph::ScalarIdentity::Int,crate::static_import_graph::ScalarIdentity::Bool,crate::static_import_graph::ScalarIdentity::String] {
+            result.specialize(scalar)?;
+        }
+        Ok(result)
+    }
+
+    pub fn view(&self) -> &ExportView { &self.view }
+
+    fn specialize(&self, scalar: crate::static_import_graph::ScalarIdentity) -> R<FrozenClass> {
+        use crate::lexer::{self,Tok};
+        use crate::static_import_graph::ScalarIdentity;
+        let ty=match scalar {
+            ScalarIdentity::Int=>"int", ScalarIdentity::Bool=>"bool", ScalarIdentity::String=>"string",
+            _=>return Err(err("E_UNSUPPORTED","scalar specialization not admitted")),
+        };
+        let class=&self.class_name;
+        let mut tokens=lexer::lex(&format!("pub define class {class} implements Newable[{class}] as pub fnc new(): {class} {{ return new {class}(); }}"))?;
+        tokens.pop();
+        for t in &self.members {
+            let mut t=t.clone();
+            if matches!(&t.tok,Tok::Ident(n) if n==&self.parameter) {
+                t.tok=Tok::Ident(ty.into());
+            }
+            tokens.push(t);
+        }
+        // The original snapshot identity is retained, but this intermediate
+        // monomorphic declaration is private to the specialization pipeline.
+        FrozenClass::admit_tokens(self.name.clone(),self.id.clone(),&self.namespace,tokens,true)
+    }
+
+    /// Compile one explicit scalar instance per guest. Multiple instances in
+    /// the same executable need a separate typed specialization registry.
+    pub fn compile_guest(&self, source: &str, scalar: crate::static_import_graph::ScalarIdentity) -> R<Vec<u8>> {
+        use crate::lexer::{self,Tok};
+        use crate::import_v2::{self,Source};
+        use crate::static_import_graph::{ScalarIdentity,TypeTerm};
+        if source.len()>crate::SOURCE_CAP {return Err(err("E_SOURCE_LIMIT","generic guest source limit"));}
+        let ty=match scalar {
+            ScalarIdentity::Int=>"int",ScalarIdentity::Bool=>"bool",ScalarIdentity::String=>"string",
+            _=>return Err(err("E_UNSUPPORTED","scalar specialization not admitted")),
+        };
+        let tokens=lexer::lex(source)?;
+        if !matches!(tokens.first().map(|t|&t.tok),Some(Tok::Ident(n)) if n=="import") {
+            return Err(err("E_SYNTAX","generic guest requires explicit class import"));
+        }
+        let (import,end)=import_v2::parse_mixed(&tokens,1)?;
+        if import.source!=Source::Package(self.name.clone()) || import.selectors.len()!=1 {
+            return Err(err("E_IMPORT_PATH","generic guest requires one pinned class selection"));
+        }
+        let sel=&import.selectors[0];
+        if sel.kind!=Kind::Class || sel.path!=self.declaration || sel.binding!=self.class_name || sel.explicit_alias {
+            return Err(err("E_IMPORT_KIND","generic guest requires original class binding"));
+        }
+        let mut scope=Scope::new();
+        scope.bind_mixed(&self.view,&import)?;
+        let _identity=scope.resolve_type_identity(&[
+            TypeTerm::Scalar(scalar),TypeTerm::Nominal{reference:&self.class_name,arguments:1}
+        ],&[&self.view])?;
+        let root=&tokens[end..];
+        let mut lowered=Vec::new();
+        let mut i=0;
+        while i<root.len() {
+            let t=&root[i];
+            if let Tok::Ident(n)=&t.tok {
+                if n.starts_with("__atto_") || matches!(n.as_str(),"import"|"define"|"declare"|"use"|"external") {
+                    return Err(err("E_UNSUPPORTED","generic root cannot introduce ambient declarations"));
+                }
+                if n==&self.class_name {
+                    if root.get(i+1).is_none_or(|t|t.tok!=Tok::LBracket)
+                        || !matches!(root.get(i+2).map(|t|&t.tok),Some(Tok::Ident(n)) if n==ty)
+                        || root.get(i+3).is_none_or(|t|t.tok!=Tok::RBracket) {
+                        return Err(err("E_TYPE","class reference must carry the exact scalar type argument"));
+                    }
+                    let typed=i.checked_sub(1).and_then(|j|root.get(j)).is_some_and(|t|t.tok==Tok::Colon);
+                    let factory=root.get(i+4).is_some_and(|t|t.tok==Tok::Dot)
+                        && matches!(root.get(i+5).map(|t|&t.tok),Some(Tok::Ident(n)) if n=="new")
+                        && root.get(i+6).is_some_and(|t|t.tok==Tok::LParen)
+                        && root.get(i+7).is_some_and(|t|t.tok==Tok::RParen);
+                    if !typed && !factory {return Err(err("E_NEWABLE","generic class only admits explicit type or factory reference"));}
+                    lowered.push(t.clone());
+                    i+=4;
+                    continue;
+                }
+            }
+            lowered.push(t.clone());
+            i+=1;
+        }
+        let instance=self.specialize(scalar)?;
+        lower_factory_calls(&mut lowered,&self.class_name)?;
+        let parsed=crate::parser::Parser::new(lowered.clone()).parse_program()?;
+        if parsed.funcs.len()!=1 || parsed.funcs[0].name!="main" || !parsed.classes.is_empty()
+            || !parsed.enums.is_empty() || !parsed.actors.is_empty() || parsed.actor_interface.is_some() {
+            return Err(err("E_UNSUPPORTED","generic guest requires only main"));
+        }
+        let mut linked=instance.tokens[..instance.tokens.len()-1].to_vec();
+        linked.extend(lowered);
+        if linked.len()>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","generic guest token budget"));}
+        let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
+        let checked=crate::check::check(&parsed)?;
+        if !checked.imports.is_empty() {return Err(err("E_UNSUPPORTED","generic guest cannot request ambient host imports"));}
+        crate::compile_prelexed(linked,None)
+    }
 }
