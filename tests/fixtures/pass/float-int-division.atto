@@ -1,9 +1,11 @@
 // expect-exit: 42
-// Canonical int/int -> float without integer truncation.
-fnc half(int numerator, int denominator): float {
+// Checked integer quotient and explicit floating division remain distinct.
+fnc half(float numerator, float denominator): float {
   return numerator / denominator;
 }
 pub fnc main(): int {
-  if half(5, 2) eq 2.5 then return 42; fi
+  if half(5.0, 2.0) eq 2.5 then
+    if -7 / 3 eq -2 then return 42; fi
+  fi
   return 1;
 }
