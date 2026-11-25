@@ -110,3 +110,38 @@ fn malformed_and_unknown_units_fail_closed() {
         assert_eq!(r.parse(bad).unwrap_err().code, code, "{bad:?}");
     }
 }
+
+#[test]
+fn exact_downscaling_and_signed_boundary() {
+    let r = reg();
+    let ms = r.parse("ms").unwrap();
+    let s = r.parse("s").unwrap();
+    for (input, expected) in [(1000, 1), (-1000, -1), (0, 0), (84000, 84)] {
+        assert_eq!(convert_int_exact(input, ms, s).unwrap(), expected);
+    }
+    let bits = r.parse("bit").unwrap();
+    let bytes = r.parse("B").unwrap();
+    assert_eq!(convert_int_exact(16, bits, bytes).unwrap(), 2);
+    assert_eq!(convert_int_exact(i64::MIN, bits, bytes).unwrap(), i64::MIN / 8);
+    assert_eq!(convert_int_exact(-1, bits, bytes).unwrap_err().code, "E_UNIT_LOSSY");
+    assert_eq!(convert_int_exact(i64::MIN / 8, bytes, bits).unwrap(), i64::MIN);
+    assert_eq!(convert_int_exact(i64::MAX / 8 + 1, bytes, bits).unwrap_err().code, "E_UNIT_OVERFLOW");
+}
+
+#[test]
+fn raw_invalid_descriptors_fail_without_panics_or_cancellation() {
+    use atto_compiler::units::{Dimension, Unit};
+    let good = Unit::DIMENSIONLESS;
+    for scale in [Ratio { num: 0, den: 0 }, Ratio { num: 1, den: 0 }, Ratio { num: 2, den: 2 }] {
+        let bad = Unit { scale, dim: good.dim };
+        assert_eq!(bad.mul(good).unwrap_err().code, "E_UNIT_SCALE");
+        assert_eq!(bad.div(good).unwrap_err().code, "E_UNIT_SCALE");
+        assert_eq!(bad.pow(0).unwrap_err().code, "E_UNIT_SCALE");
+        assert_eq!(check_same("+", bad, bad).unwrap_err().code, "E_UNIT_SCALE");
+        assert_eq!(conversion_factor(bad, good).unwrap_err().code, "E_UNIT_SCALE");
+    }
+    let bad = Unit { scale: Ratio::ONE, dim: Dimension([13,0,0,0,0,0,0,0,0]) };
+    assert_eq!(bad.div(bad).unwrap_err().code, "E_UNIT_EXPONENT");
+    assert_eq!(good.pow(13).unwrap_err().code, "E_UNIT_EXPONENT");
+    assert_eq!(good.pow(i8::MIN).unwrap_err().code, "E_UNIT_EXPONENT");
+}
