@@ -272,6 +272,7 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
     let mut scope=Scope::new();
     let mut admitted=BTreeMap::new();
     let mut i=0;
+    let mut trees = Vec::new();
     // This intentionally narrow guest API does not infer a package-relative
     // file namespace; callers must use the single-file root profile.
     while word(tokens.get(i),"import") {
@@ -282,7 +283,7 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
         if tokens.get(end).is_none_or(|t|t.tok!=Tok::Semi) {
             return Err(Diagnostic::new(pos,"E_SYNTAX","unterminated registry import"));
         }
-        if word(tokens.get(start),"pkg") {
+        if word(tokens.get(start),"pkg") && matches!(tokens.get(start+1).map(|t| &t.tok), Some(Tok::Str(_))) {
             let name=source_name(tokens.get(start+1)).map_err(|d|at(d,pos))?;
             let p=*available.get(name).ok_or_else(||Diagnostic::new(pos,"E_UNBOUND","package is not in authenticated snapshot set"))?;
             let alias=if start+2==end { None } else {
@@ -305,7 +306,7 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
             }
             scope.bind_mixed(p.view(),&parsed).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
-        } else if word(tokens.get(start),"namespace") {
+        } else if word(tokens.get(start),"namespace") && (start+1..end).any(|j| word(tokens.get(j),"from")) {
             let from=(start+1..end).find(|&j|word(tokens.get(j),"from"))
                 .ok_or_else(||Diagnostic::new(pos,"E_SYNTAX","expected namespace from pkg"))?;
             if !word(tokens.get(from+1),"pkg") || from+3!=end {
@@ -320,11 +321,17 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
             p.bind_namespace(&mut scope,name,&selector,&binding,rename.is_some()).map_err(|d|at(d,pos))?;
             admitted.insert(p.name.as_str(),p);
         } else {
-            return Err(Diagnostic::new(pos,"E_UNSUPPORTED","unsupported registry guest import clause"));
+            let (leaves,next)=crate::import_tree::parse(&tokens,start)?;
+            if next != end+1 { return Err(Diagnostic::new(pos,"E_SYNTAX","invalid tree extent")); }
+            trees.push((leaves,pos));
         }
         i=end+1;
     }
     if admitted.is_empty() { return Err(err("E_UNSUPPORTED","registry guest requires an authenticated package import")); }
+    // All explicit package admissions precede dependent tree resolution,
+    // even when a tree was written before the package import.
+    let views:Vec<_>=admitted.values().map(|p|p.view()).collect();
+    for (leaves,pos) in trees { crate::import_tree::bind(&mut scope,&leaves,&views).map_err(|d|at(d,pos))?; }
     let mut declarations=Vec::new();
     while word(tokens.get(i),"define") && word(tokens.get(i+1),"alias") {
         let (name,reference,pos,next)=crate::library::parse_alias_declaration(&tokens,i)?;
