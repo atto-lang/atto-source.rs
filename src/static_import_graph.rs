@@ -13,6 +13,8 @@ fn err(code: &'static str, msg: &str) -> Diagnostic {
     Diagnostic::new(Pos::default(), code, msg)
 }
 
+pub(crate) fn valid_component(s: &str) -> bool { ident(s) }
+
 fn ident(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.is_ascii()
         && s.as_bytes().first().is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
@@ -197,7 +199,16 @@ impl Scope {
         view.lookup(&key)
     }
 
-    /// Create a namespace const after resolution of a checked namespace node.
+    /// Resolve only in the uniquely selected origin's authenticated view.
+    pub fn resolve_in_views(&self, reference: &str, views: &[&ExportView]) -> R<Target> {
+        let resolved = self.resolve(reference)?;
+        let mut matching = views.iter().filter(|v| v.origin == resolved.target.origin);
+        let view = matching.next().ok_or_else(|| err("E_UNBOUND", "missing authenticated export view"))?;
+        if matching.next().is_some() { return Err(err("E_AMBIGUOUS", "duplicate authenticated export view")); }
+        self.resolve_export(reference, view)
+    }
+
+    /// Create a namespace alias after resolution of a checked namespace node.
     /// Chains of already resolved constants work; forward/cyclic references
     /// fail closed pending a separate graph-wide alias topological pass.
     pub fn namespace_alias(&mut self, alias: &str, target: Target) -> R<()> {
