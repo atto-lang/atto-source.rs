@@ -888,12 +888,14 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
+        let failure_effects = self.parse_failure_effects()?;
         let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
         Ok(Method {
             name,
             pos,
             public,
             is_static,
+            failure_effects,
             params,
             ret,
             body,

@@ -1,0 +1,10 @@
+// expect-error: E_EFFECT_TYPE
+define class Worker as
+    inner(): int throws(Error) {
+        return 42;
+    }
+    outer(): int raises(Error) {
+        return self.inner();
+    }
+end
+pub fnc main(): int { return 0; }

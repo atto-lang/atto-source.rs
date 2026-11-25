@@ -65,15 +65,50 @@ fn stmts(body: &[TStmt], effects: &[u8]) -> u8 {
     })
 }
 
+/// Map source declarations to their exact typed function indices. The
+/// compiler may synthesize constructors, class allocations and direct lambdas;
+/// those have no explicit source annotations but their typed bodies are still
+/// included in the transitive fixed point.
 pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnostic> {
-    // Explicit annotations describe an upper bound even if the body happens
-    // not to exercise it in this compilation. Callers must assume it may.
-    let mut effects = vec![0u8; funcs.len()];
-    for (i, source) in program.funcs.iter().enumerate() {
-        effects[i] = source.failure_effects.mask();
+    let typed_index: std::collections::BTreeMap<&str, usize> = funcs
+        .iter().enumerate().map(|(i, f)| (f.name.as_str(), i)).collect();
+    let mut bounds: Vec<Option<(&crate::ast::FailureEffects, crate::diag::Pos)>> =
+        vec![None; funcs.len()];
+    for (i, f) in program.funcs.iter().enumerate() {
+        bounds[i] = Some((&f.failure_effects, f.pos));
     }
-    // Monotone fixed point on the finite 3-bit lattice: handles recursion,
-    // mutual recursion and order-independent transitive error propagation.
+    for c in &program.classes {
+        for m in &c.methods {
+            let label = format!("{}.{}", c.name, m.name);
+            let i = typed_index.get(label.as_str()).copied().ok_or_else(|| {
+                Diagnostic::new(m.pos, "E_EFFECT_TYPE",
+                    format!("typed class method '{}' missing its effect-checking body", label))
+            })?;
+            bounds[i] = Some((&m.failure_effects, m.pos));
+        }
+    }
+    for a in &program.actors {
+        for m in &a.methods {
+            let label = format!("{}.{}", a.name, m.name);
+            let i = typed_index.get(label.as_str()).copied().ok_or_else(|| {
+                Diagnostic::new(m.pos, "E_EFFECT_TYPE",
+                    format!("typed actor method '{}' missing its effect-checking body", label))
+            })?;
+            bounds[i] = Some((&m.failure_effects, m.pos));
+        }
+    }
+
+    // An explicit upper bound must be honored by every caller even if the
+    // current body never invokes the failure capability. An unannotated
+    // function/method is inferred from all reachable typed call targets.
+    let mut effects = vec![0u8; funcs.len()];
+    for (i, bound) in bounds.iter().enumerate() {
+        if let Some((declared, _)) = bound {
+            effects[i] = declared.mask();
+        }
+    }
+    // Monotone fixed point on the finite three-bit lattice. Recursive,
+    // mutually recursive and differently ordered definitions converge.
     for _ in 0..funcs.len().saturating_mul(3).saturating_add(1) {
         let previous = effects.clone();
         for (i, typed) in funcs.iter().enumerate() {
@@ -83,18 +118,17 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
             break;
         }
     }
-    for (i, source) in program.funcs.iter().enumerate() {
-        if !source.failure_effects.explicit {
-            continue; // Unannotated functions infer their effects.
-        }
-        let declared = source.failure_effects.mask();
-        let escaped = effects[i] & !declared;
+    for (i, bound) in bounds.iter().enumerate() {
+        let Some((declared, pos)) = bound else { continue; };
+        if !declared.explicit { continue; }
+        let escaped = effects[i] & !declared.mask();
         if escaped != 0 {
             let name = if escaped & THROW != 0 { "throws" }
                 else if escaped & RAISE != 0 { "raises" }
                 else { "panics" };
-            return Err(Diagnostic::new(source.pos, "E_EFFECT_TYPE",
-                format!("function '{}' has undeclared escaping {}(Error) effect", source.name, name)));
+            return Err(Diagnostic::new(*pos, "E_EFFECT_TYPE",
+                format!("function/method '{}' has undeclared escaping {}(Error) effect",
+                    funcs[i].name, name)));
         }
     }
     Ok(())

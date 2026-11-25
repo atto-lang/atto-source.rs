@@ -1,0 +1,7 @@
+// expect-error: E_EFFECT_TYPE
+define actor Worker as
+    run(): int panics(Error) panics(Error) {
+        return 42;
+    }
+end
+pub fnc main(): int { return 0; }
