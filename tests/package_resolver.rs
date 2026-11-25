@@ -570,7 +570,6 @@ fn shorthand_manifest_imports_fail_closed_on_wrong_kind_scope_or_selector() {
         ("import http from pkg 'https://example.test/package';", "E_UNSUPPORTED"),
         ("import fnc http from pkg '@org/project/package';", "E_UNSUPPORTED"),
         ("import const http from pkg '@org/project/package';", "E_UNSUPPORTED"),
-        ("import http as web from pkg '@org/project/package';", "E_UNSUPPORTED"),
         ("import http, http from pkg '@org/project/package';", "E_DUPLICATE"),
         ("import http, from pkg '@org/project/package';", "E_SYNTAX"),
         ("import namespace from pkg '@org/project/package';", "E_SYNTAX"),
@@ -649,4 +648,97 @@ fn manifest_shorthand_locked_disk_compilation_pins_original_manifest_and_source(
     assert!(compile_package_locked(f.root(), "src/main.atto", &trusted).unwrap().starts_with(b"\0asm"));
     f.write(path, &provider.replace("42", "0"));
     assert_eq!(compile_package_locked(f.root(), "src/main.atto", &trusted).unwrap_err().code, "E_LOCK_HASH");
+}
+
+#[test]
+fn manifest_aliases_and_qualified_names_preserve_provider_identity() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/network/http/namespace.atto", "use namespace http; pub fnc answer(): int { return 42; }");
+    f.write("src/tools.atto", "use namespace nested.tools; pub fnc answer(): int { return 42; }");
+    let mut baseline = None;
+    for (clause, binding) in [
+        ("import http from pkg '@org/project/package';", "http"),
+        ("import namespace http as web from pkg '@org/project/package';", "web"),
+        ("import http as network.http from pkg '@org/project/package';", "network.http"),
+        ("import namespace network.http from pkg '@org/project/package';", "network.http"),
+        ("import network.http from pkg '@org/project/package/network/http';", "network.http"),
+        ("import web from pkg '@org/project/package/network/http';", "web"),
+        ("import namespace http as api.v1 from pkg '@org/project/package/network/http';", "api.v1"),
+    ] {
+        f.write("src/main.atto", &format!("{clause} pub fnc main(): int {{ return {binding}.answer(); }}"));
+        let wasm = compile_package(f.root(), "src/main.atto").unwrap();
+        if let Some(ref prior) = baseline { assert_eq!(&wasm, prior, "{clause}"); }
+        else { baseline = Some(wasm); }
+    }
+    for (clause, binding) in [
+        ("import nested.tools from pkg '@org/project/package';", "nested.tools"),
+        ("import namespace nested.tools as util from pkg '@org/project/package';", "util"),
+        ("import network.tools from pkg '@org/project/package';", "network.tools"),
+    ] {
+        f.write("src/main.atto", &format!("{clause} pub fnc main(): int {{ return {binding}.answer(); }}"));
+        assert!(compile_package(f.root(), "src/main.atto").unwrap().starts_with(b"\0asm"));
+    }
+}
+
+#[test]
+fn manifest_aliases_cannot_leak_natural_names_or_runtime_authority() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/network/http/namespace.atto", "use namespace http; pub fnc answer(): int { return 42; } fnc secret(): int { return 7; }");
+    for body in [
+        "pub fnc main(): int { return http.answer(); }",
+        "pub fnc main(): int { return web.secret(); }",
+        "pub fnc main(): int { return web; }",
+        "pub fnc main(): int { return obj.web.answer(); }",
+        "pub fnc main(): int { let int web = 1; return web.answer(); }",
+        "pub fnc web(): int { return 0; } pub fnc main(): int { return 0; }",
+        "pub fnc main(int web): int { return web.answer(); }",
+        "pub fnc main(): int { return __atto_q_forged.answer(); }",
+    ] {
+        f.write("src/main.atto", &format!("import http as web from pkg '@org/project/package'; {body}"));
+        assert!(compile_package(f.root(), "src/main.atto").is_err(), "{body}");
+    }
+    for clause in [
+        "import http as web, c as web from pkg '@org/project/package';",
+        "import http as api, c as api.v1 from pkg '@org/project/package';",
+        "import c as api.v1, http as api from pkg '@org/project/package';",
+        "import http as web from pkg '@org/project/package'; import http as other from pkg '@org/project/package';",
+        "import http as web from pkg '@org/project/package'; import namespace c from \"+src/a/b/c.atto\";",
+        "import http as __atto_q_fake from pkg '@org/project/package';",
+        "import http as fnc from pkg '@org/project/package';",
+        "import http as a.b.c.d.e.f.g.h.i from pkg '@org/project/package';",
+    ] {
+        f.write("src/main.atto", &format!("{clause} pub fnc main(): int {{ return 0; }}"));
+        assert!(compile_package(f.root(), "src/main.atto").is_err(), "{clause}");
+    }
+}
+
+#[test]
+fn manifest_qualified_root_selectors_resolve_exactly_or_fail_ambiguous() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", &NAMESPACE_MANIFEST.replace("[exports]", "\"other.http\" = \"src/other.atto\"\n[exports]"));
+    f.write("src/network/http/namespace.atto", "use namespace http; pub fnc answer(): int { return 42; }");
+    f.write("src/other.atto", "use namespace other.http; pub fnc answer(): int { return 21; }");
+    f.write("src/main.atto", "import network.http from pkg '@org/project/package'; pub fnc main(): int { return network.http.answer(); }");
+    rejects(f.root(), "src/main.atto", "E_DUPLICATE");
+    for clause in [
+        "import http from pkg '@org/project/package';",
+        "import other.http as http from pkg '@org/project/package';",
+    ] {
+        f.write("src/main.atto", &format!("{clause} pub fnc main(): int {{ return http.answer(); }}"));
+        assert!(compile_package(f.root(), "src/main.atto").is_ok(), "{clause}");
+    }
+    f.write("src/main.atto", "import http as web, other.http as other from pkg '@org/project/package'; pub fnc main(): int { return web.answer() + other.answer(); }");
+    rejects(f.root(), "src/main.atto", "E_DUPLICATE");
+}
+
+#[test]
+fn manifest_aliases_with_shared_qualified_prefixes_and_multiline_comments() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/network/http/namespace.atto", "use namespace http; pub fnc answer(): int { return 20; }");
+    f.write("src/a/b/c.atto", "use namespace c; pub fnc answer(): int { return 22; }");
+    f.write("src/main.atto", "import http as api.web, c as api.calc from pkg '@org/project/package';\n// café\npub fnc main(): int { return api /* alias */ .web.answer() + api.\ncalc.answer(); }");
+    assert!(compile_package(f.root(), "src/main.atto").unwrap().starts_with(b"\0asm"));
 }
