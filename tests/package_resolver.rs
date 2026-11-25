@@ -602,3 +602,51 @@ fn manifest_shorthand_snapshot_requires_original_hashes_and_exact_reachability()
     let changed = [inputs[0], SnapshotSource { path, source: "use namespace http; pub fnc answer(): int { return 0; }" }];
     assert_eq!(compile_locked_snapshot("src/main.atto", NAMESPACE_MANIFEST, &lock, &trusted, &changed).unwrap_err().code, "E_LOCK_HASH");
 }
+
+#[test]
+fn manifest_shorthand_and_explicit_transitive_edges_share_one_graph() {
+    let f = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/a/b/c.atto", "use namespace c; pub fnc answer(): int { return 42; }");
+    for kind in ["namespace ", ""] {
+        f.write("src/network/http/namespace.atto", &format!("use default namespace; import {kind}c from pkg '@org/project/package/a/b/c'; pub fnc answer(): int {{ return c.answer(); }}"));
+        f.write("src/main.atto", "import http from pkg '@org/project/package'; pub fnc main(): int { return http.answer(); }");
+        assert!(compile_package(f.root(), "src/main.atto").unwrap().starts_with(b"\0asm"));
+    }
+    f.write("src/a/b/c.atto", "use namespace c; import http from pkg '@org/project/package'; pub fnc answer(): int { return http.answer(); }");
+    assert!(compile_package(f.root(), "src/main.atto").is_err(), "cycles cannot link");
+}
+
+#[cfg(unix)]
+#[test]
+fn manifest_shorthand_never_loads_symlinked_namespace_provider() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let external = Fixture::new();
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/network/http/placeholder.atto", "not a provider");
+    external.write("namespace.atto", "use namespace http; pub fnc answer(): int { return 42; }");
+    symlink(external.root().join("namespace.atto"), f.root().join("src/network/http/namespace.atto")).unwrap();
+    for kind in ["namespace ", ""] {
+        f.write("src/main.atto", &format!("import {kind}http from pkg '@org/project/package/network/http'; pub fnc main(): int {{ return http.answer(); }}"));
+        rejects(f.root(), "src/main.atto", "E_IMPORT_PATH");
+    }
+}
+
+#[test]
+fn manifest_shorthand_locked_disk_compilation_pins_original_manifest_and_source() {
+    let f = Fixture::new();
+    let main = "import http from pkg '@org/project/package/network/http'; pub fnc main(): int { return http.answer(); }";
+    let provider = "use namespace http; pub fnc answer(): int { return 42; }";
+    let path = "src/network/http/namespace.atto";
+    f.write(".atto.pkg.toml", NAMESPACE_MANIFEST);
+    f.write("src/main.atto", main);
+    f.write(path, provider);
+    let lock = format!("[lock]\nmanifest_sha256=\"{}\"\n[files]\n\"src/main.atto\"=\"{}\"\n\"{path}\"=\"{}\"\n",
+        hex_digest(NAMESPACE_MANIFEST.as_bytes()), hex_digest(main.as_bytes()), hex_digest(provider.as_bytes()));
+    f.write(".atto.pkg.lock", &lock);
+    let trusted = hex_digest(lock.as_bytes());
+    assert!(compile_package_locked(f.root(), "src/main.atto", &trusted).unwrap().starts_with(b"\0asm"));
+    f.write(path, &provider.replace("42", "0"));
+    assert_eq!(compile_package_locked(f.root(), "src/main.atto", &trusted).unwrap_err().code, "E_LOCK_HASH");
+}
