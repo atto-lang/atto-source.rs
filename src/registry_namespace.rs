@@ -95,6 +95,8 @@ pub struct FrozenRegistry {
     namespaces: BTreeSet<String>,
     subpaths: BTreeMap<String,String>,
     view: ExportView,
+    // Owned, verified source bytes; cannot be replaced after verification.
+    sources: BTreeMap<String,(String,String)>,
 }
 impl FrozenRegistry {
     pub fn verify(expected_name: &str, manifest: &str, lock: &str, expected_lock: &str,
@@ -108,6 +110,7 @@ impl FrozenRegistry {
         let mut view = ExportView::new(Origin::External(id.clone()));
         let mut directories = BTreeMap::new();
         let mut namespaces = BTreeSet::new();
+        let mut verified_sources = BTreeMap::new();
         // Nested namespace parents must be declared independently. For now
         // overlapping source directories are forbidden, even if pinned.
         for (ns, dir) in &parsed.namespaces {
@@ -131,6 +134,7 @@ impl FrozenRegistry {
                 let path = format!("{ns}.{function}");
                 view.add(&path, &path, Kind::Fnc, public)?;
             }
+            verified_sources.insert(ns.clone(), (file.to_string(), source.to_string()));
             namespaces.insert(ns.clone());
             directories.insert(dir.clone(),ns.clone());
         }
@@ -140,7 +144,7 @@ impl FrozenRegistry {
                 .ok_or_else(|| err("E_MANIFEST", "subpath targets undeclared namespace directory"))?;
             subpaths.insert(sub,target.clone());
         }
-        Ok(Self { name: name.clone(), id, namespaces, subpaths, view })
+        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources })
     }
 
     pub fn view(&self) -> &ExportView { &self.view }
