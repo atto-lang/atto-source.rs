@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: rejects
+// Named compatible readonly borrows can coexist.
+define class Counter as
+  pub let int value = 21;
+end
+pub fnc main(): int {
+  let counter = new Counter();
+  block {
+    val first_view = borrow! counter;
+    val second_view = borrow! counter;
+    return first_view.value + second_view.value;
+  }
+}

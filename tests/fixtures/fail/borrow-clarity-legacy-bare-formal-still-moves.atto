@@ -1,0 +1,10 @@
+// expect-error: E_MOVED
+// java: rejects
+// Until the versioned migration, Foo formals are owned, not Borrow<Foo>.
+define class Parcel as pub let int value = 42; end
+fnc consume(p: Parcel): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val result = consume(parcel);
+  return result + parcel.value;
+}

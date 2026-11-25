@@ -1,0 +1,12 @@
+// expect-error: E_BORROW
+// java: rejects
+// A live exclusive loan excludes explicit readonly call borrowing.
+define class Counter as pub mut int value = 40; end
+fnc inspect(c: Borrow<Counter>): int { return c.value; }
+pub fnc main(): int {
+  let counter = new Counter();
+  val writer = borrow! mut counter;
+  val observed = inspect(borrow! counter);
+  writer.value = observed;
+  return 42;
+}
