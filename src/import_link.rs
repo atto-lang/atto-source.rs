@@ -178,7 +178,7 @@ fn imported_function_tokens(tokens: &[Token], logical: &Path) -> R<Vec<Token>> {
     Ok(normalized[end + 1..].to_vec())
 }
 
-fn functions(tokens: &[Token]) -> R<(BTreeMap<String, bool>, BTreeSet<usize>)> {
+pub(crate) fn functions(tokens: &[Token]) -> R<(BTreeMap<String, bool>, BTreeSet<usize>)> {
     let mut funcs = BTreeMap::new();
     let mut heads = BTreeSet::new();
     let mut i = 0;
