@@ -226,3 +226,33 @@ fn pending_aliases_cannot_break_cycles_by_falling_back_to_deliberate_names() {
     assert_eq!(s.namespace_aliases(&[("x", "x")], &[]).unwrap_err().code, "E_IMPORT_CYCLE");
     assert_eq!(s.namespace_aliases(&[("x", "missing")], &[]).unwrap_err().code, "E_UNBOUND");
 }
+
+#[test]
+fn all_alias_cycles_reject_before_any_export_lookup_and_publish_nothing() {
+    for declarations in [
+        vec![("z", "a"), ("a", "b"), ("b", "c"), ("c", "a"), ("missing", "unbound")],
+        vec![("missing", "unbound"), ("c", "a"), ("b", "c"), ("a", "b"), ("z", "a")],
+        vec![("a", "b.child"), ("b", "c"), ("c", "a")],
+    ] {
+        let mut scope = Scope::new();
+        let d = scope.namespace_aliases(&declarations, &[]).unwrap_err();
+        assert_eq!(d.code, "E_IMPORT_CYCLE");
+        assert!(d.to_string().contains("a -> b -> c -> a"), "{d}");
+        assert_eq!(scope.resolve("a").unwrap_err().code, "E_UNBOUND");
+        assert_eq!(scope.resolve("z").unwrap_err().code, "E_UNBOUND");
+    }
+}
+
+#[test]
+fn long_alias_chains_are_bounded_and_nonrecursive() {
+    let mut scope = Scope::new();
+    scope.package(id("@a/b/c"), Some("root")).unwrap();
+    let names: Vec<_> = (0..255).map(|i| format!("alias{i}")).collect();
+    let aliases: Vec<_> = names.iter().enumerate().map(|(i,n)| {
+        (n.as_str(), names.get(i+1).map_or("root", String::as_str))
+    }).collect();
+    scope.namespace_aliases(&aliases, &[]).unwrap();
+    assert_eq!(scope.resolve("alias0").unwrap().target.origin, external("@a/b/c"));
+    assert_eq!(scope.namespace_aliases(&[("extra", "root")], &[]).unwrap_err().code, "E_SOURCE_LIMIT");
+    assert_eq!(scope.resolve("extra").unwrap_err().code, "E_UNBOUND");
+}
