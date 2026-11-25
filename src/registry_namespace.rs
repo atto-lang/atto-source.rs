@@ -184,3 +184,30 @@ impl FrozenRegistry {
         scope.bind_verified(binding, if explicit_alias { Tier::Explicit } else { Tier::Deliberate }, target)
     }
 }
+
+
+/// Resolve a complete batch of source alias declarations against previously
+/// bound, verified package namespaces. Both spellings share the production
+/// builtin alias parser. No import acquisition or code generation occurs.
+pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
+    packages: &[&FrozenRegistry]) -> R<()> {
+    if declarations.len() > crate::SOURCE_CAP || packages.len() > 64 {
+        return Err(err("E_SOURCE_LIMIT", "registry alias batch exceeds budget"));
+    }
+    let tokens = crate::lexer::lex(declarations)?;
+    let mut i = 0;
+    let mut normalized = Vec::new();
+    while tokens.get(i).is_some_and(|t| t.tok != crate::lexer::Tok::Eof) {
+        if !matches!(tokens.get(i).map(|t| &t.tok),Some(crate::lexer::Tok::Ident(s)) if s=="define")
+            || !matches!(tokens.get(i+1).map(|t| &t.tok),Some(crate::lexer::Tok::Ident(s)) if s=="alias") {
+            return Err(err("E_SYNTAX", "expected only define alias declarations"));
+        }
+        let (name,reference,_,next) = crate::library::parse_alias_declaration(&tokens,i)?;
+        if normalized.len() >= 256 { return Err(err("E_SOURCE_LIMIT", "too many registry aliases")); }
+        normalized.push((name,reference));
+        i = next;
+    }
+    let pairs: Vec<_> = normalized.iter().map(|(n,r)| (n.as_str(),r.as_str())).collect();
+    let views: Vec<_> = packages.iter().map(|p| p.view()).collect();
+    scope.namespace_aliases(&pairs,&views)
+}
