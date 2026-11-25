@@ -40,6 +40,8 @@ pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 /// Logical stack exhausted (spec chapter 25): a call inside a recursive call
 /// cycle would exceed [`MAX_CALL_DEPTH`] live guest frames.
 pub const PANIC_STACK: i32 = 6;
+/// Checked refinement predicate violation in the verified quantity profile.
+pub const PANIC_REFINEMENT: i32 = 7;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -136,6 +138,7 @@ struct Layout {
     imports: Vec<Import>,
     helpers: u32,
     quantity_div: Option<u32>,
+    refinement_check: Option<u32>,
     /// helper index of `S_BYTES_EQ`
     str_base: u32,
     /// global index of actor-state global 0
@@ -784,6 +787,12 @@ impl Emit<'_> {
                     BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
                     BinOp::Div => self.call(self.l.helper(self.l.quantity_div.expect("division not admitted by checker"))),
                 }
+            }
+            TExpr::RefinementCheck(value, min, max) => {
+                self.expr(value);
+                self.op(0x42); sleb(&mut self.code, *min);
+                self.op(0x42); sleb(&mut self.code, *max);
+                self.call(self.l.helper(self.l.refinement_check.expect("refinement requires verified profile")));
             }
             TExpr::Ternary(c, a, b) => {
                 self.expr(c);
@@ -1466,14 +1475,22 @@ fn quantity_div_body() -> (Sig, Vec<u8>, Vec<u8>) {
     (Sig(vec![I64, I64], vec![I64]), vec![0], c)
 }
 
+fn refinement_check_body() -> (Sig, Vec<u8>, Vec<u8>) {
+    // local 0: value; 1: minimum; 2: maximum. Signed comparisons.
+    let mut c = vec![0x20,0,0x20,1,0x53,0x20,0,0x20,2,0x55,0x72,0x04,0x40];
+    panic(&mut c, PANIC_REFINEMENT);
+    c.extend_from_slice(&[0x0b,0x20,0,0x0b]);
+    (Sig(vec![I64,I64,I64],vec![I64]),vec![0],c)
+}
 fn emit_inner(p: &TProgram, quantity_panic: Option<i32>, quantity_division: bool) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let base_helpers = str_base + if p.strings { STRING_HELPERS } else { 0 };
     let layout = Layout {
         imports: p.imports.clone(),
-        helpers: base_helpers + u32::from(quantity_division),
+        helpers: base_helpers + 2 * u32::from(quantity_division),
         quantity_div: quantity_division.then_some(base_helpers),
+        refinement_check: quantity_division.then_some(base_helpers + 1),
         str_base,
         state_base: 1 + u32::from(p.heap),
         gen_free_global: (!p.generators.is_empty()).then_some(
@@ -1518,7 +1535,7 @@ fn emit_inner(p: &TProgram, quantity_panic: Option<i32>, quantity_division: bool
         let alloc = p.heap.then(|| layout.helper(H_ALLOC));
         helpers.extend(string_helpers(layout.str_helper(S_BYTES_EQ), alloc));
     }
-    if quantity_division { helpers.push(quantity_div_body()); }
+    if quantity_division { helpers.push(quantity_div_body()); helpers.push(refinement_check_body()); }
     for (sig, locals, code) in helpers {
         func_types.push(types.idx(sig));
         let mut b = locals;
