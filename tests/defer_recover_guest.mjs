@@ -74,6 +74,33 @@ const cases = [
     stdout: '', value: 51n,
   },
   {
+    name: 'Java Result contract: bare and bang trap aliases compose without nesting',
+    src: `pub fnc main(): int {
+        val Result<int,Error> first = trap! trap 42;
+        val Result<int,Error> second = trap trap! first;
+        match second over
+          on Ok(n) -> { return n; }
+          on Err(e) -> { return 0; }
+        end
+      }`,
+    stdout: '', value: 42n,
+  },
+  {
+    name: 'Java Result contract: mixed trap aliases evaluate a throwing operand once',
+    src: `fnc fail(): int throws(Error) {
+        stdio.println("side effect");
+        throw! Error("ordinary failure");
+      }
+      pub fnc main(): int {
+        val Result<int,Error> result = trap trap! fail();
+        match result over
+          on Ok(n) -> { return 0; }
+          on Err(e) -> { stdio.println(e.message); return 42; }
+        end
+      }`,
+    stdout: 'side effect\nordinary failure\n', value: 42n,
+  },
+  {
     name: 'canonical trap bang Err question propagation runs LIFO cleanup',
     src: `fnc fail(): int throws(Error) { throw! Error("cleanup failure"); }
       fnc checked(): Result<int,Error> {
