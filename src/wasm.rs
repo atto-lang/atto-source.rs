@@ -1434,6 +1434,15 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    emit_inner(p, None)
+}
+
+// Only the checked opt-in compiler profile can request this extra export.
+pub(crate) fn emit_durable_scalar(p: &TProgram, entry: u32) -> Vec<u8> {
+    emit_inner(p, Some(entry))
+}
+
+fn emit_inner(p: &TProgram, durable_entry: Option<u32>) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
@@ -1697,7 +1706,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     section(&mut out, 6, gsec);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 });
+    uleb(&mut exp, 2 + u64::from(has_memory) + u64::from(durable_entry.is_some())
+        + if has_actors { 2 } else { 0 });
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -1716,6 +1726,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         name(&mut exp, "actor_receive");
         exp.push(0x00);
         uleb(&mut exp, actor_init_idx as u64 + 1);
+    }
+    if let Some(entry) = durable_entry {
+        name(&mut exp, "atto_durable_transition_v1");
+        exp.push(0x00);
+        uleb(&mut exp, layout.func(entry) as u64);
     }
     section(&mut out, 7, exp);
 
