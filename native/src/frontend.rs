@@ -213,7 +213,8 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
                 "execution domain '{}' is reserved and not lowered by this backend; no implicit CPU fallback",
                 token.text
             )
-        } else if opens_task_scope || (opens_block && (token.text == "task" || token.text == "nb")) {
+        } else if opens_task_scope || (opens_block && (token.text == "task" || token.text == "nb"))
+        {
             "execution task requires scheduler-aware Future lowering; no implicit inline execution"
                 .into()
         } else {
