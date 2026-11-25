@@ -201,6 +201,26 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
         let Some(operator) = op_at(tokens, i) else { continue; };
+        // Prefix `<< readable` is an expression, not a binary directional
+        // statement. The production parser/checker owns this case, and the
+        // unary syntax preflight already validated its source-token shape.
+        // Do not steal `return << c`, `x += << c`, or grouped `(<< c)`
+        // as writes from a source named "return" or an incomplete sink.
+        let statement_start = (0..i).rev().find(|&j| matches!(
+            tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow
+        )).map_or(0, |j| j + 1);
+        // 'val return << inbox' is a malformed declaration: despite the
+        // preceding reserved word, this must NOT turn into an expression.
+        // Preserve the read-binder validator's E_IO_SYNTAX diagnostic.
+        let declaration_start = statement_start
+            + usize::from(tokens.get(statement_start).and_then(word) == Some("when"));
+        let declaration_head = matches!(tokens.get(declaration_start).and_then(word),
+            Some("val" | "let" | "const"))
+            && !tokens[declaration_start..i].iter().any(|t| matches!(t.tok, Tok::Assign));
+        if operator == Direction::Write && unary_read_start(tokens, i)
+            && !declaration_head {
+            continue;
+        }
         // Locate the beginning of the containing statement or select arm.
         // This deliberately does not reinterpret embedded numeric operators.
         let mut start = i;
