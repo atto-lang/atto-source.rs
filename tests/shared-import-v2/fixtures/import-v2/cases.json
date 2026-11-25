@@ -172,6 +172,47 @@
           false
         ]
       ]
+    },
+    "contextual-root": {
+      "identity": "@foo/bar/baz",
+      "namespace": "network.http",
+      "exports": [
+        [
+          "network",
+          "namespace",
+          true
+        ],
+        [
+          "network.http",
+          "namespace",
+          true
+        ],
+        [
+          "network.http.utils",
+          "namespace",
+          true
+        ],
+        [
+          "network.config",
+          "namespace",
+          true
+        ],
+        [
+          "network.http.client",
+          "namespace",
+          true
+        ],
+        [
+          "shared",
+          "namespace",
+          true
+        ],
+        [
+          "config",
+          "namespace",
+          true
+        ]
+      ]
     }
   },
   "cases": [
@@ -3229,6 +3270,303 @@
       },
       "reference": "a.get",
       "fixture": "http-roots"
+    },
+    {
+      "id": "tree-v2-source-late",
+      "stage": "resolution",
+      "source": "import p.net.http.get as fetch;\nimport pkg '@foo/bar/baz' as p;",
+      "reference": "fetch",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http.get"
+      }
+    },
+    {
+      "id": "tree-v2-deep-self",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.{net.{http.{self as h, fnc get as fetch},tcp.{connect}}};",
+      "reference": "h",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http"
+      }
+    },
+    {
+      "id": "tree-v2-typed-leaf",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{class Request as Req, fnc get as fetch};",
+      "reference": "Req",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http.Request"
+      }
+    },
+    {
+      "id": "tree-v2-mixed-alias",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{self as h};\ndefine alias h as math;",
+      "reference": "math.get",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http.get"
+      }
+    },
+    {
+      "id": "tree-v2-trailing-nested",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.{net.{http.{get,},tcp.{connect,},},};",
+      "reference": "connect",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.tcp.connect"
+      }
+    },
+    {
+      "id": "tree-v2-inferred-kind",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.Request as Req;",
+      "reference": "Req",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "net.http.Request"
+      }
+    },
+    {
+      "id": "tree-v2-negative-typed-prefix",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport fnc p.net.http.{get};",
+      "reference": "get",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "typed group prefix",
+        "code": "E_SYNTAX",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-self-child",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{self.get};",
+      "reference": "get",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "group self must be terminal",
+        "code": "E_SYNTAX",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-self-dotted-alias",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{self as vendor.h};",
+      "reference": "vendor.h",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "self alias must be simple",
+        "code": "E_SYNTAX",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-group-alias",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{get} as h;",
+      "reference": "h",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "group not aliasable",
+        "code": "E_SYNTAX",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-private-atomic",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{get as fetch, hidden as h};",
+      "reference": "fetch",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "private export",
+        "code": "E_PRIVATE",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-wrong-kind-atomic",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{get as fetch, fnc Request};",
+      "reference": "fetch",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "wrong kind",
+        "code": "E_IMPORT_KIND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-missing-atomic",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.net.http.{get as fetch, missing};",
+      "reference": "fetch",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing export",
+        "code": "E_UNBOUND",
+        "atomic": true
+      }
+    },
+    {
+      "id": "tree-v2-negative-too-deep",
+      "stage": "resolution",
+      "source": "import pkg '@foo/bar/baz' as p;\nimport p.a.b.c.d.e.f.g.h;",
+      "reference": "h",
+      "fixture": "tree-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "path budget",
+        "code": "E_SOURCE_LIMIT",
+        "atomic": true
+      }
+    },
+    {
+      "id": "context-pkg",
+      "stage": "resolution",
+      "source": "import pkg.network.http;",
+      "reference": "http",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "network.http"
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "context-self",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport self.utils;",
+      "reference": "utils",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "network.http.utils"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-super",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport super.config;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "network.config"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-grandparent",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport super.super.shared;",
+      "reference": "shared",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "shared"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-pkg-header",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport pkg.config;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "identity",
+        "identity": "@foo/bar/baz",
+        "declaration": "config"
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-negative-headerless-self",
+      "stage": "resolution",
+      "source": "import self.utils;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing source namespace",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "context-negative-headerless-super",
+      "stage": "resolution",
+      "source": "import super.config;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "missing source namespace",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": null
+    },
+    {
+      "id": "context-negative-escape",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport super.super.super.shared;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "package root escape",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
+    },
+    {
+      "id": "context-negative-nested-context",
+      "stage": "resolution",
+      "source": "use namespace network.http;\nimport self.super.config;",
+      "reference": "config",
+      "fixture": "contextual-root",
+      "expect": {
+        "outcome": "reject",
+        "reason": "invalid contextual component",
+        "code": "E_IMPORT_PATH",
+        "atomic": true
+      },
+      "currentNamespace": "network.http"
     }
   ]
 }
