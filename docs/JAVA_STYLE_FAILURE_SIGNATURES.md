@@ -64,3 +64,25 @@ The full language specification should retain the declared **individual error
 types**, not just the boolean throw/raise/panic mask used by this early browser
 subset. This browser change is not a proof that every potential exception is
 handled, nor evidence of parity in native/other backends.
+
+## Typed failure effect sets (integration preview)
+
+The AST now stores per-kind **nominal error type names** and a separate
+per-kind declaration-presence flag. `@Throws()`, `@Raises()`, and
+`@Panics()` are explicit empty upper bounds: a reachable effect of that
+kind causes `E_EFFECT_TYPE`, with no emitted guest artifact. The parenthesized
+lowercase clause spellings `throws()`, `raises()`, and `panics()` normalize
+to the same empty rows.
+
+A supplied list is a **complete upper bound**; absent kinds are forbidden
+when any kind is explicitly declared. A completely unannotated legacy
+function still uses inferred compatibility mode. Lowercase Java-style
+clauses are signature-only; annotations always require `@` and parentheses.
+Duplicate declarations (even repeated empty rows) and trailing commas fail
+closed. A pure function may declare *empty* failure rows, never nonempty ones.
+
+**Scope limit:** only core `Error` can pass the current nominal validation.
+`@Throws(IOError)` and user-defined subclass dispatch remain unsupported,
+rather than widening or erasing types. The three-bit fixed-point checker
+remains a conservative projection of these typed sets; subtype-specific
+handler coverage and runtime panic channels are **not** certified.

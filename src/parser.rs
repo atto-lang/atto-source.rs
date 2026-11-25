@@ -1030,15 +1030,15 @@ impl Parser {
     /// share an effect representation. The browser subset currently resolves
     /// only the built-in Error; unknown nominal exception types fail closed.
     /// Capitalized @Throws/@Raises/@Panics always require parentheses.
-    fn parse_failure_effects(&mut self, mut effects: FailureEffects, allow_annotation_names: bool) -> R<FailureEffects> {
+    fn parse_failure_effects(&mut self, mut effects: FailureEffects, annotation_context: bool) -> R<FailureEffects> {
         loop {
-            let (kind, annotation, at) = match self.word_at(0) {
-                Some("throws") => (0, false, self.pos()),
-                Some("raises") => (1, false, self.pos()),
-                Some("panics") => (2, false, self.pos()),
-                Some("Throws") if allow_annotation_names => (0, true, self.pos()),
-                Some("Raises") if allow_annotation_names => (1, true, self.pos()),
-                Some("Panics") if allow_annotation_names => (2, true, self.pos()),
+            let (kind, at) = match self.word_at(0) {
+                Some("throws") => (0usize, self.pos()),
+                Some("raises") => (1usize, self.pos()),
+                Some("panics") => (2usize, self.pos()),
+                Some("Throws") if annotation_context => (0usize, self.pos()),
+                Some("Raises") if annotation_context => (1usize, self.pos()),
+                Some("Panics") if annotation_context => (2usize, self.pos()),
                 Some("Throws" | "Raises" | "Panics") => {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                         "capitalized failure annotations require '@'"));
@@ -1047,63 +1047,71 @@ impl Parser {
             };
             self.advance();
             let parens = self.eat(&Tok::LParen);
-            if annotation && !parens {
+            if annotation_context && !parens {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     "failure annotations require a parenthesized Error type list"));
             }
-            let mut types = 0usize;
-            loop {
-                if parens && *self.peek() == Tok::RParen {
-                    if types == 0 {
-                        return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
-                            "empty failure type lists are not admitted by this browser compiler"));
+            // An empty parenthesized row is an explicit zero-effect bound.
+            // Distinguish it from an absent kind via 'declared', not via a
+            // boolean that would be cleared for both states.
+            let mut types: Vec<String> = Vec::new();
+            if !(parens && self.eat(&Tok::RParen)) {
+                loop {
+                    let type_at = self.pos();
+                    let name = match self.peek().clone() {
+                        Tok::Ident(s) => s,
+                        _ => return Err(Diagnostic::new(type_at, "E_EFFECT_TYPE",
+                            "a failure effect requires an Error subtype")),
+                    };
+                    self.advance();
+                    if name != "Error" {
+                        let code = if matches!(name.as_str(),
+                            "int" | "bool" | "string" | "String" | "float" | "void") {
+                            "E_EFFECT_TYPE"
+                        } else {
+                            "E_UNSUPPORTED_TYPE"
+                        };
+                        return Err(Diagnostic::new(type_at, code,
+                            format!("failure type '{name}' requires Error ancestry and the matching nominal interface; only built-in Error is browser-admitted")));
+                    }
+                    if types.iter().any(|old| old == &name) {
+                        return Err(Diagnostic::new(type_at, "E_DUPLICATE",
+                            "duplicate Error type in a failure effect list"));
+                    }
+                    types.push(name);
+                    if self.eat(&Tok::Comma) {
+                        if parens && *self.peek() == Tok::RParen {
+                            return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                                "trailing comma in a failure type list"));
+                        }
+                        if !parens && matches!(self.word_at(0), Some("throws" | "raises" | "panics")) {
+                            return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                                "expected an Error type after ',' in the failure type list"));
+                        }
+                        continue;
                     }
                     break;
                 }
-                let type_at = self.pos();
-                let name = match self.peek().clone() {
-                    Tok::Ident(s) => s,
-                    _ => return Err(Diagnostic::new(type_at, "E_EFFECT_TYPE",
-                        "a failure effect requires an Error subtype")),
-                };
-                self.advance();
-                if name != "Error" {
-                    let code = if matches!(name.as_str(),
-                        "int" | "bool" | "string" | "String" | "float" | "void") {
-                        "E_EFFECT_TYPE"
-                    } else {
-                        "E_UNSUPPORTED_TYPE"
-                    };
-                    return Err(Diagnostic::new(type_at, code,
-                        format!("failure effect '{name}' requires Error ancestry and a matching nominal interface; only built-in Error is browser-admitted")));
-                }
-                types += 1;
-                if types > 1 {
-                    return Err(Diagnostic::new(type_at, "E_DUPLICATE",
-                        "duplicate Error type in a failure effect list"));
-                }
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
-                if !parens && matches!(self.word_at(0), Some("throws" | "raises" | "panics")) {
-                    return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
-                        "expected an Error type after ',' in the failure type list"));
+                if parens {
+                    self.expect(Tok::RParen, "')' after failure effects")?;
                 }
             }
-            if parens {
-                self.expect(Tok::RParen, "')' after failure effects")?;
-            }
-            let flag = match kind {
-                0 => &mut effects.throws,
-                1 => &mut effects.raises,
-                _ => &mut effects.panics,
-            };
-            if *flag {
+            if effects.declared[kind] {
                 return Err(Diagnostic::new(at, "E_EFFECT_TYPE",
                     "duplicate failure effect declaration"));
             }
-            *flag = true;
+            effects.declared[kind] = true;
+            *match kind {
+                0 => &mut effects.throws,
+                1 => &mut effects.raises,
+                _ => &mut effects.panics,
+            } = types;
             effects.explicit = true;
+            // Each '@' owns exactly one kind. The next annotation must have
+            // a new '@'; unprefixed clauses are never consumed in its place.
+            if annotation_context {
+                break;
+            }
         }
         Ok(effects)
     }
@@ -1229,7 +1237,7 @@ impl Parser {
         let params = self.parse_params()?;
         let (ret, arrow_type, colon_type, trailing_return, inline_effects, failure_effects) =
             self.parse_effectful_signature(annotations, prefixed_return)?;
-        if is_pure && failure_effects.explicit {
+        if is_pure && failure_effects.mask() != 0 {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure functions cannot declare throw, raise or panic effects"));
         }
