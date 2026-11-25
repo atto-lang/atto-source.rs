@@ -613,3 +613,36 @@ fn typed_external_class_rejects_distinct_declaration_identity_and_excess_locals(
         assert!(compile_registry_guest(&source,&[&p]).is_err(),"{source}");
     }
 }
+
+#[test]
+fn same_named_classes_from_distinct_packages_compile_with_hygienic_identity() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let manifest=MANIFEST.replace("[exports]","model = \"src/model/\"\n[exports]");
+    let mut inputs=INPUTS.to_vec();
+    inputs.push(SnapshotSource{path:"src/model/types.atto",source:
+        "use namespace model; pub define class Item as private int value: 10; pub answer(): int { return self.value; } end"});
+    let p=verify(&manifest,&inputs).unwrap();
+    let other=manifest.replace("@org/project/package","@other/project/package");
+    inputs.last_mut().unwrap().source="use namespace model; pub define class Item as private int value: 32; pub answer(): int { return self.value; } end";
+    let l=lock(&other,&inputs);
+    let q=FrozenRegistry::verify("@other/project/package",&other,&l,&hex_digest(l.as_bytes()),&inputs).unwrap();
+    let prefix="import pkg '@org/project/package' as p; import pkg '@other/project/package' as q; ";
+    let body="pub fnc main(): int { val a: p.model.Item = new p.model.Item(); val b: q.model.Item = new q.model.Item(); return a.answer()+b.answer(); }";
+    let source=format!("{prefix}{body}");
+    let wasm=compile_registry_guest(&source,&[&p,&q]).unwrap();
+    assert_eq!(wasm,compile_registry_guest(&source,&[&q,&p]).unwrap());
+    let reversed=format!("import pkg '@other/project/package' as q; import pkg '@org/project/package' as p; {body}");
+    assert_eq!(wasm,compile_registry_guest(&reversed,&[&p,&q]).unwrap());
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-class-cross-0.wasm"),wasm).unwrap();
+    }
+    for bad in [
+        "val a: p.model.Item = new q.model.Item(); return a.answer();",
+        "val a: p.model.Item = new p.model.Item(); val b: q.model.Item = new p.model.Item(); return a.answer()+b.answer();",
+    ] {
+        let source=format!("{prefix}pub fnc main(): int {{ {bad} }}");
+        assert_eq!(compile_registry_guest(&source,&[&p,&q]).unwrap_err().code,"E_TYPE");
+    }
+    let source=format!("{prefix}pub fnc main(): int {{ val a: p.model.Item = new p.model.Item(); val b: q.model.Item = new q.model.Item(); return a.value; }}");
+    assert_eq!(compile_registry_guest(&source,&[&p,&q]).unwrap_err().code,"E_PRIVATE");
+}
