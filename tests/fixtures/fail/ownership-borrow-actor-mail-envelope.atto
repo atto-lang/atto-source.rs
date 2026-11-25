@@ -1,0 +1,10 @@
+// expect-error: E_UNSUPPORTED
+// The compiler must never treat ActorMail envelope handles as scalar values.
+define actor Worker as
+  receive(ActorMail<int> mail): void {
+    val forged = borrow! mail;
+  }
+end
+pub fnc main(): int {
+  return 0;
+}

@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED
+pub fnc main(): int {
+  val number = 42; val reader: int = borrow! number; return 0;
+}

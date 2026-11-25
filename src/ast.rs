@@ -304,6 +304,10 @@ pub enum UnOp {
     Copy,
     /// Explicit scalar move; checker invalidates the source binding.
     Take,
+    /// Lexical non-owning scalar read loan; no runtime pointer is emitted.
+    Borrow,
+    /// Exclusive scalar loan; writes through its alias update the owner slot.
+    BorrowMut,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

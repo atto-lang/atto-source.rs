@@ -1,0 +1,4 @@
+// expect-error: E_BORROW
+pub fnc main(): int {
+  val number = 40; val reader = borrow! number; val stolen = take! number; return 0;
+}

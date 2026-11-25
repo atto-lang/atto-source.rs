@@ -1,0 +1,4 @@
+// expect-error: E_BORROW
+pub fnc main(): int {
+  let number = 40; val first = borrow! mut number; val second = borrow! mut number; return 0;
+}
