@@ -54,6 +54,7 @@ try {
       observed = {exit:result.status,diagnostic_codes:codes,stderr:diagnostic,stdout:(result.stdout??'').slice(0,8192)};
       if (c.expect.outcome === 'reject') {
         if(result.status === 0 || existsSync(output) || codes.length === 0) throw Error('expected diagnosed rejection without artifact');
+        if(c.expect.code && !codes.includes(c.expect.code)) throw Error('expected diagnostic '+c.expect.code);
         if(c.id==='relative-negative-escape' && !codes.includes('E_IMPORT_PATH')) throw Error('escape rejected without path diagnostic');
         observed.outcome='reject';
       } else if (c.expect.outcome === 'return') {
