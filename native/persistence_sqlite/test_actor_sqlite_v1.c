@@ -170,9 +170,57 @@ int main(void){
     assert(failed_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
     must(atto_actor_load_fenced(db,"actor:1",new_epoch,SCHEMA,&missing,&missing_len,&missing_seq),
          ATTO_ACTOR_STORE_CORRUPT,"failed revival did not rotate epoch");
+    /* Delete only the checkpoint, not its epoch row. Reopening cannot
+     * manufacture a new actor or repair the missing checkpoint. */
+    assert(sqlite3_open(path,&raw)==SQLITE_OK);
+    assert(sqlite3_exec(raw,"DELETE FROM atto_actor_snapshots WHERE actor_id='actor:1';",NULL,NULL,NULL)==SQLITE_OK);
+    assert(sqlite3_close(raw)==SQLITE_OK);
+    atto_actor_db_close(db);
+    must(atto_actor_db_open(path,&db),0,"reopen after checkpoint deletion");
+    must(atto_actor_activate_and_load(db,"actor:1",SCHEMA,&failed_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"deleted checkpoint not a fresh actor");
+    assert(failed_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_commit(db,"actor:1",new_epoch,0,SCHEMA,two,sizeof(two),&seq),
+         ATTO_ACTOR_STORE_CORRUPT,"cannot reset initialized actor at sequence zero");
+    assert(seq==0);
+    must(atto_actor_load_fenced(db,"actor:fresh",fresh,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_ABSENT,"genuinely uninitialized actor remains absent across reopen");
     atto_actor_db_close(db);
     /* Delete test database and journal artifacts from trusted tempdir. */
     char wal[532],shm[532];snprintf(wal,sizeof(wal),"%s-wal",path);snprintf(shm,sizeof(shm),"%s-shm",path);
+    unlink(wal);unlink(shm);unlink(path);
+    /* Migrate a real pre-marker schema, including an ambiguous epoch-only row. */
+    assert(sqlite3_open(path,&raw)==SQLITE_OK);
+    assert(sqlite3_exec(raw,
+        "CREATE TABLE atto_actor_epochs(actor_id TEXT PRIMARY KEY NOT NULL,epoch INTEGER NOT NULL CHECK(epoch>0));"
+        "CREATE TABLE atto_actor_snapshots(actor_id TEXT PRIMARY KEY NOT NULL REFERENCES atto_actor_epochs(actor_id),"
+        "sequence INTEGER NOT NULL CHECK(sequence>0),schema_tag BLOB NOT NULL CHECK(length(schema_tag)=8),"
+        "snapshot BLOB NOT NULL CHECK(length(snapshot)<=4096 AND length(snapshot)>=27));"
+        "INSERT INTO atto_actor_epochs VALUES('legacy:known',7),('legacy:ambiguous',5);",
+        NULL,NULL,NULL)==SQLITE_OK);
+    sqlite3_stmt *legacy=NULL;
+    assert(sqlite3_prepare_v2(raw,"INSERT INTO atto_actor_snapshots VALUES('legacy:known',3,?1,?2);",-1,&legacy,NULL)==SQLITE_OK);
+    assert(sqlite3_bind_blob(legacy,1,one+9,8,SQLITE_TRANSIENT)==SQLITE_OK);
+    assert(sqlite3_bind_blob(legacy,2,one,sizeof(one),SQLITE_TRANSIENT)==SQLITE_OK);
+    assert(sqlite3_step(legacy)==SQLITE_DONE);
+    sqlite3_finalize(legacy);
+    assert(sqlite3_close(raw)==SQLITE_OK);
+    must(atto_actor_db_open(path,&db),0,"migrate legacy schema");
+    must(atto_actor_activate_and_load(db,"legacy:known",SCHEMA,&new_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_OK,"legacy snapshot retained");
+    assert(new_epoch==8 && missing_seq==3 && missing_len==36 && memcmp(missing,one,36)==0);
+    atto_actor_free(missing);
+    must(atto_actor_activate_and_load(db,"legacy:ambiguous",SCHEMA,&failed_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"legacy absence quarantined");
+    assert(failed_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_activate_and_load(db,"new:actor",SCHEMA,&fresh,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_ABSENT,"new identity after migration");
+    assert(fresh==1 && missing_seq==0);
+    atto_actor_db_close(db);
+    must(atto_actor_db_open(path,&db),0,"idempotent migration reopen");
+    must(atto_actor_load_fenced(db,"new:actor",fresh,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_ABSENT,"reopen does not reclassify fresh actors");
+    atto_actor_db_close(db);
     unlink(wal);unlink(shm);unlink(path);rmdir(dir);
     puts("PASS native sqlite actor state: epoch CAS, corruption, SIGKILL after/before COMMIT, reload");
     return 0;
