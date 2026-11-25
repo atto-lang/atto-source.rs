@@ -387,3 +387,40 @@ where F: FnMut(&Path) -> std::io::Result<String> {
     }
     Ok(all)
 }
+
+
+/// Derive a narrow registry export view from real parsed source, never from
+/// caller-asserted public/kind flags. This profile admits one explicit source
+/// namespace and direct functions only; no transitive imports or nominal ABI.
+pub(crate) fn registry_function_exports(source: &str, logical: &Path)
+    -> R<(String, BTreeMap<String, bool>)> {
+    if source.len() > crate::SOURCE_CAP {
+        return Err(diagnostic(Pos::default(), "E_SOURCE_LIMIT", "registry source exceeds limit"));
+    }
+    let raw = lexer::lex(source)?;
+    let normalized = crate::namespace::normalize(&raw, Some(logical))?;
+    for t in &normalized {
+        if matches!(&t.tok, Tok::Ident(s) if s.starts_with("__atto_")) {
+            return Err(diagnostic(t.pos, "E_RESERVED", "compiler-generated identifier in registry source"));
+        }
+    }
+    if !word(normalized.first(), "use") || !word(normalized.get(1), "namespace") {
+        return Err(diagnostic(Pos::default(), "E_MANIFEST", "registry namespace source requires a namespace header"));
+    }
+    let end = normalized.iter().position(|t| t.tok == Tok::Semi)
+        .ok_or_else(|| diagnostic(Pos::default(), "E_SYNTAX", "unterminated registry namespace"))?;
+    let mut names = Vec::new();
+    for (i, t) in normalized[2..end].iter().enumerate() {
+        match (&t.tok, i % 2) {
+            (Tok::Ident(s), 0) => names.push(s.as_str()),
+            (Tok::Dot, 1) => {},
+            _ => return Err(diagnostic(t.pos, "E_SYNTAX", "invalid registry namespace")),
+        }
+    }
+    let namespace = names.join(".");
+    let (exports, _) = functions(&normalized[end + 1..])?;
+    if exports.is_empty() {
+        return Err(diagnostic(Pos::default(), "E_MANIFEST", "registry namespace contains no functions"));
+    }
+    Ok((namespace, exports))
+}
