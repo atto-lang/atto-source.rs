@@ -11,7 +11,7 @@ import {join, resolve} from 'node:path';
 const path = new URL('./contracts/caret-return-sequences-v1.json', import.meta.url);
 const bytes = await readFile(path);
 const sha = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
-assert.equal(sha, '0fad4e5a6047e748f657c93cb79d0e4860416b71',
+assert.equal(sha, 'a5cbe9e45b71a66aaf0dc39ed839f45293e414a5',
   'Spec snapshot changed without updating upstream Git-blob receipt');
 const contract = JSON.parse(bytes.toString('utf8'));
 assert.equal(contract.cases.length, 49);
@@ -144,6 +144,14 @@ console.log('CARET_SPEC_AUDIT',JSON.stringify(summary),
 if(process.env.ATTO_CARET_ENFORCE_ALL==='1'){
   if(summary.passed!==49)process.exitCode=1;
 } else {
+  // Never conceal a genuinely failed or unexecuted normative case in a
+  // successful CI job. Unsupported profiles are disclosed separately and do
+  // NOT count as passes, but an unexpected `failed` result must be red.
+  if(summary.failed > 0 || summary.not_executed > 0) {
+    console.error('CARET_SPEC_UNEXPECTED_FAILURE',
+      'failed='+summary.failed, 'not_executed='+summary.not_executed);
+    process.exitCode=1;
+  }
   // These 42 exact IDs have now passed real native+wasm32 CI (runs\n  // 43823854425 and 43825249538). Tuple-typed negative cases that only\n  // reach E_UNSUPPORTED_TYPE do NOT count as a proven type mismatch.
   // Keep each as a hard regression gate; all remaining proposed cases must
   // appear in the report as failed/unsupported until separately fixed.
