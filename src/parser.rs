@@ -1712,29 +1712,63 @@ impl Parser {
         }
     }
 
-    /// `try { } [catch (Error e) { }] [finally { }]`, at least one handler.
+    /// Braced and keyword/end forms both produce the same checked Try node.
+    /// The Wasm profile still admits one Error handler (or catch() to ignore
+    /// it); no additional effects or recovery semantics are introduced.
     fn parse_try(&mut self, pos: Pos) -> R<Stmt> {
         self.advance();
-        let body = self.parse_block()?;
+        let braced = *self.peek() == Tok::LBrace;
+        let body = if braced {
+            self.parse_block()?
+        } else {
+            self.parse_stmts_until(&["catch", "finally", "end"])?
+        };
         let catch = if self.eat_word("catch") {
             self.expect(Tok::LParen, "'(' after 'catch'")?;
-            let (ty, ty_pos) = self.ident("the caught Error type")?;
-            if ty != "Error" {
-                return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                    "this browser slice catches only the built-in Error"));
-            }
-            let (binder, _) = self.ident("a catch binding name")?;
-            self.expect(Tok::RParen, "')' after the catch binding")?;
-            Some((binder, self.parse_block()?))
+            let binder = if self.eat(&Tok::RParen) {
+                // The checker never introduces an accessible catch binding
+                // for this restricted EH slice.
+                "$catch_ignored".to_owned()
+            } else {
+                let (ty, ty_pos) = self.ident("the caught Error type")?;
+                if ty != "Error" {
+                    return Err(Diagnostic::new(ty_pos, "E_TYPE",
+                        "this browser slice catches only the built-in Error"));
+                }
+                let (binder, _) = self.ident("a catch binding name")?;
+                self.expect(Tok::RParen, "')' after the catch binding")?;
+                binder
+            };
+            let handler = if braced {
+                self.parse_block()?
+            } else {
+                self.parse_stmts_until(&["catch", "finally", "end"])?
+            };
+            Some((binder, handler))
         } else {
             None
         };
         if self.is_word("catch") {
-            return Err(unsupported(self.pos(), "multiple catch clauses"));
+            return Err(Diagnostic::new(self.pos(), "E_DUPLICATE", "multiple catch clauses"));
         }
-        let finally = if self.eat_word("finally") { Some(self.parse_block()?) } else { None };
+        let finally = if self.eat_word("finally") {
+            Some(if braced {
+                self.parse_block()?
+            } else {
+                self.parse_stmts_until(&["catch", "finally", "end"])?
+            })
+        } else {
+            None
+        };
         if catch.is_none() && finally.is_none() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "'try' requires a 'catch' or 'finally' clause"));
+        }
+        if !braced {
+            if self.is_word("catch") || self.is_word("finally") {
+                return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
+                    "catch must precede finally; at most one finally is allowed"));
+            }
+            self.expect_word("end")?;
         }
         Ok(Stmt::Try { body, catch, finally, pos })
     }
@@ -2239,7 +2273,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Raise(error, pos))
             }
-            Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
+            Some("try") => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
             Some("if") => self.parse_if(),
@@ -2275,6 +2309,13 @@ impl Parser {
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
+            }
+            // The future maybe/?=/else syntax is a value-match scope, not
+            // ordinary exception handling. Reject it explicitly even when
+            // nested in a newly admitted keyword try; it needs its own typed
+            // failure/cleanup CFG rather than falling through to an identifier.
+            Some("do") if self.word_at(1) == Some("maybe") => {
+                Err(unsupported(pos, "'do maybe' value matching"))
             }
             Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
