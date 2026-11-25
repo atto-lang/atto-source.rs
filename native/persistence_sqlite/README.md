@@ -71,3 +71,27 @@ actor simulation: it admits and checkpoints 100 increments, kills the process,
 opens a new SQLite connection, obtains a new incarnation epoch, verifies the
 counter revives at 100, and commits increment 101. This tests the native
 storage integration boundary, **not** an actual AttoLang-compiled actor.
+
+## Atomic revival and fenced read
+
+Runtime integrations should use `atto_actor_activate_and_load` rather than
+separate epoch rotation and unfenced inspection. The new API acquires a
+SQLite writer reservation, rotates the epoch, reads and validates the prior
+snapshot, and commits before returning owned bytes. A confirmed absent row
+returns ABSENT with a committed new epoch and zero sequence; corruption or
+schema mismatch returns no snapshot and rolls back the attempted activation.
+An I/O failure is not evidence of absence or a definite commit outcome.
+Use `atto_actor_load_fenced` for subsequent recovery reads: it validates the
+exact epoch and reads under one transaction. The legacy load remains an
+inspection primitive only. A normal checkpoint cannot migrate or overwrite
+corrupt durable history.
+
+One privileged worker owns each connection and serializes entire API calls;
+SQLite FULLMUTEX alone does not enforce this multi-statement ownership rule.
+Separate connections coordinate through SQLite. The supervisor must still
+fence old execution, replies and external side effects; a successful read
+is not an indefinite lease. This remains a scalar checkpoint component,
+not a generated guest codec or durable mailbox. A missing snapshot after
+external deletion cannot be distinguished from an uninitialized actor by
+this v1 format; trusted storage integrity and a durable initialization marker
+are separate requirements for runtime admission.
