@@ -791,20 +791,39 @@ pub fn compile_frozen_classes(source: &str, packages: &[&FrozenClass]) -> R<Vec<
         cursor=end;
     }
     if selected.is_empty() {return Err(err("E_SYNTAX","class guest requires explicit imports"));}
+    let sealed=selected.values().all(|p|p.sealed_factory);
+    if !sealed && selected.values().any(|p|p.sealed_factory) {
+        return Err(err("E_NEWABLE","cannot mix sealed factory and experimental raw constructor lanes"));
+    }
     let mut owners=BTreeMap::new();
     let mut linked=Vec::new();
     for (name,p) in &selected {
-        if p.sealed_factory {
-            return Err(err("E_UNSUPPORTED","sealed factory multi-package remapping needs typed identity rewriting"));
-        }
         let owner=format!("__atto_frozen_class_{}",owners.len());
+        // Only the exact already-checked compiler-generated factory header
+        // and self-allocation body may refer to the provider class name.
+        // No generic textual replacement of member names or local bindings.
+        let mut self_positions=BTreeSet::new();
+        self_positions.insert(3usize);
+        if sealed {
+            let pattern=lexer::lex(&format!("pub static fnc {SEALED_FACTORY}(): {} {{ return new {}(); }}",p.class_name,p.class_name))?;
+            let pattern=&pattern[..pattern.len()-1];
+            let matches:Vec<_>=p.tokens.windows(pattern.len()).enumerate()
+                .filter(|(_,v)|v.iter().map(|t|&t.tok).eq(pattern.iter().map(|t|&t.tok)))
+                .map(|(i,_)|i).collect();
+            if matches.len()!=1 {return Err(err("E_NEWABLE","missing unique checked factory body"));}
+            for (i,t) in pattern.iter().enumerate() {
+                if matches!(&t.tok,Tok::Ident(n) if n==&p.class_name) {
+                    self_positions.insert(matches[0]+i);
+                }
+            }
+        }
         // Provider isolation was checked before linking. Do not rewrite
         // arbitrary identifier occurrences (fields, locals, type parameters).
         // Only an exact class declaration header may contain this spelling.
         for (i,t) in p.tokens.iter().enumerate().take(p.tokens.len()-1) {
             let mut t=t.clone();
             if matches!(&t.tok,Tok::Ident(n) if n==&p.class_name) {
-                if i!=3 {return Err(err("E_UNSUPPORTED","class self-type/member spelling requires typed remapping"));}
+                if !self_positions.contains(&i) {return Err(err("E_UNSUPPORTED","class self-type/member spelling requires typed remapping"));}
                 t.tok=Tok::Ident(owner.clone());
             }
             linked.push(t);
@@ -812,10 +831,30 @@ pub fn compile_frozen_classes(source: &str, packages: &[&FrozenClass]) -> R<Vec<
         owners.insert(name.clone(),owner);
         if linked.len()>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","class declaration token budget"));}
     }
-    let root=&tokens[cursor..];
-    // Validate original structure before rewriting. The guest may declare
-    // only main, not extra classes or routines that could capture providers.
-    let parsed=crate::parser::Parser::new(root.to_vec()).parse_program()?;
+    let mut root=tokens[cursor..].to_vec();
+    // Validate all original tokens before introducing the internal factory
+    // name. Only an exact selected alias .new() can obtain this spelling.
+    if root.iter().any(|t|matches!(&t.tok,Tok::Ident(n) if n.starts_with("__atto_") || matches!(n.as_str(),"import"|"use"|"define"|"declare"|"external"))) {
+        return Err(err("E_UNSUPPORTED","class root cannot introduce ambient declarations or internal names"));
+    }
+    if sealed {
+        for i in 0..root.len() {
+            if !matches!(&root[i].tok,Tok::Ident(n) if n=="new") {continue;}
+            let alias=i.checked_sub(2).and_then(|j|root.get(j)).and_then(|t|match &t.tok {
+                Tok::Ident(n) if aliases.contains_key(n)=>Some(n), _=>None,
+            });
+            if alias.is_none() || root[i-1].tok!=Tok::Dot
+                || i.checked_sub(3).and_then(|j|root.get(j)).is_some_and(|t|t.tok==Tok::Dot)
+                || root.get(i+1).is_none_or(|t|t.tok!=Tok::LParen)
+                || root.get(i+2).is_none_or(|t|t.tok!=Tok::RParen) {
+                return Err(err("E_NEWABLE","allocation requires exact imported alias.new()"));
+            }
+            root[i].tok=Tok::Ident(SEALED_FACTORY.into());
+        }
+    }
+    // Validate root structure before joining providers; no root class or
+    // extra routine can capture an authenticated declaration.
+    let parsed=crate::parser::Parser::new(root.clone()).parse_program()?;
     if parsed.funcs.len()!=1 || parsed.funcs[0].name!="main" || !parsed.classes.is_empty()
         || !parsed.enums.is_empty() || !parsed.actors.is_empty() || parsed.actor_interface.is_some() {
         return Err(err("E_UNSUPPORTED","class guest root must contain only main"));
@@ -823,9 +862,6 @@ pub fn compile_frozen_classes(source: &str, packages: &[&FrozenClass]) -> R<Vec<
     for (i,t) in root.iter().enumerate() {
         let mut t=t.clone();
         if let Tok::Ident(n)=&t.tok {
-            if n.starts_with("__atto_") || matches!(n.as_str(),"import"|"use"|"define"|"declare"|"external") {
-                return Err(err("E_UNSUPPORTED","class root cannot introduce ambient declarations or internal names"));
-            }
             if let Some((name,_identity))=aliases.get(n) {
                 let before=i.checked_sub(1).and_then(|j|root.get(j));
                 let after=root.get(i+1);
