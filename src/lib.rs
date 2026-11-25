@@ -47,6 +47,7 @@ pub mod module_lower;
 pub mod const_import_link;
 pub mod import_link;
 pub mod import_v2;
+pub mod import_tree;
 pub mod static_import_graph;
 /// Checked physical layout metadata; does not admit guest reference operations.
 pub mod ref_layout;
