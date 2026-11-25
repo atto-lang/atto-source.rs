@@ -4,8 +4,11 @@
 
 use crate::ast::{ActorDecl, ActorInterface, ActorInterfaceMethod, FieldMode, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
-use crate::target_syntax::{ReceiverEffects, ReceiverHeader, StateAssignment, StateUse, TargetHeaders};
+use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, StateAssignment, StateUse, TargetHeaders, revalidate_receiver_facts};
 use crate::lexer::{Tok, Token};
+use crate::target_flow::{ReceiverFlow, analyze_receiver_body, check_receiver_arguments};
+use crate::target_borrow::{ReceiverBorrowFacts, check_receiver_borrows};
+use crate::target_cleanup::{ReceiverCleanupPlan, plan_receiver_cleanup};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetType {
@@ -64,12 +67,31 @@ pub struct TypedStateUse {
     pub field_ty: Option<TargetType>,
 }
 
+/// A single syntactically complete return statement in the pre-executable
+/// actor receiver IR. None means its expression needs the real body AST.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedBodyReturn {
+    pub receiver: usize,
+    pub pos: Pos,
+    pub result: Option<TargetType>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TypedActorModule {
     pub namespace: Option<String>,
     pub actors: Vec<TypedActor>,
     pub receivers: Vec<TypedReceiver>,
     pub state_uses: Vec<TypedStateUse>,
+    /// Partial return-type facts, not a complete control-flow or AOT proof.
+    pub body_returns: Vec<TypedBodyReturn>,
+    /// Structured flow facts; never an executable actor body proof.
+    pub receiver_flows: Vec<ReceiverFlow>,
+    /// Conservative path-sensitive ownership and lexical loan facts.
+    /// These never license executable receiver lowering.
+    pub receiver_borrows: Vec<ReceiverBorrowFacts>,
+    /// Frontend lock-acquire/normal/trap cleanup obligations. The runtime
+    /// backend has not discharged them; all out-of-line mtds remain gated.
+    pub receiver_cleanup: Vec<ReceiverCleanupPlan>,
 }
 
 fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
@@ -213,6 +235,72 @@ impl TypedActorModule {
                     actor.name, a.field, expected, actual)));
         }
         Ok(())
+    }
+
+    /// Only type expressions whose complete meaning is statically known.
+    /// All other return bodies remain unproved and explicitly non-executable.
+    fn check_receiver_return(&self, headers: &TargetHeaders, ret: &ReceiverReturn)
+        -> Result<TypedBodyReturn, Diagnostic> {
+        let method = self.receivers.get(ret.receiver)
+            .ok_or_else(|| type_error(ret.pos, "invalid return receiver index"))?;
+        let h = headers.receivers.get(ret.receiver)
+            .ok_or_else(|| type_error(ret.pos, "missing source receiver header"))?;
+        let ts = &ret.expr;
+        let result = match ts.as_slice() {
+            [] => Some(TargetType::Void),
+            [Token {tok: Tok::Int(Some(_)), ..}] => Some(TargetType::Int),
+            [Token {tok: Tok::Int(None), ..}] => {
+                return Err(Diagnostic::new(ret.pos, "E_INTEGER_RANGE",
+                    "integer literal 9223372036854775808 requires a leading minus"));
+            }
+            [Token {tok: Tok::Float(_), ..}] => Some(TargetType::Float),
+            [Token {tok: Tok::Str(_), ..}] => Some(TargetType::Str),
+            [Token {tok: Tok::Ident(name), ..}] if name == "true" || name == "false" =>
+                Some(TargetType::Bool),
+            [Token {tok: Tok::Ident(name), ..}] => {
+                if name == "self" {
+                    return Err(Diagnostic::new(ret.pos, "E_ESCAPE",
+                        "actor receiver cannot escape by return"));
+                }
+                h.params.iter().find(|p| p.name == *name)
+                    .map(|p| self.type_of(&p.type_name, p.pos))
+                    .transpose()?
+            }
+            [Token {tok: Tok::Minus, ..}, Token {tok: Tok::Int(_), ..}] =>
+                Some(TargetType::Int),
+            // A zero-argument nominal self call has a known return signature.
+            [Token {tok: Tok::Ident(owner), ..}, Token {tok: Tok::Dot, ..},
+             Token {tok: Tok::Ident(name), ..}, Token {tok: Tok::LParen, ..},
+             Token {tok: Tok::RParen, ..}] if owner == "self" && name != "handle_state" => {
+                Some(self.resolve(headers.namespace.as_deref(), &h.owner,
+                    name, 0, false, ret.pos)?.returns.clone())
+            }
+            // By-value scalar projection from a concrete actor under a
+            // critical-read lease. No reference/handle is permitted to escape.
+            [Token {tok: Tok::Ident(owner), ..}, Token {tok: Tok::Dot, ..},
+             Token {tok: Tok::Ident(access), ..}, Token {tok: Tok::LParen, ..},
+             Token {tok: Tok::Ident(critical), ..}, Token {tok: Tok::Minus, ..},
+             Token {tok: Tok::Ident(mode), ..}, Token {tok: Tok::Pipe, ..},
+             Token {tok: Tok::Ident(binder), ..}, Token {tok: Tok::Pipe, ..},
+             Token {tok: Tok::Arrow, ..}, Token {tok: Tok::Ident(value), ..},
+             Token {tok: Tok::Dot, ..}, Token {tok: Tok::Ident(field), ..},
+             Token {tok: Tok::RParen, ..}]
+              if owner == "self" && access == "handle_state" && critical == "critical"
+                  && (mode == "read" || mode == "write") && binder == value => {
+                headers.definitions.iter().find(|a| a.name == h.owner)
+                    .map(|a| scalar_field_type(a, field, ret.pos))
+                    .transpose()?
+            }
+            _ => None,
+        };
+        if let Some(actual) = &result {
+            if *actual != method.returns {
+                return Err(type_error(ret.pos, format!(
+                    "receiver '{}.{}' returns {:?}, but return expression has {:?}",
+                    h.owner, h.name, method.returns, actual)));
+            }
+        }
+        Ok(TypedBodyReturn { receiver: ret.receiver, pos: ret.pos, result })
     }
 
     fn lower_one(&self, h: &ReceiverHeader) -> Result<TypedReceiver, Diagnostic> {
@@ -385,6 +473,9 @@ impl ScalarParser<'_> {
 /// result annotations, so forward references within one file are permitted.
 pub fn lower_target_signatures(headers: &TargetHeaders)
     -> Result<TypedActorModule, Diagnostic> {
+    // Imported headers can omit source-derived state writes, reads, returns,
+    // or calls; re-derive the complete facts before any typed proof is used.
+    revalidate_receiver_facts(headers)?;
     let mut module = TypedActorModule {
         namespace: headers.namespace.clone(),
         actors: headers.actors.iter().map(|name| TypedActor {
@@ -394,6 +485,10 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         }).collect(),
         receivers: Vec::with_capacity(headers.receivers.len()),
         state_uses: Vec::with_capacity(headers.state_uses.len()),
+        body_returns: Vec::with_capacity(headers.receiver_returns.len()),
+        receiver_flows: Vec::with_capacity(headers.receiver_bodies.len()),
+        receiver_borrows: Vec::with_capacity(headers.receiver_bodies.len()),
+        receiver_cleanup: Vec::with_capacity(headers.receiver_bodies.len()),
     };
     for definition in &headers.definitions {
         if !headers.actors.contains(&definition.name) {
@@ -410,12 +505,52 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     for assignment in &headers.state_assignments {
         module.check_scalar_assignment(headers, assignment)?;
     }
+    for ret in &headers.receiver_returns {
+        module.body_returns.push(module.check_receiver_return(headers, ret)?);
+    }
     if headers.receiver_effects.len() != module.receivers.len() {
         return Err(type_error(Pos::default(),
             "missing receiver effect facts; typed lowering requires full body preflight"));
     }
     for (receiver, direct) in module.receivers.iter_mut().zip(&headers.receiver_effects) {
         receiver.effects = direct.clone();
+    }
+    // Known argument types are checked even when the caller's body cannot
+    // yet be lowered. Unknown expressions explicitly preserve an unknown
+    // effect obligation rather than silently counting as safe.
+    let unknown_args = check_receiver_arguments(headers, &module)?;
+    for (receiver, unknown) in module.receivers.iter_mut().zip(unknown_args) {
+        receiver.effects.unproved_call |= unknown;
+    }
+    // Imported TargetHeaders may be forged or truncated. Every receiver
+    // method must have exactly one complete body, in nominal declaration
+    // order. A missing body is NOT evidence of a lease-free receiver.
+    if headers.receiver_bodies.len() != module.receivers.len() {
+        return Err(Diagnostic::new(Pos::default(),"E_SEALED",
+            "missing receiver body prevents validating state-lease cleanup"));
+    }
+    for (index, body) in headers.receiver_bodies.iter().enumerate() {
+        if body.receiver != index {
+            return Err(Diagnostic::new(
+                headers.receivers[index].pos,"E_SEALED",
+                "receiver body index mismatch prevents cleanup validation"));
+        }
+        module.receiver_flows.push(analyze_receiver_body(headers, &module, body)?);
+        module.receiver_borrows.push(check_receiver_borrows(&module, body)?);
+        let cleanup = plan_receiver_cleanup(body)?;
+        // Independently cross-check syntax effect facts against the actual
+        // source-located lease regions. Calls' *transitive* state effects
+        // are deliberately excluded: only direct callback acquisitions count.
+        let direct = &headers.receiver_effects[index];
+        let has_lease = !cleanup.leases.is_empty();
+        let has_write_lease = cleanup.leases.iter().any(|lease|
+            matches!(lease.mode,crate::target_cleanup::StateLeaseMode::ExclusiveWrite));
+        if direct.reads_state != has_lease || direct.writes_state != has_write_lease {
+            return Err(Diagnostic::new(
+                headers.receivers[index].pos,"E_SEALED",
+                "state-effect facts disagree with required lease cleanup regions"));
+        }
+        module.receiver_cleanup.push(cleanup);
     }
     // Bounded monotone fixed point: each effect bit can transition only from
     // false to true. Recursive calls are handled without unbounded DFS.

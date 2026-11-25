@@ -51,7 +51,7 @@ fn parameters_and_actor_capabilities_have_nominal_types() {
         declare actor Foo2;
         pub mtd (mut self: Foo1) combine(
             ActorRef<Foo2> peer, int count, string label
-        ): ActorRef<Foo1> { return peer; }").unwrap();
+        ): ActorRef<Foo2> { return peer; }").unwrap();
     assert_eq!(m.receivers.len(),1);
     let f=&m.receivers[0];
     assert_eq!(f.actor,0);
@@ -61,7 +61,7 @@ fn parameters_and_actor_capabilities_have_nominal_types() {
     assert_eq!(f.params[0].name,"peer");
     assert_eq!(f.params[1].ty,TargetType::Int);
     assert_eq!(f.params[2].ty,TargetType::Str);
-    assert_eq!(f.returns,TargetType::ActorRef(0));
+    assert_eq!(f.returns,TargetType::ActorRef(1));
 }
 
 #[test]
@@ -209,11 +209,12 @@ fn typed_lowerer_revalidates_critical_lease_invariants_even_for_imported_headers
     assert!(!headers.state_uses[0].mutation);
     assert!(!headers.state_uses[0].exclusive);
     headers.state_uses[0].mutation = true;
-    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_READONLY");
+    // A forged source fact fails integrity revalidation before type checking.
+    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_SEALED");
     headers.state_uses[0].mutation = false;
     headers.state_uses[0].exclusive = true;
     headers.receivers[0].mutable = false;
-    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_MUTABILITY");
+    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_SEALED");
 }
 
 #[test]
@@ -420,4 +421,727 @@ fn state_projection_address_taking_is_forbidden_under_both_leases() {
         }}");
         rejects(&source, "E_BORROW");
     }
+}
+
+#[test]
+fn typed_receiver_returns_are_nominal_and_never_claim_executable_lowering() {
+    let src = r#"
+use namespace workers;
+declare actor Foo1;
+declare actor Foo2;
+define actor Foo1 as let int count = 1; end
+define actor Foo2 as let bool ready = true; end
+mtd (Foo1 self) value(): int { return 10; }
+mtd (Foo1 self) forwarded(): int { return self.value(); }
+mtd (Foo1 self) load(): int {
+    return self.handle_state(critical-read |s| -> s.count);
+}
+mtd (Foo2 self) value(): bool { return true; }
+mtd (Foo2 self) load(): bool {
+    return self.handle_state(critical-read |s| -> s.ready);
+}
+"#;
+    let m = typed(src).unwrap();
+    assert_eq!(m.body_returns.len(), 5);
+    for return_fact in &m.body_returns {
+        assert!(return_fact.result.is_some(), "simple return should have a typed fact");
+    }
+    assert_eq!(m.body_returns[0].result,Some(TargetType::Int));
+    assert_eq!(m.body_returns[1].result,Some(TargetType::Int));
+    assert_eq!(m.body_returns[2].result,Some(TargetType::Int));
+    assert_eq!(m.body_returns[3].result,Some(TargetType::Bool));
+    assert_eq!(m.body_returns[4].result,Some(TargetType::Bool));
+    assert!(m.receivers.iter().all(|r| !r.body_lowered),
+        "partial typed body IR is not executable receiver lowering");
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn known_mismatched_receiver_returns_reject_before_wasm_emission() {
+    for source in [
+        "declare actor Foo; mtd (Foo self) value(): int { return true; }",
+        "declare actor Foo; mtd (Foo self) value(): bool { return 123; }",
+        "declare actor Foo; mtd (Foo self) value(): void { return 123; }",
+        "declare actor Foo; mtd (Foo self) value(): int { return; }",
+        "declare actor Foo; mtd (Foo self) value(bool flag): int { return flag; }",
+        "declare actor Foo; mtd (Foo self) one(): bool { return true; }
+         mtd (Foo self) two(): int { return self.one(); }",
+        "declare actor Foo; declare actor Other;
+         mtd (Foo self) other(ActorRef<Other> peer): ActorRef<Foo> { return peer; }",
+        "declare actor Foo; define actor Foo as let int count = 1; end
+         mtd (Foo self) value(): bool {
+             return self.handle_state(critical-read |s| -> s.count);
+         }",
+    ] {
+        rejects(source,"E_TYPE");
+    }
+}
+
+#[test]
+fn unknown_return_expressions_remain_unproved_not_executable() {
+    let source = "declare actor Foo;
+        mtd (Foo self) complex(int n): int { return n + 1; }";
+    let m=typed(source).unwrap();
+    assert_eq!(m.body_returns.len(),1);
+    assert_eq!(m.body_returns[0].result,None);
+    assert!(!m.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn receiver_cfg_proves_all_branches_return_and_preserves_aot_gate() {
+    let source = r#"
+use namespace workers;
+declare actor Alpha;
+declare actor Beta;
+mtd (Alpha self) choice(bool flag): int {
+    if flag {
+        return 10;
+    } else {
+        return 20;
+    }
+}
+mtd (Beta self) choice(bool flag): bool {
+    if !flag { return true; } else { return false; }
+}
+"#;
+    let m=typed(source).unwrap();
+    assert_eq!(m.receiver_flows.len(),2);
+    for flow in &m.receiver_flows {
+        assert_eq!(flow.branches,1);
+        assert_eq!(flow.returns,2);
+        assert!(flow.fully_structured);
+        assert_eq!(flow.normal_fallthrough,Some(false));
+    }
+    assert!(m.receivers.iter().all(|r| !r.body_lowered));
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn receiver_cfg_rejects_partially_returning_branches() {
+    for source in [
+        "declare actor Foo;
+         mtd (Foo self) choose(bool flag): int {
+             if flag { return 1; } else {}
+         }",
+        "declare actor Foo;
+         mtd (Foo self) choose(bool flag): int {
+             if flag { return 1; }
+         }",
+        "declare actor Foo;
+         mtd (Foo self) choose(bool flag): int {
+             if flag { return 1; } else if false { return 2; }
+         }",
+    ] {
+        rejects(source,"E_MISSING_RETURN");
+    }
+    rejects("declare actor Foo;
+        mtd (Foo self) choose(int n): int {
+            if n { return 1; } else { return 2; }
+        }", "E_TYPE");
+}
+
+#[test]
+fn receiver_cfg_does_not_invent_proofs_for_unlowered_loops() {
+    let source="declare actor Foo;
+        mtd (Foo self) choose(bool flag): int {
+            while flag { return 1; }
+        }";
+    let m=typed(source).unwrap();
+    assert_eq!(m.receiver_flows[0].normal_fallthrough,None);
+    assert!(!m.receiver_flows[0].fully_structured);
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn receiver_nominal_argument_types_are_checked_for_known_scalars() {
+    let base="declare actor Foo;
+        mtd (Foo self) use_value(int n,bool enabled): void {}
+        mtd (Foo self) caller(int n,bool enabled): void {";
+    for args in ["true,enabled", "n,12", "enabled,n"] {
+        rejects(&format!("{base} self.use_value({args}); }}"),"E_TYPE");
+    }
+    let valid=format!("{base} self.use_value(n,(enabled)); }}");
+    let m=typed(&valid).unwrap();
+    assert!(!m.receivers[1].effects.unproved_call);
+    assert_eq!(atto_compiler::compile(&valid).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn actor_ref_call_arguments_keep_nominal_actor_identity() {
+    let base=r#"
+use namespace workers;
+declare actor Foo1;
+declare actor Foo2;
+mtd (Foo1 self) send_to(ActorRef<Foo1> peer): void {}
+"#;
+    let invalid=format!("{base}
+        mtd (Foo1 self) caller(ActorRef<Foo2> peer): void {{
+            self.send_to(peer);
+        }}");
+    rejects(&invalid,"E_TYPE");
+    let valid=format!("{base}
+        mtd (Foo1 self) caller(ActorRef<Foo1> peer): void {{
+            self.send_to(peer);
+        }}");
+    assert!(typed(&valid).is_ok());
+}
+
+#[test]
+fn unknown_call_arguments_remain_unproved_and_not_executable() {
+    let source="declare actor Foo;
+        mtd (Foo self) use_value(int n): void {}
+        mtd (Foo self) caller(): void { self.use_value(calculate()); }";
+    let m=typed(source).unwrap();
+    assert!(m.receivers[1].effects.unproved_call);
+    assert_eq!(m.receiver_flows[1].normal_fallthrough,None);
+    assert!(m.receivers.iter().all(|r| !r.body_lowered));
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn actor_ownership_rejects_double_take_and_use_after_move() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) consume(ActorRef<Foo> peer): void {}
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    for body in [
+        "rt take peer; rt take peer;",
+        "rt take peer; self.consume(peer);",
+        "val owned = rt take peer; self.consume(peer);",
+        "rt take peer; val previous = peer;",
+    ] {
+        rejects(&format!("{prefix} {body} }}"),"E_MOVE");
+    }
+}
+
+#[test]
+fn actor_ownership_joins_branch_moves_and_respects_abrupt_exit_paths() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) consume(ActorRef<Foo> peer): void {}
+        mtd (Foo self) run(bool flag,ActorRef<Foo> peer): void {";
+    rejects(&format!("{prefix}
+        if flag {{ rt take peer; }} else {{}}
+        self.consume(peer); }}"),"E_MOVE");
+    let safe=format!("{prefix}
+        if flag {{ rt take peer; return; }} else {{}}
+        self.consume(peer); }}");
+    let m=typed(&safe).expect("a terminating moved branch cannot poison a live path");
+    assert_eq!(m.receiver_borrows[1].branch_joins,1);
+    assert_eq!(m.receiver_borrows[1].moves,1);
+    assert!(!m.receivers[1].body_lowered);
+    assert_eq!(atto_compiler::compile(&safe).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn actor_ownership_denies_shared_mutable_conflicts_and_moves_under_loan() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    rejects(&format!("{prefix} val a = rt borrow peer; rt take peer; }}"),"E_BORROW");
+    rejects(&format!("{prefix}
+        let value = 10;
+        val read_alias = rt borrow value;
+        val write_alias = rt borrow mut value; }}"),"E_BORROW");
+    rejects(&format!("{prefix}
+        let value = 10;
+        val write_alias = rt borrow mut value;
+        val read_alias = rt borrow value; }}"),"E_BORROW");
+    rejects(&format!("{prefix}
+        let value = 10;
+        val write_alias = rt borrow mut value;
+        val copy_value = value; }}"),"E_BORROW");
+    rejects(&format!("{prefix}
+        val write_alias = rt borrow mut peer; }}"),"E_MUTABILITY");
+}
+
+#[test]
+fn actor_ownership_denies_suspend_unwind_and_unproved_calls_while_borrowed() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) consume(ActorRef<Foo> peer): void {}
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    for body in [
+        "val ref_one = rt borrow peer; await pending();",
+        "val ref_one = rt borrow peer; self.consume(peer);",
+        "val ref_one = rt borrow peer; panic(Error(\"bad\"));",
+        "val ref_one = rt borrow peer; throw Error(\"bad\");",
+        "val ref_one = rt borrow peer; return;",
+    ] {
+        rejects(&format!("{prefix} {body} }}"),"E_BORROW");
+    }
+}
+
+#[test]
+fn actor_ownership_prevents_return_and_call_escape_of_borrow_alias() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) consume(ActorRef<Foo> peer): void {}
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    rejects(&format!("{prefix}
+        val borrowed = rt borrow peer; self.consume(borrowed); }}"),"E_ESCAPE");
+    rejects(&format!("{prefix}
+        val borrowed = rt borrow peer; return borrowed; }}"),"E_ESCAPE");
+}
+
+#[test]
+fn actor_ownership_releases_lexical_borrow_on_inner_scope_exit() {
+    let source="declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {
+            { val alias = rt borrow peer; }
+            rt take peer;
+        }";
+    let m=typed(source).expect("inner scope exit releases the lexical loan");
+    let facts=&m.receiver_borrows[0];
+    assert_eq!(facts.loans,1);
+    assert_eq!(facts.moves,1);
+    assert_eq!(facts.lexical_loan_releases,1);
+    assert_eq!(facts.branch_joins,0);
+    assert!(facts.ownership_preflight_complete,
+        "the bounded ownership subset proves lexical release, not executable code");
+    assert!(!m.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn actor_ownership_opaque_loops_never_contribute_an_executable_proof() {
+    let src="declare actor Foo;
+        mtd (Foo self) run(bool flag,ActorRef<Foo> peer): void {
+            while flag { rt take peer; }
+        }";
+    let m=typed(src).expect("unsupported flow is explicitly unproved");
+    assert!(!m.receiver_borrows[0].ownership_preflight_complete);
+    assert!(!m.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn actor_borrow_shared_loan_does_not_authorize_source_mutation() {
+    let prelude = "declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    for change in [
+        "peer = spawn Foo();",
+        "peer += 1;",
+        "peer++;",
+        "++peer;",
+    ] {
+        rejects(&format!("{prelude}
+            val borrowed = rt borrow peer;
+            {change}
+        }}"), "E_BORROW");
+    }
+}
+
+#[test]
+fn receiver_ownership_conditions_never_hide_implicit_move_or_borrow() {
+    let prelude = "declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    for condition in ["rt take peer", "rt borrow peer", "rt borrow mut peer"] {
+        rejects(&format!("{prelude}
+            if {condition} {{ }} else {{ }}
+        }}"), "E_BORROW");
+    }
+}
+
+#[test]
+fn opaque_receiver_conditions_are_not_misreported_as_complete_ownership_proofs() {
+    let src="declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {
+            if compute(peer) { } else { }
+        }";
+    let module=typed(src).expect("unproved call is retained as an explicit obligation");
+    assert!(!module.receiver_borrows[0].ownership_preflight_complete);
+    assert!(!module.receiver_flows[0].fully_structured);
+    assert!(module.receivers[0].effects.unproved_call);
+    assert!(!module.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn pure_bool_conditions_preserve_bounded_move_joins() {
+    let good="declare actor Foo;
+        mtd (Foo self) run(bool flag,ActorRef<Foo> peer): void {
+            if (!flag) { val p = rt borrow peer; } else {}
+            rt take peer;
+        }";
+    let m=typed(good).expect("branch-scoped shared borrow is released before taking");
+    assert!(m.receiver_borrows[0].ownership_preflight_complete);
+    assert_eq!(m.receiver_borrows[0].moves,1);
+    assert_eq!(m.receiver_borrows[0].branch_joins,1);
+    assert!(!m.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(good).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn shared_borrows_remain_compatible_until_lexical_scope_end() {
+    let src="declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {
+            { val first = rt borrow peer; val second = rt borrow peer; }
+            rt take peer;
+        }";
+    let m=typed(src).expect("two shared borrows can coexist");
+    assert_eq!(m.receiver_borrows[0].loans,2);
+    assert_eq!(m.receiver_borrows[0].lexical_loan_releases,2);
+    assert!(m.receiver_borrows[0].ownership_preflight_complete);
+    assert!(!m.receivers[0].body_lowered);
+}
+#[test]
+fn receiver_exit_edges_track_all_proved_branches_without_runtime_claims() {
+    use atto_compiler::target_borrow::BorrowExitKind;
+    let src="declare actor Alpha;
+        mtd (Alpha self) choose(bool flag): int {
+            if flag { return 10; } else { return 20; }
+        }";
+    let m=typed(src).unwrap();
+    let facts=&m.receiver_borrows[0];
+    assert!(facts.ownership_preflight_complete);
+    assert!(!facts.normal_fallthrough);
+    assert_eq!(facts.exit_edges.len(),2);
+    for edge in &facts.exit_edges {
+        assert_eq!(edge.kind,BorrowExitKind::Return);
+        assert_eq!(edge.active_loans,0);
+        assert!(edge.lexical_exit_checked);
+        assert!(!edge.runtime_cleanup_proven);
+    }
+    assert!(!m.receivers[0].body_lowered);
+}
+
+#[test]
+fn receiver_borrow_region_close_is_explicit_and_not_runtime_cleanup() {
+    use atto_compiler::target_borrow::BorrowExitKind;
+    let src="declare actor Alpha;
+        mtd (Alpha self) run(ActorRef<Alpha> peer): void {
+            { val left = rt borrow peer; val right = rt borrow peer; }
+            rt take peer;
+        }";
+    let m=typed(src).unwrap();
+    let facts=&m.receiver_borrows[0];
+    assert_eq!(facts.loans,2);
+    assert_eq!(facts.closed_regions.len(),2);
+    assert_ne!(facts.closed_regions[0].region,facts.closed_regions[1].region);
+    assert!(facts.closed_regions.iter().all(|r|r.source=="peer" && r.scope==1));
+    assert_eq!(facts.exit_edges.len(),1);
+    assert_eq!(facts.exit_edges[0].kind,BorrowExitKind::Fallthrough);
+    assert!(!facts.exit_edges[0].runtime_cleanup_proven);
+    assert!(facts.ownership_preflight_complete);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn receiver_exit_records_unproved_unwind_and_cancel_obligations() {
+    use atto_compiler::target_borrow::BorrowExitKind;
+    let src="declare actor A;
+        mtd (A self) fail_now(): void { panic(Error(\"stop\")); }
+        mtd (A self) wait_for_result(): void { await pending(); }";
+    let m=typed(src).unwrap();
+    assert_eq!(m.receiver_borrows.len(),2);
+    assert!(m.receiver_borrows[0].exit_edges.iter()
+        .any(|edge|edge.kind==BorrowExitKind::Panic
+             && !edge.runtime_cleanup_proven));
+    assert!(!m.receiver_borrows[0].ownership_preflight_complete);
+    assert!(m.receiver_borrows[1].exit_edges.iter()
+        .any(|edge|edge.kind==BorrowExitKind::Suspend
+             && !edge.runtime_cleanup_proven));
+    assert!(m.receiver_borrows[1].exit_edges.iter()
+        .any(|edge|edge.kind==BorrowExitKind::Cancel
+             && !edge.runtime_cleanup_proven));
+    assert!(!m.receiver_borrows[1].ownership_preflight_complete);
+    assert!(m.receivers.iter().all(|r|!r.body_lowered));
+}
+
+#[test]
+fn arithmetic_possible_panic_cannot_cross_active_lexical_borrow() {
+    let prefix="declare actor A;
+        mtd (A self) run(ActorRef<A> peer): void {
+            val lease = rt borrow peer;";
+    for expr in ["1+2;","10-3;","10*3;","10/3;"] {
+        rejects(&format!("{prefix} {expr} }}"),"E_BORROW");
+    }
+    let safe="declare actor A;
+        mtd (A self) run(ActorRef<A> peer): void {
+            { val lease = rt borrow peer; }
+            1+2;
+        }";
+    let m=typed(safe).unwrap();
+    assert!(!m.receiver_borrows[0].ownership_preflight_complete);
+    assert!(m.receiver_borrows[0].exit_edges.iter()
+        .all(|edge|!edge.runtime_cleanup_proven));
+}
+
+#[test]
+fn unproved_return_expression_never_certifies_complete_ownership() {
+    let src="declare actor A;
+        mtd (A self) read(): int { return risky(); }";
+    let m=typed(src).unwrap();
+    assert!(!m.receiver_borrows[0].ownership_preflight_complete);
+    assert_eq!(m.receiver_borrows[0].exit_edges.len(),1);
+    assert!(!m.receiver_borrows[0].exit_edges[0].runtime_cleanup_proven);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn state_cleanup_records_read_lease_normal_edge_without_backend_proof() {
+    use atto_compiler::target_cleanup::{
+        LeaseCleanupExit,StateLeaseMode,require_backend_cleanup_proof
+    };
+    let src=r#"
+declare actor Counter;
+define actor Counter as val int count = 4; end
+mtd (Counter self) read_count(): int {
+    return self.handle_state(critical-read |s| -> s.count);
+}
+"#;
+    let typed_module=typed(src).unwrap();
+    let plan=&typed_module.receiver_cleanup[0];
+    assert_eq!(plan.leases.len(),1);
+    let region=&plan.leases[0];
+    assert_eq!(region.receiver,0);
+    assert_eq!(region.lease,0);
+    assert_eq!(region.mode,StateLeaseMode::SharedRead);
+    assert!(!region.checked_arithmetic);
+    assert_eq!(region.cleanup.len(),1);
+    assert_eq!(region.cleanup[0].exit,LeaseCleanupExit::Normal);
+    assert!(!region.cleanup[0].backend_release_proven);
+    assert!(!plan.backend_cleanup_proven);
+    assert_eq!(require_backend_cleanup_proof(plan).unwrap_err().code,"E_UNSUPPORTED");
+    assert!(!typed_module.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn state_cleanup_write_lease_requires_distinct_panic_release_obligation() {
+    use atto_compiler::target_cleanup::{
+        LeaseCleanupExit,StateLeaseMode,require_backend_cleanup_proof
+    };
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) increment(int delta): void {
+    self.handle_state(critical-write |s| -> {
+        s.count = s.count + delta;
+    });
+}
+"#;
+    let typed_module=typed(src).unwrap();
+    let region=&typed_module.receiver_cleanup[0].leases[0];
+    assert_eq!(region.mode,StateLeaseMode::ExclusiveWrite);
+    assert!(region.checked_arithmetic);
+    assert_eq!(region.cleanup.len(),2);
+    assert_eq!(region.cleanup[0].exit,LeaseCleanupExit::Normal);
+    assert_eq!(region.cleanup[1].exit,LeaseCleanupExit::CheckedPanic);
+    assert!(region.cleanup.iter().all(|edge|!edge.backend_release_proven));
+    assert_ne!(region.cleanup[0].pos,region.cleanup[1].pos);
+    assert_eq!(require_backend_cleanup_proof(&typed_module.receiver_cleanup[0])
+        .unwrap_err().code,"E_UNSUPPORTED");
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn multiple_state_lease_callbacks_are_separate_cleanup_regions() {
+    use atto_compiler::target_cleanup::StateLeaseMode;
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) twice(): void {
+    self.handle_state(critical-read |s| -> s.count);
+    self.handle_state(critical-write |t| -> { t.count = 1; });
+}
+"#;
+    let m=typed(src).unwrap();
+    let p=&m.receiver_cleanup[0];
+    assert_eq!(p.leases.len(),2);
+    assert_eq!(p.leases[0].lease,0);
+    assert_eq!(p.leases[1].lease,1);
+    assert_eq!(p.leases[0].mode,StateLeaseMode::SharedRead);
+    assert_eq!(p.leases[1].mode,StateLeaseMode::ExclusiveWrite);
+    assert_eq!(p.leases[0].cleanup.len(),1);
+    assert_eq!(p.leases[1].cleanup.len(),1);
+    assert!(p.leases[0].normal_end_pos != p.leases[1].normal_end_pos);
+    assert!(!m.receivers[0].body_lowered);
+}
+
+#[test]
+fn branch_and_loop_inside_critical_callback_require_executable_cleanup_proof() {
+    let prefix=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> {
+"#;
+    for callback in [
+        "if true { s.count = 1; } else { s.count = 2; }",
+        "while true { s.count = s.count + 1; }",
+        "for i in values { s.count = 1; }",
+        "loop { s.count = s.count + 1; }",
+        "match 1 over 1 -> { s.count = 1; } end",
+    ] {
+        let source=format!("{prefix} {callback} }}); }}");
+        rejects(&source,"E_BORROW");
+    }
+}
+
+#[test]
+fn actor_state_cleanup_contract_is_distinct_from_lexical_local_borrow() {
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(ActorRef<Counter> peer): void {
+    { val alias = rt borrow peer; }
+    self.handle_state(critical-write |s| -> { s.count = 1; });
+}
+"#;
+    let m=typed(src).unwrap();
+    assert_eq!(m.receiver_borrows[0].loans,1);
+    assert_eq!(m.receiver_borrows[0].closed_regions.len(),1);
+    assert_eq!(m.receiver_cleanup[0].leases.len(),1);
+    assert!(m.receiver_cleanup[0].leases[0].cleanup
+        .iter().all(|edge|!edge.backend_release_proven));
+    assert!(!m.receivers[0].body_lowered);
+}
+
+#[test]
+fn lease_free_receiver_has_no_state_unlock_obligation_but_cannot_emit() {
+    use atto_compiler::target_cleanup::require_backend_cleanup_proof;
+    let src="declare actor Foo;
+        mtd (Foo self) identity(int n): int { return n; }";
+    let m=typed(src).unwrap();
+    assert_eq!(m.receiver_cleanup[0].leases.len(),0);
+    assert!(require_backend_cleanup_proof(&m.receiver_cleanup[0]).is_ok());
+    assert!(!m.receivers[0].body_lowered,
+        "vacuous lock-cleanup proof cannot authorize receiver codegen");
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn forged_frontend_flags_can_never_authorize_actor_lease_cleanup() {
+    use atto_compiler::target_cleanup::require_backend_cleanup_proof;
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> { s.count = s.count + 1; });
+}
+"#;
+    let mut plan=typed(src).unwrap().receiver_cleanup.remove(0);
+    assert_eq!(plan.leases.len(),1);
+    assert_eq!(plan.leases[0].cleanup.len(),2);
+    // These are externally mutable facts, NOT actual generated release code.
+    plan.backend_cleanup_proven=true;
+    for edge in &mut plan.leases[0].cleanup {
+        edge.backend_release_proven=true;
+    }
+    assert_eq!(require_backend_cleanup_proof(&plan).unwrap_err().code,"E_UNSUPPORTED");
+    plan.leases[0].cleanup.clear();
+    assert_eq!(require_backend_cleanup_proof(&plan).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn imported_receiver_bodies_cannot_omit_or_duplicate_cleanup_requirements() {
+    let source="declare actor Counter;
+        mtd (Counter self) first(): void { }
+        mtd (Counter self) second(): void { }";
+    let original=parse_target_declarations(&lex(source).unwrap()).unwrap();
+    assert_eq!(original.receiver_bodies.len(),2);
+    let mut missing=original.clone();
+    missing.receiver_bodies.pop();
+    assert_eq!(lower_target_signatures(&missing).unwrap_err().code,"E_SEALED");
+    let mut swapped=original.clone();
+    swapped.receiver_bodies.swap(0,1);
+    assert_eq!(lower_target_signatures(&swapped).unwrap_err().code,"E_SEALED");
+    let mut duplicated=original;
+    duplicated.receiver_bodies[1].receiver=0;
+    assert_eq!(lower_target_signatures(&duplicated).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_state_effects_must_match_actual_lease_regions() {
+    let source=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) write_now(): void {
+    self.handle_state(critical-write |s| -> { s.count = 1; });
+}
+"#;
+    let original=parse_target_declarations(&lex(source).unwrap()).unwrap();
+    assert!(original.receiver_effects[0].reads_state);
+    assert!(original.receiver_effects[0].writes_state);
+    let mut forged=original.clone();
+    forged.receiver_effects[0].reads_state=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.receiver_effects[0].writes_state=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn raw_cleanup_planning_must_deny_nested_actor_acquisitions() {
+    use atto_compiler::target_cleanup::plan_receiver_cleanup;
+    use atto_compiler::target_syntax::ReceiverBodyTokens;
+    let fake=ReceiverBodyTokens{
+        receiver:0,
+        tokens:lex("{ self.handle_state(critical-write |s| -> { self.handle_state(critical-read |t| -> t.count); }); }").unwrap(),
+    };
+    assert_eq!(plan_receiver_cleanup(&fake).unwrap_err().code,"E_BORROW");
+}
+
+
+#[test]
+fn imported_source_facts_cannot_hide_invalid_state_rhs_or_reads() {
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> { s.count = true; });
+}
+"#;
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert!(!original.state_uses.is_empty());
+    assert_eq!(original.state_assignments.len(),1);
+    // The complete source has an actual bool-to-int error.
+    assert_eq!(lower_target_signatures(&original).unwrap_err().code,"E_TYPE");
+    let mut dropped=original.clone();
+    dropped.state_assignments.clear();
+    assert_eq!(lower_target_signatures(&dropped).unwrap_err().code,"E_SEALED");
+    let mut dropped=original.clone();
+    dropped.state_uses.clear();
+    assert_eq!(lower_target_signatures(&dropped).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.state_assignments[0].rhs=lex("1").unwrap().into_iter()
+        .filter(|tok| tok.tok != atto_compiler::lexer::Tok::Eof).collect();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_source_facts_cannot_hide_invalid_returns_or_nominal_calls() {
+    let src="declare actor Worker; mtd (Worker self) result(): int { return true; }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert_eq!(original.receiver_returns.len(),1);
+    assert_eq!(lower_target_signatures(&original).unwrap_err().code,"E_TYPE");
+    let mut forged=original;
+    forged.receiver_returns.clear();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+
+    let src="declare actor Worker;
+        mtd (Worker self) helper(): void {}
+        mtd (Worker self) caller(): void { self.helper(); }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert_eq!(original.receiver_calls.len(),1);
+    assert!(lower_target_signatures(&original).is_ok());
+    let mut forged=original.clone();
+    forged.receiver_calls.clear();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.receiver_calls[0].arguments.push(vec![]);
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_source_facts_cannot_clear_panic_effects_or_splice_receiver_bodies() {
+    let src="declare actor Worker; mtd (Worker self) arithmetic(): void { 1 + 2; }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert!(original.receiver_effects[0].may_panic);
+    let mut forged=original.clone();
+    forged.receiver_effects[0].may_panic=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    let extra=lex("{ }").unwrap();
+    forged.receiver_bodies[0].tokens.extend(extra.into_iter()
+        .filter(|tok| tok.tok != atto_compiler::lexer::Tok::Eof));
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
 }
