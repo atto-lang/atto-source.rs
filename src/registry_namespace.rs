@@ -215,3 +215,206 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
     let views: Vec<_> = packages.iter().map(|p| p.view()).collect();
     scope.namespace_aliases(&pairs,&views)
 }
+
+
+/// Compile the bounded frozen-registry direct-function guest profile.
+/// Only whole registry package imports, typed namespace selections and
+/// source aliases are admitted. All source bytes are owned by verified
+/// snapshots. No filesystem/network lookup, implicit fallback, or runtime
+/// namespace objects are possible. The ordinary compiler still handles
+/// type checking, private module lowering and Wasm emission.
+pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<u8>> {
+    use crate::lexer::{self, Tok, Token};
+    use crate::import_v2::{self, Source};
+    fn word(t: Option<&Token>, value: &str) -> bool {
+        matches!(t.map(|t| &t.tok),Some(Tok::Ident(s)) if s==value)
+    }
+    fn token(tok: Tok, pos: Pos) -> Token { Token { tok, pos } }
+    fn id(name: &str, pos: Pos) -> Token { token(Tok::Ident(name.into()),pos) }
+    fn at(mut d: Diagnostic, pos: Pos) -> Diagnostic { if d.pos.line == 0 { d.pos=pos; } d }
+    fn source_name(t: Option<&Token>) -> R<&str> {
+        match t.map(|x| &x.tok) {
+            Some(Tok::Str(s)) => Ok(s),
+            _ => Err(err("E_SYNTAX","registry source requires a quoted package name")),
+        }
+    }
+    fn path_tokens(t: &[Token]) -> R<String> {
+        if t.is_empty() || t.len()>15 || t.len()%2==0 {
+            return Err(err("E_SYNTAX","invalid qualified registry path"));
+        }
+        let mut parts=Vec::new();
+        for (i,x) in t.iter().enumerate() {
+            match (&x.tok,i%2) {
+                (Tok::Ident(s),0) => parts.push(s.as_str()),
+                (Tok::Dot,1) => {},
+                _ => return Err(err("E_SYNTAX","invalid qualified registry path")),
+            }
+        }
+        let path=parts.join(".");
+        if !namespace(&path) { return Err(err("E_IMPORT_PATH","invalid registry binding path")); }
+        Ok(path)
+    }
+    if source.len()>crate::SOURCE_CAP || packages.is_empty() || packages.len()>16 {
+        return Err(err("E_SOURCE_LIMIT","registry guest source or package budget exceeded"));
+    }
+    let mut available=BTreeMap::new();
+    for &p in packages {
+        if available.insert(p.name.as_str(),p).is_some() {
+            return Err(err("E_AMBIGUOUS","multiple pinned snapshots for one registry name"));
+        }
+    }
+    let tokens=lexer::lex(source)?;
+    for t in &tokens {
+        if matches!(&t.tok,Tok::Ident(s) if s.starts_with("__atto_")) {
+            return Err(Diagnostic::new(t.pos,"E_RESERVED","reserved compiler-generated identifier"));
+        }
+    }
+    let mut scope=Scope::new();
+    let mut admitted=BTreeMap::new();
+    let mut i=0;
+    // This intentionally narrow guest API does not infer a package-relative
+    // file namespace; callers must use the single-file root profile.
+    while word(tokens.get(i),"import") {
+        let pos=tokens[i].pos;
+        let start=i+1;
+        let mut end=start;
+        while tokens.get(end).is_some_and(|t| !matches!(t.tok,Tok::Semi|Tok::Eof)) { end+=1; }
+        if tokens.get(end).is_none_or(|t|t.tok!=Tok::Semi) {
+            return Err(Diagnostic::new(pos,"E_SYNTAX","unterminated registry import"));
+        }
+        if word(tokens.get(start),"pkg") {
+            let name=source_name(tokens.get(start+1)).map_err(|d|at(d,pos))?;
+            let p=*available.get(name).ok_or_else(||Diagnostic::new(pos,"E_UNBOUND","package is not in authenticated snapshot set"))?;
+            let alias=if start+2==end { None } else {
+                if !word(tokens.get(start+2),"as") || start+3>=end {
+                    return Err(Diagnostic::new(pos,"E_SYNTAX","expected package as qualified.alias"));
+                }
+                Some(path_tokens(&tokens[start+3..end]).map_err(|d|at(d,pos))?)
+            };
+            p.bind_package(&mut scope,alias.as_deref()).map_err(|d|at(d,pos))?;
+            admitted.insert(p.name.as_str(),p);
+        } else if import_v2::is_mixed(&tokens,start) {
+            let (parsed,next)=import_v2::parse_mixed(&tokens,start)?;
+            if next!=end+1 { return Err(Diagnostic::new(pos,"E_SYNTAX","invalid import extent")); }
+            let Source::Package(name)=&parsed.source else {
+                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest requires explicit pkg domain"));
+            };
+            let p=*available.get(name.as_str()).ok_or_else(||Diagnostic::new(pos,"E_UNBOUND","package is not in authenticated snapshot set"))?;
+            if parsed.selectors.iter().any(|s| !matches!(s.kind,Kind::Fnc|Kind::Namespace)) {
+                return Err(Diagnostic::new(pos,"E_UNSUPPORTED","registry guest admits function and namespace selectors only"));
+            }
+            scope.bind_mixed(p.view(),&parsed).map_err(|d|at(d,pos))?;
+            admitted.insert(p.name.as_str(),p);
+        } else if word(tokens.get(start),"namespace") {
+            let from=(start+1..end).find(|&j|word(tokens.get(j),"from"))
+                .ok_or_else(||Diagnostic::new(pos,"E_SYNTAX","expected namespace from pkg"))?;
+            if !word(tokens.get(from+1),"pkg") || from+3!=end {
+                return Err(Diagnostic::new(pos,"E_SYNTAX","expected namespace from pkg quoted source"));
+            }
+            let name=source_name(tokens.get(from+2)).map_err(|d|at(d,pos))?;
+            let root=name.split('/').take(3).collect::<Vec<_>>().join("/");
+            let p=*available.get(root.as_str()).ok_or_else(||Diagnostic::new(pos,"E_UNBOUND","package is not in authenticated snapshot set"))?;
+            let rename=(start+1..from).find(|&j|word(tokens.get(j),"as"));
+            let selector=path_tokens(&tokens[start+1..rename.unwrap_or(from)]).map_err(|d|at(d,pos))?;
+            let binding=if let Some(j)=rename { path_tokens(&tokens[j+1..from]).map_err(|d|at(d,pos))? } else { selector.clone() };
+            p.bind_namespace(&mut scope,name,&selector,&binding,rename.is_some()).map_err(|d|at(d,pos))?;
+            admitted.insert(p.name.as_str(),p);
+        } else {
+            return Err(Diagnostic::new(pos,"E_UNSUPPORTED","unsupported registry guest import clause"));
+        }
+        i=end+1;
+    }
+    if admitted.is_empty() { return Err(err("E_UNSUPPORTED","registry guest requires an authenticated package import")); }
+    let mut declarations=Vec::new();
+    while word(tokens.get(i),"define") && word(tokens.get(i+1),"alias") {
+        let (name,reference,pos,next)=crate::library::parse_alias_declaration(&tokens,i)?;
+        if declarations.len()>=256 { return Err(Diagnostic::new(pos,"E_SOURCE_LIMIT","too many aliases")); }
+        declarations.push((name,reference)); i=next;
+    }
+    let pairs:Vec<_>=declarations.iter().map(|(n,r)|(n.as_str(),r.as_str())).collect();
+    let views:Vec<_>=admitted.values().map(|p|p.view()).collect();
+    scope.namespace_aliases(&pairs,&views).map_err(|d|at(d,Pos{line:1,col:1}))?;
+
+    // Prepare deterministic private module owners for each verified source
+    // namespace. Package name order, not caller or import order, determines
+    // synthetic owner names. No synthesized names can occur in source.
+    let mut modules=BTreeMap::new();
+    let mut linked=Vec::new();
+    for p in admitted.values() {
+        for (ns,(file,body)) in &p.sources {
+            if modules.len()>=64 { return Err(err("E_SOURCE_LIMIT","too many linked registry namespaces")); }
+            let owner=format!("__atto_registry_{}",modules.len());
+            let normalized=crate::namespace::normalize(&lexer::lex(body)?,Some(Path::new(file)))?;
+            let semi=normalized.iter().position(|t|t.tok==Tok::Semi).ok_or_else(||err("E_SYNTAX","missing verified namespace header"))?;
+            let funcs=&normalized[semi+1..];
+            let (names,heads)=crate::import_link::functions(funcs)?;
+            // Before joining, typecheck the source in isolation. A synthetic
+            // entry is only for this check and never enters the linked guest.
+            // Reject references to main and qualified accesses in dependencies;
+            // no ambient root/other-package authority is admitted.
+            if funcs.iter().any(|t| t.tok==Tok::Dot || word(Some(t),"main")) {
+                return Err(err("E_UNSUPPORTED","registry dependency must be a closed direct-function unit"));
+            }
+            let mut isolated=funcs[..funcs.len()-1].to_vec();
+            isolated.extend(lexer::lex("pub fnc main(): int { return 0; }")?);
+            let parsed=crate::parser::Parser::new(isolated).parse_program()?;
+            let checked=crate::check::check(&parsed)?;
+            if !checked.imports.is_empty() { return Err(err("E_UNSUPPORTED","registry dependency cannot request ambient host imports")); }
+            let pos=normalized[0].pos;
+            linked.extend([id("define",pos),id("module",pos),id(&owner,pos),id("as",pos)]);
+            for (j,t) in funcs.iter().enumerate() {
+                if t.tok==Tok::Eof { continue; }
+                if !heads.contains(&j) && funcs.get(j+1).is_some_and(|n|n.tok==Tok::LParen) {
+                    if let Tok::Ident(s)=&t.tok {
+                        if names.contains_key(s) {
+                            linked.extend([id(&owner,t.pos),token(Tok::Dot,t.pos)]);
+                        }
+                    }
+                }
+                linked.push(t.clone());
+            }
+            linked.push(id("end",pos));
+            modules.insert((p.name.clone(),ns.clone()),owner);
+            if linked.len()>lexer::MAX_TOKENS { return Err(err("E_SOURCE_LIMIT","registry guest token budget exceeded")); }
+        }
+    }
+    // Only direct static calls can consume registry bindings. Every reference
+    // beginning with an admitted binding root must resolve to a public fnc.
+    // Unknown qualified expressions fail closed, not as ambient members.
+    while i<tokens.len() {
+        let t=&tokens[i];
+        if let Tok::Ident(name)=&t.tok {
+            if matches!(name.as_str(),"define"|"declare"|"import"|"use"|"module"|"class"|"actor"|"enum"|"external") {
+                return Err(Diagnostic::new(t.pos,"E_UNSUPPORTED","registry guest root admits direct functions only"));
+            }
+            if scope.has_root(name) {
+                if i>0 && tokens[i-1].tok==Tok::Dot {
+                    return Err(Diagnostic::new(t.pos,"E_UNSUPPORTED","registry namespace is not a runtime member"));
+                }
+                let start=i;
+                let mut end=i+1;
+                while tokens.get(end).is_some_and(|x|x.tok==Tok::Dot)
+                    && matches!(tokens.get(end+1).map(|x|&x.tok),Some(Tok::Ident(_))) { end+=2; }
+                if tokens.get(end).is_none_or(|x|x.tok!=Tok::LParen) {
+                    return Err(Diagnostic::new(t.pos,"E_UNSUPPORTED","registry binding supports direct calls only"));
+                }
+                let reference=path_tokens(&tokens[start..end]).map_err(|d|at(d,t.pos))?;
+                let resolved=scope.resolve(&reference).map_err(|d|at(d,t.pos))?;
+                let p=admitted.values().find(|p|resolved.target.origin==Origin::External(p.id.clone()))
+                    .ok_or_else(||Diagnostic::new(t.pos,"E_IMPORT_PATH","resolved origin is not admitted"))?;
+                let target=scope.resolve_export(&reference,p.view()).map_err(|d|at(d,t.pos))?;
+                if target.kind!=Kind::Fnc { return Err(Diagnostic::new(t.pos,"E_IMPORT_KIND","registry call requires exported function")); }
+                let (ns,member)=target.declaration.rsplit_once('.').ok_or_else(||err("E_INTERNAL","invalid verified function identity"))?;
+                let owner=modules.get(&(p.name.clone(),ns.to_string())).ok_or_else(||err("E_INTERNAL","verified function owner not linked"))?;
+                linked.extend([id(owner,t.pos),token(Tok::Dot,t.pos),id(member,t.pos)]);
+                i=end; continue;
+            }
+        }
+        if t.tok==Tok::Dot {
+            return Err(Diagnostic::new(t.pos,"E_UNBOUND","unbound qualified registry guest reference"));
+        }
+        linked.push(t.clone()); i+=1;
+        if linked.len()>lexer::MAX_TOKENS { return Err(err("E_SOURCE_LIMIT","registry guest token budget exceeded")); }
+    }
+    crate::compile_prelexed(linked,None)
+}
