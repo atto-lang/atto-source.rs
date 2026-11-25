@@ -119,6 +119,10 @@ pub struct Scope { bindings: Vec<Binding> }
 impl Scope {
     pub fn new() -> Self { Self::default() }
 
+    pub(crate) fn has_root(&self, name: &str) -> bool {
+        self.bindings.iter().any(|b| b.name.split('.').next() == Some(name))
+    }
+
     fn insert(&mut self, name: &str, tier: Tier, target: Target) -> R<()> {
         if !path(name) { return Err(err("E_IMPORT_PATH", "invalid static binding path")); }
         if self.bindings.len() >= LIMIT { return Err(err("E_SOURCE_LIMIT", "static binding budget exceeded")); }
