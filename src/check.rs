@@ -2650,9 +2650,10 @@ impl<'a> FnCx<'a> {
         // but are immutable after construction in this first profile.
         // Do not expose class-based mutable write-through via borrow! mut.
         if mutable && matches!(owner_ty, Type::Class(c)
-            if self.g.classes[c as usize].name.starts_with(crate::closed_record_guest::PRIVATE_PREFIX)) {
+            if self.g.classes[c as usize].name.starts_with(crate::closed_record_guest::PRIVATE_PREFIX)
+                || self.g.classes[c as usize].name.starts_with(crate::fixed_sequence_guest::PRIVATE_PREFIX)) {
             return Err(Diagnostic::new(pos, "E_BORROW",
-                "closed Record mutable borrowing requires a verified Record mutation/ownership ABI"));
+                "compiler-owned Record/Array/Tuple storage cannot be mutably borrowed without a verified mutation/ownership ABI"));
         }
         if self.loans.contains_key(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
