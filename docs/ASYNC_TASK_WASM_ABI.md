@@ -34,6 +34,33 @@ pub suspends fnc main(): int {
 - Cancellation and errors propagate to the owning scope/supervisor. Each completion is exactly once; cancellation, actor generation changes and hot reload fence all stale wakeups.
 - This design does not retroactively claim that Java/.NET/LLVM/Forge compilers implement this syntax. Reference grammar contains `suspends` and unary `await`; the browser subset needs an actual runtime. `task { }` syntax and the exact `rt.sleep` spelling are subject to cross-backend approval.
 
+## Canonical timer slice (stacked preview; NOT general Duration support)
+
+On this draft branch the browser compiler additionally accepts `await sleep(100ms)` and
+`await std.time.sleep(100ms)`, with exact integral suffixes `ns/us/ms/s/min/h`.
+The lexer verifies a checked u64 nanosecond Duration value; **only in a
+sleep-call argument** does the parser lower it to a rounded-up millisecond
+count for the existing `atto.sleep_ms(i64) -> i64` JSPI import. Durations
+cannot yet be stored, passed to other functions or used in arithmetic;
+the executable compiler returns a legacy i64 zero from the sleep import,
+rather than the future canonical `void` type. These are explicitly
+limited implementation details, NOT full `core.time.Duration` support.
+
+The JSPI host retains its preview quota of **0..=1000 ms** and checks a
+monotonic deadline after each timer wake. The existing `rt.sleep(int_ms)`
+syntax and ABI remain compatible, but are not the preferred source API.
+Only the browser Worker has this import. No native actor scheduler,
+real task-scope cancellation, cross-backend parity, or general timeout
+semantics are claimed. `sleep_blocking` deliberately fails with
+`E_BLOCKING_CONTEXT` on this non-fiber JSPI target: synchronous
+carrier blocking cannot be made safe by wrapping `setTimeout`.
+
+The canonical contract is
+[atto-spec language/timers-and-sleep-v1.md](https://github.com/atto-lang/atto-spec/blob/feat/timer-sleep-audit-20261116/language/timers-and-sleep-v1.md),
+tracked in atto-spec PR #47. Any promotion to the standard runtime
+must implement a true typed Duration, void return, cancellation races,
+shutdown fences, portable timer wakeups and verified guest execution.
+
 ## Portable lowering: compiler-generated continuation state machine
 
 For each `suspends fnc`, split basic blocks at potentially suspending calls; spill live locals into an **actor-/task-owned frame arena**, assign resume-state tags, synthesize resume/drop/cancel entrypoints, and generate ordinary Wasm functions. The runtime scheduler owns `TaskId`, generation, wake queue and task tree. Suspend returns a pending status to the worker event loop; future resolution enqueues the task for resume. **No JavaScript user-code transpilation or monkey patching.**
