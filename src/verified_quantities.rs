@@ -207,6 +207,7 @@ impl Parser<'_> {
         } else {
             self.literal(false)?
         };
+        v = self.attach_postfix(v, pos)?;
         if self.take(Tok::Dot) {
             if parenthesized || v.unit == Unit::scalar() { return Err(self.err("E_UNSUPPORTED", "conversion is restricted to quantity literals")); }
             self.expect_word("to_unit")?; self.expect(Tok::Lt)?;
