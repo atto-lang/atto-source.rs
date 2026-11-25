@@ -16,6 +16,7 @@ on:
       - 'tests/profile_cli.rs'
       - 'src/static_import_graph.rs'
       - 'tests/static_import_graph.rs'
+      - 'tests/shared_nominal_matrix.rs'
       - 'src/target_syntax.rs'
       - 'src/library.rs'
       - 'src/lib.rs'
@@ -51,6 +52,14 @@ jobs:
       - name: Run focused and compatibility compiler suites
         run: |
           cargo test --locked --no-fail-fast --test layout_plan --test import_tree --test registry_namespace --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link --test package_resolver --test package_cli --test namespace_storefront
+      - name: Execute shared nominal-kind matrix against production resolver
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          matrix="$(mktemp)"
+          trap 'rm -f "$matrix"' EXIT
+          node tests/shared-import-v2/nominal-matrix-projection.mjs > "$matrix"
+          ATTO_NOMINAL_MATRIX="$matrix" cargo test --locked --test shared_nominal_matrix -- --nocapture
       - name: Compile real builtin guests and run exported main
         if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
         run: |
