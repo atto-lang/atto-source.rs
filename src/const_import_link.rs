@@ -96,7 +96,11 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
         return Err(fail(Pos::default(), "E_SOURCE_LIMIT", "imported file exceeds byte limit"));
     }
     let tokens = lexer::lex(src)?;
-    reject_reserved(&tokens)?;
+    file_constants_tokens(&tokens)
+}
+
+fn file_constants_tokens(tokens: &[Token]) -> R<BTreeMap<String, ConstExport>> {
+    reject_reserved(tokens)?;
     let mut i = 0usize;
     let mut exports = BTreeMap::new();
     while tokens.get(i).is_some_and(|t| t.tok != Tok::Eof) {
@@ -236,7 +240,25 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
     Ok(exports)
 }
 
-fn is_disallowed_reference_context(tokens: &[Token], i: usize) -> Option<&'static str> {
+/// Reuse the existing scalar literal parser for a verified registry unit.
+/// The first constant declaration selects the constant-only provider profile;
+/// mixed declaration units must await the full typed dependency linker.
+/// The caller has already normalized and authenticated the source tokens.
+pub(crate) fn registry_literal_exports(tokens: &[Token], start: usize)
+    -> R<Option<BTreeMap<String, (bool, Vec<Tok>)>>> {
+    let first = if word(tokens,start,"pub") {start+1}else{start};
+    if !word(tokens,first,"define") {return Ok(None);}
+    let exports=file_constants_tokens(tokens)?;
+    let mut values=BTreeMap::new();
+    for (name,item) in exports {
+        let value=item.value.ok_or_else(||fail(tokens[start].pos,"E_UNSUPPORTED",
+            "registry literal provider may contain only constants"))?;
+        values.insert(name,(item.public,value));
+    }
+    Ok(Some(values))
+}
+
+pub(crate) fn is_disallowed_reference_context(tokens: &[Token], i: usize) -> Option<&'static str> {
     let before = i.checked_sub(1).and_then(|n| tokens.get(n));
     let after = tokens.get(i + 1);
     if after.is_some_and(|t| matches!(t.tok, Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus))
