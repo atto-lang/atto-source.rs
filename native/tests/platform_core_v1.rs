@@ -8,26 +8,26 @@ use oreslang_source_rs::compile;
 use serde_json::Value;
 
 const POSITIVE: [(&str, &str); 7] = [
-    ("arith-precedence.ores", include_str!("../contracts/platform-core-v1/arith-precedence.ores")),
-    ("signed-minimum.ores", include_str!("../contracts/platform-core-v1/signed-minimum.ores")),
-    ("max-minus-five.ores", include_str!("../contracts/platform-core-v1/max-minus-five.ores")),
-    ("two-negative-factors.ores", include_str!("../contracts/platform-core-v1/two-negative-factors.ores")),
-    ("nested-unary.ores", include_str!("../contracts/platform-core-v1/nested-unary.ores")),
-    ("negative-product.ores", include_str!("../contracts/platform-core-v1/negative-product.ores")),
-    ("eager-checked-int.ores", include_str!("../contracts/platform-core-v1/eager-checked-int.ores")),
+    ("arith-precedence.ores", include_str!("../../contracts/platform-core-v1/arith-precedence.ores")),
+    ("signed-minimum.ores", include_str!("../../contracts/platform-core-v1/signed-minimum.ores")),
+    ("max-minus-five.ores", include_str!("../../contracts/platform-core-v1/max-minus-five.ores")),
+    ("two-negative-factors.ores", include_str!("../../contracts/platform-core-v1/two-negative-factors.ores")),
+    ("nested-unary.ores", include_str!("../../contracts/platform-core-v1/nested-unary.ores")),
+    ("negative-product.ores", include_str!("../../contracts/platform-core-v1/negative-product.ores")),
+    ("eager-checked-int.ores", include_str!("../../contracts/platform-core-v1/eager-checked-int.ores")),
 ];
 const NEGATIVE: [(&str, &str); 5] = [
-    ("reject-unknown-symbol.ores", include_str!("../contracts/platform-core-v1/reject-unknown-symbol.ores")),
-    ("reject-string-as-int.ores", include_str!("../contracts/platform-core-v1/reject-string-as-int.ores")),
-    ("reject-overflow.ores", include_str!("../contracts/platform-core-v1/reject-overflow.ores")),
-    ("reject-xor-operator.ores", include_str!("../contracts/platform-core-v1/reject-xor-operator.ores")),
-    ("reject-no-value-return.ores", include_str!("../contracts/platform-core-v1/reject-no-value-return.ores")),
+    ("reject-unknown-symbol.ores", include_str!("../../contracts/platform-core-v1/reject-unknown-symbol.ores")),
+    ("reject-string-as-int.ores", include_str!("../../contracts/platform-core-v1/reject-string-as-int.ores")),
+    ("reject-overflow.ores", include_str!("../../contracts/platform-core-v1/reject-overflow.ores")),
+    ("reject-xor-operator.ores", include_str!("../../contracts/platform-core-v1/reject-xor-operator.ores")),
+    ("reject-no-value-return.ores", include_str!("../../contracts/platform-core-v1/reject-no-value-return.ores")),
 ];
 
 #[test]
 fn canonical_manifest_has_exact_candidates_and_never_claims_backend_proof() {
     let manifest: Value =
-        serde_json::from_str(include_str!("../contracts/platform-core-v1/manifest.json"))
+        serde_json::from_str(include_str!("../../contracts/platform-core-v1/manifest.json"))
             .expect("canonical fixture manifest must be valid JSON");
     assert_eq!(manifest["schema"], "oreslang.platform-core.v1");
     assert_eq!(manifest["positive"].as_array().unwrap().len(), POSITIVE.len());
@@ -115,7 +115,7 @@ mod native {
     #[test]
     fn seven_canonical_positive_fixtures_execute_full_width_i64() {
         let manifest: serde_json::Value = serde_json::from_str(
-            include_str!("../contracts/platform-core-v1/manifest.json")).unwrap();
+            include_str!("../../contracts/platform-core-v1/manifest.json")).unwrap();
         for (index, (name, source)) in POSITIVE.iter().enumerate() {
             let expected = manifest["positive"][index]["expected_stdout"].as_str().unwrap();
             let output = run_renamed_entry(source);
