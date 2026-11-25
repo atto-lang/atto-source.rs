@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Deny private source export unless the policy is a bounded ASCII, comment-only
-# regular file. This guard never authorizes a cross-organization destination.
+# Admit ONLY a bounded ASCII comments-only policy or the ONE exact
+# independently reviewed destination below. A passing policy check is NOT a
+# per-commit private source export authorization: the mirror must additionally
+# verify this allowlist on protected main, source SHA/tree, destination private
+# visibility/immutable repository ID, separate security approval and runner steps.
 set -euo pipefail
 
 reject() {
@@ -65,14 +68,21 @@ while :; do
   [[ "$newline_terminated" -eq 1 ]] || break
 done < "$snapshot"
 
-# grep 0: active entry; 1: comments/whitespace only; 2+: operational failure.
+# The sole reviewable exception is pinned by BOTH exact full name and GitHub
+# numeric repository ID. Unknown, duplicated, altered, whitespace-padded,
+# multi-line, CRLF-active, or ambiguous entries fail closed. Do not silently
+# accept a PR-head allowlist as authority to export: use protected main and an
+# independent security decision for the particular source SHA/tree.
+approved_entry='channelsiege/atto-ci 1458328077'
 set +e
-LC_ALL=C grep -aEvq '^[[:space:]]*(#.*)?$' -- "$snapshot"
+active=$(LC_ALL=C grep -aEv '^[[:space:]]*(#.*)?$' -- "$snapshot")
 classification=$?
 set -e
 case "$classification" in
-  0) reject 'active destination requires independently reviewed authorization' ;;
-  1) ;;
+  0)
+    [[ "$active" == "$approved_entry" ]] || reject 'unknown or ambiguous private CI destination'
+    printf '%s\n' 'private CI allowlist: one exact private destination; per-source export is still separately gated'
+    ;;
+  1) printf '%s\n' 'private CI source export: disabled by default' ;;
   *) reject 'policy classifier failed' ;;
 esac
-printf '%s\n' 'private CI source export: disabled by default'
