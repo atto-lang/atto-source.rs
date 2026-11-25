@@ -27,7 +27,6 @@ fn mismatch_inexact_scale_and_erasure_fail_closed() {
         ("1<Missing>", "E_UNIT_NAME"),
         ("1 <Second>", "E_SYNTAX"),
         ("9223372036854775807<Second>.to_unit<Millis>()", "E_UNIT_RANGE"),
-        ("1<Second> / 0<Second>", "E_UNSUPPORTED"),
     ] {
         assert_eq!(compile(&source(expr)).unwrap_err().code, expected, "{expr}");
     }
@@ -104,4 +103,18 @@ fn malformed_literal_and_suffix_controls() {
     }
     assert!(compile("define dimension T; define unit A: T; define unit B: T = A * 0b10; pub fnc main() -> int { return 42; }").is_err());
     assert!(compile("pub fnc main() -> int { int protocol = 42; return protocol; }").is_ok());
+}
+
+#[test]
+fn arithmetic_failure_is_emitted_only_after_whole_source_type_check() {
+    let zero = compile(&source("1<Second> / 0<Second>")).unwrap();
+    let overflow = compile(&source("-9223372036854775808<Second> / -1<Second>")).unwrap();
+    let add = compile(&source("(9223372036854775807<Second> + 1<Second>) / 1<Second>")).unwrap();
+    assert_eq!(overflow, add);
+    assert_ne!(zero, overflow);
+    assert_eq!(compile(&source("(1<Second> / 0<Second>) + (9223372036854775807<Second> + 1<Second>) / 1<Second>")).unwrap(), zero);
+    assert_eq!(compile(&source("(1<Second> / 0<Second>) + 1<Millis>")).unwrap_err().code, "E_UNIT_DIMENSION");
+    assert_eq!(compile(&source("(1<Second> / 0<Second>) + 1500<Millis>.to_unit<Second>()")).unwrap_err().code, "E_UNIT_INEXACT");
+    assert_eq!(compile(&source("(1<Second> / 0<Second>) + (1<Second> / 1<Millis>)")).unwrap_err().code, "E_UNIT_SCALE");
+    assert!(compile(&source("1<Second> / 0<Second> trailing")).is_err());
 }
