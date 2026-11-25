@@ -12,7 +12,7 @@
 //! * `*` and `/` compose dimensions and multiply scales exactly.
 //! * Converting between different dimensions (seconds to bytes, meters to
 //!   seconds) is never possible.
-//! * Scales are exact rationals over u64/i128, never floats, so
+//! * Scales are exact rationals over u128/u128, never floats, so
 //!   `KiB -> B` is exactly 1024 and `ms -> s` exactly 1/1000.
 //!
 //! Numeric representation, overflow and rounding of the *values* are
@@ -61,7 +61,16 @@ impl Ratio {
         })
     }
 
+    fn validate(self) -> R<()> {
+        if self.num == 0 || self.den == 0 || gcd(self.num, self.den) != 1 {
+            return Err(err("E_UNIT_SCALE", "unit scale must be positive and reduced"));
+        }
+        Ok(())
+    }
+
     fn mul(self, o: Ratio) -> R<Ratio> {
+        self.validate()?;
+        o.validate()?;
         // Cross-reduce first so exact products stay small.
         let g1 = gcd(self.num, o.den);
         let g2 = gcd(o.num, self.den);
@@ -150,7 +159,17 @@ impl Unit {
         dim: Dimension([0; 9]),
     };
 
+    fn validate(self) -> R<()> {
+        self.scale.validate()?;
+        if self.dim.0.iter().any(|e| e.unsigned_abs() > MAX_EXPONENT as u8) {
+            return Err(err("E_UNIT_EXPONENT", "unit exponent exceeds +/-12"));
+        }
+        Ok(())
+    }
+
     pub fn mul(self, o: Unit) -> R<Unit> {
+        self.validate()?;
+        o.validate()?;
         Ok(Unit {
             scale: self.scale.mul(o.scale)?,
             dim: self.dim.combine(o.dim, 1)?,
@@ -158,6 +177,8 @@ impl Unit {
     }
 
     pub fn div(self, o: Unit) -> R<Unit> {
+        self.validate()?;
+        o.validate()?;
         Ok(Unit {
             scale: self.scale.mul(o.scale.inv())?,
             dim: self.dim.combine(o.dim, -1)?,
@@ -165,6 +186,10 @@ impl Unit {
     }
 
     pub fn pow(self, e: i8) -> R<Unit> {
+        self.validate()?;
+        if e.unsigned_abs() > MAX_EXPONENT as u8 {
+            return Err(err("E_UNIT_EXPONENT", "unit exponent exceeds +/-12"));
+        }
         let mut dim = Dimension::default();
         for _ in 0..e.unsigned_abs() {
             dim = dim.combine(self.dim, if e < 0 { -1 } else { 1 })?;
@@ -285,6 +310,8 @@ impl Registry {
 
 /// `a + b`, `a - b`, comparisons, assignment, returns.
 pub fn check_same(op: &str, a: Unit, b: Unit) -> R<Unit> {
+    a.validate()?;
+    b.validate()?;
     if a == b {
         return Ok(a);
     }
@@ -305,6 +332,8 @@ pub fn check_same(op: &str, a: Unit, b: Unit) -> R<Unit> {
 
 /// Exact factor `f` such that `value_in_to = value_in_from * f`.
 pub fn conversion_factor(from: Unit, to: Unit) -> R<Ratio> {
+    from.validate()?;
+    to.validate()?;
     if from.dim != to.dim {
         return Err(err(
             "E_UNIT_MISMATCH",
@@ -314,19 +343,21 @@ pub fn conversion_factor(from: Unit, to: Unit) -> R<Ratio> {
     from.scale.mul(to.scale.inv())
 }
 
-/// Exact integer conversion: allowed only when the factor is integral
-/// (`s -> ms`, `KiB -> B`). Downscaling (`ms -> s`) needs an explicit
-/// rounding mode from the numeric contract and is rejected here.
+/// Exact integer conversion: the converted value, not just the factor,
+/// must be integral. Reduce the denominator against the magnitude before
+/// multiplication, then enforce the signed-i64 range (including MIN).
 pub fn convert_int_exact(value: i64, from: Unit, to: Unit) -> R<i64> {
     let f = conversion_factor(from, to)?;
-    if f.den != 1 {
-        return Err(err(
-            "E_UNIT_LOSSY",
-            format!("conversion factor {f} is not integral; choose an explicit rounding mode"),
-        ));
+    let magnitude = u128::from(value.unsigned_abs());
+    if magnitude % f.den != 0 {
+        return Err(err("E_UNIT_LOSSY", format!("conversion by {f} is not integral for this value")));
     }
-    let factor = i64::try_from(f.num).map_err(|_| err("E_UNIT_OVERFLOW", "conversion factor exceeds i64"))?;
-    value
-        .checked_mul(factor)
-        .ok_or_else(|| err("E_UNIT_OVERFLOW", "converted value overflows i64"))
+    let result = (magnitude / f.den).checked_mul(f.num)
+        .ok_or_else(|| err("E_UNIT_OVERFLOW", "converted value overflows i64"))?;
+    if value < 0 && result == (1u128 << 63) {
+        return Ok(i64::MIN);
+    }
+    let signed = i64::try_from(result)
+        .map_err(|_| err("E_UNIT_OVERFLOW", "converted value overflows i64"))?;
+    Ok(if value < 0 { -signed } else { signed })
 }
