@@ -1,7 +1,9 @@
 //! Fail-closed tests for direct lambda desugaring and public AST entry point.
 use atto_compiler::{
     ast::{Expr, ExprKind, Func, Stmt, Type, UnOp},
-    check, lexer, parser::Parser, Pos,
+    check, lexer,
+    parser::Parser,
+    Pos,
 };
 
 fn source_program(source: &str) -> atto_compiler::ast::Program {
@@ -36,11 +38,19 @@ fn forged_ast_private_function_name_rejects_collision() {
     let mut program = simple();
     let pos = Pos { line: 1, col: 1 };
     program.funcs.push(Func {
-        name: "$lambda_0".to_string(), pos, is_generator: false, is_pure: false,
-        params: vec![], ret: Type::Int,
-        body: vec![Stmt::Return(Some(Expr {
-            kind: ExprKind::Int(Some(0)), pos,
-        }), pos)],
+        name: "$lambda_0".to_string(),
+        pos,
+        is_generator: false,
+        is_pure: false,
+        params: vec![],
+        ret: Type::Int,
+        body: vec![Stmt::Return(
+            Some(Expr {
+                kind: ExprKind::Int(Some(0)),
+                pos,
+            }),
+            pos,
+        )],
     });
     let d = check::check(&program).unwrap_err();
     assert_eq!(d.code, "E_DUPLICATE", "{d}");
@@ -49,7 +59,9 @@ fn forged_ast_private_function_name_rejects_collision() {
 fn nested_statement_ast_rewriter_respects_depth_limit() {
     let mut program = simple();
     let mut statement = Stmt::Block(Vec::new());
-    for _ in 0..140 { statement = Stmt::Block(vec![statement]); }
+    for _ in 0..140 {
+        statement = Stmt::Block(vec![statement]);
+    }
     program.funcs[0].body.insert(1, statement);
     let d = check::check(&program).unwrap_err();
     assert_eq!(d.code, "E_NESTING", "{d}");
@@ -58,9 +70,15 @@ fn nested_statement_ast_rewriter_respects_depth_limit() {
 fn nested_expression_ast_rewriter_respects_depth_limit() {
     let mut program = simple();
     let pos = Pos { line: 1, col: 1 };
-    let mut inner = Expr { kind: ExprKind::Int(Some(1)), pos };
+    let mut inner = Expr {
+        kind: ExprKind::Int(Some(1)),
+        pos,
+    };
     for _ in 0..140 {
-        inner = Expr { kind: ExprKind::Unary(UnOp::Plus, Box::new(inner)), pos };
+        inner = Expr {
+            kind: ExprKind::Unary(UnOp::Plus, Box::new(inner)),
+            pos,
+        };
     }
     let Stmt::Return(Some(e), _) = &mut program.funcs[0].body[1] else {
         panic!("expected direct return")
@@ -78,7 +96,6 @@ fn direct_lambda_name_collision_does_not_affect_unrelated_functions() {
     assert_eq!(typed.funcs[2].name, "$lambda_1");
     assert!(atto_compiler::compile(source).is_ok());
 }
-
 
 #[test]
 fn lambda_calls_in_constructor_arguments_bind_to_definition_site() {

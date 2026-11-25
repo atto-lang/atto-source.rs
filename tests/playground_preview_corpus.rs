@@ -7,12 +7,13 @@ use std::path::Path;
 fn all_published_previews_compile_or_reject_with_a_diagnostic() {
     let dir = Path::new("tests/playground_previews");
     let manifest = fs::read_to_string(dir.join("MANIFEST.tsv")).expect("preview manifest");
-    let entries: Vec<_> = manifest.lines()
-        .filter(|s| !s.starts_with('#') && !s.is_empty()).collect();
+    let entries: Vec<_> = manifest.lines().filter(|s| !s.starts_with('#') && !s.is_empty()).collect();
     assert_eq!(entries.len(), 42, "all 42 public previews must be represented");
-    let files: Vec<_> = fs::read_dir(dir).unwrap().map(|e| {
-        e.unwrap().file_name().to_string_lossy().into_owned()
-    }).filter(|s| s.ends_with(".atto")).collect();
+    let files: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|s| s.ends_with(".atto"))
+        .collect();
     assert_eq!(files.len(), entries.len(), "no missing or untracked .atto files");
     let mut seen = std::collections::BTreeSet::new();
     for entry in entries {
@@ -26,15 +27,15 @@ fn all_published_previews_compile_or_reject_with_a_diagnostic() {
         match built {
             Ok(bytes) => {
                 assert!(bytes.starts_with(b"\0asm\x01\0\0\0"), "{name}: invalid Wasm header");
-                assert_eq!(atto_compiler::compile(&source).unwrap(), bytes,
-                    "{name}: nondeterministic output");
+                assert_eq!(atto_compiler::compile(&source).unwrap(), bytes, "{name}: nondeterministic output");
                 eprintln!("PLAY_PREVIEW_ADMITTED_NOT_YET_VERIFIED {name}");
             }
             Err(diagnostic) => {
-                assert!(diagnostic.code.starts_with("E_"),
-                    "{name}: missing structured error: {diagnostic}");
-                assert!(diagnostic.pos.line > 0 && diagnostic.pos.col > 0,
-                    "{name}: missing positioned error");
+                assert!(diagnostic.code.starts_with("E_"), "{name}: missing structured error: {diagnostic}");
+                assert!(
+                    diagnostic.pos.line > 0 && diagnostic.pos.col > 0,
+                    "{name}: missing positioned error"
+                );
                 eprintln!("PLAY_PREVIEW_UNSUPPORTED {name}: {}", diagnostic.code);
             }
         }

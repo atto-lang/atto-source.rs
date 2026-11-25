@@ -31,13 +31,23 @@ pub enum Instruction {
     Evaluate(Stmt),
     /// If the condition is false, jump to the indexed instruction;
     /// otherwise continue at the next instruction.
-    Guard { condition: Expr, on_false: u32 },
-    Jump { to: u32 },
+    Guard {
+        condition: Expr,
+        on_false: u32,
+    },
+    Jump {
+        to: u32,
+    },
     /// Emit exactly one element, then resume at the next instruction.
-    Yield { value: Expr },
+    Yield {
+        value: Expr,
+    },
     /// Resume this same PC until the delegated generator is exhausted.
     /// A dedicated frame slot retains the child handle across outer pulls.
-    Delegate { source: Expr, slot: u32 },
+    Delegate {
+        source: Expr,
+        slot: u32,
+    },
     /// Terminal state (also the target for a bare return).
     Done,
 }
@@ -72,8 +82,11 @@ impl Builder {
 
     fn push(&mut self, ins: Instruction, pos: Pos) -> Result<usize, Diagnostic> {
         if self.instructions.len() >= MAX_GENERATOR_INSTRUCTIONS {
-            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
-                "generator resume CFG exceeds 4096 instructions"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_SOURCE_LIMIT",
+                "generator resume CFG exceeds 4096 instructions",
+            ));
         }
         let n = self.instructions.len();
         self.instructions.push(ins);
@@ -100,8 +113,11 @@ impl Builder {
 
     fn nested(&mut self, body: &[Stmt], pos: Pos) -> Result<(), Diagnostic> {
         if self.depth >= MAX_GENERATOR_NESTING {
-            return Err(Diagnostic::new(pos, "E_NESTING",
-                "generator control-flow nesting exceeds 128 levels"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_NESTING",
+                "generator control-flow nesting exceeds 128 levels",
+            ));
         }
         self.depth += 1;
         let result = self.stmts(body);
@@ -109,13 +125,16 @@ impl Builder {
         result
     }
 
-    fn loop_body(&mut self, cond: Option<&Expr>, body: &[Stmt],
-                 update: Option<&Stmt>, pos: Pos) -> Result<(), Diagnostic> {
+    fn loop_body(&mut self, cond: Option<&Expr>, body: &[Stmt], update: Option<&Stmt>, pos: Pos) -> Result<(), Diagnostic> {
         let head = self.pc();
         let guard = if let Some(c) = cond {
-            Some(self.push(Instruction::Guard {
-                condition: c.clone(), on_false: 0,
-            }, c.pos)?)
+            Some(self.push(
+                Instruction::Guard {
+                    condition: c.clone(),
+                    on_false: 0,
+                },
+                c.pos,
+            )?)
         } else {
             None
         };
@@ -148,12 +167,18 @@ impl Builder {
                 self.push(Instruction::Evaluate(stmt.clone()), *pos)?;
             }
             Stmt::Raise(_, pos) | Stmt::Try { pos, .. } | Stmt::Defer { pos, .. } | Stmt::Recover { pos, .. } => {
-                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "try/defer/recover/raise inside generators need continuation-owned unwind frames"));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_UNSUPPORTED",
+                    "try/defer/recover/raise inside generators need continuation-owned unwind frames",
+                ));
             }
             Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } => {
-                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "generator mutation and state loans require an owned frame and borrow analysis"));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_UNSUPPORTED",
+                    "generator mutation and state loans require an owned frame and borrow analysis",
+                ));
             }
             Stmt::Expr(expr) => {
                 self.push(Instruction::Evaluate(stmt.clone()), expr.pos)?;
@@ -164,23 +189,34 @@ impl Builder {
             }
             Stmt::YieldFrom(source, pos) => {
                 let slot = self.delegate_slots;
-                self.delegate_slots = self.delegate_slots.checked_add(1).ok_or_else(||
-                    Diagnostic::new(*pos, "E_SOURCE_LIMIT", "too many generator delegates"))?;
-                self.push(Instruction::Delegate { source: source.clone(), slot }, *pos)?;
+                self.delegate_slots = self
+                    .delegate_slots
+                    .checked_add(1)
+                    .ok_or_else(|| Diagnostic::new(*pos, "E_SOURCE_LIMIT", "too many generator delegates"))?;
+                self.push(
+                    Instruction::Delegate {
+                        source: source.clone(),
+                        slot,
+                    },
+                    *pos,
+                )?;
             }
             Stmt::Return(None, pos) => {
                 self.push(Instruction::Done, *pos)?;
             }
             Stmt::Return(Some(_), pos) => {
-                return Err(Diagnostic::new(*pos, "E_RETURN",
-                    "generators may only use a bare return"));
+                return Err(Diagnostic::new(*pos, "E_RETURN", "generators may only use a bare return"));
             }
             Stmt::If { arms, otherwise, pos } => {
                 let mut ends = Vec::new();
                 for (cond, arm) in arms {
-                    let test = self.push(Instruction::Guard {
-                        condition: cond.clone(), on_false: 0,
-                    }, cond.pos)?;
+                    let test = self.push(
+                        Instruction::Guard {
+                            condition: cond.clone(),
+                            on_false: 0,
+                        },
+                        cond.pos,
+                    )?;
                     self.nested(arm, *pos)?;
                     ends.push(self.jump(*pos)?);
                     let next_arm = self.pc();
@@ -200,7 +236,13 @@ impl Builder {
             Stmt::Loop { body, pos } => {
                 self.loop_body(None, body, None, *pos)?;
             }
-            Stmt::For { init, cond, update, body, pos } => {
+            Stmt::For {
+                init,
+                cond,
+                update,
+                body,
+                pos,
+            } => {
                 if let Some(init) = init {
                     self.stmt(init)?;
                 }
@@ -208,16 +250,14 @@ impl Builder {
             }
             Stmt::Break(pos) => {
                 if self.loops.is_empty() {
-                    return Err(Diagnostic::new(*pos, "E_LOOP",
-                        "break outside generator loop"));
+                    return Err(Diagnostic::new(*pos, "E_LOOP", "break outside generator loop"));
                 }
                 let site = self.jump(*pos)?;
                 self.loops.last_mut().unwrap().breaks.push(site);
             }
             Stmt::Continue(pos) => {
                 if self.loops.is_empty() {
-                    return Err(Diagnostic::new(*pos, "E_LOOP",
-                        "continue outside generator loop"));
+                    return Err(Diagnostic::new(*pos, "E_LOOP", "continue outside generator loop"));
                 }
                 let site = self.jump(*pos)?;
                 self.loops.last_mut().unwrap().continues.push(site);
@@ -226,16 +266,25 @@ impl Builder {
                 self.nested(body, Pos::default())?;
             }
             Stmt::ForIn { pos, .. } => {
-                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "for-in inside generator requires iterator lifetime/close lowering"));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_UNSUPPORTED",
+                    "for-in inside generator requires iterator lifetime/close lowering",
+                ));
             }
             Stmt::Match { pos, .. } => {
-                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "match inside generator requires typed arm CFG lowering"));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_UNSUPPORTED",
+                    "match inside generator requires typed arm CFG lowering",
+                ));
             }
             Stmt::Throw(_, pos) => {
-                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "throw inside generator requires continuation exception unwinding"));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_UNSUPPORTED",
+                    "throw inside generator requires continuation exception unwinding",
+                ));
             }
         }
         Ok(())
@@ -266,8 +315,11 @@ pub fn lower(body: &[Stmt]) -> Result<GeneratorPlan, Diagnostic> {
         };
         if let Some(to) = to {
             if to >= n {
-                return Err(Diagnostic::new(Pos::default(), "E_COMPILER",
-                    "invalid generator resume control-flow target"));
+                return Err(Diagnostic::new(
+                    Pos::default(),
+                    "E_COMPILER",
+                    "invalid generator resume control-flow target",
+                ));
             }
         }
     }

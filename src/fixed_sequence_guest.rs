@@ -12,10 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{
-    BindKind, ClassDecl, Constructor, Expr, ExprKind, Field, FieldMode, Param, Program, Stmt, Type,
-    UnOp,
-};
+use crate::ast::{BindKind, ClassDecl, Constructor, Expr, ExprKind, Field, FieldMode, Param, Program, Stmt, Type, UnOp};
 use crate::collection_types::{LiteralType, TypedBinding};
 use crate::diag::{Diagnostic, Pos};
 
@@ -100,11 +97,7 @@ pub(crate) fn generated_class(name: String, types: &[LiteralType], at: Pos) -> R
         public: false,
         state_container: false,
         fields,
-        ctor: Some(Constructor {
-            pos: at,
-            params,
-            body,
-        }),
+        ctor: Some(Constructor { pos: at, params, body }),
         methods: Vec::new(),
     })
 }
@@ -112,17 +105,9 @@ pub(crate) fn generated_class(name: String, types: &[LiteralType], at: Pos) -> R
 /// Only a directly named bound Array/List/Tuple with a literal nonnegative index
 /// acquires a field projection. All computed, negative and non-local accesses
 /// retain the original Index node and fail closed in the scalar checker.
-fn rewrite_projection(
-    expr: &mut Expr,
-    locals: &BTreeMap<String, usize>,
-    depth: usize,
-) -> Result<(), Diagnostic> {
+fn rewrite_projection(expr: &mut Expr, locals: &BTreeMap<String, usize>, depth: usize) -> Result<(), Diagnostic> {
     if depth >= MAX_REWRITE_DEPTH {
-        return Err(error(
-            expr.pos,
-            "E_NESTING",
-            "indexed sequence expression exceeds depth budget",
-        ));
+        return Err(error(expr.pos, "E_NESTING", "indexed sequence expression exceeds depth budget"));
     }
     match &mut expr.kind {
         ExprKind::Index(receiver, index) => {
@@ -130,24 +115,23 @@ fn rewrite_projection(
             rewrite_projection(index, locals, depth + 1)?;
             if let ExprKind::Var(name) = &receiver.kind {
                 if let Some(&length) = locals.get(name) {
-                    let field =
-                        match &index.kind {
-                            ExprKind::Int(Some(i)) if *i < length as u64 => item_field(*i as usize),
-                            ExprKind::Int(Some(_))
-                            | ExprKind::Int(None)
-                            | ExprKind::Unary(UnOp::Neg, _) => {
-                                return Err(error(
-                                    index.pos,
-                                    "E_INDEX_BOUNDS",
-                                    "static Array/List/Tuple index is outside the fixed allocation",
-                                ))
-                            }
-                            _ => return Err(error(
+                    let field = match &index.kind {
+                        ExprKind::Int(Some(i)) if *i < length as u64 => item_field(*i as usize),
+                        ExprKind::Int(Some(_)) | ExprKind::Int(None) | ExprKind::Unary(UnOp::Neg, _) => {
+                            return Err(error(
+                                index.pos,
+                                "E_INDEX_BOUNDS",
+                                "static Array/List/Tuple index is outside the fixed allocation",
+                            ))
+                        }
+                        _ => {
+                            return Err(error(
                                 index.pos,
                                 "E_UNSUPPORTED",
                                 "computed Array/List/Tuple indexes need a runtime checked indexing ABI",
-                            )),
-                        };
+                            ))
+                        }
+                    };
                     expr.kind = ExprKind::Member(receiver.clone(), field);
                 }
             }
@@ -166,10 +150,7 @@ fn rewrite_projection(
             rewrite_projection(yes, locals, depth + 1)?;
             rewrite_projection(no, locals, depth + 1)?;
         }
-        ExprKind::Call(_, args)
-        | ExprKind::New(_, args)
-        | ExprKind::Array(args)
-        | ExprKind::Tuple(args) => {
+        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) | ExprKind::Tuple(args) => {
             for arg in args {
                 rewrite_projection(arg, locals, depth + 1)?;
             }
@@ -209,10 +190,9 @@ fn rewrite_projection(
 
 fn rewrite_statement(stmt: &mut Stmt, locals: &BTreeMap<String, usize>) -> Result<(), Diagnostic> {
     match stmt {
-        Stmt::Bind { init, .. }
-        | Stmt::Assign { value: init, .. }
-        | Stmt::Expr(init)
-        | Stmt::Return(Some(init), _) => rewrite_projection(init, locals, 0),
+        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } | Stmt::Expr(init) | Stmt::Return(Some(init), _) => {
+            rewrite_projection(init, locals, 0)
+        }
         // Scope-sensitive indexing inside nested branches must wait for
         // lexical SSA proof; do not let an outer binding leak into a shadow.
         _ => Ok(()),
@@ -230,20 +210,11 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
     for binding in checked {
         if matches!(
             &binding.value.ty,
-            LiteralType::Tuple(_) | LiteralType::Array(_) | LiteralType::List(_) |
-                LiteralType::Pair(_,_) | LiteralType::Entry(_,_)
+            LiteralType::Tuple(_) | LiteralType::Array(_) | LiteralType::List(_) | LiteralType::Pair(_, _) | LiteralType::Entry(_, _)
         ) {
-            let key = (
-                binding.value.pos.line,
-                binding.value.pos.col,
-                binding.name.clone(),
-            );
+            let key = (binding.value.pos.line, binding.value.pos.col, binding.name.clone());
             if source_types.insert(key, binding).is_some() {
-                return Err(error(
-                    binding.value.pos,
-                    "E_SHAPE",
-                    "ambiguous typed sequence source provenance",
-                ));
+                return Err(error(binding.value.pos, "E_SHAPE", "ambiguous typed sequence source provenance"));
             }
         }
     }
@@ -255,14 +226,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
         let mut body = Vec::with_capacity(func.body.len());
         let mut locals = BTreeMap::<String, usize>::new();
         for original in std::mem::take(&mut func.body) {
-            let Stmt::Bind {
-                kind,
-                name,
-                ty,
-                init,
-                pos,
-            } = original
-            else {
+            let Stmt::Bind { kind, name, ty, init, pos } = original else {
                 let mut other = original;
                 rewrite_statement(&mut other, &locals)?;
                 body.push(other);
@@ -270,9 +234,14 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             };
             let raw_items = match &init.kind {
                 ExprKind::Tuple(_) | ExprKind::Array(_) => true,
-                ExprKind::Call(factory, _) if matches!(factory.as_str(),
-                    "@builtin/Array.of" | "@builtin/List.of" |
-                    "@builtin/Pair.of" | "@builtin/Entry.of") => true,
+                ExprKind::Call(factory, _)
+                    if matches!(
+                        factory.as_str(),
+                        "@builtin/Array.of" | "@builtin/List.of" | "@builtin/Pair.of" | "@builtin/Entry.of"
+                    ) =>
+                {
+                    true
+                }
                 _ => false,
             };
             if !raw_items {
@@ -289,33 +258,27 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 continue;
             }
             let key = (init.pos.line, init.pos.col, name.clone());
-            let typed = source_types.get(&key).ok_or_else(|| {
-                error(
-                    init.pos,
-                    "E_SHAPE",
-                    "missing compiler-owned Array/List/Tuple type inventory",
-                )
-            })?;
+            let typed = source_types
+                .get(&key)
+                .ok_or_else(|| error(init.pos, "E_SHAPE", "missing compiler-owned Array/List/Tuple type inventory"))?;
             let types = match &typed.value.ty {
                 LiteralType::Tuple(items) => items.clone(),
                 LiteralType::Array(element) | LiteralType::List(element) => {
                     // [] is admitted only with a concrete contextual element.
                     if typed.value.children.is_empty() && matches!(element.as_ref(), LiteralType::Bottom) {
-                        return Err(error(init.pos, "E_TYPE_INFERENCE",
-                            "empty List/Array needs a concrete element type"));
+                        return Err(error(
+                            init.pos,
+                            "E_TYPE_INFERENCE",
+                            "empty List/Array needs a concrete element type",
+                        ));
                     }
                     vec![element.as_ref().clone(); typed.value.children.len()]
                 }
-                LiteralType::Pair(a,b) | LiteralType::Entry(a,b) =>
-                    vec![a.as_ref().clone(), b.as_ref().clone()],
+                LiteralType::Pair(a, b) | LiteralType::Entry(a, b) => vec![a.as_ref().clone(), b.as_ref().clone()],
                 _ => return Err(error(init.pos, "E_SHAPE", "collection type identity lost")),
             };
-            let empty_sequence = types.is_empty()
-                && matches!(&typed.value.ty, LiteralType::Array(_) | LiteralType::List(_));
-            if (types.is_empty() && !empty_sequence)
-                || types.len() > MAX_EXECUTABLE_ITEMS
-                || ordinal >= MAX_EXECUTABLE_BINDINGS
-            {
+            let empty_sequence = types.is_empty() && matches!(&typed.value.ty, LiteralType::Array(_) | LiteralType::List(_));
+            if (types.is_empty() && !empty_sequence) || types.len() > MAX_EXECUTABLE_ITEMS || ordinal >= MAX_EXECUTABLE_BINDINGS {
                 return Err(error(
                     init.pos,
                     "E_UNSUPPORTED",
@@ -330,40 +293,41 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 ));
             }
             if typed.value.children.len() != types.len() {
-                return Err(error(
-                    init.pos,
-                    "E_SHAPE",
-                    "typed sequence length differs from source",
-                ));
+                return Err(error(init.pos, "E_SHAPE", "typed sequence length differs from source"));
             }
             let product_labels: Option<[&str; 2]> = match &typed.value.ty {
-                LiteralType::Pair(_,_) => Some(["first","second"]),
-                LiteralType::Entry(_,_) => Some(["key","value"]),
+                LiteralType::Pair(_, _) => Some(["first", "second"]),
+                LiteralType::Entry(_, _) => Some(["key", "value"]),
                 _ => None,
             };
             let values = match init.kind {
                 ExprKind::Tuple(items) | ExprKind::Array(items) => items,
-                ExprKind::Call(factory, items) if matches!(factory.as_str(),
-                    "@builtin/Array.of" | "@builtin/List.of" |
-                    "@builtin/Pair.of" | "@builtin/Entry.of") => items,
+                ExprKind::Call(factory, items)
+                    if matches!(
+                        factory.as_str(),
+                        "@builtin/Array.of" | "@builtin/List.of" | "@builtin/Pair.of" | "@builtin/Entry.of"
+                    ) =>
+                {
+                    items
+                }
                 _ => unreachable!("raw_items checked factory AST"),
             };
             let mut arguments = Vec::with_capacity(values.len());
-            for (value, (type_expected, checked_child)) in values
-                .into_iter()
-                .zip(types.iter().zip(&typed.value.children))
-            {
+            for (value, (type_expected, checked_child)) in values.into_iter().zip(types.iter().zip(&typed.value.children)) {
                 // An open/closed Record or other nested aggregate cannot be
                 // stored in this scalar-only guest sequence ABI. In particular
                 // OpenRecord expected vs Record{...} actual is not a corrupt
                 // compiler shape: it is a well-typed, unsupported nested value.
                 // Reject *before* comparing their representation identities.
-                if !matches!(type_expected,
-                    LiteralType::Int | LiteralType::Bool |
-                    LiteralType::Float | LiteralType::String)
-                {
-                    return Err(error(value.pos, "E_UNSUPPORTED",
-                        "nested Array/List/Tuple/Entry elements need a checked owned guest ABI"));
+                if !matches!(
+                    type_expected,
+                    LiteralType::Int | LiteralType::Bool | LiteralType::Float | LiteralType::String
+                ) {
+                    return Err(error(
+                        value.pos,
+                        "E_UNSUPPORTED",
+                        "nested Array/List/Tuple/Entry elements need a checked owned guest ABI",
+                    ));
                 }
                 if &checked_child.ty != type_expected {
                     return Err(error(
@@ -397,7 +361,10 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             // a zero-byte bump allocation or null pointer. The sentinel is
             // not an accessible collection element: length remains zero.
             let mut class = if empty_sequence {
-                arguments.push(Expr {kind: ExprKind::Int(Some(0)), pos: init.pos});
+                arguments.push(Expr {
+                    kind: ExprKind::Int(Some(0)),
+                    pos: init.pos,
+                });
                 generated_class(class_name.clone(), &[LiteralType::Int], init.pos)?
             } else {
                 generated_class(class_name.clone(), &types, init.pos)?
@@ -407,7 +374,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                     field.name = label.to_string();
                 }
                 if let Some(ctor) = &mut class.ctor {
-                    for (stmt,label) in ctor.body.iter_mut().zip(labels) {
+                    for (stmt, label) in ctor.body.iter_mut().zip(labels) {
                         if let Stmt::FieldAssign { field, .. } = stmt {
                             *field = label.to_string();
                         }

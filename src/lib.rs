@@ -6,41 +6,41 @@
 //! This is a subset compiler: every construct outside the admitted subset is
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
+/// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
+pub mod any_type_lower;
 pub mod ast;
+pub mod check;
+/// Executable narrow closed-scalar Record profile through checked fixed-slot guest class ABI.
+pub mod closed_record_guest;
 pub mod collection_types;
+pub mod detached_io;
+pub mod diag;
+/// Executable bounded scalar Tuple.of/Array.of with checked constant indexes.
+pub mod fixed_sequence_guest;
+pub mod generator_cfg;
+pub mod generator_frame;
+pub mod io_shorthand;
+pub mod lexer;
+/// Checked single-source module functions; external imports remain unlinked.
+pub mod module_lower;
+/// Checked source-local trait and class composition.
+pub mod nominal_lower;
+pub mod parser;
 /// Host-only canonical Record and nominal Struct static-slot layout plans.
 /// No guest ABI, allocation or Struct parsing is enabled by this module.
 pub mod record_struct_layout;
-/// Executable narrow closed-scalar Record profile through checked fixed-slot guest class ABI.
-pub mod closed_record_guest;
-/// Executable bounded scalar Tuple.of/Array.of with checked constant indexes.
-pub mod fixed_sequence_guest;
-/// Bounded immutable scalar Map.of allocation and statically proven key projection.
-pub mod scalar_map_guest;
-pub mod check;
-pub mod diag;
-pub mod generator_cfg;
-pub mod generator_frame;
-pub mod lexer;
-pub mod io_shorthand;
-pub mod detached_io;
-pub mod parser;
-/// Checked single-source module functions; external imports remain unlinked.
-pub mod module_lower;
-/// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
-pub mod any_type_lower;
-/// Source-local scalar products use the checked class/constructor guest ABI.
-pub mod shape_lower;
-/// Checked source-local trait and class composition.
-pub mod nominal_lower;
-/// Explicitly unlinked foreign prototypes and source-only exports.
-pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
 pub mod routine_lower;
+/// Bounded immutable scalar Map.of allocation and statically proven key projection.
+pub mod scalar_map_guest;
+/// Source-local scalar products use the checked class/constructor guest ABI.
+pub mod shape_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
 pub mod target_typed;
+/// Explicitly unlinked foreign prototypes and source-only exports.
+pub mod visibility_lower;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -63,20 +63,27 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // parameters or temporaries, even when those names occur in dead code.
     for token in &source_tokens {
         if let lexer::Tok::Ident(name) = &token.tok {
-            if name.starts_with(closed_record_guest::PRIVATE_PREFIX) ||
-                name.starts_with(fixed_sequence_guest::PRIVATE_PREFIX) {
-                return Err(Diagnostic::new(token.pos, "E_RESERVED",
-                    "compiler-owned aggregate allocation symbols are reserved"));
+            if name.starts_with(closed_record_guest::PRIVATE_PREFIX) || name.starts_with(fixed_sequence_guest::PRIVATE_PREFIX) {
+                return Err(Diagnostic::new(
+                    token.pos,
+                    "E_RESERVED",
+                    "compiler-owned aggregate allocation symbols are reserved",
+                ));
             }
         }
     }
     let mut visibility = visibility_lower::lower(source_tokens)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(
+        module_lower::lower(visibility.tokens)?,
+    )?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
-        return Err(Diagnostic::new(detached.pos, "E_UNSUPPORTED",
-            "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented"));
+        return Err(Diagnostic::new(
+            detached.pos,
+            "E_UNSUPPORTED",
+            "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented",
+        ));
     }
     // The browser guest already has a typed stdio.print output import.
     // Permit the exact stdio.out << value statement form to lower through
@@ -106,9 +113,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             lexer::Tok::RBrace => braces = braces.saturating_sub(1),
             lexer::Tok::Ident(word) if braces == 0 => {
                 let next = toks.get(i + 1).map(|token| &token.tok);
-                if word == "declare" || word == "mtd" ||
-                    (word == "use" && matches!(next,
-                        Some(lexer::Tok::Ident(name)) if name == "namespace")) {
+                if word == "declare"
+                    || word == "mtd"
+                    || (word == "use"
+                        && matches!(next,
+                        Some(lexer::Tok::Ident(name)) if name == "namespace"))
+                {
                     target = true;
                     break;
                 }
@@ -132,8 +142,11 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             let typed = target_typed::lower_target_signatures(&headers)?;
             let actor_ast = target_typed::build_actor_program(&headers, &typed);
             check::check_target_actor_interface(&actor_ast)?;
-            return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
-                "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
+            return Err(Diagnostic::new(
+                toks[0].pos,
+                "E_UNSUPPORTED",
+                "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered",
+            ));
         }
     } else {
         parser::Parser::new(toks).parse_program()?
@@ -245,9 +258,7 @@ mod abi {
                 );
             }
             // SAFETY: single-threaded wasm; the host wrote `length` bytes before calling.
-            let input: &[u8] = unsafe {
-                std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize)
-            };
+            let input: &[u8] = unsafe { std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize) };
             let source = match std::str::from_utf8(input) {
                 Ok(s) => s,
                 Err(_) => {

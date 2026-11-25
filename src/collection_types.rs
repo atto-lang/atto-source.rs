@@ -84,8 +84,9 @@ fn type_args(input: &str, at: Pos, depth: usize) -> Result<Vec<&str>, Diagnostic
                 }
             }
             '>' => {
-                level = level.checked_sub(1).ok_or_else(||
-                    diag(at, "E_TYPE", "unbalanced collection generic argument"))?;
+                level = level
+                    .checked_sub(1)
+                    .ok_or_else(|| diag(at, "E_TYPE", "unbalanced collection generic argument"))?;
             }
             ',' if level == 0 => {
                 parts.push(&input[start..index]);
@@ -121,60 +122,69 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
         "Map" => LiteralType::Map(Box::new(LiteralType::Bottom), Box::new(LiteralType::Bottom)),
         "Tuple" => LiteralType::AnyTuple,
         _ => {
-            let (head, rest) = n.split_once('<').ok_or_else(||
-                diag(pos, "E_UNSUPPORTED_TYPE", format!("collection element type '{name}' is not in this static typing profile")))?;
-            let inner = rest.strip_suffix('>').ok_or_else(||
-                diag(pos, "E_TYPE", "collection type arguments must end with '>'"))?;
+            let (head, rest) = n.split_once('<').ok_or_else(|| {
+                diag(
+                    pos,
+                    "E_UNSUPPORTED_TYPE",
+                    format!("collection element type '{name}' is not in this static typing profile"),
+                )
+            })?;
+            let inner = rest
+                .strip_suffix('>')
+                .ok_or_else(|| diag(pos, "E_TYPE", "collection type arguments must end with '>'"))?;
             if head == "Record" {
-                let row = inner.strip_prefix('{')
+                let row = inner
+                    .strip_prefix('{')
                     .and_then(|s| s.strip_suffix('}'))
-                    .ok_or_else(|| diag(pos, "E_TYPE_ARITY",
-                        "Record's generic argument must be a closed {field: Type} row"))?;
-                let parts = if row.is_empty() { Vec::new() }
-                    else { type_args(row, pos, depth + 1)? };
+                    .ok_or_else(|| diag(pos, "E_TYPE_ARITY", "Record's generic argument must be a closed {field: Type} row"))?;
+                let parts = if row.is_empty() {
+                    Vec::new()
+                } else {
+                    type_args(row, pos, depth + 1)?
+                };
                 let mut fields = Vec::with_capacity(parts.len());
                 for entry in parts {
-                    let (hex, ty) = entry.split_once(':').ok_or_else(|| diag(
-                        pos, "E_TYPE", "invalid compiler-owned closed Record field descriptor"
-                    ))?;
+                    let (hex, ty) = entry
+                        .split_once(':')
+                        .ok_or_else(|| diag(pos, "E_TYPE", "invalid compiler-owned closed Record field descriptor"))?;
                     if hex.len() % 2 != 0 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
-                        return Err(diag(pos, "E_TYPE",
-                            "invalid compiler-owned closed Record field name"));
+                        return Err(diag(pos, "E_TYPE", "invalid compiler-owned closed Record field name"));
                     }
-                    let bytes = hex.as_bytes().chunks_exact(2).map(|pair| {
-                        let digits = std::str::from_utf8(pair).map_err(|_| diag(
-                            pos, "E_TYPE", "invalid Record field name encoding"
-                        ))?;
-                        u8::from_str_radix(digits, 16).map_err(|_| diag(
-                            pos, "E_TYPE", "invalid Record field name encoding"
-                        ))
-                    }).collect::<Result<Vec<_>, _>>()?;
-                    let name = String::from_utf8(bytes).map_err(|_| diag(
-                        pos, "E_TYPE", "Record field name must be valid UTF-8"
-                    ))?;
+                    let bytes = hex
+                        .as_bytes()
+                        .chunks_exact(2)
+                        .map(|pair| {
+                            let digits =
+                                std::str::from_utf8(pair).map_err(|_| diag(pos, "E_TYPE", "invalid Record field name encoding"))?;
+                            u8::from_str_radix(digits, 16).map_err(|_| diag(pos, "E_TYPE", "invalid Record field name encoding"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let name = String::from_utf8(bytes).map_err(|_| diag(pos, "E_TYPE", "Record field name must be valid UTF-8"))?;
                     fields.push((name, canonical_type(ty, pos, depth + 1)?));
                 }
                 fields.sort_by(|a, b| a.0.cmp(&b.0));
                 if fields.windows(2).any(|w| w[0].0 == w[1].0) {
-                    return Err(diag(pos, "E_DUPLICATE",
-                        "duplicate closed Record type field"));
+                    return Err(diag(pos, "E_DUPLICATE", "duplicate closed Record type field"));
                 }
                 return Ok(LiteralType::Record(fields));
             }
             let parts = type_args(inner, pos, depth + 1)?;
-            let args: Vec<_> = parts.iter().map(|p| canonical_type(p, pos, depth + 1))
-                .collect::<Result<_, _>>()?;
+            let args: Vec<_> = parts.iter().map(|p| canonical_type(p, pos, depth + 1)).collect::<Result<_, _>>()?;
             match (head, args.as_slice()) {
                 ("Option", [item]) => LiteralType::Option(Box::new(item.clone())),
-                ("Pair", [key,value]) => LiteralType::Pair(Box::new(key.clone()), Box::new(value.clone())),
-                ("Entry", [key,value]) => LiteralType::Entry(Box::new(key.clone()), Box::new(value.clone())),
+                ("Pair", [key, value]) => LiteralType::Pair(Box::new(key.clone()), Box::new(value.clone())),
+                ("Entry", [key, value]) => LiteralType::Entry(Box::new(key.clone()), Box::new(value.clone())),
                 ("Array", [item]) => LiteralType::Array(Box::new(item.clone())),
                 ("List", [item]) => LiteralType::List(Box::new(item.clone())),
-                ("Map", [key, value]) =>
-                    LiteralType::Map(Box::new(key.clone()), Box::new(value.clone())),
+                ("Map", [key, value]) => LiteralType::Map(Box::new(key.clone()), Box::new(value.clone())),
                 ("Tuple", values) if !values.is_empty() => LiteralType::Tuple(values.to_vec()),
-                _ => return Err(diag(pos, "E_TYPE_ARITY",
-                    format!("unsupported collection constructor/arity in '{name}'"))),
+                _ => {
+                    return Err(diag(
+                        pos,
+                        "E_TYPE_ARITY",
+                        format!("unsupported collection constructor/arity in '{name}'"),
+                    ))
+                }
             }
         }
     })
@@ -205,60 +215,61 @@ fn compatible(actual: &LiteralType, expected: &LiteralType) -> bool {
     match (actual, expected) {
         (_, Bottom) | (Bottom, _) => true,
         (Record(_), OpenRecord) | (OpenRecord, OpenRecord) => true,
-        (Record(a), Record(b)) =>
-            a.len() == b.len() && a.iter().zip(b).all(|((na,ta),(nb,tb))|
-                na == nb && compatible(ta,tb)),
-        (Array(a), Array(b)) | (List(a), List(b)) => compatible(a,b),
-        (Map(ka, va), Map(kb, vb))
-        | (Pair(ka, va), Pair(kb, vb))
-        | (Entry(ka, va), Entry(kb, vb)) =>
-            compatible(ka,kb) && compatible(va,vb),
-        (Option(a), Option(b)) => compatible(a,b),
+        (Record(a), Record(b)) => a.len() == b.len() && a.iter().zip(b).all(|((na, ta), (nb, tb))| na == nb && compatible(ta, tb)),
+        (Array(a), Array(b)) | (List(a), List(b)) => compatible(a, b),
+        (Map(ka, va), Map(kb, vb)) | (Pair(ka, va), Pair(kb, vb)) | (Entry(ka, va), Entry(kb, vb)) => {
+            compatible(ka, kb) && compatible(va, vb)
+        }
+        (Option(a), Option(b)) => compatible(a, b),
         (Tuple(_), AnyTuple) => true,
-        (Tuple(a), Tuple(b)) =>
-            a.len() == b.len() && a.iter().zip(b).all(|(x,y)| compatible(x,y)),
+        (Tuple(a), Tuple(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| compatible(x, y)),
         _ => actual == expected,
     }
 }
 
 fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagnostic> {
     use LiteralType::*;
-    if a == Bottom { return Ok(b); }
-    if b == Bottom { return Ok(a); }
-    if a == b { return Ok(a); }
+    if a == Bottom {
+        return Ok(b);
+    }
+    if b == Bottom {
+        return Ok(a);
+    }
+    if a == b {
+        return Ok(a);
+    }
     match (a, b) {
-        (Record(_), Record(_)) | (Record(_), OpenRecord) |
-        (OpenRecord, Record(_)) => Ok(OpenRecord),
-        (Option(a), Option(b)) => Ok(Option(Box::new(common(*a,*b,at)?))),
+        (Record(_), Record(_)) | (Record(_), OpenRecord) | (OpenRecord, Record(_)) => Ok(OpenRecord),
+        (Option(a), Option(b)) => Ok(Option(Box::new(common(*a, *b, at)?))),
         (List(a), List(b)) => Ok(List(Box::new(common(*a, *b, at)?))),
         (Array(a), Array(b)) => Ok(Array(Box::new(common(*a, *b, at)?))),
-        (Map(ka,va), Map(kb,vb)) => Ok(Map(
-            Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
-        (Entry(ka,va), Entry(kb,vb)) => Ok(Entry(
-            Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
-        (Tuple(a), Tuple(b)) if a.len() == b.len() =>
-            Ok(Tuple(a.into_iter().zip(b).map(|(x,y)| common(x,y,at))
-                .collect::<Result<Vec<_>,_>>()?)),
-        (a,b) => Err(diag(at, "E_TYPE", format!(
-            "collection contains incompatible element types {a:?} and {b:?}"))),
+        (Map(ka, va), Map(kb, vb)) => Ok(Map(Box::new(common(*ka, *kb, at)?), Box::new(common(*va, *vb, at)?))),
+        (Entry(ka, va), Entry(kb, vb)) => Ok(Entry(Box::new(common(*ka, *kb, at)?), Box::new(common(*va, *vb, at)?))),
+        (Tuple(a), Tuple(b)) if a.len() == b.len() => Ok(Tuple(
+            a.into_iter().zip(b).map(|(x, y)| common(x, y, at)).collect::<Result<Vec<_>, _>>()?,
+        )),
+        (a, b) => Err(diag(
+            at,
+            "E_TYPE",
+            format!("collection contains incompatible element types {a:?} and {b:?}"),
+        )),
     }
 }
 
-fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Pos)
-    -> Result<(), Diagnostic>
-{
+fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Pos) -> Result<(), Diagnostic> {
     if let Some(expected) = expected {
         if !compatible(actual, expected) {
-            return Err(diag(at, "E_TYPE", format!(
-                "literal type {actual:?} is not assignable to {expected:?}")));
+            return Err(diag(
+                at,
+                "E_TYPE",
+                format!("literal type {actual:?} is not assignable to {expected:?}"),
+            ));
         }
     }
     Ok(())
 }
 
-fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
-    -> Result<TypedLiteral, Diagnostic>
-{
+fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize) -> Result<TypedLiteral, Diagnostic> {
     use LiteralType::*;
     if depth >= MAX_LITERAL_DEPTH {
         return Err(diag(e.pos, "E_NESTING", "literal expression nesting exceeds the limit"));
@@ -267,37 +278,37 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
     let mut source_to_record_slot = Vec::new();
     let ty = match &e.kind {
         ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 => Int,
-        ExprKind::Int(_) => return Err(diag(e.pos, "E_INTEGER_RANGE",
-            "integer literal outside signed 64-bit range")),
+        ExprKind::Int(_) => return Err(diag(e.pos, "E_INTEGER_RANGE", "integer literal outside signed 64-bit range")),
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
         ExprKind::Symbol(_) => Symbol,
         ExprKind::Var(name) if name == "None" => match expected {
             Some(Option(item)) if **item != Bottom => Option(item.clone()),
-            _ => return Err(diag(e.pos, "E_TYPE_INFERENCE",
-                "None requires an explicit Option<T> contextual type")),
+            _ => {
+                return Err(diag(
+                    e.pos,
+                    "E_TYPE_INFERENCE",
+                    "None requires an explicit Option<T> contextual type",
+                ))
+            }
         },
-        ExprKind::Call(name, args) if matches!(name.as_str(),
-                "@builtin/Pair.of" | "@builtin/Entry.of") => {
+        ExprKind::Call(name, args) if matches!(name.as_str(), "@builtin/Pair.of" | "@builtin/Entry.of") => {
             if args.len() != 2 {
-                return Err(diag(e.pos,"E_FACTORY_ARITY",
-                    "Pair.of/Entry.of requires exactly two arguments"));
+                return Err(diag(e.pos, "E_FACTORY_ARITY", "Pair.of/Entry.of requires exactly two arguments"));
             }
             let is_pair = name == "@builtin/Pair.of";
-            let (left,right) = match (is_pair,expected) {
-                (true,Some(Pair(a,b))) | (false,Some(Entry(a,b))) =>
-                    (Some(a.as_ref()),Some(b.as_ref())),
-                (_,None) => (None,None),
-                _ => return Err(diag(e.pos,"E_TYPE",
-                    "Pair and Entry are different product types")),
+            let (left, right) = match (is_pair, expected) {
+                (true, Some(Pair(a, b))) | (false, Some(Entry(a, b))) => (Some(a.as_ref()), Some(b.as_ref())),
+                (_, None) => (None, None),
+                _ => return Err(diag(e.pos, "E_TYPE", "Pair and Entry are different product types")),
             };
-            let a = inferred(&args[0],left,depth+1)?;
-            let b = inferred(&args[1],right,depth+1)?;
+            let a = inferred(&args[0], left, depth + 1)?;
+            let b = inferred(&args[1], right, depth + 1)?;
             let ty = if is_pair {
-                Pair(Box::new(a.ty.clone()),Box::new(b.ty.clone()))
+                Pair(Box::new(a.ty.clone()), Box::new(b.ty.clone()))
             } else {
-                Entry(Box::new(a.ty.clone()),Box::new(b.ty.clone()))
+                Entry(Box::new(a.ty.clone()), Box::new(b.ty.clone()))
             };
             children.push(a);
             children.push(b);
@@ -312,34 +323,42 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             Int
         }
-        ExprKind::Unary(UnOp::Plus, v) if matches!(v.kind, ExprKind::Int(_)) =>
-            inferred(v, Some(&Int), depth + 1)?.ty,
+        ExprKind::Unary(UnOp::Plus, v) if matches!(v.kind, ExprKind::Int(_)) => inferred(v, Some(&Int), depth + 1)?.ty,
         // Keep Array and List factories distinct even though both accept
         // positional items. Rewriting both to bracket literals would infer
         // List for an untyped Array.of(...) and violate the factory contract.
-        ExprKind::Call(name, args)
-            if matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of") => {
+        ExprKind::Call(name, args) if matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of") => {
             let is_array = name == "@builtin/Array.of";
             let element = match (is_array, expected) {
                 (true, Some(Array(item))) | (false, Some(List(item))) => (**item).clone(),
                 (_, None) => Bottom,
-                _ => return Err(diag(e.pos, "E_TYPE",
-                    "collection factory result does not match expected Array/List type")),
+                _ => {
+                    return Err(diag(
+                        e.pos,
+                        "E_TYPE",
+                        "collection factory result does not match expected Array/List type",
+                    ))
+                }
             };
             if args.is_empty() && element == Bottom {
-                return Err(diag(e.pos, "E_TYPE_INFERENCE",
-                    "empty Array.of/List.of requires a concrete generic element type"));
+                return Err(diag(
+                    e.pos,
+                    "E_TYPE_INFERENCE",
+                    "empty Array.of/List.of requires a concrete generic element type",
+                ));
             }
             let target = if is_array {
                 Array(Box::new(element))
             } else {
                 List(Box::new(element))
             };
-            let literal = Expr {pos: e.pos, kind: ExprKind::Array(args.clone())};
+            let literal = Expr {
+                pos: e.pos,
+                kind: ExprKind::Array(args.clone()),
+            };
             return inferred(&literal, Some(&target), depth + 1).map_err(|err| {
                 if err.code == "E_TYPE" {
-                    diag(err.pos, "E_TYPE_INFERENCE",
-                        "Array.of/List.of elements have no checked common type")
+                    diag(err.pos, "E_TYPE_INFERENCE", "Array.of/List.of elements have no checked common type")
                 } else {
                     err
                 }
@@ -354,28 +373,28 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let mut found = Bottom;
             for item in items {
-                let child = inferred(item,
-                    if element == Bottom { None } else { Some(&element) }, depth + 1)?;
+                let child = inferred(item, if element == Bottom { None } else { Some(&element) }, depth + 1)?;
                 found = common(found, child.ty.clone(), item.pos)?;
                 children.push(child);
             }
             let element_ty = if element == Bottom { found } else { element };
-            if kind { Array(Box::new(element_ty)) } else { List(Box::new(element_ty)) }
+            if kind {
+                Array(Box::new(element_ty))
+            } else {
+                List(Box::new(element_ty))
+            }
         }
         ExprKind::Record(fields) => {
             let expected_fields = match expected {
                 Some(Record(row)) => Some(row.as_slice()),
                 Some(OpenRecord) | None => None,
-                _ => return Err(diag(e.pos, "E_TYPE",
-                    "record literal requires Record context")),
+                _ => return Err(diag(e.pos, "E_TYPE", "record literal requires Record context")),
             };
             let mut typed_fields = Vec::new();
             for (field, value) in fields {
-                let wanted = expected_fields.and_then(|row|
-                    row.iter().find(|(name, _)| name == field).map(|(_, ty)| ty));
+                let wanted = expected_fields.and_then(|row| row.iter().find(|(name, _)| name == field).map(|(_, ty)| ty));
                 if expected_fields.is_some() && wanted.is_none() {
-                    return Err(diag(value.pos, "E_NO_FIELD",
-                        format!("closed Record type has no field '{field}'")));
+                    return Err(diag(value.pos, "E_NO_FIELD", format!("closed Record type has no field '{field}'")));
                 }
                 let child = inferred(value, wanted, depth + 1)?;
                 typed_fields.push((field.clone(), child.ty.clone()));
@@ -384,8 +403,11 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             if let Some(row) = expected_fields {
                 for (name, _) in row {
                     if !fields.iter().any(|(source, _)| source == name) {
-                        return Err(diag(e.pos, "E_NO_FIELD",
-                            format!("closed Record is missing required field '{name}'")));
+                        return Err(diag(
+                            e.pos,
+                            "E_NO_FIELD",
+                            format!("closed Record is missing required field '{name}'"),
+                        ));
                     }
                 }
             }
@@ -393,12 +415,13 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             // order. Evaluate values in the original source order, then place
             // each result into the corresponding canonical slot. A shared
             // shape descriptor must NEVER reorder the initializer effects.
-            typed_fields.sort_by(|a,b| a.0.cmp(&b.0));
+            typed_fields.sort_by(|a, b| a.0.cmp(&b.0));
             if typed_fields.windows(2).any(|w| w[0].0 == w[1].0) {
-                return Err(diag(e.pos,"E_DUPLICATE","duplicate static record field"));
+                return Err(diag(e.pos, "E_DUPLICATE", "duplicate static record field"));
             }
             for (name, _) in fields {
-                let slot = typed_fields.binary_search_by(|(field,_)| field.cmp(name))
+                let slot = typed_fields
+                    .binary_search_by(|(field, _)| field.cmp(name))
                     .expect("record field was inserted above");
                 source_to_record_slot.push(slot);
             }
@@ -406,20 +429,24 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         }
         // Standalone key => value is nominal Entry<K,V> in source typing.
         // It does not allocate an Entry guest object or alias a Pair/Map.
-        ExprKind::Entry(key,value) => {
-            let (wanted_k,wanted_v) = match expected {
-                Some(Entry(k,v)) => (Some(k.as_ref()),Some(v.as_ref())),
-                None => (None,None),
-                _ => return Err(diag(e.pos,"E_TYPE",
-                    "standalone Entry cannot implicitly convert to Pair, Map or Record")),
+        ExprKind::Entry(key, value) => {
+            let (wanted_k, wanted_v) = match expected {
+                Some(Entry(k, v)) => (Some(k.as_ref()), Some(v.as_ref())),
+                None => (None, None),
+                _ => {
+                    return Err(diag(
+                        e.pos,
+                        "E_TYPE",
+                        "standalone Entry cannot implicitly convert to Pair, Map or Record",
+                    ))
+                }
             };
-            let k=inferred(key,wanted_k,depth+1)?;
-            let v=inferred(value,wanted_v,depth+1)?;
-            if !matches!(k.ty,Int | Bool | String | Symbol) {
-                return Err(diag(key.pos,"E_MAP_KEY",
-                    "Entry key requires a scalar stable Hash/Eq witness"));
+            let k = inferred(key, wanted_k, depth + 1)?;
+            let v = inferred(value, wanted_v, depth + 1)?;
+            if !matches!(k.ty, Int | Bool | String | Symbol) {
+                return Err(diag(key.pos, "E_MAP_KEY", "Entry key requires a scalar stable Hash/Eq witness"));
             }
-            let pair=Entry(Box::new(k.ty.clone()),Box::new(v.ty.clone()));
+            let pair = Entry(Box::new(k.ty.clone()), Box::new(v.ty.clone()));
             children.push(k);
             children.push(v);
             pair
@@ -427,26 +454,34 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         // Typed Entry-only Map factory. The type witness is compiler-owned:
         // no dynamic Map type erasure or invented implicit widening.
         ExprKind::Call(factory, args) if factory.starts_with("@builtin/Map.of_entries<") => {
-            let signature = factory.strip_prefix("@builtin/Map.of_entries<")
+            let signature = factory
+                .strip_prefix("@builtin/Map.of_entries<")
                 .and_then(|s| s.strip_suffix('>'))
-                .ok_or_else(|| diag(e.pos, "E_SHAPE",
-                    "malformed compiler-owned Map.of_entries signature"))?;
-            let (key_name, value_name) = signature.split_once(',')
-                .ok_or_else(|| diag(e.pos, "E_SHAPE",
-                    "Map.of_entries requires precisely K and V witnesses"))?;
+                .ok_or_else(|| diag(e.pos, "E_SHAPE", "malformed compiler-owned Map.of_entries signature"))?;
+            let (key_name, value_name) = signature
+                .split_once(',')
+                .ok_or_else(|| diag(e.pos, "E_SHAPE", "Map.of_entries requires precisely K and V witnesses"))?;
             let key_type = match key_name {
-                "int" => Int, "bool" => Bool, "string" => String,
-                _ => return Err(diag(e.pos, "E_MAP_KEY",
-                    "Map.of_entries requires a scalar hashable key type")),
+                "int" => Int,
+                "bool" => Bool,
+                "string" => String,
+                _ => return Err(diag(e.pos, "E_MAP_KEY", "Map.of_entries requires a scalar hashable key type")),
             };
             let value_type = match value_name {
-                "int" => Int, "bool" => Bool, "string" => String, "float" => Float,
-                _ => return Err(diag(e.pos, "E_UNSUPPORTED_TYPE",
-                    "Map.of_entries requires a scalar value type in this guest profile")),
+                "int" => Int,
+                "bool" => Bool,
+                "string" => String,
+                "float" => Float,
+                _ => {
+                    return Err(diag(
+                        e.pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "Map.of_entries requires a scalar value type in this guest profile",
+                    ))
+                }
             };
             if args.len() % 2 != 0 {
-                return Err(diag(e.pos, "E_FACTORY_ARITY",
-                    "Map.of_entries requires whole Entry<K,V> pairs"));
+                return Err(diag(e.pos, "E_FACTORY_ARITY", "Map.of_entries requires whole Entry<K,V> pairs"));
             }
             for entry in args.chunks_exact(2) {
                 let k = inferred(&entry[0], Some(&key_type), depth + 1)?;
@@ -458,40 +493,40 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         }
         ExprKind::Map(entries) => {
             let (wanted_k, wanted_v) = match expected {
-                Some(Map(k,v)) => (k.as_ref().clone(), v.as_ref().clone()),
+                Some(Map(k, v)) => (k.as_ref().clone(), v.as_ref().clone()),
                 None => (Bottom, Bottom),
                 _ => return Err(diag(e.pos, "E_TYPE", "map literal requires Map context")),
             };
             let (mut keys, mut vals) = (Bottom, Bottom);
-            for (key,value) in entries {
+            for (key, value) in entries {
                 let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1)?;
                 let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1)?;
-                keys = common(keys,key_node.ty.clone(),key.pos)?;
-                vals = common(vals,value_node.ty.clone(),value.pos)?;
+                keys = common(keys, key_node.ty.clone(), key.pos)?;
+                vals = common(vals, value_node.ty.clone(), value.pos)?;
                 children.push(key_node);
                 children.push(value_node);
             }
             let key_ty = if wanted_k == Bottom { keys } else { wanted_k };
             let val_ty = if wanted_v == Bottom { vals } else { wanted_v };
             if !matches!(key_ty, Int | Bool | String | Symbol | Bottom) {
-                return Err(diag(e.pos, "E_MAP_KEY",
-                    "this profile permits only scalar hashable map key types"));
+                return Err(diag(e.pos, "E_MAP_KEY", "this profile permits only scalar hashable map key types"));
             }
             Map(Box::new(key_ty), Box::new(val_ty))
         }
         ExprKind::EmptyBraces => match expected {
             Some(OpenRecord) | Some(Record(_)) => Record(Vec::new()),
-            Some(Map(key,val)) if **key != Bottom && **val != Bottom =>
-                Map(key.clone(), val.clone()),
-            _ => return Err(diag(e.pos,"E_INFER",
-                "empty '{}' needs an unambiguous Record or Map<K,V> context")),
+            Some(Map(key, val)) if **key != Bottom && **val != Bottom => Map(key.clone(), val.clone()),
+            _ => return Err(diag(e.pos, "E_INFER", "empty '{}' needs an unambiguous Record or Map<K,V> context")),
         },
         ExprKind::Tuple(items) => {
             let slots = match expected {
                 Some(Tuple(slots)) => {
-                    if slots.len()!=items.len() {
-                        return Err(diag(e.pos, "E_TYPE_ARITY",
-                            format!("tuple has {} elements, expected {}", items.len(), slots.len())));
+                    if slots.len() != items.len() {
+                        return Err(diag(
+                            e.pos,
+                            "E_TYPE_ARITY",
+                            format!("tuple has {} elements, expected {}", items.len(), slots.len()),
+                        ));
                     }
                     Some(slots)
                 }
@@ -499,95 +534,138 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
                 _ => return Err(diag(e.pos, "E_TYPE", "tuple literal requires Tuple context")),
             };
             let mut tys = Vec::new();
-            for (i,item) in items.iter().enumerate() {
-                let child = inferred(item,slots.map(|s| &s[i]),depth + 1)?;
+            for (i, item) in items.iter().enumerate() {
+                let child = inferred(item, slots.map(|s| &s[i]), depth + 1)?;
                 tys.push(child.ty.clone());
                 children.push(child);
             }
             Tuple(tys)
         }
-        _ => return Err(diag(e.pos, "E_UNSUPPORTED",
-            "nonliteral collection elements require ownership-aware expression type checking")),
+        _ => {
+            return Err(diag(
+                e.pos,
+                "E_UNSUPPORTED",
+                "nonliteral collection elements require ownership-aware expression type checking",
+            ))
+        }
     };
-    matches_expected(&ty,expected,e.pos)?;
-    Ok(TypedLiteral { pos: e.pos,ty,children,source_to_record_slot })
+    matches_expected(&ty, expected, e.pos)?;
+    Ok(TypedLiteral {
+        pos: e.pos,
+        ty,
+        children,
+        source_to_record_slot,
+    })
 }
 
 /// Static type-only lookup. Guest field projection is separately checked
 /// by the typed compiler and never inferred from an unproved open Record.
-pub fn static_record_field_type(
-    ty: &LiteralType, field: &str, at: Pos
-) -> Result<LiteralType, Diagnostic> {
+pub fn static_record_field_type(ty: &LiteralType, field: &str, at: Pos) -> Result<LiteralType, Diagnostic> {
     match ty {
-        LiteralType::Record(fields) => fields.iter()
+        LiteralType::Record(fields) => fields
+            .iter()
             .find(|(name, _)| name == field)
             .map(|(_, ty)| ty.clone())
-            .ok_or_else(|| diag(at, "E_NO_FIELD",
-                format!("closed record has no field '{field}'"))),
-        LiteralType::OpenRecord => Err(diag(at, "E_FIELD_PRESENCE",
-            format!("open Record field '{field}' requires a verified presence/type guard"))),
+            .ok_or_else(|| diag(at, "E_NO_FIELD", format!("closed record has no field '{field}'"))),
+        LiteralType::OpenRecord => Err(diag(
+            at,
+            "E_FIELD_PRESENCE",
+            format!("open Record field '{field}' requires a verified presence/type guard"),
+        )),
         _ => Err(diag(at, "E_TYPE", "static record selection requires Record type")),
     }
 }
 
 fn starts_literal(e: &Expr) -> bool {
-    matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
-        ExprKind::Map(_) | ExprKind::Entry(_, _) | ExprKind::Symbol(_) |
-        ExprKind::EmptyBraces | ExprKind::Tuple(_)) ||
-        matches!(&e.kind, ExprKind::Call(name, _) if
+    matches!(
+        &e.kind,
+        ExprKind::Array(_)
+            | ExprKind::Record(_)
+            | ExprKind::Map(_)
+            | ExprKind::Entry(_, _)
+            | ExprKind::Symbol(_)
+            | ExprKind::EmptyBraces
+            | ExprKind::Tuple(_)
+    ) || matches!(&e.kind, ExprKind::Call(name, _) if
             matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of" |
-                "@builtin/Pair.of" | "@builtin/Entry.of")) ||
-        matches!(&e.kind, ExprKind::Call(name, _) if
+                "@builtin/Pair.of" | "@builtin/Entry.of"))
+        || matches!(&e.kind, ExprKind::Call(name, _) if
             name.starts_with("@builtin/Map.of_entries<"))
 }
 
 /// Staged semantic preflight: checked declarations are *not* yet executable.
 /// Scalar-only statements remain the responsibility of the existing checker.
-fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
-    -> Result<(), Diagnostic>
-{
+fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>) -> Result<(), Diagnostic> {
     for stmt in body {
         match stmt {
-            Stmt::Bind {name, ty,init,pos,..} => {
-                let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
-                if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
-                    LiteralType::List(_) | LiteralType::Map(_,_) |
-                    LiteralType::Pair(_,_) | LiteralType::Entry(_,_) |
-                    LiteralType::Option(_) | LiteralType::OpenRecord |
-                    LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
-                    || starts_literal(init)
+            Stmt::Bind { name, ty, init, pos, .. } => {
+                let wanted = ty.map(|t| annotation(t, program, *pos)).transpose()?.flatten();
+                if wanted.as_ref().is_some_and(|t| {
+                    matches!(
+                        t,
+                        LiteralType::Array(_)
+                            | LiteralType::List(_)
+                            | LiteralType::Map(_, _)
+                            | LiteralType::Pair(_, _)
+                            | LiteralType::Entry(_, _)
+                            | LiteralType::Option(_)
+                            | LiteralType::OpenRecord
+                            | LiteralType::Record(_)
+                            | LiteralType::Tuple(_)
+                            | LiteralType::AnyTuple
+                    )
+                }) || starts_literal(init)
                 {
-                    let value = inferred(init,wanted.as_ref(),0)?;
-                    if ty.is_none() && (matches!(&init.kind, ExprKind::EmptyBraces) ||
-                        matches!(&init.kind, ExprKind::Array(v) if v.is_empty())) {
-                        return Err(diag(init.pos,"E_INFER",
-                            "empty collection without type annotation is ambiguous"));
+                    let value = inferred(init, wanted.as_ref(), 0)?;
+                    if ty.is_none()
+                        && (matches!(&init.kind, ExprKind::EmptyBraces) || matches!(&init.kind, ExprKind::Array(v) if v.is_empty()))
+                    {
+                        return Err(diag(init.pos, "E_INFER", "empty collection without type annotation is ambiguous"));
                     }
-                    out.push(TypedBinding {name:name.clone(),declared:wanted,value});
+                    out.push(TypedBinding {
+                        name: name.clone(),
+                        declared: wanted,
+                        value,
+                    });
                 }
             }
-            Stmt::Block(inner) | Stmt::While {body:inner,..} |
-            Stmt::Loop {body:inner,..} | Stmt::StateWrite {body:inner,..} |
-            Stmt::ForIn {body:inner,..} => walk(inner,program,out)?,
-            Stmt::If {arms,otherwise,..} => {
-                for (_,inner) in arms { walk(inner,program,out)?; }
-                if let Some(inner) = otherwise { walk(inner,program,out)?; }
+            Stmt::Block(inner)
+            | Stmt::While { body: inner, .. }
+            | Stmt::Loop { body: inner, .. }
+            | Stmt::StateWrite { body: inner, .. }
+            | Stmt::ForIn { body: inner, .. } => walk(inner, program, out)?,
+            Stmt::If { arms, otherwise, .. } => {
+                for (_, inner) in arms {
+                    walk(inner, program, out)?;
+                }
+                if let Some(inner) = otherwise {
+                    walk(inner, program, out)?;
+                }
             }
-            Stmt::For {init,update,body,..} => {
-                if let Some(s) = init { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
-                walk(body,program,out)?;
-                if let Some(s) = update { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
+            Stmt::For { init, update, body, .. } => {
+                if let Some(s) = init {
+                    walk(std::slice::from_ref(s.as_ref()), program, out)?;
+                }
+                walk(body, program, out)?;
+                if let Some(s) = update {
+                    walk(std::slice::from_ref(s.as_ref()), program, out)?;
+                }
             }
-            Stmt::Match {arms,..} => {
-                for arm in arms { walk(&arm.body,program,out)?; }
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    walk(&arm.body, program, out)?;
+                }
             }
-            Stmt::Try {body,catch,finally,..} => {
-                walk(body,program,out)?;
-                if let Some((_,inner)) = catch { walk(inner,program,out)?; }
-                if let Some(inner) = finally { walk(inner,program,out)?; }
+            Stmt::Try { body, catch, finally, .. } => {
+                walk(body, program, out)?;
+                if let Some((_, inner)) = catch {
+                    walk(inner, program, out)?;
+                }
+                if let Some(inner) = finally {
+                    walk(inner, program, out)?;
+                }
             }
-            Stmt::Defer {body,..} | Stmt::Recover {body,..} =>
-                walk(body,program,out)?,
+            Stmt::Defer { body, .. } | Stmt::Recover { body, .. } => walk(body, program, out)?,
             _ => {}
         }
     }
@@ -599,7 +677,7 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
 pub fn analyze(program: &Program) -> Result<Vec<TypedBinding>, Diagnostic> {
     let mut out = Vec::new();
     for func in &program.funcs {
-        walk(&func.body,program,&mut out)?;
+        walk(&func.body, program, &mut out)?;
     }
     Ok(out)
 }

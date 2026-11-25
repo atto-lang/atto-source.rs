@@ -15,12 +15,14 @@ fn first_generator(source: &str) -> Vec<Stmt> {
 
 #[test]
 fn yield_points_resume_in_source_order_and_end_at_done() {
-    let body = first_generator(r#"
+    let body = first_generator(
+        r#"
         fnc *gen values(): Generator<int> {
             yield 20;
             yield 22;
         }
-    "#);
+    "#,
+    );
     let plan = lower(&body).unwrap();
     assert_eq!(plan.yields, 2);
     assert_eq!(plan.delegate_slots, 0);
@@ -32,7 +34,8 @@ fn yield_points_resume_in_source_order_and_end_at_done() {
 
 #[test]
 fn loop_and_yield_star_lower_to_distinct_pull_driven_resume_states() {
-    let program = Parser::new(lex(r#"
+    let program = Parser::new(
+        lex(r#"
         fnc *gen count_to(int limit): Generator<int> {
             for (let i = 1; i <= limit; i++) do
                 yield i;
@@ -42,7 +45,11 @@ fn loop_and_yield_star_lower_to_distinct_pull_driven_resume_states() {
             yield 0;
             yield* count_to(limit);
         }
-    "#).unwrap()).parse_program().unwrap();
+    "#)
+        .unwrap(),
+    )
+    .parse_program()
+    .unwrap();
     let leaf = lower(&program.funcs[0].body).unwrap();
     assert_eq!(leaf.yields, 1);
     assert_eq!(leaf.delegate_slots, 0);
@@ -64,7 +71,8 @@ fn loop_and_yield_star_lower_to_distinct_pull_driven_resume_states() {
 
 #[test]
 fn branch_and_nested_loop_jumps_are_in_bounds_and_break_continue_have_own_targets() {
-    let body = first_generator(r#"
+    let body = first_generator(
+        r#"
         fnc *gen g(int limit): Generator<int> {
             for (let i = 0; i < limit; i++) do
                 if i eq 1 then continue; fi
@@ -73,7 +81,8 @@ fn branch_and_nested_loop_jumps_are_in_bounds_and_break_continue_have_own_target
             done
             yield 42;
         }
-    "#);
+    "#,
+    );
     let plan = lower(&body).unwrap();
     let size = plan.instructions.len() as u32;
     let mut guards = 0;
@@ -87,7 +96,9 @@ fn branch_and_nested_loop_jumps_are_in_bounds_and_break_continue_have_own_target
             }
             Instruction::Jump { to } => {
                 assert!(*to < size, "jump {pc} escapes CFG");
-                if *to <= pc as u32 { backward += 1; }
+                if *to <= pc as u32 {
+                    backward += 1;
+                }
                 jumps += 1;
             }
             _ => {}
@@ -101,7 +112,8 @@ fn branch_and_nested_loop_jumps_are_in_bounds_and_break_continue_have_own_target
 
 #[test]
 fn delegates_have_distinct_frame_slots_even_across_conditional_arms() {
-    let body = first_generator(r#"
+    let body = first_generator(
+        r#"
         fnc *gen g(bool use_first): Generator<int> {
             if use_first then
                 yield* first();
@@ -110,12 +122,21 @@ fn delegates_have_distinct_frame_slots_even_across_conditional_arms() {
             fi
             yield* third();
         }
-    "#);
+    "#,
+    );
     let plan = lower(&body).unwrap();
     assert_eq!(plan.delegate_slots, 3);
-    let slots: Vec<_> = plan.instructions.iter().filter_map(|i|
-        if let Instruction::Delegate { slot, .. } = i { Some(*slot) } else { None }
-    ).collect();
+    let slots: Vec<_> = plan
+        .instructions
+        .iter()
+        .filter_map(|i| {
+            if let Instruction::Delegate { slot, .. } = i {
+                Some(*slot)
+            } else {
+                None
+            }
+        })
+        .collect();
     assert_eq!(slots, vec![0, 1, 2]);
     assert!(matches!(plan.instructions.last(), Some(Instruction::Done)));
 }
@@ -123,15 +144,23 @@ fn delegates_have_distinct_frame_slots_even_across_conditional_arms() {
 #[test]
 fn cfg_is_bounded_and_does_not_silently_accept_unlowered_for_in() {
     let pos = Pos { line: 7, col: 2 };
-    let one = Stmt::Yield(Expr { kind: ExprKind::Int(Some(1)), pos }, pos);
+    let one = Stmt::Yield(
+        Expr {
+            kind: ExprKind::Int(Some(1)),
+            pos,
+        },
+        pos,
+    );
     let too_many = vec![one; MAX_GENERATOR_INSTRUCTIONS];
     let err = lower(&too_many).unwrap_err();
     assert_eq!(err.code, "E_SOURCE_LIMIT");
-    let body = first_generator(r#"
+    let body = first_generator(
+        r#"
         fnc *gen g(): Generator<int> {
             for value in other() do yield value; done
         }
-    "#);
+    "#,
+    );
     let err = lower(&body).unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED");
     assert!(err.message.contains("for-in"));
