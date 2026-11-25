@@ -73,16 +73,22 @@ pub enum Import {
     PrintBool,
     PrintStr,
     PrintNewline,
+    ActorSpawn,
+    ActorSend,
+    ActorClose,
 }
 
 impl Import {
-    pub const ALL: [Import; 4] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline];
+    pub const ALL: [Import; 7] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend, Import::ActorClose];
     pub fn name(self) -> &'static str {
         match self {
             Import::PrintI64 => "print_i64",
             Import::PrintBool => "print_bool",
             Import::PrintStr => "print_str",
             Import::PrintNewline => "print_newline",
+            Import::ActorSpawn => "actor_spawn",
+            Import::ActorSend => "actor_send",
+            Import::ActorClose => "actor_close",
         }
     }
 }
@@ -93,6 +99,13 @@ pub enum TExpr {
     Bool(bool),
     /// Compact, checked variant index of a distinct nominal enum type.
     EnumTag(u32),
+    SpawnActor(u16),
+    /// A send returns a typed Result<void, SendError> represented as an
+    /// internal i32 status (0=Ok, 1=Full, 2=Closed).
+    ActorSend(Box<TE>, Box<TE>),
+    ActorClose(Box<TE>),
+    /// Statically checked predicate on a SendResult status.
+    SendResultCheck(Box<TE>, u32),
     /// Allocate an independently owned guest instance with immutable defaults.
     NewClass { size: u32, fields: Vec<(u32, FieldValue)> },
     /// Load a scalar class field at a checked, compiler-derived byte offset.
@@ -159,6 +172,8 @@ pub struct TProgram {
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
     pub heap_used: bool,
+    /// Explicit checked actor handler exports (nominal actor id, function index).
+    pub actor_handlers: Vec<(u16, u32)>,
 }
 
 struct Local {
@@ -173,6 +188,8 @@ struct FnCx<'a> {
     names: &'a BTreeMap<String, Vec<usize>>,
     enums: &'a BTreeMap<String, (u16, Vec<String>)>,
     classes: &'a BTreeMap<String, ClassLayout>,
+    actors: &'a BTreeMap<String, (u16, bool)>,
+    in_actor_handler: bool,
     heap_used: &'a mut bool,
     ret: Type,
     scopes: Vec<Vec<Local>>,
@@ -223,9 +240,31 @@ pub fn check(p: &Program) -> R<TProgram> {
         classes.insert(declaration.name.clone(), ClassLayout { id: class_id, size, fields });
         class_id += 1;
     }
+    // Actor handler bodies are compiled as hidden free functions, exported for
+    // execution only in a distinct browser Worker with its own Wasm instance.
+    let mut all_funcs = p.funcs.clone();
+    let mut actors = BTreeMap::new();
+    let mut actor_handlers = Vec::new();
+    let mut actor_id = 0u16;
+    for d in &p.declarations {
+        if d.kind != DeclarationKind::Actor { continue; }
+        if let Some(handler) = &d.handler {
+            let mut h = handler.clone();
+            h.name = format!("__atto_actor_receive_{actor_id}");
+            actor_handlers.push((actor_id, all_funcs.len() as u32));
+            all_funcs.push(h);
+        }
+        actors.insert(d.name.clone(), (actor_id, d.handler.is_some()));
+        actor_id += 1;
+    }
+    for f in &p.funcs {
+        if f.name.starts_with("__atto_actor_") {
+            return Err(Diagnostic::new(f.pos, "E_RESERVED", "compiler-internal actor function name"));
+        }
+    }
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (i, f) in p.funcs.iter().enumerate() {
+    for (i, f) in all_funcs.iter().enumerate() {
         if p.declarations.iter().any(|d| d.name == f.name) {
             return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
                 format!("function '{}' conflicts with a nominal declaration", f.name)));
@@ -264,8 +303,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             *i
         }
         None => {
-            let pos = p
-                .funcs
+            let pos = all_funcs
                 .iter()
                 .find(|f| f.name == "main")
                 .map(|f| f.pos)
@@ -281,12 +319,14 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut data = Vec::new();
     let mut funcs = Vec::new();
     let mut heap_used = false;
-    for f in &p.funcs {
+    for f in &all_funcs {
         let mut cx = FnCx {
             sigs: &sigs,
             names: &names,
             enums: &enums,
             classes: &classes,
+            actors: &actors,
+            in_actor_handler: f.name.starts_with("__atto_actor_receive_"),
             heap_used: &mut heap_used,
             ret: f.ret,
             scopes: vec![Vec::new()],
@@ -333,6 +373,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         imports,
         data,
         heap_used,
+        actor_handlers,
     })
 }
 
@@ -587,6 +628,8 @@ impl FnCx<'_> {
                 let object = self.value(object)?;
                 let id = match object.ty {
                     Type::Class(id) => id,
+                    Type::Actor(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "actor methods including send() -> Result are not lowered yet")),
                     _ => return Err(type_err(pos, "field access requires a class reference")),
                 };
                 let layout = self.classes.values().find(|c| c.id == id)
@@ -715,7 +758,7 @@ impl FnCx<'_> {
                         Type::Bool
                     }
                     BinOp::Eq | BinOp::Ne => {
-                        if matches!(a.ty, Type::Class(_)) || matches!(b.ty, Type::Class(_)) {
+                        if matches!(a.ty, Type::Class(_) | Type::Actor(_)) || matches!(b.ty, Type::Class(_) | Type::Actor(_)) {
                             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                                 "class identity equality is not admitted by the browser compiler"));
                         }
@@ -765,8 +808,62 @@ impl FnCx<'_> {
                 }
             }
             ExprKind::NewClass(name, args) => self.construct_class(name, args, pos)?,
+            ExprKind::SpawnActor(name, args) => {
+                if self.in_actor_handler { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "nested actor spawn from receive() is not admitted without a supervisor")); }
+                let (id, runnable) = self.actors.get(name).ok_or_else(|| Diagnostic::new(pos,
+                    "E_SPAWN_TYPE", format!("'{name}' is not a declared actor")))?;
+                if !args.is_empty() { return Err(Diagnostic::new(pos, "E_ARITY",
+                    "stage-1 actors have no constructor arguments")); }
+                if !runnable { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "actor must declare a stateless receive(int) -> int handler before spawn")); }
+                self.imports.push(Import::ActorSpawn);
+                TE { e: TExpr::SpawnActor(*id), ty: Type::Actor(*id) }
+            },
+            ExprKind::MethodCall(receiver, name, args) => self.method_call(receiver, name, args, pos)?,
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
         })
+    }
+
+    // Separate method checker keeps the recursive generic expression checker
+    // stack frame bounded: nested operator chains must fail at the parser's
+    // 256-height budget, never overflow a 2 MiB host stack.
+    fn method_call(&mut self, receiver: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+                let object = self.value(receiver)?;
+                Ok(match (object.ty, name) {
+                    (Type::Actor(_), "send") => {
+                        if self.in_actor_handler { return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                            "actor-to-actor send from receive() requires capability checks")); }
+                        if args.len()!=1 { return Err(Diagnostic::new(pos,"E_ARITY",
+                            "actor.send expects exactly one int message")); }
+                        let message = self.value(&args[0])?;
+                        if message.ty != Type::Int { return Err(type_err(args[0].pos,
+                            "actor.send requires a Sendable int; no pointers, handles or references")); }
+                        self.imports.push(Import::ActorSend);
+                        TE { e:TExpr::ActorSend(Box::new(object),Box::new(message)),ty:Type::SendResult }
+                    }
+                    (Type::Actor(_), "close") => {
+                        if self.in_actor_handler { return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                            "actor.close from receive() is not admitted")); }
+                        if !args.is_empty() { return Err(Diagnostic::new(pos,"E_ARITY",
+                            "actor.close expects no arguments")); }
+                        self.imports.push(Import::ActorClose);
+                        TE { e:TExpr::ActorClose(Box::new(object)),ty:Type::Bool }
+                    }
+                    (Type::SendResult, "is_ok" | "is_err" | "is_full" | "is_closed") => {
+                        if !args.is_empty() { return Err(Diagnostic::new(pos,"E_ARITY",
+                            "Result predicate expects no arguments")); }
+                        let code = match name { "is_ok"=>0, "is_full"=>1, "is_closed"=>2,
+                            _=>3 /* nonzero admission error */ };
+                        TE { e:TExpr::SendResultCheck(Box::new(object),code),ty:Type::Bool }
+                    }
+                    (Type::Actor(_), _) => return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                        "only actor.send(int) and actor.close() are admitted")),
+                    (Type::SendResult, _) => return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                        "only is_ok/is_err/is_full/is_closed Result predicates are admitted")),
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                        "method calls on this receiver type are not admitted")),
+                })
     }
 
     /// Allocation is only authorized by an explicit syntax node from `new`.
@@ -822,6 +919,8 @@ impl FnCx<'_> {
             }
         }
         if name == "stdio.print" || name == "stdio.println" {
+            if self.in_actor_handler { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "receive() cannot use direct stdio; actor output requires explicit capabilities")); }
             let newline = name == "stdio.println";
             if args.len() != 1 {
                 return Err(Diagnostic::new(
