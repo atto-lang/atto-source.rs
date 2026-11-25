@@ -139,9 +139,9 @@ impl PackageManifest {
 /// Keys are bare identifiers or quoted literal keys; no escape expansion,
 /// dotted TOML keys, arrays, inline tables, duplicate tables or unknown fields.
 pub fn parse_package_manifest(manifest: &str) -> R<PackageManifest> {
-    if manifest.len() > MAX_MANIFEST || !manifest.bytes().all(|b| matches!(b, b'\\t' | b'\\r' | b'\\n' | b' '..=b'~'))
-        || manifest.split('\\n').any(|line| line.strip_suffix('\\r').unwrap_or(line).contains('\\r'))
-        || manifest.ends_with('\\r') {
+    if manifest.len() > MAX_MANIFEST || !manifest.bytes().all(|b| matches!(b, 9 | 13 | 10 | b' '..=b'~'))
+        || manifest.split(char::from(10)).any(|line| line.strip_suffix(char::from(13)).unwrap_or(line).contains(char::from(13)))
+        || manifest.ends_with(char::from(13)) {
         return Err(error("E_MANIFEST", "manifest exceeds budget or contains unsupported bytes"));
     }
     let mut section = "";
