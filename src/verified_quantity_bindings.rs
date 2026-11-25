@@ -411,6 +411,27 @@ mod strict_tests {
         }}
     }
     #[test]
+    fn interval_admission_matches_checked_i64_near_extrema() {
+        let mut ranges = Vec::new();
+        for start in [i64::MIN,-3,0,i64::MAX-3] {
+            for lo in 0..=3 { for hi in lo..=3 {
+                ranges.push(Range { lo: start+lo, hi: start+hi });
+            }}
+        }
+        for l in &ranges { for r in &ranges {
+            for op in [BinOp::Add,BinOp::Sub,BinOp::Mul,BinOp::Div] {
+                let all=(l.lo..=l.hi).all(|x| (r.lo..=r.hi).all(|y| match op {
+                    BinOp::Add => x.checked_add(y).is_some(),
+                    BinOp::Sub => x.checked_sub(y).is_some(),
+                    BinOp::Mul => x.checked_mul(y).is_some(),
+                    BinOp::Div => x.checked_div(y).is_some(),
+                    _ => false,
+                }));
+                assert_eq!(l.proves_binary(*r,op),all);
+            }
+        }}
+    }
+    #[test]
     fn extrema_do_not_use_clipped_normal_result_as_proof() {
         let min=Range::exact(i64::MIN); let max=Range::exact(i64::MAX);
         let neg=Range::exact(-1); let one=Range::exact(1);
