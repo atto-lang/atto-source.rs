@@ -37,7 +37,8 @@ fn compiler() -> &'static str {
 fn checked_arithmetic_refuses_incomplete_safety_and_effect_exports() {
     let dir = TemporaryDir::new();
     let source = dir.0.join("guest.atto");
-    fs::write(&source,
+    fs::write(
+        &source,
         "pub fnc main(): int { return 9223372036854775807+1; }",
     )
     .expect("create source");
@@ -77,7 +78,10 @@ fn checked_arithmetic_refuses_incomplete_safety_and_effect_exports() {
         .output()
         .expect("run checked-i64 paired-export refusal");
     assert!(!paired.status.success());
-    assert!(!object.exists() && !effects.exists(), "incomplete facts published");
+    assert!(
+        !object.exists() && !effects.exists(),
+        "incomplete facts published"
+    );
 }
 
 #[test]
@@ -91,9 +95,7 @@ fn duplicate_checked_flag_fails_before_output_publication() {
         .output()
         .expect("execute duplicate flag test");
     assert!(!result.status.success());
-    assert!(
-        String::from_utf8_lossy(&result.stderr).contains("duplicate --checked-i64")
-    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("duplicate --checked-i64"));
     assert!(!object.exists());
 }
 
@@ -104,11 +106,8 @@ fn checked_strict_aot_cli_compiles_and_executes_native_guest() {
     let source = dir.0.join("positive.atto");
     let object = dir.0.join("positive.o");
     let executable = dir.0.join("positive");
-    fs::write(
-        &source,
-        include_str!("fixtures/checked_i64_v1/signed.atto"),
-    )
-    .expect("write positive fixture");
+    fs::write(&source, include_str!("fixtures/checked_i64_v1/signed.atto"))
+        .expect("write positive fixture");
     let result = Command::new(compiler())
         .args(["--strict-aot", "--checked-i64"])
         .arg(&source)
