@@ -1,7 +1,7 @@
 //! Typed source slice for immutable i64 quantity bindings and earlier private helpers.
 //! Units are checked structurally before erasure into the scalar Wasm IR.
 //! No refinement predicates, dynamic conversion, FFI, imports or exported quantity ABI.
-use super::{Parser, Unit, Value, error, convert, attach, R};
+use super::{Parser, Unit, Value, error, convert, R};
 use crate::ast::{BinOp, Type};
 use crate::check::{TE, TExpr, TFunc, TProgram, TStmt};
 use crate::diag::Pos;
@@ -166,14 +166,22 @@ fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
 fn atom(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
     let pos = p.token().pos;
     let mut value = atom_base(p, locals, funcs, depth)?;
-    while let Some(unit) = p.explicit_unit()? {
-        value.unit = attach(&value.unit, unit, pos)?;
+    while let Some(unit) = p.postfix_unit(&value.unit, pos)? {
+        value.unit = unit;
     }
     Ok(value)
 }
 fn atom_base(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
     if depth > 48 || p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "typed quantity expression budget")); }
     p.budget -= 1;
+    if p.take(Tok::Lt) {
+        let pos = p.token().pos;
+        let target = p.name()?;
+        p.expect(Tok::Gt)?;
+        let mut value = atom(p, locals, funcs, depth+1)?;
+        value.unit = p.checked_scalar_cast(&value.unit, &target, pos)?;
+        return Ok(value);
+    }
     if p.take(Tok::Minus) {
         if p.token().tok == Tok::Int(None) { return literal(p, true); }
         let value = atom(p, locals, funcs, depth+1)?;
@@ -229,7 +237,7 @@ fn expr(p: &mut Parser<'_>, locals: &Locals, funcs: &Functions, precedence: u8, 
     if precedence == 0 && p.word("as") {
         let pos = p.token().pos;
         let name = p.name()?;
-        left.unit = attach(&left.unit, p.lookup(&name)?, pos)?;
+        left.unit = p.cast_or_legacy_unit(&left.unit, &name, pos)?;
     }
     Ok(left)
 }
