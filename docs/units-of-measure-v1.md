@@ -55,7 +55,7 @@ pub fnc main() -> int {
 }
 ```
 
-The new frontend consumes a complete standalone source file, resolves file-local nominal dimensions and exact rational scales, checks every closed arithmetic operation, and passes only a proved successful dimensionless result to the existing scalar Wasm compiler. It is deliberately narrower than spec #224: 256-bit reduced scale components with 576-bit conversion work buffers, no imports, no general quantity bindings/signatures, no affine values or polymorphism, no runtime failure lowering. Arithmetic that would trap is currently rejected before emission with E_UNSUPPORTED; this is not full conformance. The older nine-dimension algebra remains a separate internal API. The normal CLI path and direct compiler entry share this preview; imported quantities fail closed.
+The new frontend consumes a complete standalone source file, resolves file-local nominal dimensions and exact rational scales, checks every closed arithmetic operation, and passes only a proved successful dimensionless result to the existing scalar Wasm compiler. It is deliberately narrower than spec #224: 256-bit reduced scale components with 576-bit conversion work buffers, no imports, no general quantity bindings/signatures, no affine values or polymorphism, no dynamic quantity ABI. The closed frontend now retains typed arithmetic failures through the normal Wasm emitter: overflow sets panic_code 1 and division by zero sets panic_code 2, then traps. The entire source must type-check before a trap artifact is emitted. This is not general runtime quantity arithmetic. The older nine-dimension algebra remains a separate internal API. The normal CLI path and direct compiler entry share this preview; imported quantities fail closed.
 
 ## Tests
 
@@ -67,7 +67,7 @@ malformed/unknown expressions.
 ## Next slices
 
 1. Run the focused exact-head quantity test workflow and actual Wasm guest; preserve all origin gates.
-2. Verify the new 256-bit scale arithmetic at the exact head and separate typing from runtime arithmetic trap lowering.
+2. Verify the new 256-bit scale arithmetic and the closed-profile trap lowering at the exact head.
 3. Use compiler-resolved package/module/declaration IDs for imported and compound dimensions.
 4. Integrate checked quantity bindings, signatures, FFI and serialization; add affine and polymorphic profiles only after separate specification review.
 5. Execute shared conformance #584 with comparable backend receipts.
@@ -75,3 +75,5 @@ malformed/unknown expressions.
 The legacy immutable-binding Cranelift tests are retained verbatim in `tests/legacy/immutable_binding_parity_cranelift.rs`; the browser crate now has its own real compiler regression in `tests/immutable_binding_parity.rs`. The original Cranelift/effect-IR suite is not claimed as executed by this change.
 
 Wave 4 adds a dependency-free fixed-width rational implementation for the nominal frontend and focused source tests for wide scales, exact conversions and malformed decimal/quantity tokens. The legacy SI algebra retains its own 128-bit limits; its API is not the nominal declaration profile. The new shared corpus has 119 cases. These changes remain pending Rust compiler execution and cross-backend guest receipts.
+
+Wave 5 separates static rejection from closed checked arithmetic failures. The frontend carries the first eager left-to-right arithmetic failure separately from the unit type, checks subsequent syntax and static unit obligations, and selects the existing Wasm panic ABI only on a well-typed complete program. Focused CI tests and the new Rust shared-corpus driver in conformance #584 remain pending real compiler execution. The merged specification's current profile still excludes quantity variables, signatures, dynamic conversions, imported identity and general effects; those require a separate design and compiler integration.
