@@ -112,7 +112,7 @@ fn typed_selection_uses_parser_and_checks_export_identity() {
     let g = graph();
     let mut s = Scope::new();
     let m = mixed("import class [C, D as Data], fnc [f as fetch, g], module (m, n), namespace (z) from pkg '@foo/bar/baz';");
-    s.bind_mixed(&g, &m.selectors).unwrap();
+    s.bind_mixed(&g, &m).unwrap();
     for (local, remote, kind) in [("C","C",Kind::Class), ("Data","D",Kind::Class),
         ("fetch","f",Kind::Fnc), ("g","g",Kind::Fnc), ("m","m",Kind::Module),
         ("n","n",Kind::Module), ("z","z",Kind::Namespace)] {
@@ -132,13 +132,13 @@ fn typed_list_failure_is_atomic_for_wrong_kind_private_missing_and_duplicate() {
         ("import class [C], fnc [C.not_namespace] from pkg '@foo/bar/baz';","E_IMPORT_KIND"),
     ] {
         let mut s = Scope::new();
-        assert_eq!(s.bind_mixed(&graph(), &mixed(src).selectors).unwrap_err().code, code);
+        assert_eq!(s.bind_mixed(&graph(), &mixed(src)).unwrap_err().code, code);
         assert_eq!(s.resolve("C").unwrap_err().code, "E_UNBOUND");
     }
     let mut s = Scope::new();
     s.bind_verified("fetch", Tier::Explicit, builtin()).unwrap();
     let m = mixed("import class [C], fnc [f as fetch] from pkg '@foo/bar/baz';");
-    assert_eq!(s.bind_mixed(&graph(), &m.selectors).unwrap_err().code, "E_DUPLICATE");
+    assert_eq!(s.bind_mixed(&graph(), &m).unwrap_err().code, "E_DUPLICATE");
     assert_eq!(s.resolve("C").unwrap_err().code, "E_UNBOUND");
 }
 #[test]
@@ -147,7 +147,7 @@ fn as_same_name_is_still_explicit_and_namespace_alias_is_not_value() {
     s.package(id("@a/b/z"), None).unwrap();
     let m = mixed("import namespace [z as z] from pkg '@foo/bar/baz';");
     assert!(m.selectors[0].explicit_alias);
-    s.bind_mixed(&graph(), &m.selectors).unwrap();
+    s.bind_mixed(&graph(), &m).unwrap();
     let z = s.resolve("z").unwrap().target;
     assert_eq!(z.origin, external("@foo/bar/baz"));
     s.namespace_alias("alias", z.clone()).unwrap();
@@ -176,4 +176,18 @@ fn capacity_is_atomic_across_automatic_suffixes() {
     assert_eq!(s.package(id("@a/b/c"), None).unwrap_err().code, "E_SOURCE_LIMIT");
     assert_eq!(s.resolve("c").unwrap_err().code, "E_UNBOUND");
     assert!(s.resolve("p254").is_ok());
+}
+
+#[test]
+fn mismatched_export_view_cannot_supply_another_package_or_builtin() {
+    let mut s = Scope::new();
+    for src in [
+        "import class [C] from pkg '@other/bar/baz';",
+        "import class [C] from core.num;",
+        "import class [C] from './lib.atto';",
+        "import class [C] from pkg '@foo/bar/baz/subpath';",
+    ] {
+        assert_eq!(s.bind_mixed(&graph(), &mixed(src)).unwrap_err().code, "E_IMPORT_PATH");
+        assert_eq!(s.resolve("C").unwrap_err().code, "E_UNBOUND");
+    }
 }
