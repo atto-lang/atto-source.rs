@@ -1,0 +1,9 @@
+// expect-host-tamper: selector-or-generation
+fnc make_adder(int offset): fnc(int) => int {
+    return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+    val adder = make_adder(1);
+    stdio.print(7);
+    return adder(41);
+}

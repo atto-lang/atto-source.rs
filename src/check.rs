@@ -19,6 +19,7 @@ use crate::diag::{Diagnostic, Pos};
 mod generator_lower;
 pub mod lambda_types;
 mod direct_lambda;
+mod owned_lambda;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
@@ -649,7 +650,8 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
-    let lowered = direct_lambda::lower(p)?;
+    let owned = owned_lambda::lower(p)?;
+    let lowered = direct_lambda::lower(&owned)?;
     check_lowered(&lowered)
 }
 
@@ -1203,7 +1205,21 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     validate_generator_graph(&generators, p)?;
     imports.sort();
     imports.dedup();
-    let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    let mut funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    // The synthetic closure receiver has a compiler-controlled dispatch
+    // selector. A malformed selector is a guest integrity fault, never a
+    // plausible integer result. The source AST's return-zero branch exists
+    // only to satisfy the ordinary definite-return checker; replace it with
+    // unreachable after full typing (the generated name is not source-lexable).
+    if let Some(receiver) = funcs.iter_mut().find(|f| f.name == "$owned_lambda_int_int.call") {
+        match receiver.body.as_mut_slice() {
+            [TStmt::If(_, Some(other))] if matches!(other.as_slice(), [TStmt::Return(Some(_))]) => {
+                other.clear();
+                other.push(TStmt::Unreachable);
+            }
+            _ => panic!("generated closure dispatch lost its fail-closed fallback"),
+        }
+    }
     let strings = funcs
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
@@ -3033,6 +3049,15 @@ impl<'a> FnCx<'a> {
         self.arity(&label, m.params.len(), args.len(), pos)?;
         let mut targs = vec![recv];
         targs.extend(self.args(&label, args, &m.params)?);
+        // Closing a compiler-private owned closure is a consuming operation.
+        // Reject a second close or invocation at the source ownership gate.
+        // The runtime generation check remains authoritative against forged
+        // guest frames or malicious host writes to exported linear memory.
+        if cname == "$owned_lambda_int_int" && name == "close" {
+            if let TExpr::Local(slot) = &targs[0].e {
+                self.moved.insert(*slot);
+            }
+        }
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,

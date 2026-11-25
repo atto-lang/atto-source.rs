@@ -1,0 +1,10 @@
+// expect-exhaustion: PANIC_HEAP=3 after exactly 256 unclosed allocations
+// Test-only leak profile: this intentionally omits close() to exercise the
+// bounded per-instance closure arena's fail-closed capacity check.
+fnc make_adder(int offset): fnc(int) => int {
+    return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+    val unused_adder = make_adder(1);
+    return 42;
+}

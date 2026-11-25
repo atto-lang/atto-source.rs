@@ -111,10 +111,10 @@ fn callable_fat_arrow_is_required_in_parameter_return_and_local_type_positions()
 }
 
 #[test]
-fn canonical_callable_type_with_typed_lambda_is_checked_before_emission() {
+fn canonical_callable_factory_compiles_after_owned_closure_lowering() {
     let source = "fnc make_adder(int offset): fnc(int) => int { return |n| : int -> n + offset; } pub fnc main(): int { return 0; }";
-    let diagnostic = atto_compiler::compile(source).expect_err("first-class callable still gated");
-    assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
+    let wasm = atto_compiler::compile(source).expect("bounded owned closure factory");
+    assert!(wasm.starts_with(b"\0asm"));
 }
 
 #[test]
@@ -130,6 +130,7 @@ fn direct_ast_cannot_forge_callable_metadata_or_indices() {
     let p = parse(&format!("pub fnc apply(fnc(int)=>int callback): int {{ return 0; }} {MAIN}"));
     let t = p.funcs[0].params[0].ty;
     for forged in ["fnc(bool)=>int", "fnc(void)=>int", "fnc(int)=>nope",
+        "fnc(int)->int",
         "fnc(int,)=>int", "fnc(int)=>int trailing"] {
         let mut names = p.type_names.clone();
         names[0].0 = forged.into();

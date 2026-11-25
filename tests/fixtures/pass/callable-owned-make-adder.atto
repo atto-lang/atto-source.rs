@@ -1,0 +1,8 @@
+// expect-exit: 42
+fnc make_adder(int offset): fnc(int) => int {
+    return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+    val add_one = make_adder(1);
+    return add_one(41);
+}
