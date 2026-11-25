@@ -1304,7 +1304,7 @@ impl Parser {
     /// Normalize name-first and return-first headers to one callable signature.
     /// The left arrow is a single lexical token and never a value operator.
     fn parse_named_callable_header(
-        &mut self, what: &'static str,
+        &mut self, what: &'static str, allow_inline_self: bool,
     ) -> R<CallableHeader> {
         let return_first = self.is_return_first_header();
         let prefixed_type = if return_first {
@@ -1323,8 +1323,26 @@ impl Parser {
             return Err(unsupported(self.pos(), "generic named callables"));
         }
         self.expect(Tok::LParen, "'('")?;
-        if what == "a method name" && self.is_word("self") {
-            return Err(unsupported(self.pos(), "explicit 'self' receivers"));
+        // A leading *standalone* self is the preexisting implicit readonly
+        // instance receiver, never an additional caller-visible value slot.
+        // Keep the value formal `self peer` separate: the second identifier
+        // means it is a typed parameter, not the receiver declaration.
+        if what == "a method name" && self.is_word("self")
+            && matches!(self.peek_at(1), Tok::Comma | Tok::RParen)
+        {
+            if !allow_inline_self {
+                return Err(unsupported(self.pos(), "static methods cannot declare self receivers"));
+            }
+            self.advance();
+            if self.eat(&Tok::Comma) && *self.peek() == Tok::RParen {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "inline self receiver needs a following value formal after ','"));
+            }
+        } else if what == "a method name" && self.is_word("mut")
+            && self.word_at(1) == Some("self")
+        {
+            // The current Method AST has no checked receiver-mutation proof.
+            return Err(unsupported(self.pos(), "mutable inline self receiver needs ownership proof"));
         }
         let params = self.parse_params()?;
         if what == "a method name" && *self.peek() == Tok::LParen {
@@ -1350,7 +1368,7 @@ impl Parser {
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
-        } = self.parse_named_callable_header("a method name")?;
+        } = self.parse_named_callable_header("a method name", !is_static)?;
         // For an explicit inferred result, the comma/end body still has a
         // checked tail return, never a silently discarded terminal expression.
         let body = self.parse_callable_body(arrow_type, colon_type, return_first,
@@ -1625,7 +1643,7 @@ impl Parser {
         };
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
-        } = self.parse_named_callable_header("a function name")?;
+        } = self.parse_named_callable_header("a function name", false)?;
         let declared_effects = self.parse_effect_clauses()?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
