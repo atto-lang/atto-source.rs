@@ -648,8 +648,8 @@ fn frozen_generic_class_source_arity_and_scalar_guests() {
     let prefix="import [class models.Container] from pkg '@org/project/package'; ";
     let guests=[
         (S::Int,"val c: Container[int] = Container[int].new(); return c.echo(42);"),
-        (S::Bool,"val c = Container[bool].new(); if c.echo(true) { return 42; } return 0;"),
-        (S::String,"val c = Container[string].new(); val v = c.echo(\"answer\"); if v == \"answer\" { return 42; } return 0;"),
+        (S::Bool,"val c = Container[bool].new(); if c.echo(true) { return 42; } fi return 0;"),
+        (S::String,"val c = Container[string].new(); val v = c.echo(\"answer\"); if v == \"answer\" { return 42; } fi return 0;"),
     ];
     for (i,(scalar,root)) in guests.iter().enumerate(){
         let guest=format!("{prefix}pub fnc main(): int {{ {root} }}");
