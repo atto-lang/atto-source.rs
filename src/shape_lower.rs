@@ -284,6 +284,20 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             if declared.contains_key(&decl.name) {
                 return Err(error(decl.pos,"E_DUPLICATE",format!("duplicate product '{}'",decl.name)));
             }
+            // The existing executable representation is still a nominal
+            // class. Calculate only non-executable typed layout metadata here.
+            if decl.kind == Kind::Struct {
+                use crate::collection_types::LiteralType as Ty;
+                let fields: Vec<(String,Ty)> = decl.fields.iter().map(|field| {
+                    let ty = match field.ty.as_str() {
+                        "int" => Ty::Int, "bool" => Ty::Bool,
+                        "float" => Ty::Float, "string" => Ty::String,
+                        _ => unreachable!("parse_decl already validated scalar type"),
+                    };
+                    (field.name.clone(), ty)
+                }).collect();
+                let _plan=crate::layout_plan::nominal_struct(&decl.name,&fields,decl.pos)?;
+            }
             first.extend(fragment(&synthesized(&decl.name,&decl.fields),decl.pos)?);
             declared.insert(decl.name.clone(),decl);
             i=next;continue;

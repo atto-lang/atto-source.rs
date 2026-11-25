@@ -10,6 +10,10 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+/// Lower recursion cap for nested lambda syntax and generic return types.
+/// The full expression depth limit is unchanged; these syntactic forms build
+/// deeper Rust call stacks per level and must fail before stack exhaustion.
+const MAX_LAMBDA_RECURSION: u32 = 48;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -109,6 +113,7 @@ const RESERVED: &[&str] = &[
     "neq",
     "is",
     "new",
+    "with",
     "true",
     "false",
     "null",
@@ -2678,6 +2683,23 @@ impl Parser {
 
     fn parse_ternary(&mut self) -> R<Expr> {
         let mut c = self.parse_logical_or()?;
+        // The right-hand side is a checked static Record update list, never
+        // an arbitrary block, dynamic Map or implicit aliasing operation.
+        // Bind before pipelines; chaining is left associative.
+        let mut with_links = 0;
+        while self.eat_word("with") {
+            let at = self.toks[self.i - 1].pos;
+            let fields = match self.parse_brace_literal()? {
+                ExprKind::Record(fields) => fields,
+                ExprKind::EmptyBraces => Vec::new(),
+                _ => return Err(Diagnostic::new(at, "E_WITH_MAP",
+                    "with requires named ':' fields, not Map '=>' entries")),
+            };
+            self.grow(1)?;
+            with_links += 1;
+            c = Expr { kind: ExprKind::With(Box::new(c), fields), pos: at };
+        }
+        self.height -= with_links;
         // Functional pipeline: value |> f |> g(extra) lowers to g(f(value), extra).
         // Only ordinary named functions are admitted: no computed callees,
         // receiver calls or actor piping. This preserves argument evaluation
@@ -3103,6 +3125,10 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        if self.depth >= MAX_LAMBDA_RECURSION {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda type exceeds the safe parser recursion budget"));
+        }
         self.enter()?;
         let result = (|| {
             let mut name = match self.peek().clone() {
@@ -3140,6 +3166,10 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        if self.depth >= MAX_LAMBDA_RECURSION {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda expression exceeds the safe parser recursion budget"));
+        }
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {

@@ -8,6 +8,10 @@
 
 pub mod ast;
 pub mod collection_types;
+pub mod collection_scopes;
+/// Bounded closed Record -> checked real guest-Wasm class reconstruction.
+pub mod record_guest;
+pub mod layout_plan;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -123,7 +127,14 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Contextual literal typing is checked before executable scalar lowering.
     // It never grants a guest allocation; unsupported values remain rejected.
     let _collection_ir = collection_types::analyze(&program)?;
-    let typed = check::check(&program)?;
+    // Scoped Record field/presence checking is an independent static gate.
+    // Guest compilation of collections remains E_UNSUPPORTED.
+    collection_scopes::analyze(&program)?;
+    // The scoped Record and ownership checks above apply to the ORIGINAL
+    // source AST. Only admitted flat scalar Records are now reconstructed
+    // through existing typed constructors; all other guest shapes fail closed.
+    let lowered_record_program = record_guest::lower(&program)?;
+    let typed = check::check(&lowered_record_program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
