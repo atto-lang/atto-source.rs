@@ -386,3 +386,38 @@ fn pinned_multifile_namespace_links_public_members_and_preserves_private_ownersh
     changed.last_mut().unwrap().path="src/http/nested/extra.atto";
     assert_eq!(error(verify(MANIFEST,&changed)),"E_UNSUPPORTED");
 }
+
+#[test]
+fn physical_declaration_provenance_never_grants_private_authority() {
+    use atto_compiler::registry_namespace::{compile_registry_guest,compile_contextual_guest};
+    let mut inputs=INPUTS.to_vec();
+    inputs[0].source="use namespace http; fnc secret(int x): int { return x+1; } pub fnc get(int x): int { return secret(x); }";
+    inputs.push(SnapshotSource{path:"src/http/extra.atto",source:"use namespace http; define pub const int LIMIT = 41; pub fnc answer(): int { return get(LIMIT); }"});
+    let p=verify(MANIFEST,&inputs).unwrap();
+    let mut scope=Scope::new();
+    p.bind_package(&mut scope,Some("p")).unwrap();
+    let get=scope.resolve_export("p.http.get",p.view()).unwrap();
+    let limit=scope.resolve_export("p.http.LIMIT",p.view()).unwrap();
+    assert_eq!(p.declaration_source(&get).unwrap(),"src/http/main.atto");
+    assert_eq!(p.declaration_source(&limit).unwrap(),"src/http/extra.atto");
+    let mut forged=get.clone();
+    forged.kind=Kind::Const;
+    assert_eq!(p.declaration_source(&forged).unwrap_err().code,"E_IMPORT_KIND");
+    forged=get.clone();
+    forged.declaration="http.secret".into();
+    assert_eq!(p.declaration_source(&forged).unwrap_err().code,"E_PRIVATE");
+    let source="import pkg '@org/project/package' as p; pub fnc main(): int { return p.http.answer(); }";
+    let wasm=compile_registry_guest(source,&[&p]).unwrap();
+    if let Ok(dir)=std::env::var("ATTO_REGISTRY_GUEST_DIR"){
+        std::fs::write(std::path::Path::new(&dir).join("registry-owner-0.wasm"),wasm).unwrap();
+    }
+    let spoof="use namespace http; import self.secret; pub fnc main(): int { return secret(41); }";
+    assert_eq!(compile_contextual_guest(spoof,&p,&[],Some(std::path::Path::new("src/http/main.atto"))).unwrap_err().code,"E_PRIVATE");
+    let mut changed=inputs.clone();
+    changed.last_mut().unwrap().source="use namespace http; pub fnc answer(): int { return secret(41); }";
+    assert_eq!(error(verify(MANIFEST,&changed)),"E_PRIVATE");
+    changed=inputs.clone();
+    changed.last_mut().unwrap().source="use namespace http; define pub const int LIMIT = 40; pub fnc answer(): int { return get(LIMIT); }";
+    let q=verify(MANIFEST,&changed).unwrap();
+    assert_eq!(q.declaration_source(&get).unwrap_err().code,"E_IMPORT_PATH");
+}

@@ -97,6 +97,8 @@ pub struct FrozenRegistry {
     view: ExportView,
     // Owned, verified source bytes; cannot be replaced after verification.
     sources: BTreeMap<String,(String,String)>,
+    // Physical owner of every admitted function or literal, from pinned bytes.
+    declaration_sources: BTreeMap<String,String>,
     literals: BTreeMap<String,Vec<crate::lexer::Tok>>,
     mixed_functions: BTreeMap<String,Vec<crate::lexer::Token>>,
 }
@@ -113,6 +115,7 @@ impl FrozenRegistry {
         let mut directories = BTreeMap::new();
         let mut namespaces = BTreeSet::new();
         let mut verified_sources = BTreeMap::new();
+        let mut declaration_sources = BTreeMap::new();
         let mut literals = BTreeMap::new();
         let mut mixed_functions = BTreeMap::new();
         // Nested namespace parents must be declared independently. For now
@@ -139,7 +142,7 @@ impl FrozenRegistry {
             let mut files=Vec::new();
             let mut owners=BTreeMap::new();
             let mut total=0usize;
-            for (index,(&file,&source)) in matching.iter().copied().enumerate(){
+            for (&file,&source) in matching.iter().copied(){
                 let normalized=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(file)))?;
                 if normalized.iter().any(|t|matches!(&t.tok,Tok::Ident(s) if s.starts_with("__atto_"))){
                     return Err(err("E_RESERVED","compiler-generated identifier in registry source"));
@@ -151,7 +154,7 @@ impl FrozenRegistry {
                 if total>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","namespace aggregate token budget exceeded"));}
                 if matching.len()>1 {
                     for (name,public) in crate::const_import_link::registry_file_inventory(&normalized)? {
-                        if owners.insert(name,(index,public)).is_some(){
+                        if owners.insert(name,(file,public)).is_some(){
                             return Err(err("E_DUPLICATE","duplicate declaration across namespace files"));
                         }
                     }
@@ -162,16 +165,17 @@ impl FrozenRegistry {
             // referenced across files. Private declarations remain usable
             // only in their own pinned file; no namespace-header spoof can
             // confer private authority on a different source unit.
-            for (index,tokens) in files.iter().enumerate(){
+            for ((&file,_),tokens) in matching.iter().copied().zip(&files){
                 for t in &tokens[end..] {
                     if let Tok::Ident(name)=&t.tok {
-                        if owners.get(name).is_some_and(|(owner,public)|*owner!=index && !*public){
+                        if owners.get(name).is_some_and(|(owner,public)|*owner!=file && !*public){
                             return Err(Diagnostic::new(t.pos,"E_PRIVATE","cross-file private declaration reference"));
                         }
                     }
                 }
             }
             let (&file,&source)=matching[0];
+            let source_for = |name: &str| owners.get(name).map_or(file, |(path,_)| *path);
             let normalized=if files.len()==1 {files.pop().unwrap()}else{
                 let mut combined=header[..end].to_vec();
                 for tokens in files {
@@ -185,11 +189,13 @@ impl FrozenRegistry {
                 for (name,(public,value)) in provider.literals {
                     let path=format!("{ns}.{name}");
                     view.add(&path,&path,Kind::Const,public)?;
+                    declaration_sources.insert(path.clone(),source_for(&name).to_string());
                     literals.insert(path,value);
                 }
                 for (name,public) in provider.functions {
                     let path=format!("{ns}.{name}");
                     view.add(&path,&path,Kind::Fnc,public)?;
+                    declaration_sources.insert(path,source_for(&name).to_string());
                 }
                 if provider.function_tokens.len()>1 {
                     mixed_functions.insert(ns.clone(),provider.function_tokens);
@@ -209,6 +215,7 @@ impl FrozenRegistry {
                 for (function,public) in functions {
                     let path=format!("{ns}.{function}");
                     view.add(&path,&path,Kind::Fnc,public)?;
+                    declaration_sources.insert(path,source_for(&function).to_string());
                 }
                 verified_sources.insert(ns.clone(),(file.to_string(),source.to_string()));
             }
@@ -221,10 +228,25 @@ impl FrozenRegistry {
                 .ok_or_else(|| err("E_MANIFEST", "subpath targets undeclared namespace directory"))?;
             subpaths.insert(sub,target.clone());
         }
-        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, literals, mixed_functions })
+        Ok(Self { name: name.clone(), id, namespaces, subpaths, view, sources: verified_sources, declaration_sources, literals, mixed_functions })
     }
 
     pub fn view(&self) -> &ExportView { &self.view }
+
+    /// Physical provenance of a checked public declaration, not a private
+    /// access capability. A target from another lock or with a forged kind
+    /// must never be accepted, even when its declaration spelling matches.
+    pub fn declaration_source(&self, target: &Target) -> R<&str> {
+        if target.origin != Origin::External(self.id.clone()) {
+            return Err(err("E_IMPORT_PATH","declaration origin differs from pinned package"));
+        }
+        let checked = self.view.lookup(&target.declaration)?;
+        if &checked != target {
+            return Err(err("E_IMPORT_KIND","declaration identity differs from checked export"));
+        }
+        self.declaration_sources.get(&target.declaration).map(String::as_str)
+            .ok_or_else(||err("E_IMPORT_KIND","namespace has no single source owner"))
+    }
 
     /// Whole-package imports use natural suffixes unless explicitly renamed.
     pub fn bind_package(&self, scope: &mut Scope, alias: Option<&str>) -> R<()> {
