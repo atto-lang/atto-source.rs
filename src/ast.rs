@@ -190,6 +190,34 @@ pub struct ActorDecl {
     pub methods: Vec<Method>,
 }
 
+/// One source-level contract for ordinary throws, escalated raises and fatal
+/// panics. Presence and allowed nominal error sets must remain independent:
+/// @Throws() explicitly forbids an escaping throw; omission is inferred.
+/// This browser backend currently resolves only the built-in Error nominal type.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FailureEffects {
+    pub explicit: bool,
+    pub declared: [bool; 3],
+    pub throws: Vec<String>,
+    pub raises: Vec<String>,
+    pub panics: Vec<String>,
+}
+impl FailureEffects {
+    pub fn allowed_types(&self, kind: usize) -> &[String] {
+        match kind {
+            0 => &self.throws,
+            1 => &self.raises,
+            2 => &self.panics,
+            _ => &[],
+        }
+    }
+    pub fn mask(&self) -> u8 {
+        u8::from(!self.throws.is_empty())
+            | (u8::from(!self.raises.is_empty()) << 1)
+            | (u8::from(!self.panics.is_empty()) << 2)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Func {
     pub name: String,
@@ -198,6 +226,8 @@ pub struct Func {
     pub is_generator: bool,
     /// Explicit effect contract: no externally observable effects or impure calls.
     pub is_pure: bool,
+    /// Explicit nominal bounds, or an inferred (absent) row.
+    pub failure_effects: FailureEffects,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -263,8 +293,15 @@ pub enum Stmt {
         finally: Option<Vec<Stmt>>,
         pos: Pos,
     },
-    /// `defer || -> { ... };` registers a LIFO cleanup without running it.
-    Defer { body: Vec<Stmt>, pos: Pos },
+    /// `defer { ... };`, `defer _ -> { ... };`, `defer || -> { ... };`,
+    /// or `defer (|T a| -> _ -> { ... })(value);`.
+    /// Factory arguments are evaluated exactly once at registration.
+    Defer {
+        params: Vec<(String, Type, Pos)>,
+        body: Vec<Stmt>,
+        args: Vec<Expr>,
+        pos: Pos,
+    },
     /// `recover (|T a, ..| -> |err, c| -> { ... })(args);` registers a
     /// recovery callback whose factory arguments are evaluated once, now.
     Recover {

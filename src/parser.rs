@@ -549,9 +549,15 @@ impl Parser {
                 ));
             }
             decls += 1;
+            let annotations = self.parse_failure_annotations()?;
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
+            if annotations.explicit &&
+                matches!(self.word_at(at), Some("define" | "actor")) {
+                return Err(Diagnostic::new(start, "E_SYNTAX",
+                    "failure-effect annotations apply to callables, not class/actor/type declarations"));
+            }
             match (self.word_at(at), self.word_at(at + 1)) {
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
@@ -594,7 +600,7 @@ impl Parser {
                     };
                     return Err(unsupported(self.pos(), &what));
                 }
-                _ => prog.funcs.push(self.parse_func()?),
+                _ => prog.funcs.push(self.parse_func(annotations) ?),
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
@@ -1091,10 +1097,7 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_func(&mut self) -> R<Func> {
-        if *self.peek() == Tok::At {
-            return Err(unsupported(self.pos(), "annotations"));
-        }
+    fn parse_func(&mut self, annotations: FailureEffects) -> R<Func> {
         let start = self.pos();
         self.eat_word("pub");
         let is_pure = self.eat_word("pure");
@@ -1143,7 +1146,11 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
-        self.parse_effect_clauses()?;
+        let failure_effects = self.parse_failure_effects(annotations, false)?;
+        if is_pure && failure_effects.mask() != 0 {
+            return Err(Diagnostic::new(pos, "E_PURE",
+                "pure functions cannot declare nonempty throw, raise or panic bounds"));
+        }
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1161,53 +1168,116 @@ impl Parser {
             pos,
             is_generator,
             is_pure,
+            failure_effects,
             params,
             ret,
             body,
         })
     }
 
-    /// Proposed exceptional effect clauses after the result type:
-    /// `throws(Error)`, `raises(Error)`, `panics(Error)`. This browser slice
-    /// validates the syntax and admits only the built-in `Error`. The clause
-    /// is a declared upper bound; it is not yet transitively effect-checked
-    /// and never grants or suppresses any failure path.
-    fn parse_effect_clauses(&mut self) -> R<()> {
-        let mut seen: Vec<&'static str> = Vec::new();
+    /// Annotations and signature clauses share one nominal effect row.
+    /// An annotation must have '@' and a parenthesized list; one '@' owns
+    /// exactly one effect kind. Empty lists are explicit prohibitions.
+    fn parse_failure_annotations(&mut self) -> R<FailureEffects> {
+        let mut effects = FailureEffects::default();
+        while *self.peek() == Tok::At {
+            let at = self.pos();
+            self.advance();
+            if !matches!(self.word_at(0), Some(
+                "Throws" | "Raises" | "Panics" | "throws" | "raises" | "panics"
+            )) {
+                return Err(unsupported(at, "non-failure annotations"));
+            }
+            effects = self.parse_failure_effects(effects, true)?;
+        }
+        Ok(effects)
+    }
+
+    /// Parse @Throws(Error), @Throws(), throws(Error), and throws Error.
+    /// Built-in Error is the only nominal Error subclass browser-admitted.
+    /// Unsupported names fail closed, rather than assuming subtype ancestry.
+    fn parse_failure_effects(&mut self, mut effects: FailureEffects,
+                             annotation_context: bool) -> R<FailureEffects> {
         loop {
-            let kind = match self.word_at(0) {
-                Some("throws") => "throws",
-                Some("raises") => "raises",
-                Some("panics") => "panics",
-                _ => return Ok(()),
+            let (kind, at) = match self.word_at(0) {
+                Some("throws") => (0usize, self.pos()),
+                Some("raises") => (1usize, self.pos()),
+                Some("panics") => (2usize, self.pos()),
+                Some("Throws") if annotation_context => (0usize, self.pos()),
+                Some("Raises") if annotation_context => (1usize, self.pos()),
+                Some("Panics") if annotation_context => (2usize, self.pos()),
+                Some("Throws" | "Raises" | "Panics") => {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "capitalized failure annotations require '@'"));
+                },
+                _ => break,
             };
-            if *self.peek_at(1) != Tok::LParen {
-                return Ok(());
-            }
-            let pos = self.pos();
-            if seen.contains(&kind) {
-                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate '{kind}' effect clause")));
-            }
-            seen.push(kind);
             self.advance();
-            self.advance();
-            loop {
-                let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
-                if ty != "Error" {
-                    return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                        format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+            let parens = self.eat(&Tok::LParen);
+            if annotation_context && !parens {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "failure annotations require a parenthesized Error type list"));
+            }
+            let mut types: Vec<String> = Vec::new();
+            if !(parens && self.eat(&Tok::RParen)) {
+                loop {
+                    let type_at = self.pos();
+                    let name = match self.peek().clone() {
+                        Tok::Ident(s) => s,
+                        _ => return Err(Diagnostic::new(type_at, "E_EFFECT_TYPE",
+                            "a failure effect requires an Error subtype")),
+                    };
+                    self.advance();
+                    if name != "Error" {
+                        let code = if matches!(name.as_str(),
+                            "int" | "bool" | "string" | "String" | "float" | "void") {
+                            "E_EFFECT_TYPE"
+                        } else { "E_UNSUPPORTED_TYPE" };
+                        return Err(Diagnostic::new(type_at, code,
+                            format!("failure type '{name}' requires Error ancestry; only built-in Error is browser-admitted")));
+                    }
+                    if types.iter().any(|old| old == &name) {
+                        return Err(Diagnostic::new(type_at, "E_DUPLICATE",
+                            "duplicate Error type in a failure effect list"));
+                    }
+                    types.push(name);
+                    if self.eat(&Tok::Comma) {
+                        if parens && *self.peek() == Tok::RParen {
+                            return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                                "trailing comma in a failure type list"));
+                        }
+                        if !parens && matches!(self.word_at(0), Some("throws" | "raises" | "panics")) {
+                            return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                                "expected an Error type after ',' in the failure type list"));
+                        }
+                        continue;
+                    }
+                    break;
                 }
-                if !self.eat(&Tok::Comma) { break; }
+                if parens {
+                    self.expect(Tok::RParen, "')' after failure effects")?;
+                }
             }
-            self.expect(Tok::RParen, "')' to close the effect clause")?;
-            // `throws(Error), raises(Error)`: a comma may separate clauses.
-            if *self.peek() == Tok::Comma
-                && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
-                && *self.peek_at(2) == Tok::LParen
+            if effects.declared[kind] {
+                return Err(Diagnostic::new(at, "E_EFFECT_TYPE",
+                    "duplicate failure effect declaration"));
+            }
+            effects.declared[kind] = true;
+            *match kind {
+                0 => &mut effects.throws,
+                1 => &mut effects.raises,
+                _ => &mut effects.panics,
+            } = types;
+            effects.explicit = true;
+            if annotation_context { break; }
+            // Both separated and adjacent clauses are supported.
+            if *self.peek() == Tok::Comma &&
+                matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
             {
                 self.advance();
             }
         }
+        Ok(effects)
     }
 
     /// `try { } [catch (Error e) { }] [finally { }]`, at least one handler.
@@ -1237,46 +1307,104 @@ impl Parser {
         Ok(Stmt::Try { body, catch, finally, pos })
     }
 
-    /// `recover (|T a, ...| -> |err, c| -> { body })(args);`
-    fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
-        self.advance();
-        self.expect(Tok::LParen, "'(' after 'recover'")?;
-        self.expect(Tok::Pipe, "'|' to open the recovery factory parameters")?;
+    /// Shared registration factory header: \`|T first, T second|\`.
+    /// These are explicit values evaluated at registration, not lexical captures.
+    fn parse_cleanup_factory_params(&mut self) -> R<Vec<(String, Type, Pos)>> {
+        self.expect(Tok::Pipe, "'|' to open the factory parameters")?;
         let mut params: Vec<(String, Type, Pos)> = Vec::new();
         if !self.eat(&Tok::Pipe) {
             loop {
                 if params.len() >= MAX_PARAMS {
-                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many recovery factory parameters"));
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                        "too many cleanup factory parameters"));
                 }
                 let ty = self.parse_type()?;
-                let (name, p) = self.ident("a recovery factory parameter name")?;
-                if params.iter().any(|(n, ..)| *n == name) {
-                    return Err(Diagnostic::new(p, "E_DUPLICATE", format!("duplicate parameter '{name}'")));
+                let (name, p) = self.ident("a cleanup factory parameter")?;
+                if name == "_" || params.iter().any(|(n, ..)| *n == name) {
+                    return Err(Diagnostic::new(p, "E_DUPLICATE",
+                        format!("duplicate or reserved factory parameter '{name}'")));
                 }
                 params.push((name, ty, p));
                 if self.eat(&Tok::Pipe) { break; }
                 self.expect(Tok::Comma, "',' or '|' after a factory parameter")?;
             }
         }
-        self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
-        self.expect(Tok::Pipe, "'|err, c|' recovery handler parameters")?;
-        let (err, _) = self.ident("the recovery error parameter")?;
-        self.expect(Tok::Comma, "',' between the error and cursor parameters")?;
-        let (cursor, cursor_pos) = self.ident("the recovery cursor parameter")?;
-        if cursor == err || params.iter().any(|(n, ..)| *n == err || *n == cursor) {
-            return Err(Diagnostic::new(cursor_pos, "E_DUPLICATE", "recovery parameter names must be distinct"));
+        Ok(params)
+    }
+
+    /// A deferred cleanup can be a block, a zero-argument lambda, or a
+    /// factory with explicit, single-evaluation captures.
+    fn parse_defer(&mut self, pos: Pos) -> R<Stmt> {
+        self.advance();
+        let (params, body, args) = if *self.peek() == Tok::LBrace {
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat_word("_") {
+            self.expect(Tok::Arrow, "'->' after 'defer _'")?;
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat(&Tok::Pipe) {
+            self.expect(Tok::Pipe, "empty '||' lambda after 'defer'")?;
+            self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat(&Tok::LParen) {
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the defer factory parameters")?;
+            if !self.eat_word("_") {
+                return Err(self.expected("'_' for the zero-argument deferred cleanup"));
+            }
+            self.expect(Tok::Arrow, "'->' before the deferred cleanup body")?;
+            let body = self.parse_block()?;
+            self.expect(Tok::RParen, "')' after the defer factory")?;
+            let args = self.parse_args()?;
+            (params, body, args)
+        } else {
+            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+        };
+        self.terminator()?;
+        Ok(Stmt::Defer { params, body, args, pos })
+    }
+
+    /// Recovery handlers receive a lexical, non-escaping ErrorView and a
+    /// one-shot cursor; either binder may carry its explicit special type.
+    fn parse_recovery_handler(&mut self, params: &[(String, Type, Pos)])
+        -> R<(String, String, Vec<Stmt>)>
+    {
+        self.expect(Tok::Pipe, "'|' to open the recovery handler")?;
+        if self.word_at(0) == Some("ErrorView") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.advance();
+        }
+        let (err, err_pos) = self.ident("the recovery error handle")?;
+        self.expect(Tok::Comma, "',' after the recovery error handle")?;
+        if self.word_at(0) == Some("RecoveryCursor") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.advance();
+        }
+        let (cursor, cursor_pos) = self.ident("the recovery cursor")?;
+        if err == cursor || err == "_" || cursor == "_" ||
+            params.iter().any(|(n, ..)| *n == err || *n == cursor)
+        {
+            return Err(Diagnostic::new(if err == "_" { err_pos } else { cursor_pos },
+                "E_DUPLICATE", "recovery bindings must be distinct and cannot be '_'"));
         }
         self.expect(Tok::Pipe, "'|' after the recovery cursor")?;
         self.expect(Tok::Arrow, "'->' before the recovery handler body")?;
-        if *self.peek() != Tok::LBrace {
-            return Err(self.expected("'{' to open the recovery handler body"));
-        }
         let body = self.parse_block()?;
-        self.expect(Tok::RParen, "')' to close the recovery factory")?;
-        if *self.peek() != Tok::LParen {
-            return Err(self.expected("'(' with the recovery factory arguments"));
-        }
-        let args = self.parse_args()?;
+        Ok((err, cursor, body))
+    }
+
+    /// Canonical \`recover |err, cursor| -> { ... };\` and compatible
+    /// \`recover (|T v| -> |err, cursor| -> { ... })(value);\`.
+    fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
+        self.advance();
+        let (params, err, cursor, body, args) = if self.eat(&Tok::LParen) {
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
+            let (err, cursor, body) = self.parse_recovery_handler(&params)?;
+            self.expect(Tok::RParen, "')' to close the recovery factory")?;
+            let args = self.parse_args()?;
+            (params, err, cursor, body, args)
+        } else {
+            let (err, cursor, body) = self.parse_recovery_handler(&[])?;
+            (Vec::new(), err, cursor, body, Vec::new())
+        };
         self.terminator()?;
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
@@ -1644,19 +1772,8 @@ impl Parser {
                 Ok(Stmt::Raise(error, pos))
             }
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
-            Some("defer") if *self.peek_at(1) == Tok::Pipe && *self.peek_at(2) == Tok::Pipe => {
-                self.advance();
-                self.advance();
-                self.advance();
-                self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
-                if *self.peek() != Tok::LBrace {
-                    return Err(self.expected("'{' to open the deferred cleanup body"));
-                }
-                let body = self.parse_block()?;
-                self.terminator()?;
-                Ok(Stmt::Defer { body, pos })
-            }
-            Some("recover") if *self.peek_at(1) == Tok::LParen => self.parse_recover(pos),
+            Some("defer") => self.parse_defer(pos),
+            Some("recover") => self.parse_recover(pos),
             Some("if") => self.parse_if(),
             Some("guard") => self.parse_guard(),
             Some("while") => {
