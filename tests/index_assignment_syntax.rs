@@ -27,9 +27,9 @@ fn record_index_assignment_preserves_receiver_key_and_rhs_ast() {
 }
 
 #[test]
-fn record_nonidentifier_quoted_key_is_not_rewritten_into_member() {
+fn quoted_map_key_is_not_rewritten_into_record_member() {
     let p = parse(r#"pub fnc main(): int {
-        let mut Record record = {"content-type": 1};
+        let mut Map<string,int> record = {"content-type": 1};
         record["content-type"] = 7;
         return 0;
     }"#);
