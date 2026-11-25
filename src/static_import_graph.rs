@@ -150,11 +150,7 @@ impl Scope {
             if !seen.insert(&selector.binding) { return Err(err("E_DUPLICATE", "duplicate mixed binding")); }
             let target = exports.lookup(&selector.path)?;
             if target.kind != selector.kind { return Err(err("E_IMPORT_KIND", "export kind does not match typed selector")); }
-            // Explicit renames are inferred from the final binding spelling
-            // only for now; parser must retain authored 'as' before integration.
-            let natural = if selector.kind == Kind::Namespace { selector.path.as_str() }
-                else { selector.path.rsplit('.').next().unwrap_or("") };
-            let tier = if selector.binding == natural { Tier::Deliberate } else { Tier::Explicit };
+            let tier = if selector.explicit_alias { Tier::Explicit } else { Tier::Deliberate };
             staged.insert(&selector.binding, tier, target)?;
         }
         *self = staged;
