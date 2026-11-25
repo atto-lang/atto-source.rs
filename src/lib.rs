@@ -133,8 +133,18 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     compile_prelexed(tokens, logical_path)
 }
 
-fn compile_quantity(outcome: verified_quantities::Outcome, logical_path: Option<&std::path::Path>)
+fn compile_quantity(lowered: verified_quantities::Lowered, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    let outcome = match lowered {
+        verified_quantities::Lowered::Closed(outcome) => outcome,
+        verified_quantities::Lowered::Typed(program) => {
+            let bytes = wasm::emit_quantity_program(&program);
+            if bytes.len() > wasm::MAX_OUTPUT {
+                return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+            }
+            return Ok(bytes);
+        }
+    };
     let (number, failure) = match outcome {
         Ok(number) => (number, None),
         Err(failure) => (0, Some(failure)),
