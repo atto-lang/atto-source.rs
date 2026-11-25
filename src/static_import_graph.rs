@@ -174,6 +174,32 @@ impl Scope {
                 return Err(err("E_DUPLICATE", "duplicate namespace alias"));
             }
         }
+        if staged.bindings.len().saturating_add(pending.len()) > LIMIT {
+            return Err(err("E_SOURCE_LIMIT", "static binding budget exceeded"));
+        }
+        // Every alias depends on at most one other alias: the first component
+        // of its qualified RHS. Detect cycles in the entire declaration graph
+        // before attempting any export lookup. Iterative walks avoid recursive
+        // stack growth and give a deterministic cycle path even for unused
+        // declarations or qualified references such as a = b.child.
+        let mut checked = BTreeSet::new();
+        for &start in pending.keys() {
+            let mut walk = Vec::new();
+            let mut positions = BTreeMap::new();
+            let mut current = start;
+            while let Some(&reference) = pending.get(current) {
+                if checked.contains(current) { break; }
+                if let Some(&at) = positions.get(current) {
+                    let mut cycle: Vec<&str> = walk[at..].to_vec();
+                    cycle.push(current);
+                    return Err(err("E_IMPORT_CYCLE", &format!("cyclic namespace aliases: {}", cycle.join(" -> "))));
+                }
+                positions.insert(current, walk.len());
+                walk.push(current);
+                current = reference.split('.').next().unwrap_or("");
+            }
+            checked.extend(walk);
+        }
         while !pending.is_empty() {
             let mut ready = Vec::new();
             for (&name, &reference) in &pending {
