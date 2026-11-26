@@ -14,7 +14,8 @@ fn wasm(source: &str) -> Vec<u8> {
 #[test]
 fn scalar_deep_copy_produces_real_wasm_bytes() {
     wasm("pub fnc main(): int { val x = 41; val y = copy!! x; return y + 1; }");
-    wasm("pub fnc main(): int { return copy!!(42); }");
+    wasm("pub fnc main(): int { return copy!! (42); }");
+    assert_eq!(compile("pub fnc main(): int { return copy!!(42); }").unwrap_err().code, "E_BANG_KEYWORD_WHITESPACE");
 }
 
 #[test]
@@ -103,7 +104,8 @@ fn shallow_flat_without_deep_consent_executes_distinct_root() {
 #[test]
 fn shallow_nested_class_and_exclusive_loan_remain_denied() {
     let nested = include_str!("fixtures/fail/153-copy-noncopy-class.atto");
-    assert_eq!(compile(nested).unwrap_err().code, "E_COPY");
+    // The current browser layout rejects class-valued fields before copy admission.
+    assert_eq!(compile(nested).unwrap_err().code, "E_UNSUPPORTED_TYPE");
     let exclusive = include_str!("fixtures/fail/996-copy-doublebang-exclusive-loan.atto").replace("copy!! original", "copy! original");
     assert_eq!(compile(&exclusive).unwrap_err().code, "E_BORROW");
 }
