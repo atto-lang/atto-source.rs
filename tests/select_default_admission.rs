@@ -50,3 +50,17 @@ fn default_arm_is_a_lexical_block_not_a_callback() {
     let p = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
     assert!(matches!(&p.funcs[0].body[0], atto_compiler::ast::Stmt::Block(_)));
 }
+
+#[test]
+fn mixed_counted_portable_sources_fail_closed_until_guest_lowering() {
+    for (name, source) in [
+        ("counted-mixed-future-alias", include_str!("fixtures/select-source-v2/counted-mixed-future-alias.atto")),
+        ("counted-multi-channel-fair", include_str!("fixtures/select-source-v2/counted-multi-channel-fair.atto")),
+        ("counted-distinct-alias-projection", include_str!("fixtures/select-source-v2/counted-distinct-alias-projection.atto")),
+        ("counted-mixed-zero", include_str!("fixtures/select-source-v2/counted-mixed-zero.atto")),
+    ] {
+        assert!(compile(source).is_err(), "{name}: unsupported counted source must not emit guest bytes");
+    }
+    let control = compile("pub fnc main(): int { do select { default: -> { return 42; } } return 99; }").unwrap();
+    assert!(control.starts_with(b"\0asm"));
+}
