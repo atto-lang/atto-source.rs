@@ -19,6 +19,7 @@ struct Direct {
     lambda: Expr,
     params: Vec<String>,
     inferred: Option<Vec<Type>>,
+    declared: Option<CallableSignature>,
     captures: Vec<Capture>,
     calls: usize,
     expression_depth: usize,
@@ -41,6 +42,17 @@ fn literal_type(e: &Expr) -> Option<Type> {
     }
 }
 pub fn lower(input: &Program) -> R<Program> {
+    // A hand-built AST cannot introduce an executable declaration for the
+    // temporary apply operand marker. Source identifiers cannot spell it.
+    let marker = crate::parser::APPLY_TUPLE_LITERAL_NAME;
+    if input.funcs.iter().any(|f| f.name == marker)
+        || input.classes.iter().any(|c| c.name == marker)
+        || input.enums.iter().any(|e| e.name == marker)
+        || input.actors.iter().any(|a| a.name == marker)
+    {
+        return Err(error(Pos { line: 1, col: 1 }, "E_DUPLICATE",
+            "reserved compiler tuple operand marker"));
+    }
     let mut program = input.clone();
     let mut generated = Vec::new();
     for (idx, f) in program.funcs.iter_mut().enumerate() {
@@ -67,22 +79,26 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "at most one direct lambda per function is supported"));
                     }
-                    if let Some(t @ Type::Callable(_)) = ty {
-                        // Even though callable storage is not executable,
-                        // a typed lambda binding provides a complete
-                        // contextual signature: check its body and captures
-                        // before the explicit runtime capability gate.
+                    let declared = if let Some(t @ Type::Callable(_)) = ty {
                         let want = CallableSignature::from_source_type(
                             *t, &input.type_names, *pos)?;
-                        let _typed = CallableSignature::from_noncapturing(
+                        let checked = CallableSignature::from_noncapturing(
                             init, Some(&want.params), Some(want.result))?;
-                        return Err(error(*pos, "E_UNSUPPORTED",
-                            "typed callable values require verified Wasm indirect dispatch"));
-                    }
-                    if *kind != BindKind::Val || ty.is_some() {
-                        return Err(error(*pos, "E_UNSUPPORTED",
-                            "direct lambdas need an unannotated immutable val binding"));
-                    }
+                        if checked != want {
+                            return Err(error(*pos, "E_TYPE", "typed lambda differs from declaration"));
+                        }
+                        if !matches!(kind, BindKind::Val | BindKind::Const) {
+                            return Err(error(*pos, "E_UNSUPPORTED",
+                                "mutable callable values require verified Wasm indirect dispatch"));
+                        }
+                        Some(want)
+                    } else {
+                        if *kind != BindKind::Val || ty.is_some() {
+                            return Err(error(*pos, "E_UNSUPPORTED",
+                                "direct lambdas need an unannotated immutable val binding"));
+                        }
+                        None
+                    };
                     if bindings_before_lambda.contains(name) {
                         return Err(error(*pos, "E_DUPLICATE",
                             "direct lambda duplicates an existing local binding"));
@@ -125,6 +141,9 @@ pub fn lower(input: &Program) -> R<Program> {
                             });
                         }
                     }
+                    if declared.is_some() && !captures.is_empty() {
+                        return Err(error(*pos, "E_CAPTURE", "typed closed callable cannot capture enclosing state"));
+                    }
                     // Snapshot at the lexical definition point, not at a call
                     // inside a shadowing block. Values are immutable scalars.
                     for c in &captures {
@@ -139,7 +158,8 @@ pub fn lower(input: &Program) -> R<Program> {
                         source: name.clone(),
                         hidden,
                         lambda: init.clone(),
-                        params: params.clone(), inferred: None, captures, calls: 0,
+                        params: params.clone(), inferred: declared.as_ref().map(|sig| sig.params.clone()),
+                        declared, captures, calls: 0,
                         expression_depth: 0, statement_depth: 0,
                     });
                     continue;
@@ -167,7 +187,7 @@ pub fn lower(input: &Program) -> R<Program> {
         if let Some(d) = direct {
             if d.calls == 0 {
                 return Err(error(d.lambda.pos, "E_UNSUPPORTED",
-                    "unused lambdas are not executable; first-class callables remain unsupported"));
+                    "unused lambdas are not executable; first-class callables require verified indirect dispatch"));
             }
             let types = d.inferred.ok_or_else(|| error(d.lambda.pos, "E_INFER",
                 "lambda parameter types need a direct invocation"))?;
@@ -179,7 +199,11 @@ pub fn lower(input: &Program) -> R<Program> {
                     all_types.push(c.ty);
                 }
             }
-            let signature = CallableSignature::from_noncapturing(&lifted, Some(&all_types), None)?;
+            let signature = CallableSignature::from_noncapturing(&lifted, Some(&all_types),
+                d.declared.as_ref().map(|sig| sig.result))?;
+            if d.declared.as_ref().is_some_and(|want| *want != signature) {
+                return Err(error(d.lambda.pos, "E_TYPE", "lowered callable signature differs from declaration"));
+            }
             let callable = TypedCallable::checked(
                 signature,
                 CallableTarget::Direct {
@@ -271,7 +295,12 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             rewrite_expr(e, d),
         Stmt::Try { body, catch, finally, .. } => {
             rewrite_statements(body, d)?;
-            if let Some((_, handler)) = catch { rewrite_statements(handler, d)?; }
+            if let Some((name, handler)) = catch {
+                if *name == d.source {
+                    return Err(error(d.lambda.pos, "E_UNSUPPORTED", "catch binding cannot shadow direct lambda"));
+                }
+                rewrite_statements(handler, d)?;
+            }
             if let Some(cleanup) = finally { rewrite_statements(cleanup, d)?; }
             Ok(())
         }
@@ -344,6 +373,37 @@ fn rewrite_expr(e: &mut Expr, d: &mut Direct) -> R<()> {
     result
 }
 fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
+    // Resolve only the lexically tracked immutable callable. Ordinary
+    // nominal methods named call remain ordinary MethodCall expressions.
+    // Normalize before the existing checked direct-call rewrite, preserving
+    // argument order, arity, signature, captures and the private target.
+    if let ExprKind::MethodCall(receiver, member, args) = &mut e.kind {
+        if matches!(&receiver.kind, ExprKind::Var(name) if *name == d.source) {
+            if member == "call" {
+                e.kind = ExprKind::Call(d.source.clone(), std::mem::take(args));
+            } else if member == "apply" {
+                if d.declared.is_none() {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires a closed source-typed callable in this profile"));
+                }
+                if args.len() != 1 {
+                    return Err(error(e.pos, "E_ARITY", "apply expects exactly one tuple"));
+                }
+                let operand = args.pop().expect("arity checked");
+                let ExprKind::Call(marker, elements) = operand.kind else {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires an immediate parenthesized scalar tuple literal"));
+                };
+                if marker != crate::parser::APPLY_TUPLE_LITERAL_NAME
+                    || elements.iter().any(|arg| literal_type(arg).is_none())
+                {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires an immediate parenthesized scalar tuple literal"));
+                }
+                e.kind = ExprKind::Call(d.source.clone(), elements);
+            }
+        }
+    }
     match &mut e.kind {
         ExprKind::Var(n) if *n == d.source =>
             Err(error(e.pos, "E_UNSUPPORTED",
