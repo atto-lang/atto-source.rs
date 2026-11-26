@@ -457,6 +457,28 @@ for (const body of ['return true ^^ false;', 'return 12 ^ ^ 10;', 'let x: int = 
   });
 }
 
+// Source-level side effects distinguish eager integer XOR from lazy Boolean gates.
+check('canonical-caret/eager-order-vs-lazy-boolean', () => {
+  const r = compile(`
+    fnc left(): int { stdio.println("left"); return 12; }
+    fnc right(): int { stdio.println("right"); return 10; }
+    fnc unexpected(): bool { stdio.println("unexpected"); return true; }
+    pub fnc main(): int {
+      val bits: int = left() ^^ right();
+      val a: bool = false && unexpected();
+      val b: bool = true || unexpected();
+      stdio.println(a);
+      stdio.println(b);
+      ^ bits;
+    }
+  `);
+  assert.ok(r.ok, r.message);
+  const guest = runGuest(r.wasm);
+  assert.equal(guest.ok, true);
+  assert.equal(guest.value, 6n);
+  assert.equal(guest.stdout, 'left\\nright\\nfalse\\ntrue\\n');
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);
