@@ -1,0 +1,19 @@
+define pub brand #user_id;
+define pub brand #order_id;
+define class UserId with brand #user_id as
+    pub int value = 42;
+end
+define class OtherUserId with brand #user_id as
+    pub int value = 42;
+end
+define class OrderId with brand #order_id as
+    pub int value = 42;
+end
+define class PlainId as
+    pub int value = 42;
+end
+fnc read_user(~UserId id): int { return id.value; }
+pub fnc main(): int {
+    val id = new PlainId();
+    return read_user(id);
+}
