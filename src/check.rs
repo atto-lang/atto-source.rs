@@ -1897,6 +1897,9 @@ impl<'a> FnCx<'a> {
                 TStmt::StateCriticalWrite(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
+            Stmt::IndexAssign { pos, .. } => return Err(Diagnostic::new(*pos,
+                "E_UNSUPPORTED",
+                "indexed assignment needs resolved Map/Record/Struct receiver, ownership and checked guest storage")),
             Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, method, args), pos })
                 if method == "next" && args.is_empty()
                     && matches!(&base.kind, ExprKind::Var(n) if self.recover_cursor.as_deref() == Some(n.as_str())) =>
@@ -3637,13 +3640,12 @@ impl<'a> FnCx<'a> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
-        if name == "@builtin/checked-index-write" {
-            // Parser has retained the full Index(receiver,key) lvalue, but
-            // no guest writer may bypass Record field-shape, Struct nominal
-            // exclusion, Map Hash/Eq and exclusive ownership checking.
-            // Rejection must precede evaluating any argument or emitting Wasm.
+        // Entry<K,V> has passed the bounded nominal static preflight, but there
+        // is no ownership-safe guest Entry allocation/lowering yet. A reserved
+        // compiler intrinsic is never an unresolved user function (E_UNBOUND).
+        if name == "@builtin/Entry.of" || name.starts_with("@builtin/Entry.ascribe<") {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "indexed assignment awaits checked Map/Record lvalue typing and guest lowering"));
+                "first-class Entry<K,V> guest lowering is not implemented"));
         }
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));

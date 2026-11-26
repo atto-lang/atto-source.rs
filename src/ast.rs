@@ -238,6 +238,13 @@ pub enum Stmt {
         value: Expr,
         pos: Pos,
     },
+    /// Preserve an indexed lvalue without deciding whether it is Map, Record or Struct.
+    IndexAssign {
+        target: Expr,
+        index: Expr,
+        value: Expr,
+        pos: Pos,
+    },
     Expr(Expr),
     /// Ordinary guest failure. The checker admits only throw Error(string).
     /// Wasm's fatal traps, panics and host exceptions are never this signal.
