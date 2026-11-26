@@ -1,4 +1,4 @@
-// LLVM-local freestanding arena arithmetic. No memory authority or heap effects.
+// Rust-backend freestanding arena arithmetic. No memory authority or heap effects.
 // Inclusive byte limit; -1 denotes invalid input or an impossible reservation.
 pub fnc arena_alignment_valid(int alignment) -> bool {
   if alignment <= 0 then return false; fi
@@ -8,8 +8,9 @@ pub fnc arena_alignment_valid(int alignment) -> bool {
 pub fnc arena_padding(int cursor, int alignment) -> int {
   if cursor < 0 then return -1; fi
   if arena_alignment_valid(alignment) == false then return -1; fi
-  // floor(cursor / alignment) * alignment is <= cursor: no overflow.
-  val int remainder = cursor - (cursor / alignment) * alignment;
+  // With validated positive power-of-two alignment and nonnegative cursor,
+  // masking the low bits is exact remainder without division or overflow.
+  val int remainder = cursor & (alignment - 1);
   if remainder == 0 then return 0; fi
   return alignment - remainder;
 }
