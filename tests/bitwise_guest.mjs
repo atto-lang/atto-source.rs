@@ -31,6 +31,9 @@ try {
   for (const [expression, expected] of [
     ...cases.map(([e, n]) => [`return ${e};`, n]),
     ...compounds.map(([e, n]) => [`let x: int = 12; ${e}; return x;`, n]),
+    ['let x: int = -9223372036854775808; x ^^= -1; return x;', 9223372036854775807n],
+    ['let x: int = 9223372036854775807; x ^^= -1; return x;', -9223372036854775808n],
+    ['let x: int = -9223372036854775808; x ^^= x; return x;', 0n],
   ]) {
     const src = join(tmp, `${i}.atto`);
     const bin = join(tmp, `${i}.wasm`);
@@ -56,6 +59,8 @@ try {
     'let x: int = 12; x ^^/*gap*/= 3; return x;',
     'val x: int = 12; x ^^= 3; return x;',
     'let x: int = 12; x ^^= true; return x;',
+    'let x: int = 12; x ^^= 1.5; return x;',
+    'let x: float = 12.0; x ^^= 10; return 0;',
     'return 1 <<< 64;',
     'return 1 >>> -1;',
   ].entries()) {
@@ -64,7 +69,10 @@ try {
     await writeFile(src, `pub fnc main(): int { ${body} }\n`);
     const result = spawnSync(attoc, [src, '-o', bin],
       { encoding: 'utf8', timeout: 30000 });
-    assert.notEqual(result.status, 0, 'deprecated caret syntax compiled unexpectedly');
+    assert.equal(result.error, undefined, `compiler infrastructure error: ${body}`);
+    assert.equal(result.signal, null, `compiler terminated by signal: ${body}`);
+    assert.equal(result.status, 1, `expected source diagnostic, not infrastructure failure: ${body}`);
+    assert.ok(result.stderr.trim().length > 0, `missing source diagnostic: ${body}`);
     await assert.rejects(readFile(bin), { code: 'ENOENT' },
       'rejected syntax may not leave any guest artifact');
   }
@@ -110,7 +118,7 @@ try {
   }
   assert.equal(validRuntime, 12);
   assert.equal(invalidRuntime, 24);
-  console.log('PASS', i, 'bitwise Wasm guests; 11 no-artifact checks;',
+  console.log('PASS', i, 'bitwise Wasm guests; 13 no-artifact checks;',
     validRuntime, 'dynamic boundary guests;', invalidRuntime, 'runtime shift panic checks');
 } finally {
   await rm(tmp, { recursive: true, force: true });
