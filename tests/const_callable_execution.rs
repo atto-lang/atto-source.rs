@@ -183,3 +183,38 @@ fn local_callable_call_intrinsic_reuses_the_direct_wasm_target() {
     rejects(&format!("{prefix}f.call(20,true); }}"), "E_TYPE");
     rejects(&format!("{prefix}f.bind(20); }}"), "E_UNSUPPORTED");
 }
+
+#[test]
+fn immediate_typed_apply_is_byte_identical_to_direct_invocation() {
+    for (signature, lambda, args, tuple) in [
+        ("(int,int)=>int", "|int a,int b| :int -> a+b", "20,22", "(20,22)"),
+        ("(int,bool)=>int", "|int a,bool b| :int -> a+2", "40,true", "(40,true)"),
+        ("(int)=>int", "|int a| :int -> a+2", "40", "(40,)"),
+        ("()=>int", "|| :int -> 42", "", "()"),
+    ] {
+        let prefix = format!("type F={signature}; pub fnc main():int {{ const F f={lambda}; return ");
+        let direct = format!("{prefix}f({args}); }}");
+        let call = format!("{prefix}f.call({args}); }}");
+        let apply = format!("{prefix}f.apply({tuple}); }}");
+        let expected = atto_compiler::compile(&direct).unwrap_or_else(|e| panic!("{direct}: {e}"));
+        assert_eq!(expected, atto_compiler::compile(&call).unwrap(), "{call}");
+        assert_eq!(expected, atto_compiler::compile(&apply).unwrap(), "{apply}");
+    }
+}
+
+#[test]
+fn immediate_apply_rejects_unproven_operands_and_wrong_signature() {
+    let prefix = "type F=(int,int)=>int; pub fnc main():int { const F f=|int a,int b| :int -> a+b; return ";
+    for (expr, code) in [
+        ("f.apply((20,))", "E_ARITY"),
+        ("f.apply((20,22,0))", "E_ARITY"),
+        ("f.apply((20,true))", "E_TYPE"),
+        ("f.apply(20,22)", "E_ARITY"),
+        ("f.apply((20))", "E_UNSUPPORTED"),
+        ("f.apply([20,22])", "E_UNSUPPORTED"),
+        ("f.apply((20+0,22))", "E_UNSUPPORTED"),
+        ("f.apply(tuple(20,22))", "E_UNSUPPORTED"),
+    ] {
+        rejects(&format!("{prefix}{expr}; }}"), code);
+    }
+}
