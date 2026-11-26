@@ -283,9 +283,47 @@ fn analyze_impl(tokens: &[Token], check_direct_calls: bool) -> Result<UnsafeSynt
     Ok(out)
 }
 
+/// Native unsafe packages are absent from the guest catalog, irrespective
+/// of the alias used at the import site. Do not inspect ordinary string
+/// literals or relative source paths as if they were package identifiers.
+fn reserved_native_import(value: &str) -> bool {
+    if value.starts_with("./") || value.starts_with("../") {
+        return false;
+    }
+    let parts: Vec<&str> = value.split(['/', '.', ':'])
+        .filter(|part| !part.is_empty()).collect();
+    matches!(parts.as_slice(),
+        ["std", "unsafe", ..] | ["ores", "std", "unsafe", ..]
+        | ["atto", "std", "unsafe", ..])
+}
+
+fn deny_native_package_imports(tokens: &[Token]) -> Result<(), Diagnostic> {
+    let mut in_import = false;
+    for (i, token) in tokens.iter().enumerate() {
+        if word(token, "import") {
+            in_import = true;
+        } else if matches!(token.tok, Tok::Semi | Tok::Eof | Tok::LBrace | Tok::RBrace) {
+            in_import = false;
+        } else if in_import && word(token, "from") {
+            let mut path_at = i + 1;
+            if tokens.get(path_at).is_some_and(|t| word(t, "pkg")) {
+                path_at += 1;
+            }
+            if let Some(Token { tok: Tok::Str(value), pos }) = tokens.get(path_at) {
+                if reserved_native_import(value) {
+                    return Err(Diagnostic::new(*pos, "E_UNSAFE_DOMAIN",
+                        "native unsafe standard-library packages are unavailable to browser/Wasm guests"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The browser compiler is a guest compiler with no trusted native-host grant.
 /// Parsing/structural checking cannot turn it into a native FFI executor.
 pub fn reject_unlowered(tokens: &[Token]) -> Result<(), Diagnostic> {
+    deny_native_package_imports(tokens)?;
     let parsed = analyze(tokens)?;
     if let Some(pos) = parsed.first_unsafe {
         return Err(Diagnostic::new(pos, "E_UNSAFE_DOMAIN",
@@ -362,6 +400,22 @@ mod tests {
         assert_eq!(parse("pub fnc main(): int { val s = \"unsafe { }\"; return 42; }")
                    .unwrap().blocks.len(), 0);
         assert!(compile("pub fnc main(): int { return 42; }").is_ok());
+    }
+
+    #[test]
+    fn native_unsafe_import_aliases_are_denied_before_resolution() {
+        for path in ["std/unsafe", "std/unsafe/ffi", "ores.std/unsafe/ffi",
+                     "atto.std.unsafe.ffi", "std::unsafe::ffi", "std//unsafe/ffi"] {
+            let source = format!(r#"import module innocent from "{path}"; pub fnc main(): int {{ return 42; }}"#);
+            let tokens = lexer::lex(&source).unwrap();
+            assert_eq!(reject_unlowered(&tokens).unwrap_err().code, "E_UNSAFE_DOMAIN");
+            assert_eq!(compile(&source).unwrap_err().code, "E_UNSAFE_DOMAIN");
+        }
+        for path in ["std/unsafe_tools", "std/unsafeness", "./std/unsafe.atto"] {
+            assert!(!reserved_native_import(path), "{path}");
+        }
+        let source = r#"pub fnc main(): int { val text = "std/unsafe/ffi"; return 42; }"#;
+        assert!(reject_unlowered(&lexer::lex(source).unwrap()).is_ok());
     }
 
     #[test]
