@@ -2228,25 +2228,6 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
-                // Recognize only direct write callbacks in method return position.
-                // Read expressions retain their existing expression parser.
-                if self.state_method && self.state_binder.is_none() {
-                    let prefix = if self.word_at(0).is_some_and(is_state_intrinsic)
-                        && *self.peek_at(1) == Tok::LParen { Some(0) }
-                    else if self.word_at(0) == Some("self") && *self.peek_at(1) == Tok::Dot
-                        && self.word_at(2).is_some_and(is_state_intrinsic) && *self.peek_at(3) == Tok::LParen { Some(2) }
-                    else { None };
-                    if let Some(p) = prefix {
-                        if matches!(self.word_at(p), Some("state_w" | "handle_state_w"))
-                            || (self.word_at(p) == Some("handle_state")
-                                && self.word_at(p + 2) == Some("critical")
-                                && (*self.peek_at(p + 3) != Tok::Minus
-                                    || self.word_at(p + 4) == Some("write"))) {
-                            if p == 2 { self.advance(); self.advance(); }
-                            return self.parse_state_critical_stmt(true);
-                        }
-                    }
-                }
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
                     // return values, including an exhaustive match.
@@ -2264,6 +2245,15 @@ impl Parser {
                         "generators may terminate with 'return;' but cannot return a value"));
                 }
                 self.terminator()?;
+                // Parse the entire expression before deciding whether to
+                // retain the direct-return write IR shape. A suffix operator
+                // must consume the detached scalar only after lease release.
+                if self.state_method && self.state_binder.is_none() {
+                    if let Some(Expr { kind: ExprKind::StateWriteValue(mut body, result), pos: write_pos }) = value.clone() {
+                        body.push(Stmt::Return(Some(*result), write_pos));
+                        return Ok(Stmt::StateWrite { body, pos: write_pos });
+                    }
+                }
                 Ok(Stmt::Return(value, pos))
             }
             Some("throw") => {
