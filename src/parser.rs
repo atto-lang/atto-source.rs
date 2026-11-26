@@ -3648,7 +3648,7 @@ impl Parser {
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
-            Tok::Bang => UnOp::Not,
+            Tok::Bang | Tok::UnicodeNot => UnOp::Not,
             Tok::Tilde => UnOp::BitNot,
             Tok::Amp | Tok::Star => return Err(Diagnostic::new(
                 pos,
@@ -4206,6 +4206,7 @@ fn describe(t: &Tok) -> String {
                 Tok::YieldStar => "yield*",
                 Tok::Slash => "/",
                 Tok::Bang => "!",
+                Tok::UnicodeNot => "¬",
                 Tok::Question => "?",
                 Tok::Pipe => "|",
                 Tok::PipeGt => "|>",
