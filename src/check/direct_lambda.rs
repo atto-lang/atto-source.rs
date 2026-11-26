@@ -42,6 +42,17 @@ fn literal_type(e: &Expr) -> Option<Type> {
     }
 }
 pub fn lower(input: &Program) -> R<Program> {
+    // A hand-built AST cannot introduce an executable declaration for the
+    // temporary apply operand marker. Source identifiers cannot spell it.
+    let marker = crate::parser::APPLY_TUPLE_LITERAL_NAME;
+    if input.funcs.iter().any(|f| f.name == marker)
+        || input.classes.iter().any(|c| c.name == marker)
+        || input.enums.iter().any(|e| e.name == marker)
+        || input.actors.iter().any(|a| a.name == marker)
+    {
+        return Err(error(Pos { line: 1, col: 1 }, "E_DUPLICATE",
+            "reserved compiler tuple operand marker"));
+    }
     let mut program = input.clone();
     let mut generated = Vec::new();
     for (idx, f) in program.funcs.iter_mut().enumerate() {
@@ -379,10 +390,30 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
     // Normalize before the existing checked direct-call rewrite, preserving
     // argument order, arity, signature, captures and the private target.
     if let ExprKind::MethodCall(receiver, member, args) = &mut e.kind {
-        if matches!(&receiver.kind, ExprKind::Var(name) if *name == d.source)
-            && member == "call"
-        {
-            e.kind = ExprKind::Call(d.source.clone(), std::mem::take(args));
+        if matches!(&receiver.kind, ExprKind::Var(name) if *name == d.source) {
+            if member == "call" {
+                e.kind = ExprKind::Call(d.source.clone(), std::mem::take(args));
+            } else if member == "apply" {
+                if d.declared.is_none() {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires a closed source-typed callable in this profile"));
+                }
+                if args.len() != 1 {
+                    return Err(error(e.pos, "E_ARITY", "apply expects exactly one tuple"));
+                }
+                let operand = args.pop().expect("arity checked");
+                let ExprKind::Call(marker, elements) = operand.kind else {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires an immediate parenthesized scalar tuple literal"));
+                };
+                if marker != crate::parser::APPLY_TUPLE_LITERAL_NAME
+                    || elements.iter().any(|arg| literal_type(arg).is_none())
+                {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires an immediate parenthesized scalar tuple literal"));
+                }
+                e.kind = ExprKind::Call(d.source.clone(), elements);
+            }
         }
     }
     match &mut e.kind {
