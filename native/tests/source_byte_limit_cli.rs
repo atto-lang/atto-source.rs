@@ -103,3 +103,17 @@ fn byte_over_limit_is_rejected_before_object_or_facts_publication() {
     }
     fs::remove_dir_all(dir).expect("remove isolated test directory");
 }
+
+#[test]
+fn oversized_multibyte_boundary_reports_size_not_truncated_encoding() {
+    let dir = scratch("over-unicode");
+    let source = dir.join("over-unicode.ores");
+    let object = dir.join("unexpected.o");
+    let contents = source_with_exact_byte_count(MAX_SOURCE_BYTES) + "é";
+    fs::write(&source, contents).unwrap();
+    let result = run(&["--strict-aot", source.to_str().unwrap(), object.to_str().unwrap()]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("source too large"));
+    assert!(!object.exists());
+    fs::remove_dir_all(dir).unwrap();
+}

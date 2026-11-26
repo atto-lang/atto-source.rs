@@ -5,7 +5,7 @@ use oreslang_source_rs::{
 };
 use std::{env, fs, io::Read, path::Path, process::ExitCode};
 
-const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+const MAX_SOURCE_BYTES: usize = frontend::MAX_SOURCE_BYTES;
 
 fn canonical_destination(path: &str) -> Result<std::path::PathBuf, String> {
     let destination = Path::new(path);
@@ -98,15 +98,18 @@ fn main() -> ExitCode {
             }
         }
         // Bound both ordinary and paired compiler invocations before tokenization.
-        let mut source = String::new();
+        let mut bytes = Vec::new();
         fs::File::open(input)
             .map_err(|e| e.to_string())?
             .take(MAX_SOURCE_BYTES as u64 + 1)
-            .read_to_string(&mut source)
+            .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        if source.len() > MAX_SOURCE_BYTES {
-            return Err("source too large: exceeds 1 MiB admission budget".into());
+        if bytes.len() > MAX_SOURCE_BYTES {
+            return Err(format!("source too large: exceeds {MAX_SOURCE_BYTES} byte admission budget"));
         }
+        // Decide the byte budget before UTF-8 decoding, even when the bounded
+        // read ends inside a multibyte character.
+        let source = String::from_utf8(bytes).map_err(|e| e.to_string())?;
         let parsed = frontend::parse(&source).map_err(|e| e.to_string())?;
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
         let _freestanding = freestanding;
