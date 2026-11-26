@@ -56,6 +56,7 @@ jobs:
           cargo test --lib compiler_cache_witness::tests:: -- --nocapture
           cargo test --lib compiler_cache_key_policy::tests:: -- --nocapture
           cargo test --lib compiler_cache_ledger::tests:: -- --nocapture
+          cargo test --lib registry_check_memo::tests:: -- --nocapture
           cargo test --test package_resolver -- --nocapture
           cargo test --test multihop_linker -- --nocapture
           cargo check --no-default-features

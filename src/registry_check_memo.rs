@@ -90,3 +90,41 @@ impl<'a> Pass<'a>{
     }
     pub(crate) fn finish(self)->(Memo,Work){(self.next,self.work)}
 }
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn sig(source:&str)->String{
+        let tokens=lexer::lex(source).unwrap();
+        let (names,_)=crate::import_link::functions(&tokens).unwrap();
+        let (parsed,checked)=check_closed(&tokens).unwrap();
+        signature(&parsed,&checked,&names).unwrap()
+    }
+    #[test]
+    fn partial_callable_fingerprint_tracks_checked_signature_and_transitive_escape_effect(){
+        let clean="pub fnc get(int x): int { return helper(x); } fnc helper(int x): int { return x+1; }";
+        let edited=clean.replace("x+1","x+2");
+        assert_eq!(sig(clean),sig(&edited));
+        assert_ne!(sig(clean),sig(&clean.replace("get(int x)","get(int value)").replace("helper(x);","helper(value);")));
+        // Exercise the actual typed escape solver directly. The bounded
+        // registry direct-call admission itself may reject Error construction.
+        let throwing=clean.replace("return x+1;","throw Error(\"failure\");");
+        assert_ne!(sig(clean),sig(&throwing));
+        let expanded=clean.replace("fnc helper","pub fnc helper");
+        assert_ne!(sig(clean),sig(&expanded));
+        println!("CACHE_CALLABLE_SIGNATURE|body-stable|parameter-visibility-and-inferred-throw-drift");
+    }
+    #[test]
+    fn exact_token_proof_is_not_reused_after_position_or_body_drift(){
+        let initial=lexer::lex("pub fnc get(int x): int { return x+1; }").unwrap();
+        let moved=lexer::lex("\npub fnc get(int x): int { return x+1; }").unwrap();
+        let names=crate::import_link::functions(&initial).unwrap().0;
+        let empty=Memo::default();let mut pass=Pass::new(&empty);
+        pass.admit("pkg","math",&initial,&names).unwrap();
+        let (memo,work)=pass.finish();assert_eq!((work.checked,work.reused),(1,0));
+        let mut pass=Pass::new(&memo);pass.admit("pkg","math",&moved,&names).unwrap();
+        let (_,work)=pass.finish();assert_eq!((work.checked,work.reused,work.same_signature),(1,0,1));
+        let mut pass=Pass::new(&memo);pass.admit("pkg","math",&initial,&names).unwrap();
+        let (_,work)=pass.finish();assert_eq!((work.checked,work.reused),(0,1));
+    }
+}

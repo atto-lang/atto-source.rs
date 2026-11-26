@@ -643,3 +643,13 @@ all supplied current source bytes and resolve the whole root graph. Failed
 compilation or publication cannot commit staged views. Provider-view counts
 are distinct from typecheck or code generation work; a changed provider still
 causes complete guest code generation on a final-artifact miss.
+
+The direct-function registry lane additionally memoizes exact successful
+isolated namespace semantic checks in the current process. All source
+and binding authority checks remain mandatory. It reports actual fresh
+and reused isolated-check counts, and partial compiler-derived callable
+signature drift (scalar types, parameter names and mutability, declared
+effect bounds and inferred escaping throw/raise). These fingerprints are
+reporting only; they do not certify full public ABI, fatal panic effects,
+ownership or nominal contracts. A changed unit is always checked; on an
+artifact miss the whole linked program is still checked and emitted.

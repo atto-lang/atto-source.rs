@@ -104,6 +104,35 @@ fn locked_registry_application_cold_warm_edit_and_authority_denials(){
     assert_eq!((renamed_build.checked_namespaces,renamed_build.reused_namespace_checks),(1,1));
     assert_eq!((renamed_build.unchanged_callable_signatures,renamed_build.changed_callable_signatures),(0,1));
     execute(&renamed_build.bytes,"43");
+    // A negative lookup must not survive a changed authenticated export
+    // graph. Reuse the unchanged math check even within a changed package.
+    let expanded_app=APP.replace("other.math.get(20);","other.math.get(20)+provider.aux.get(0);");
+    let expanded_roots=[SnapshotSource{path:"main.atto",source:&expanded_app}];
+    let expanded_root_lock=lock(ROOT,&expanded_roots);let expanded_root_pin=hex_digest(expanded_root_lock.as_bytes());
+    let expanded_root=||Snapshot{sources:&expanded_roots,lockfile:&expanded_root_lock,trusted_lock_sha256:&expanded_root_pin,..root()};
+    let renamed_dep=||RegistryDependency{sources:&renamed_inputs,lockfile:&renamed_lock,trusted_lock_sha256:&renamed_pin,..p()};
+    let before=files(&cache);
+    assert_eq!(session.build_registry(Mode::Incremental,&pin,MASTER,expanded_root(),&[renamed_dep(),q()]).unwrap_err().code,"E_UNBOUND");
+    assert_eq!(files(&cache),before);
+    let expanded_manifest=format!("{PROVIDER}aux=\"src/aux/\"\n");
+    let aux="use namespace aux; pub fnc get(int x): int { return x+1; }";
+    let expanded_inputs=[renamed_inputs[0],SnapshotSource{path:"src/aux/main.atto",source:aux}];
+    let expanded_lock=lock(&expanded_manifest,&expanded_inputs);let expanded_pin=hex_digest(expanded_lock.as_bytes());
+    let expanded=||RegistryDependency{manifest:&expanded_manifest,sources:&expanded_inputs,lockfile:&expanded_lock,trusted_lock_sha256:&expanded_pin,..p()};
+    let added=session.build_registry(Mode::Incremental,&pin,MASTER,expanded_root(),&[expanded(),q()]).unwrap();
+    assert_eq!(added.outcome,Outcome::Compiled);assert_eq!((added.checked_namespaces,added.reused_namespace_checks),(1,2));
+    execute(&added.bytes,"44");
+    let aux_edit=aux.replace("x+1","x+2");
+    let edited_inputs=[renamed_inputs[0],SnapshotSource{path:"src/aux/main.atto",source:&aux_edit}];
+    let edited_lock=lock(&expanded_manifest,&edited_inputs);let edited_pin=hex_digest(edited_lock.as_bytes());
+    let edited=RegistryDependency{sources:&edited_inputs,lockfile:&edited_lock,trusted_lock_sha256:&edited_pin,..expanded()};
+    let edited_build=session.build_registry(Mode::Incremental,&pin,MASTER,expanded_root(),&[edited,q()]).unwrap();
+    assert_eq!(edited_build.outcome,Outcome::Compiled);
+    assert_eq!((edited_build.checked_namespaces,edited_build.reused_namespace_checks),(1,2));
+    assert_eq!(edited_build.unchanged_callable_signatures,1);execute(&edited_build.bytes,"45");
+    let v=FrozenRegistry::verify("@org/project/provider",&expanded_manifest,&edited_lock,&edited_pin,&edited_inputs).unwrap();
+    assert_eq!(edited_build.bytes,compile_registry_guest(&expanded_app,&[&v,&vq]).unwrap());
+    println!("CACHE_REGISTRY_NAMESPACE|new-export-negative-lookup-rechecked|same-package-sibling-check-reused|edit=1/2|guest=44/45");
     println!("CACHE_REGISTRY_SEMANTIC|closed-checks=2/0,0/2,1/1|body-signature-equal|named-parameter-signature-changed|failed-edit-rollback|guest=42/43");
     println!("CACHE_REGISTRY_APP|two-providers|cold-warm=42|repinned-edit=43|views=2/0,0/2,1/1|failed-edit-rollback|order-independent|stale-root-provider-private-duplicate-missing-denied");
 }
