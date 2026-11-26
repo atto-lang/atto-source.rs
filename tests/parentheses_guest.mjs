@@ -38,7 +38,22 @@ cases.push(
   [main('val p = Pair.of("first-name",42); return p.second;'), 42n],
   [main('val e: Entry<int,int> = Entry.of(42,5); return e.key;'), 42n],
 );
+cases.push(
+  [main('val e = Entry.of(42,5); return e.key;'), 42n],
+  [main('val p: Pair<int> = Pair.of<string,int>("name",42); return p.second;'), 42n],
+  [main('val p = Pair.of<int>("name",20+22); return p.second;'), 42n],
+  [main('val e = Entry.of<int,int>(20+22,5); return e.key;'), 42n],
+  ['fnc make(string key, int value): int { val p = Pair.of<int>(key,value); return p.second; }\n' + main('return make("runtime",42);'), 42n],
+);
 const malformed = [
+  'val p: Pair<int> = Pair.of<bool>("a",true); return 0;',
+  'val e: Entry<int,int> = Entry.of<string,int>("a",5); return 0;',
+  'val p = Pair.of<int>(42,5); return 0;',
+  'val p = Pair.of<int,int>(42,5); return 0;',
+  'val Entry=1; val e=Entry.of(42,5); return 0;',
+  'val p = Pair.of<int>("a",(5]); return 0;',
+  'val e = Entry.of<int,int>(42,[5)); return 0;',
+  'val p = Pair.of<int>("a",5); return p.key;',
   'val p = Pair.of(42,5); return 0;',
   'val p = Pair.of(true,5); return 0;',
   'val p: Pair<int,int> = Pair(42,5); return 0;',
