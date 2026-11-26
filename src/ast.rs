@@ -196,6 +196,8 @@ pub struct ClassDecl {
     /// Distinct nominal protected-state declaration, never an ordinary class.
     /// Only a restricted Worker-local scalar backend has executable lowering.
     pub state_container: bool,
+    /// Explicit core DeepCopyable<Self> declaration, not inferred from fields.
+    pub deep_copy_opt_in: bool,
     pub fields: Vec<Field>,
     pub ctor: Option<Constructor>,
     pub methods: Vec<Method>,
