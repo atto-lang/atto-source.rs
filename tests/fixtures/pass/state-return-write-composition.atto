@@ -1,0 +1,21 @@
+// expect-exit: 0
+// expect-stdout: 42
+// expect-stdout: 44
+// expect-stdout: 43
+define state container Counter as
+  state { let int count = 0; }
+  pub add(): int {
+    return state_w(|s| -> { s.count = 40; return s.count; }) + 2;
+  }
+  pub next(): int {
+    return (self.handle_state_w(|v| -> { v.count = v.count + 3; return v.count; })) + 1;
+  }
+  pub read(): int { return state_ro(|s| -> s.count); }
+end
+pub fnc main(): int {
+  val c = new Counter();
+  stdio.println(c.add());
+  stdio.println(c.next());
+  stdio.println(c.read());
+  return 0;
+}
