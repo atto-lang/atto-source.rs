@@ -1,0 +1,1 @@
+suspends fnc main(): int { val Channel<int> incoming = Channel.new<int>(4); val int result = await select<int>(1) { when readch incoming: int value -> { return value * 2; } }; return result; }
