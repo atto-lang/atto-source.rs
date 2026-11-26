@@ -1,0 +1,37 @@
+name: Scalar parameter rebind guest
+on:
+  pull_request:
+    paths:
+      - 'src/parser.rs'
+      - 'src/check.rs'
+      - 'src/wasm.rs'
+      - 'tests/parameter_rebind.rs'
+      - 'tests/parameter-rebind-guest.mjs'
+      - '.github/workflows/parameter-rebind-guest.yml'
+  push:
+    branches:
+      - 'draft/fixed-parameter-ssa-rebind-20261126'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scalar-rebind:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record actual source and toolchain
+        run: |
+          git rev-parse HEAD HEAD^{tree}
+          rustc --version
+          cargo --version
+          node --version
+      - name: Compiler regression tests
+        run: cargo test --locked --test parameter_rebind
+      - name: Build real compiler
+        run: cargo build --locked --release --bin attoc
+      - name: Execute Wasm guests and exact-byte comparison
+        run: node tests/parameter-rebind-guest.mjs
