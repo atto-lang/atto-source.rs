@@ -2580,7 +2580,7 @@ impl Parser {
         };
         if read_only && write {
             return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                "write callback result is only admitted in direct method return position"));
+                "read callback cannot acquire exclusive write authority"));
         }
         Ok(write)
     }
@@ -2589,6 +2589,13 @@ impl Parser {
     /// narrower than arbitrary closures: mutation only, pure scalar RHS, no
     /// early return, IO, allocations, calls, loops or nested state access.
     fn parse_state_critical_stmt(&mut self, return_result: bool) -> R<Stmt> {
+        let pos = self.pos();
+        let body = self.parse_state_write_body(return_result)?;
+        self.terminator()?;
+        Ok(Stmt::StateWrite { body, pos })
+    }
+
+    fn parse_state_write_body(&mut self, return_result: bool) -> R<Vec<Stmt>> {
         let pos = self.pos();
         if self.state_binder.is_some() {
             return Err(Diagnostic::new(pos, "E_STATE_BORROW",
@@ -2622,7 +2629,7 @@ impl Parser {
                 Stmt::Return(Some(value), _) if return_result && i + 1 == body.len()
                     && Self::pure_state_value(value) => {}
                 _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                    "critical block permits pure state assignments and, only in return position, a terminal scalar result")),
+                    "critical block permits pure state assignments and, in value position, a terminal scalar result")),
             }
         }
         if return_result && !matches!(body.last(), Some(Stmt::Return(Some(_), _))) {
@@ -2630,8 +2637,20 @@ impl Parser {
                 "returned critical-write requires a terminal callback result"));
         }
         self.expect(Tok::RParen, "')' after critical scope")?;
-        self.terminator()?;
-        Ok(Stmt::StateWrite { body, pos })
+        Ok(body)
+    }
+
+    fn parse_state_access_expr(&mut self) -> R<ExprKind> {
+        let write = matches!(self.word_at(0), Some("state_w" | "handle_state_w"))
+            || (self.word_at(0) == Some("handle_state")
+                && self.word_at(2) == Some("critical")
+                && (*self.peek_at(3) != Tok::Minus || self.word_at(4) == Some("write")));
+        if !write { return self.parse_state_critical_read(); }
+        let mut body = self.parse_state_write_body(true)?;
+        let Some(Stmt::Return(Some(result), _)) = body.pop() else {
+            unreachable!("write body checked for terminal scalar result");
+        };
+        Ok(ExprKind::StateWriteValue(body, Box::new(result)))
     }
 
     fn pure_state_value(e: &Expr) -> bool {
@@ -4062,7 +4081,7 @@ impl Parser {
                     && self.word_at(2).is_some_and(is_state_intrinsic) && *self.peek_at(3) == Tok::LParen => {
                     self.advance();
                     self.advance();
-                    self.parse_state_critical_read()?
+                    self.parse_state_access_expr()?
                 }
                 "self" => {
                     if self.state_method {
@@ -4072,7 +4091,7 @@ impl Parser {
                     self.advance();
                     ExprKind::SelfRef
                 }
-                name if self.state_method && is_state_intrinsic(name) => self.parse_state_critical_read()?,
+                name if self.state_method && is_state_intrinsic(name) => self.parse_state_access_expr()?,
                 "new" => {
                     self.advance();
                     let (class, _) = self.ident("a class name after 'new'")?;

@@ -1,0 +1,6 @@
+// expect-error: E_ESCAPE
+define state container Counter as
+  state { let int count = 0; }
+  pub bad(): int { val a = state_w(|s| -> { return s; }); return a; }
+end
+pub fnc main(): int { return 0; }

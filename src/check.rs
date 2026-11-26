@@ -195,6 +195,8 @@ pub enum TExpr {
     /// Copy scalar fields in source order under ONE read ticket, release,
     /// then materialize the compiler-generated tuple outside the lease.
     StateSnapshot { ctor: u32, fields: Vec<(Type, u32)> },
+    /// A bounded synchronous exclusive region yielding an owned scalar.
+    StateWriteValue { body: Vec<TStmt>, result: Box<TE> },
     /// read an actor-state global
     GlobalGet(u32),
     /// bump-allocate a zeroed object of `n` bytes; panics when the heap is full
@@ -1593,6 +1595,8 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         TExpr::AdtNew { payload, .. } =>
             payload.as_ref().map_or(EscapeEffects::default(),
                 |v| expr_escape_effects(v, effects)),
+        TExpr::StateWriteValue { body, result } =>
+            stmts_escape_effects(body, effects).union(expr_escape_effects(result, effects)),
         TExpr::StateSnapshot { ctor, .. } => effects.get(*ctor as usize).copied()
             .unwrap_or(EscapeEffects { throws: true, raises: true }),
         TExpr::Call(target, args) => {
@@ -1878,6 +1882,8 @@ fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) ->
                     ctor_init_stmts(stmts, &mut nested, fields, true).map(|_| ()),
             }
         }
+        ExprKind::StateWriteValue(..) => Err(Diagnostic::new(e.pos, "E_STATE_BORROW",
+            "write callback cannot initialize a constructor field")),
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
         ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
         ExprKind::StateRead(_) | ExprKind::Spawn(_) => Ok(()),
@@ -2106,6 +2112,8 @@ fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
                 constructor_self_stmts(std::slice::from_ref(stmt.as_ref()), true),
             LambdaBody::Block(stmts) => constructor_self_stmts(stmts, true),
         },
+        ExprKind::StateWriteValue(..) => Err(Diagnostic::new(e.pos, "E_STATE_BORROW",
+            "write callback is unavailable during construction")),
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_)
         | ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::StateRead(_)
         | ExprKind::Spawn(_) => Ok(()),
@@ -2341,7 +2349,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         // propagation. Keep these explicit when evolving the language.
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
-        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::StateSnapshot { .. } | TExpr::GlobalGet(_) |
+        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::StateSnapshot { .. } | TExpr::StateWriteValue { .. } | TExpr::GlobalGet(_) |
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
@@ -2407,6 +2415,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         return true;
     }
     match &e.e {
+        TExpr::StateWriteValue { body, result } => any_in_stmts(body, f) || any_in(result, f),
         TExpr::Trap { value, .. } => any_in(value, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
@@ -3993,7 +4002,7 @@ impl<'a> FnCx<'a> {
                 ExprKind::Ternary(..) => Some("conditional expression (needs canonical joins)"),
                 ExprKind::MethodCall(..) => Some("method call (receiver effect summary not exported)"),
                 ExprKind::Lambda { .. } => Some("closure capture"),
-                ExprKind::Spawn(_) | ExprKind::SelfRef | ExprKind::StateRead(_) =>
+                ExprKind::Spawn(_) | ExprKind::SelfRef | ExprKind::StateRead(_) | ExprKind::StateWriteValue(..) =>
                     Some("actor, self or protected state access"),
                 _ => Some("expression form outside straight-line-v1"),
             };
@@ -4405,6 +4414,28 @@ impl<'a> FnCx<'a> {
             ExprKind::Call(name, _) if crate::prelude::core_constructor(name) =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
+            ExprKind::StateWriteValue(body, result) => {
+                let allowed = matches!(self.owner,
+                    Owner::Class { c, ctor: false, is_static: false }
+                    if self.g.classes[c as usize].state_container);
+                if !allowed || self.state_read_scope || self.state_write_scope {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "write callback requires a non-nested protected instance method"));
+                }
+                self.state_write_scope = true;
+                let checked = (|| -> R<(Vec<TStmt>, TE)> {
+                    let statements = self.scoped(body)?;
+                    let value = self.expr(result)?;
+                    if !matches!(value.ty, Type::Int | Type::Bool) {
+                        return Err(type_err(result.pos, "write callback result must be owned int/bool"));
+                    }
+                    Ok((statements, value))
+                })();
+                self.state_write_scope = false;
+                let (body, value) = checked?;
+                let ty = value.ty;
+                TE { e: TExpr::StateWriteValue { body, result: Box::new(value) }, ty }
+            }
             ExprKind::StateRead(projection) => {
                 let c = match self.owner {
                     Owner::Class { c, ctor: false, is_static: false }

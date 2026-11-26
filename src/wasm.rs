@@ -940,6 +940,22 @@ impl Emit<'_> {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
             }
+            TExpr::StateWriteValue { body, result } => {
+                debug_assert_eq!(self.state_write_depth, 0);
+                let slot = self.state_ticket_slot.expect("protected write value ticket local");
+                self.get(0);
+                self.i32c(1);
+                self.call(self.l.import(Import::StateEnter));
+                self.set(slot);
+                self.state_write_depth += 1;
+                self.stmts(body);
+                self.expr(result);
+                self.state_write_depth -= 1;
+                // The scalar stays on the operand stack; no enclosing return
+                // or result publication until the exclusive ticket is released.
+                self.get(slot);
+                self.call(self.l.import(Import::StateLeave));
+            }
             TExpr::StateSnapshot { ctor, fields } => {
                 // Fixed receiver and scalar loads only. No allocation, user
                 // call, suspension or per-field ticket inside the read lease.
