@@ -9,6 +9,8 @@
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+/// Bounded static synchronous actor call graphs; not continuation lowering.
+pub mod actor_stack_bound;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
 pub mod collection_layout;
 /// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
@@ -51,6 +53,10 @@ pub mod import_tree;
 pub mod static_import_graph;
 /// Checked physical layout metadata; does not admit guest reference operations.
 pub mod ref_layout;
+// Host-only substrates; no guest ownership or physical layout certification.
+pub mod owner_arena;
+pub mod actor_arena;
+pub mod layout_trace;
 pub mod layout_plan;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
@@ -66,6 +72,7 @@ mod secure_fs;
 pub mod sha256;
 /// Canonical cache-key envelope only; no artifact reuse authority.
 pub mod compiler_cache_key;
+pub mod incremental;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
@@ -162,7 +169,23 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    compile_prelexed(lexer::lex(source)?, logical_path)
+    let tokens = lexer::lex(source)?;
+    // Admit only the bounded, explicitly contracted private scalar header.
+    // The existing lowerer checks the entire file; errors never fall back.
+    if verified_quantities::scalar_contract_header(&tokens) {
+        let pos = tokens[0].pos;
+        match verified_quantities::lower(source, &tokens)? {
+            Some(verified_quantities::Lowered::Typed(program)) => {
+                let bytes = wasm::emit_quantity_program(&program);
+                if bytes.len() > wasm::MAX_OUTPUT {
+                    return Err(Diagnostic::new(pos, "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+                }
+                return Ok(bytes);
+            }
+            _ => return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "scalar contract did not produce a typed program")),
+        }
+    }
+    compile_prelexed(tokens, logical_path)
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
@@ -189,6 +212,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
+        actor_stack_bound::verify(&program)?;
         let bytes = wasm::emit(&program);
         if bytes.len() > wasm::MAX_OUTPUT {
             return Err(Diagnostic::new(Pos { line: 1, col: 1 },
@@ -394,6 +418,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
+    actor_stack_bound::verify(&typed)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
