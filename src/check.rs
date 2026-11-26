@@ -484,6 +484,10 @@ struct FnCx<'a> {
     fresh_class_roots: BTreeSet<u32>,
     /// Stable CLASS borrow provenance; expiry never grants ownership.
     borrowed_slots: BTreeSet<u32>,
+    /// A mutable scalar-field alias is never an ordinary mutable local.
+    /// On last-use expiry this retains non-owning provenance; a future read
+    /// or assignment cannot silently use the initialization snapshot.
+    mutable_field_aliases: BTreeSet<u32>,
     nll_fuel: usize,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
@@ -2477,6 +2481,7 @@ impl<'a> FnCx<'a> {
             moved: BTreeSet::new(),
             fresh_class_roots: BTreeSet::new(),
             borrowed_slots: BTreeSet::new(),
+            mutable_field_aliases: BTreeSet::new(),
             nll_fuel: NLL_WORK_BUDGET,
             loans: BTreeMap::new(),
             state_write_scope: false,
@@ -2564,6 +2569,7 @@ impl<'a> FnCx<'a> {
         let moved = std::mem::take(&mut self.moved);
         let fresh_class_roots = std::mem::take(&mut self.fresh_class_roots);
         let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
+        let mutable_field_aliases = std::mem::take(&mut self.mutable_field_aliases);
         let loans = std::mem::take(&mut self.loans);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
@@ -2576,6 +2582,7 @@ impl<'a> FnCx<'a> {
         self.moved = moved;
         self.fresh_class_roots = fresh_class_roots;
         self.borrowed_slots = borrowed_slots;
+        self.mutable_field_aliases = mutable_field_aliases;
         self.loops = loops;
         self.scopes = scopes;
         r
@@ -2695,6 +2702,7 @@ impl<'a> FnCx<'a> {
                 self.moved.remove(&l.slot);
                 self.fresh_class_roots.remove(&l.slot);
                 self.borrowed_slots.remove(&l.slot);
+                self.mutable_field_aliases.remove(&l.slot);
             }
         }
     }
@@ -2834,6 +2842,48 @@ impl<'a> FnCx<'a> {
                     Some(l) => (l.slot, l.ty, l.mutable, l.mail.is_some()),
                     None => return Err(Diagnostic::new(*pos, "E_UNBOUND", format!("unknown name '{name}'"))),
                 };
+                // A mutable field loan is a checked addressable projection,
+                // not a scalar copy. Reassignment writes the original owner
+                // field through the existing typed FieldSet guest path.
+                if self.mutable_field_aliases.contains(&slot) {
+                    let loan = self.loans.get(&slot).copied().ok_or_else(||
+                        Diagnostic::new(*pos, "E_BORROW",
+                            "mutable field loan has ended; alias cannot regain ownership"))?;
+                    let Some(offset) = loan.field else {
+                        return Err(Diagnostic::new(*pos, "E_BORROW",
+                            "mutable alias lacks an authenticated scalar field"));
+                    };
+                    if !loan.mutable || !mutable || mail
+                        || !self.fresh_class_roots.contains(&loan.owner)
+                    {
+                        return Err(Diagnostic::new(*pos, "E_BORROW",
+                            "mutable field assignment requires an active unique-owner loan"));
+                    }
+                    let owner_ty = self.scopes.iter().flatten()
+                        .find(|local| local.slot == loan.owner)
+                        .map(|local| local.ty)
+                        .ok_or_else(|| Diagnostic::new(*pos, "E_BORROW",
+                            "mutable field loan owner has left its lexical scope"))?;
+                    if !matches!(owner_ty, Type::Class(_)) || self.moved.contains(&loan.owner) {
+                        return Err(Diagnostic::new(*pos, "E_BORROW",
+                            "mutable field loan owner is no longer live"));
+                    }
+                    let written = self.consume_expected(value, ty)?;
+                    if written.ty != ty {
+                        return Err(type_err(value.pos,
+                            "mutable field loan assignment type mismatch"));
+                    }
+                    if self.moved.contains(&loan.owner)
+                        || !self.loans.contains_key(&slot)
+                    {
+                        return Err(Diagnostic::new(*pos, "E_BORROW",
+                            "field loan or owner invalidated during assignment"));
+                    }
+                    return Ok(TStmt::FieldSet {
+                        obj: TE { e: TExpr::Local(loan.owner), ty: owner_ty },
+                        offset, ty, value: written
+                    });
+                }
                 if !mutable || mail {
                     return Err(Diagnostic::new(
                         *pos,
@@ -3826,12 +3876,14 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
         // A field offset is a declaration-checked projection, not an index
-        // or caller-supplied alias root. For now, only direct-new class roots
-        // and immutable snapshots of scalar fields have a guest representation.
+        // or caller-supplied alias root. Read-only scalar loans are snapshots;
+        // mutable scalar loans lower every access through FieldGet/FieldSet.
         let projected_field = if let Some(field_name) = requested_field {
-            if mutable {
+            if mutable && (kind != BindKind::Let
+                || !self.lookup(owner_name).is_some_and(|local| local.mutable))
+            {
                 return Err(Diagnostic::new(pos, "E_BORROW",
-                    "mutable scalar field loans require reference write-through lowering"));
+                    "mutable scalar field loan requires let owner and let alias"));
             }
             if !self.fresh_class_roots.contains(&owner) {
                 return Err(Diagnostic::new(pos, "E_BORROW",
@@ -3854,7 +3906,11 @@ impl<'a> FnCx<'a> {
             }
             if f.mode == FieldMode::ActorState {
                 return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                    "protected state requires a critical-read lease"));
+                    "protected state requires a critical-read/write lease"));
+            }
+            if mutable && !f.binding.rebindable() {
+                return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                    "mutable loan requires a writable let class field"));
             }
             if !matches!(f.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                 return Err(Diagnostic::new(pos, "E_BORROW",
@@ -3876,10 +3932,14 @@ impl<'a> FnCx<'a> {
             }
         }
         if let Some(field) = projected_field {
-            // Snapshot-backed, read-only scalar loan: the stored value is
-            // independent, while the field's original storage remains protected.
-            let slot = self.declare(name, value.ty, false, pos)?;
-            self.loans.insert(slot, ScopedLoan { owner, field: Some(field), mutable: false });
+            // Read-only field loans use immutable snapshots. Mutable loans
+            // retain their owner/field identity, and all subsequent reads and
+            // writes are emitted directly against that original field.
+            let slot = self.declare(name, value.ty, mutable, pos)?;
+            self.loans.insert(slot, ScopedLoan { owner, field: Some(field), mutable });
+            if mutable {
+                self.mutable_field_aliases.insert(slot);
+            }
             return Ok(TStmt::Set(slot, value));
         }
         // Tuple roots are value-aggregate anchors. Their non-Copy storage
@@ -4505,6 +4565,35 @@ impl<'a> FnCx<'a> {
                 }
                 Some(l) => {
                     let (slot, ty) = (l.slot, l.ty);
+                    if self.mutable_field_aliases.contains(&l.slot) {
+                        let loan = self.loans.get(&l.slot).copied().ok_or_else(||
+                            Diagnostic::new(pos, "E_BORROW",
+                                "mutable field loan has ended; no independent snapshot exists"))?;
+                        let offset = loan.field.ok_or_else(||
+                            Diagnostic::new(pos, "E_BORROW",
+                                "mutable field alias lacks authenticated field place"))?;
+                        if !loan.mutable || self.moved.contains(&loan.owner) {
+                            return Err(Diagnostic::new(pos, "E_BORROW",
+                                "mutable field reference owner is no longer live"));
+                        }
+                        let owner_ty = self.scopes.iter().flatten()
+                            .find(|local| local.slot == loan.owner).map(|local| local.ty)
+                            .ok_or_else(|| Diagnostic::new(pos, "E_BORROW",
+                                "mutable field reference outlived its owner"))?;
+                        if !matches!(owner_ty, Type::Class(_)) {
+                            return Err(Diagnostic::new(pos, "E_BORROW",
+                                "mutable field reference has no class owner"));
+                        }
+                        return Ok(TE {
+                            e: TExpr::FieldGet {
+                                obj: Box::new(TE {
+                                    e: TExpr::Local(loan.owner), ty: owner_ty,
+                                }),
+                                offset
+                            },
+                            ty: l.ty,
+                        });
+                    }
                     if self.borrowed_slots.contains(&slot) && !self.loans.contains_key(&slot) {
                         if let Some(tr) = self.trace.as_mut() { tr.unavailable("expired class borrow"); }
                         return Err(Diagnostic::new(pos, "E_BORROW",
@@ -4728,6 +4817,18 @@ impl<'a> FnCx<'a> {
                 };
             }
             if let Some(l) = self.lookup(n) {
+                // An exclusive loan of *one* field does not lock its sibling
+                // fields. Bypass whole-receiver value admission ONLY for this
+                // checked member projection; field_get authenticates overlap,
+                // visibility and protected-state access using the actual slot.
+                if matches!(l.ty, Type::Class(_))
+                    && !self.moved.contains(&l.slot)
+                    && self.loans.values().any(|loan|
+                        loan.owner == l.slot && loan.mutable && loan.field.is_some())
+                {
+                    let root = TE { e: TExpr::Local(l.slot), ty: l.ty };
+                    return self.field_get(root, name, pos);
+                }
                 if let Some(payload) = l.mail {
                     return match name {
                         "value" if payload == Type::Bool => Ok(TE {
@@ -4853,10 +4954,11 @@ impl<'a> FnCx<'a> {
         // This is particularly important for compiler-generated tuple roots:
         // their scalar projections must not bypass an existing mutable loan.
         if matches!(&obj.e, TExpr::Local(slot) if
-            self.loans.values().any(|loan| loan.owner == *slot && loan.mutable))
+            self.loans.values().any(|loan| loan.owner == *slot && loan.mutable
+                && (loan.field.is_none() || loan.field == Some(f.slot))))
         {
             return Err(Diagnostic::new(pos, "E_BORROW",
-                "cannot read owner fields while an exclusive mutable loan is live"));
+                "cannot read a field overlapping an exclusive mutable loan"));
         }
         // A borrowed aggregate cannot yield an independently owned handle.
         // Without a nested-loan provenance IR, such a field could escape

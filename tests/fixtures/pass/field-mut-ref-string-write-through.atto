@@ -1,0 +1,14 @@
+// expect-exit: 42
+// expect-stdout: Bob
+// java: rejects
+define class Person as
+  pub let string name = "Alice";
+  pub let int age = 42;
+end
+pub fnc main(): int {
+  let person = new Person();
+  let name_ref = borrow! mut person.name;
+  name_ref = "Bob";
+  stdio.println(name_ref);
+  return person.age;
+}
