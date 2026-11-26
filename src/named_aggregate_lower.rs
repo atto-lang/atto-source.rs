@@ -54,7 +54,7 @@ impl<'a> Parser<'a> {
     fn id(&mut self) -> R<String> {
         let t=self.take();
         match word(t) {
-            Some(s) if s.len()<=128 && !matches!(s,"infer"|"const"|"val"|"let"|"return"|"fnc"|"main"|"true"|"false"|"self"|"int"|"bool"|"string"|"float"|"void"|"Record"|"Tuple"|"struct"|"Any"|"Array"|"Option"|"Result"|"Map"|"List"|"Vector"|"Pair"|"Entry") => Ok(s.to_owned()),
+            Some(s) if s.len()<=128 && !crate::parser::is_reserved(s) && !matches!(s,"infer"|"const"|"val"|"let"|"return"|"fnc"|"main"|"true"|"false"|"self"|"int"|"bool"|"string"|"float"|"void"|"Record"|"Tuple"|"struct"|"Any"|"Array"|"Option"|"Result"|"Map"|"List"|"Vector"|"Pair"|"Entry") => Ok(s.to_owned()),
             _=>Err(err(t,"E_TYPE_NAME","expected nonreserved identifier")),
         }
     }
@@ -82,7 +82,17 @@ impl<'a> Parser<'a> {
         let (introduce,alias)=if self.eat(Tok::Lt) {
             let introduce=word(self.peek())==Some("infer");
             if introduce { self.take(); }
+            let alias_at = self.peek();
             let alias=self.id()?;
+            // Names in the type namespace must not shadow compiler-owned
+            // type identities, even when this scalar profile erases the alias.
+            if crate::prelude::TYPE_INFO.iter().any(|info| info.name == alias.as_str())
+                || crate::prelude::protected_identity(&alias)
+                || crate::parser::is_unlowered_ownership_intrinsic(&alias)
+                || matches!(alias.as_str(), "boolean" | "Pointer" | "ActorRef" | "ActorMail" | "Generator")
+            {
+                return Err(err(alias_at, "E_TYPE_NAME", "compiler-owned type name"));
+            }
             self.expect(Tok::Gt)?;
             (introduce,Some(alias))
         } else { (false,None) };
