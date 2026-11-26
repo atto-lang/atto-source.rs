@@ -118,6 +118,7 @@ pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
     }
     let tokens = lexer::lex(source)?;
+    parser::reject_singleton_declarations(&tokens)?;
     match verified_quantities::lower_mode(source, &tokens, true)? {
         Some(verified_quantities::Lowered::Typed(program)) => {
             let bytes = wasm::emit_quantity_program(&program);
@@ -169,7 +170,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    parser::reject_singleton_declarations(&tokens)?;
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    parser::reject_singleton_declarations(&original_tokens)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
     core_future_ownership::preflight(&original_tokens)?;

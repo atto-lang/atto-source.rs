@@ -9,6 +9,24 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
+/// Singleton is contextual: deny declarations before any scalar lowering.
+pub(crate) fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), Diagnostic> {
+    fn word(token: Option<&Token>, expected: &str) -> bool {
+        matches!(token.map(|t| &t.tok), Some(Tok::Ident(s)) if s == expected)
+    }
+    for (i, token) in tokens.iter().enumerate() {
+        if !word(Some(token), "define") {
+            continue;
+        }
+        let next = i + 1 + usize::from(word(tokens.get(i + 1), "pub"));
+        if let Some(singleton) = tokens.get(next).filter(|t| word(Some(t), "singleton")) {
+            return Err(Diagnostic::new(singleton.pos, "E_SINGLETON_UNSUPPORTED",
+                "ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and owned shared-region RW lowering"));
+        }
+    }
+    Ok(())
+}
+
 pub const MAX_DEPTH: u32 = 128;
 /// Guard the much heavier recursive lambda-type / lambda-body frames on
 /// small Rust test-worker stacks before generic parser depth is exhausted.
@@ -628,6 +646,7 @@ impl Parser {
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
+        reject_singleton_declarations(&self.toks)?;
         let mut prog = Program::default();
         let mut decls = 0usize;
         while *self.peek() != Tok::Eof {
