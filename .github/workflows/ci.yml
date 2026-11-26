@@ -41,6 +41,12 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute safe Wasm guests and reject unsafe source in CLI modes
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node --check tests/unsafe_guest_execution.mjs
+          node tests/unsafe_guest_execution.mjs
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc
