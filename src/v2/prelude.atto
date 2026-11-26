@@ -598,10 +598,16 @@ fnc __chan_close(int c): void {
 // claimed as an actor DATA port. Check at construction, mutation, and on
 // EVERY select before consuming ANY case so later forbidden cases cannot be
 // masked by an earlier winner. The bounded scan is non-suspending.
+// Guest-terminal faults must retire scheduler-owned polls before trapping.
+fnc __plan_terminal_fault(int code): void {
+  __sched_terminal_cleanup();
+  __panic(code);
+}
+
 fnc __plan_check_case(int ch): void {
-  if ch == 0 then __panic(10); fi
-  if __load(ch, 56) != 0 then __panic(10); fi
-  if __load(ch, 64) != 0 then __panic(10); fi
+  if ch == 0 then __plan_terminal_fault(10); fi
+  if __load(ch, 56) != 0 then __plan_terminal_fault(10); fi
+  if __load(ch, 64) != 0 then __plan_terminal_fault(10); fi
 }
 
 fnc __plan_preflight(int p): void {
@@ -616,8 +622,8 @@ fnc __plan_preflight(int p): void {
 // ready-case scan, the chosen read, or the cursor update: only one case commits.
 fnc __plan_from_list(int cases, int dynamic): int {
   val n = __load(cases, 0);
-  if n <= 0 then __panic(10); fi
-  if n > 256 then __panic(10); fi
+  if n <= 0 then __plan_terminal_fault(10); fi
+  if n > 256 then __plan_terminal_fault(10); fi
   val p = __alloc(2128);
   __store(p, 0, n);
   __store(p, 8, n);
@@ -644,7 +650,7 @@ fnc __plan_from_list(int cases, int dynamic): int {
 fnc __plan_probe(int p, int fairMode, int wrapResult): int {
   val n = __load(p, 0);
   // A live plan may have all its dynamic slots removed; never spin forever.
-  if n == 0 then __panic(10); fi
+  if n == 0 then __plan_terminal_fault(10); fi
   // Fail before one channel read if any other active case has become a
   // pipeline-owned channel since the plan/snapshot was created.
   __plan_preflight(p);
@@ -683,9 +689,9 @@ fnc __plan_probe(int p, int fairMode, int wrapResult): int {
     fi
     k = k + 1;
   done
-  if live == 0 then __panic(10); fi
+  if live == 0 then __plan_terminal_fault(10); fi
   // No open/readable cases: report a closed stream rather than sleeping.
-  if viable == 0 then __panic(9); fi
+  if viable == 0 then __plan_terminal_fault(9); fi
   return 0;
 }
 
@@ -755,14 +761,14 @@ fnc __plan_invalidate_cache(int p): void {
 
 fnc __plan_next_version(int p): int {
   val version = __load(p, 24);
-  if version == 9223372036854775807 then __panic(10); fi
+  if version == 9223372036854775807 then __plan_terminal_fault(10); fi
   return version + 1;
 }
 
 fnc __plan_remove(int p, int key): int {
-  if __load(p, 32) == 0 then __panic(10); fi
-  if key < 0 then __panic(10); fi
-  if key >= __load(p, 0) then __panic(10); fi
+  if __load(p, 32) == 0 then __plan_terminal_fault(10); fi
+  if key < 0 then __plan_terminal_fault(10); fi
+  if key >= __load(p, 0) then __plan_terminal_fault(10); fi
   if __load(p, 48 + 8 * key) == 0 then return 0; fi
   val version = __plan_next_version(p);
   __plan_invalidate_cache(p);
@@ -775,9 +781,9 @@ fnc __plan_remove(int p, int key): int {
 }
 
 fnc __plan_put(int p, int key, int ch): void {
-  if __load(p, 32) == 0 then __panic(10); fi
-  if key < 0 then __panic(10); fi
-  if key >= __load(p, 0) then __panic(10); fi
+  if __load(p, 32) == 0 then __plan_terminal_fault(10); fi
+  if key < 0 then __plan_terminal_fault(10); fi
+  if key >= __load(p, 0) then __plan_terminal_fault(10); fi
   __plan_check_case(ch);
   val version = __plan_next_version(p);
   __plan_invalidate_cache(p);
@@ -796,10 +802,10 @@ fnc __plan_put(int p, int key, int ch): void {
 fnc __plan_snapshot(int p): int {
   // Independent pending-operation quota; no effect on an immediate probe.
   val active = __load(p, 2112);
-  if active >= 256 then __panic(10); fi
+  if active >= 256 then __plan_terminal_fault(10); fi
   val guest_active = __rt(9);
-  if guest_active >= 256 then __panic(10); fi
-  if __load(p, 8) == 0 then __panic(10); fi
+  if guest_active >= 256 then __plan_terminal_fault(10); fi
+  if __load(p, 8) == 0 then __plan_terminal_fault(10); fi
   __plan_preflight(p);
   val cached = __load(p, 2120);
   if cached != 0 then
