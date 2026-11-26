@@ -106,3 +106,27 @@ fn full_width_safe_parameters_and_matched_boundaries_still_execute() {
         assert_eq!(result.code(), Some(expected), "{source}: {result:?}");
     }
 }
+
+#[test]
+fn atto_xo_checked_debit_shared_guests() {
+    let corpus = include_str!("../contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let mut ids = std::collections::HashSet::new();
+    let mut value_count = 0;
+    let mut overflow_count = 0;
+    for row in corpus.lines() {
+        let fields: Vec<_> = row.split('|').collect();
+        assert_eq!(fields.len(), 8);
+        let id = fields[0];
+        assert!(ids.insert(id), "duplicate case {id}");
+        let status = actual_native_status(fields[7]);
+        if fields[1] == "overflow" {
+            assert_eq!(status.signal(), Some(4), "{id}: {status:?}");
+            overflow_count += 1;
+        } else {
+            let expected: i32 = fields[1].parse().expect("expected exit code");
+            assert_eq!(status.code(), Some(expected), "{id}: {status:?}");
+            value_count += 1;
+        }
+    }
+    assert_eq!((value_count, overflow_count), (3, 4));
+}
