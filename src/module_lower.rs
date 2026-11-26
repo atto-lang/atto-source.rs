@@ -123,6 +123,9 @@ pub fn lower_with_manifest(toks: Vec<Token>) -> R<Lowered> {
                 if current.tok == Tok::Eof {
                     return Err(Diagnostic::new(pos, "E_EOF", "unterminated module"));
                 }
+                if current.tok == Tok::CheckedFileExport {
+                    return Err(Diagnostic::new(current.pos, "E_SCOPE", "export directives must be file-level"));
+                }
                 if module.members.len() >= MAX_MEMBERS {
                     return Err(Diagnostic::new(current.pos, "E_SOURCE_LIMIT", "module member budget exceeded"));
                 }
