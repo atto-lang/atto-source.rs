@@ -1,4 +1,7 @@
 //! Independent Rust Oreslang frontend, validated MIR and Cranelift backend.
+pub mod actor_arena;
+pub mod owner_arena;
+pub mod layout_trace;
 pub mod cfg;
 pub mod codegen;
 pub mod effects;
