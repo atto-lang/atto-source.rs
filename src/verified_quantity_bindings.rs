@@ -549,6 +549,34 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
 mod strict_tests {
     use super::*;
     #[test]
+    fn branch_facts_cover_every_sampled_concrete_successor() {
+        let mut samples = vec![i64::MIN, i64::MIN+1, i64::MIN+2];
+        samples.extend(-8..=7);
+        samples.extend([i64::MAX-2,i64::MAX-1,i64::MAX]);
+        for (i,lo) in samples.iter().enumerate() {
+            for hi in &samples[i..] {
+                let r=Range{lo:*lo,hi:*hi};
+                for n in &samples {
+                    for (op,inv) in [(BinOp::Lt,BinOp::Ge),(BinOp::Le,BinOp::Gt),
+                        (BinOp::Gt,BinOp::Le),(BinOp::Ge,BinOp::Lt),
+                        (BinOp::Eq,BinOp::Ne),(BinOp::Ne,BinOp::Eq)] {
+                        let yes=restrict(r,op,*n); let no=restrict(r,inv,*n);
+                        assert!(r.contains(yes) && r.contains(no));
+                        for x in samples.iter().filter(|x| r.lo <= **x && **x <= r.hi) {
+                            let matches = match op {
+                                BinOp::Lt => x<n, BinOp::Le => x<=n,
+                                BinOp::Gt => x>n, BinOp::Ge => x>=n,
+                                BinOp::Eq => x==n, BinOp::Ne => x!=n,
+                                _ => unreachable!(),
+                            };
+                            assert!((if matches {yes} else {no}).contains(Range::exact(*x)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn interval_admission_matches_exhaustive_small_domain() {
         for a in -8i64..=7 { for b in a..=7 {
             for c in -8i64..=7 { for d in c..=7 {
