@@ -1,10 +1,13 @@
 // expect-error: E_COPY
 // java: rejects
+define class Child as
+    pub let int value = 42;
+end
 define class Parcel as
- pub let int value = 42;
+    pub let Child child = new Child();
 end
 pub fnc main(): int {
- val parcel = new Parcel();
- val clone = copy! parcel;
- return clone.value;
+    val parcel = new Parcel();
+    val clone = copy! parcel;
+    return clone.child.value;
 }
