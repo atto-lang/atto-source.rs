@@ -46,6 +46,8 @@ pub mod linker;
 pub mod package_resolver;
 pub mod units;
 mod verified_quantities;
+/// Reusable proof primitive; collection identity integration remains pending.
+pub mod verified_bounds;
 mod quantity_scale;
 #[cfg(target_os = "linux")]
 mod secure_fs;
