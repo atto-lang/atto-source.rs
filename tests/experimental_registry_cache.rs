@@ -147,3 +147,45 @@ fn locked_registry_application_cold_warm_edit_and_authority_denials(){
     println!("CACHE_REGISTRY_SEMANTIC|closed-checks=2/0,0/2,1/1|body-signature-equal|named-parameter-signature-changed|failed-edit-rollback|guest=42/43");
     println!("CACHE_REGISTRY_APP|two-providers|cold-warm=42|repinned-edit=43|views=2/0,0/2,1/1|failed-edit-rollback|order-independent|stale-root-provider-private-duplicate-missing-denied");
 }
+
+
+#[test]
+fn pinned_unnamespaced_sibling_edit_reuses_namespace_checks_and_preserves_guest(){
+    let t=Temp(std::env::temp_dir().join(format!("atto-registry-local-sibling-{}",std::process::id())));
+    fs::DirBuilder::new().mode(0o700).create(&t.0).unwrap();
+    let cache=t.0.join("cache");let authority=t.0.join("authority");
+    for dir in [&cache,&authority]{fs::DirBuilder::new().mode(0o700).create(dir).unwrap();}
+    let compiler=hex_digest(&fs::read("/proc/self/exe").unwrap());
+    let toolchain=hex_digest(b"test compiler local-sibling edit");
+    let open=||HostSession::open(&cache,&authority,"tenant/local-sibling",BuildIdentity{compiler_sha256:&compiler,toolchain_sha256:&toolchain,target:TargetOs::Posix}).unwrap();
+    let mut session=open();let pin=sha256(&session.proposed_record(1,MASTER).unwrap());session.provision(1,MASTER,&pin).unwrap();
+    let app="import namespace math as provider from pkg '@org/project/provider'; pub fnc main(): int { return provider.get(41); }";
+    let roots=[SnapshotSource{path:"main.atto",source:app}];let root_lock=lock(ROOT,&roots);let root_pin=hex_digest(root_lock.as_bytes());
+    let root=||Snapshot{entry:"main.atto",manifest:ROOT,lockfile:&root_lock,trusted_lock_sha256:&root_pin,sources:&roots};
+    let original=[SnapshotSource{path:"src/math/main.atto",source:MATH},
+        SnapshotSource{path:"src/math/local.atto",source:"pub fnc get(int x): int { return x+900; }"}];
+    let updated=[original[0],SnapshotSource{path:"src/math/local.atto",source:"pub fnc get(int x): int { return x+901; }"}];
+    let original_lock=lock(PROVIDER,&original);let original_pin=hex_digest(original_lock.as_bytes());
+    let updated_lock=lock(PROVIDER,&updated);let updated_pin=hex_digest(updated_lock.as_bytes());
+    let dep=||RegistryDependency{name:"@org/project/provider",manifest:PROVIDER,lockfile:&original_lock,trusted_lock_sha256:&original_pin,sources:&original};
+    let next=||RegistryDependency{sources:&updated,lockfile:&updated_lock,trusted_lock_sha256:&updated_pin,..dep()};
+    let cold=session.build_registry(Mode::Cold,&pin,MASTER,root(),&[dep()]).unwrap();
+    execute(&cold.bytes,"42");assert_eq!(cold.checked_namespaces,1);
+    let warm=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[dep()]).unwrap();
+    assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(warm.bytes,cold.bytes);
+    let before=files(&cache);
+    assert_eq!(session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[RegistryDependency{sources:&updated,..dep()}]).unwrap_err().code,"E_LOCK_HASH");
+    assert_eq!(files(&cache),before);
+    let changed=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[next()]).unwrap();
+    // Full lock identity changes, so the existing conservative whole-artifact
+    // key misses. The namespace check itself must still be reused.
+    assert_eq!(changed.outcome,Outcome::Compiled);
+    assert_eq!((changed.checked_namespaces,changed.reused_namespace_checks),(0,1));
+    assert_eq!(changed.bytes,cold.bytes);execute(&changed.bytes,"42");
+    let verified=FrozenRegistry::verify("@org/project/provider",PROVIDER,&updated_lock,&updated_pin,&updated).unwrap();
+    assert_eq!(changed.bytes,compile_registry_guest(app,&[&verified]).unwrap());
+    drop(session);let mut session=open();
+    let reopened=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[next()]).unwrap();
+    assert_eq!(reopened.outcome,Outcome::Reused);assert_eq!(reopened.bytes,changed.bytes);
+    println!("REGISTRY_LOCAL_SIBLING_CACHE|guest=42|stale-pin-denied|namespace-check-reused|byte-equivalent|reopen-artifact-reused");
+}
