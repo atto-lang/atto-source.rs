@@ -62,7 +62,7 @@ define module zorde as
       if needed > self.maximum - self.content.size; do return false; fi
       let int remaining = value;
       while remaining >= 128; do
-        self.content.add((remaining % 128) + 128);
+        self.content.add((remaining - (remaining / 128) * 128) + 128);
         remaining = remaining / 128;
       done
       self.content.add(remaining);
@@ -159,7 +159,7 @@ define module zorde as
           return Err("TruncatedVaruint");
         fi
         let int byte_value = self.content.get(self.position + i);
-        let int digit = byte_value % 128;
+        let int digit = byte_value - (byte_value / 128) * 128;
         if i == 4 && (digit > 7 || byte_value >= 128); do
           return Err("VaruintOverflow");
         fi
@@ -351,7 +351,7 @@ define module zorde as
       return Err("InvalidI31Payload");
     fi
     let int zigzag = value.unwrap();
-    if zigzag % 2 == 0; do return Ok(zigzag / 2); fi
+    if zigzag - (zigzag / 2) * 2 == 0; do return Ok(zigzag / 2); fi
     return Ok(-(zigzag / 2) - 1);
   }
 end
