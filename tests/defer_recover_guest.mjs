@@ -13,6 +13,29 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
 
+  ...[
+    ['trap!42', 'pub fnc main(): int { return trap!42; }'],
+    ['trap!(...)', 'pub fnc main(): int { return trap!(7 / 2); }'],
+    ['throw!Error', 'pub fnc main(): int throws(Error) { throw!Error("x"); }'],
+    ['raise!Error', 'pub fnc main(): int raises(Error) { raise!Error("x"); }'],
+    ['panic!Error', 'pub fnc main(): int { panic!Error("x"); }'],
+    ['trap! followed by comment without whitespace', 'pub fnc main(): int { return trap!/*gap*/ 42; }'],
+  ].map(([name, src]) => ({
+    name: 'Java bang separator: reject ' + name,
+    src, reject: 'E_BANG_KEYWORD_WHITESPACE',
+  })),
+  {
+    name: 'Java bang separator: whitespace before parenthesized operand',
+    src: `pub fnc main(): int {
+        val Result<int,Error> result = trap! (42);
+        match result over
+          on Ok(n) -> { return n; }
+          on Err(e) -> { return 0; }
+        end
+      }`,
+    stdout: '', value: 42n,
+  },
+
   {
     name: 'canonical throw bang uses catch then finally in that order',
     src: `fnc fail(): int throws(Error) { throw! Error("bang throw"); }
@@ -551,7 +574,7 @@ try {
     await writeFile(src, c.src);
     const built = spawnSync(attoc, [src, '-o', out], { encoding: 'utf8', timeout: 30_000 });
     if (c.reject) {
-      assert.notEqual(built.status, 0, c.name + ': legacy Option trap must not compile');
+      assert.notEqual(built.status, 0, c.name + ': rejected source must not compile');
       assert.match(built.stderr, new RegExp(c.reject), c.name + ': expected typed diagnostic');
       await assert.rejects(readFile(out), { code: 'ENOENT' }, 'failure must leave no guest artifact');
       console.log('PASS negative no-artifact:', c.name);
