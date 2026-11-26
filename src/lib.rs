@@ -25,6 +25,24 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_internal(source, false).map(|(bytes, _)| bytes)
+}
+
+/// Opt-in restricted compiler-owned typed-MIR read/definition census.
+/// The census is produced from the EXACT checked program subsequently used
+/// for Wasm emission. It is not a loan safety approval or full codegen proof.
+/// Borrowing and any unknown memory/control effects fail closed here.
+pub fn compile_with_typed_scalar_census(
+    source: &str,
+) -> Result<(Vec<u8>, check::typed_mir_census::Census), Diagnostic> {
+    let (bytes, census) = compile_internal(source, true)?;
+    Ok((bytes, census.expect("requested census always produced or rejected")))
+}
+
+fn compile_internal(
+    source: &str,
+    census_requested: bool,
+) -> Result<(Vec<u8>, Option<check::typed_mir_census::Census>), Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -67,6 +85,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     }
     let program = parser::Parser::new(toks).parse_program()?;
     let typed = check::check(&program)?;
+    // Audit the exact typed IR that will be emitted; unknown/erased loans
+    // fail closed in opt-in mode before any executable bytes are created.
+    let census = if census_requested {
+        Some(check::typed_mir_census::from_checked_program(&typed)?)
+    } else {
+        None
+    };
     let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
@@ -75,7 +100,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             "generated module exceeds 1 MiB",
         ));
     }
-    Ok(bytes)
+    Ok((bytes, census))
 }
 
 /// Browser host ABI (`atto-playground` compiler contract v2). One instance is
