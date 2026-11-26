@@ -175,6 +175,30 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
     }
   }
   console.log('DUAL_TARGET_RECURSION_CASES=10');
+  // Real checked class constructors, method calls, and independent copy!! roots.
+  let classCases=0;
+  for(const file of [
+    '50-class-constructor-method.atto',
+    '994-copy-doublebang-two-independent-class-copies.atto',
+    '995-copy-doublebang-flat-class-mixed-fields.atto'
+  ]){
+    const source=readFileSync(new URL('../fixtures/pass/'+file,import.meta.url),'utf8');
+    const js=await run(source);
+    const wasm=compile(source,'compile');
+    assert.equal(wasm.status,0,wasm.diagnostic);
+    const guest=new WebAssembly.Instance(new WebAssembly.Module(wasm.bytes),{}).exports;
+    assert.equal(js.main(),42n,file);
+    assert.equal(guest.main(),42n,file);
+    assert.equal(js.panic_code.value,0);
+    assert.equal(guest.panic_code.value,0);
+    assert.equal(js.memory.buffer.byteLength,1048576);
+    assert.deepEqual(new Uint8Array(js.memory.buffer),new Uint8Array(guest.memory.buffer),file);
+    const other=await run(source);
+    assert.notEqual(other.memory.buffer,js.memory.buffer);
+    assert.equal(other.main(),42n);
+    classCases++;
+  }
+  console.log('DUAL_TARGET_CLASS_CASES='+classCases);
   const overflow=await run('pub fnc main(): int { return 9223372036854775807+1; }');
   assert.throws(()=>overflow.main(),/E_PANIC:1/);
   assert.equal(overflow.panic_code.value,1);
