@@ -548,6 +548,11 @@ impl Parser {
                 self.expect(Kind::RParen)?;
                 Ok(Expr::Call { name, args })
             }
+            Some(Kind::Plus) => {
+                // Canonical typed i64 identity, without implicit casts.
+                self.expect(Kind::Plus)?;
+                self.primary()
+            }
             Some(Kind::Minus) => {
                 let minus = self.expect(Kind::Minus)?;
                 // The signed i64 minimum is valid even though its positive
