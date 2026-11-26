@@ -76,8 +76,19 @@ fn comments_strings_and_plain_headers_do_not_forge_actors() {
     let p = parse("// declare actor Shadow;\ndeclare actor Real;\
         fnc f(): void { val s = \"declare actor Fake;\"; }");
     assert_eq!(p.actors, vec!["Real"]);
-    assert_eq!(atto_compiler::compile("use namespace workers; pub fnc main(): int {return 42;}")
-        .unwrap_err().code, "E_UNSUPPORTED");
+    // Standalone explicit namespace is now executable file identity, not
+    // an actor declaration or authority to import absent modules.
+    let source = "use namespace workers; pub fnc main(): int {return 42;}";
+    assert!(parse(source).actors.is_empty());
+    let wasm = atto_compiler::compile(source).expect("standalone namespace");
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("node").arg("-e")
+        .arg("const fs=require('node:fs');const m=new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(0)),{});if(m.exports.main()!==42n)process.exitCode=1;")
+        .stdin(Stdio::piped()).spawn().expect("Node required");
+    child.stdin.take().unwrap().write_all(&wasm).unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(atto_compiler::compile("use namespace workers; pub fnc main(): int {return workers.missing();}").is_err());
 }
 
 #[test]
