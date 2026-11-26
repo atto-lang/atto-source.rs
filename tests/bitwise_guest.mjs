@@ -22,7 +22,7 @@ const cases = [
   ['0B1011 >>> 1', 5n],
 ];
 const compounds = [
-  ['x &= 10', 8n], ['x |= 2', 14n],
+  ['x &= 10', 8n], ['x |= 2', 14n], ['x ^^= 10', 6n],
   ['x <<<= 2', 48n], ['x >>>= 1', 6n], ['x ashr= 1', 6n],
 ];
 const tmp = await mkdtemp(join(tmpdir(), 'atto-bitwise-'));
@@ -50,6 +50,10 @@ try {
     'return 12 ^ 10;',
     'return 12 ^ ^ 10;',
     'let x: int = 12; x ^= 3; return x;',
+    'let x: int = 12; x ^ ^= 3; return x;',
+    'let x: int = 12; x ^^ = 3; return x;',
+    'val x: int = 12; x ^^= 3; return x;',
+    'let x: int = 12; x ^^= true; return x;',
     'return 1 <<< 64;',
     'return 1 >>> -1;',
   ].entries()) {
@@ -78,7 +82,7 @@ try {
     assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
     assert.equal(instance.exports.panic_code.value, 7, operation);
   }
-  console.log('PASS', i, 'bitwise Wasm guests; 5 no-artifact and 3 runtime shift panic checks');
+  console.log('PASS', i, 'bitwise Wasm guests; 9 no-artifact and 3 runtime shift panic checks');
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }

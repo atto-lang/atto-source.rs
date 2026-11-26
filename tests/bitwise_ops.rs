@@ -22,7 +22,7 @@ fn bitwise_operations_compile_and_emit_wasm() {
 #[test]
 fn compound_assignment_uses_local_mutability_and_original_value() {
     for assignment in [
-        "x &= 10", "x |= 2", "x <<<= 2", "x >>>= 1", "x ashr= 1",
+        "x &= 10", "x |= 2", "x ^^= 7", "x <<<= 2", "x >>>= 1", "x ashr= 1",
     ] {
         let src = format!("pub fnc main(): int {{ let x: int = 12; {assignment}; return x; }}");
         compile(&src).unwrap_or_else(|e| panic!("{assignment}: {e}"));
@@ -106,5 +106,16 @@ fn shift_distances_are_checked_not_masked() {
     }
     for expr in ["1 <<< 0", "1 <<< 63", "-1 >>> 63", "-8 ashr 63"] {
         compile(&source(expr)).unwrap_or_else(|err| panic!("{expr}: {err}"));
+    }
+}
+
+#[test]
+fn xor_compound_requires_contiguous_tokens_and_integer_operands() {
+    for body in ["let x: int = 12; x ^ ^= 3; return x;",
+                 "let x: int = 12; x ^^ = 3; return x;",
+                 "let x: int = 12; x ^^= true; return x;",
+                 "let x: bool = true; x ^^= false; return 0;"] {
+        let program = format!("pub fnc main(): int {{ {body} }}");
+        assert!(compile(&program).is_err(), "{body}");
     }
 }

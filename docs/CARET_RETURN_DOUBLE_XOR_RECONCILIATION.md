@@ -14,8 +14,11 @@ already-merged implementation from #382.
   integer XOR is implied by `^`.
 - A spaced `^ ^` sequence does not form XOR; the compiler demands the
   two carets share one token span (adjacent source columns).
-- The old `^=` compound spelling is rejected. `^^=` is **not introduced**;
-  the language spec must explicitly approve any future compound shorthand.
+- The old `^=` compound spelling is rejected. Contiguous `^^=` is admitted
+  for writable integer locals under the current bitwise-and-stream-operators-v1
+  contract (atto-spec blob 1cd08cbae07da5788735b50d3f1f790ad04a9c48).
+  Spaced caret/assignment tokens, immutable locals and non-integer operands
+  remain rejected. Native and wasm32 guest tests are authored; execution pending.
   Write `value = value ^^ mask;` for checked mutable locals.
 - Existing `<<<`, `>>>` shift and typed `<<`, `>>` stream/channel
   admission paths remain separate, not overloaded.
