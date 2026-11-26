@@ -66,7 +66,7 @@ pub enum ReadMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlanMode { Wait, Try, Nb }
+pub enum PlanMode { Future, Try, Nb }
 
 #[derive(Clone, Debug)]
 pub struct Arg {
