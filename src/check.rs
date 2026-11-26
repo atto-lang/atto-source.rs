@@ -192,6 +192,9 @@ pub enum TExpr {
         obj: Box<TE>,
         offset: u32,
     },
+    /// Copy scalar fields in source order under ONE read ticket, release,
+    /// then materialize the compiler-generated tuple outside the lease.
+    StateSnapshot { ctor: u32, fields: Vec<(Type, u32)> },
     /// read an actor-state global
     GlobalGet(u32),
     /// bump-allocate a zeroed object of `n` bytes; panics when the heap is full
@@ -1590,6 +1593,8 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         TExpr::AdtNew { payload, .. } =>
             payload.as_ref().map_or(EscapeEffects::default(),
                 |v| expr_escape_effects(v, effects)),
+        TExpr::StateSnapshot { ctor, .. } => effects.get(*ctor as usize).copied()
+            .unwrap_or(EscapeEffects { throws: true, raises: true }),
         TExpr::Call(target, args) => {
             let callee = effects.get(*target as usize).copied().unwrap_or(
                 // Unknown typed call targets must fail closed, not be assumed pure.
@@ -2336,7 +2341,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         // propagation. Keep these explicit when evolving the language.
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
-        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
+        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::StateSnapshot { .. } | TExpr::GlobalGet(_) |
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
@@ -4400,7 +4405,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Call(name, _) if crate::prelude::core_constructor(name) =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
-            ExprKind::StateRead(field) => {
+            ExprKind::StateRead(projection) => {
                 let c = match self.owner {
                     Owner::Class { c, ctor: false, is_static: false }
                         if self.g.classes[c as usize].state_container => c,
@@ -4412,10 +4417,37 @@ impl<'a> FnCx<'a> {
                         "protected state read cannot nest with another active lease"));
                 }
                 self.state_read_scope = true;
-                let checked = self.field_get(TE {
-                    e: TExpr::Local(0),
-                    ty: Type::Class(c),
-                }, field, pos);
+                let checked = (|| -> R<TE> {
+                    let receiver = || TE { e: TExpr::Local(0), ty: Type::Class(c) };
+                    match projection {
+                        StateProjection::Scalar(field) => self.field_get(receiver(), field, pos),
+                        StateProjection::Tuple { class, fields } => {
+                            if !class.starts_with("__atto_tuple_private_") || fields.is_empty()
+                                || fields.len() > 16 {
+                                return Err(Diagnostic::new(pos, "E_STATE_BORROW", "invalid scalar snapshot shape"));
+                            }
+                            let ci = self.g.class(class).ok_or_else(|| type_err(pos, "unknown generated snapshot tuple type"))?;
+                            let info = &self.g.classes[ci as usize];
+                            let ctor = info.new_idx;
+                            let params = info.ctor_params.clone();
+                            if params.len() != fields.len() {
+                                return Err(Diagnostic::new(pos, "E_ARITY", "state snapshot arity does not match tuple shape"));
+                            }
+                            let mut slots = Vec::with_capacity(fields.len());
+                            for (field, expected) in fields.iter().zip(params) {
+                                let value = self.field_get(receiver(), field, pos)?;
+                                if !matches!(value.ty, Type::Int | Type::Bool) || value.ty != expected {
+                                    return Err(type_err(pos, "snapshot requires matching owned int/bool projections"));
+                                }
+                                let TExpr::StateFieldRead { offset, .. } = value.e else {
+                                    return Err(Diagnostic::new(pos, "E_STATE_BORROW", "snapshot field is not protected state"));
+                                };
+                                slots.push((value.ty, offset));
+                            }
+                            Ok(TE { e: TExpr::StateSnapshot { ctor, fields: slots }, ty: Type::Class(ci) })
+                        }
+                    }
+                })();
                 self.state_read_scope = false;
                 checked?
             }
