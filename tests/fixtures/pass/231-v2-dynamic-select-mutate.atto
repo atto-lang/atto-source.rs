@@ -30,6 +30,13 @@ pub suspends fnc main(): int {
     round = round + 1;
   done
   if plan.version() != 302 then return 3; fi
+  // Recycled queue nodes must not leave stale tails in either channel.
+  writech second, 11;
+  writech first_channel, 31;
+  val Option<SelectResult> left_reuse = try select first from plan;
+  val Option<SelectResult> right_reuse = try select first from plan;
+  if left_reuse.unwrap().value != 31 then return 6; fi
+  if right_reuse.unwrap().value != 11 then return 7; fi
   val SelectResult retained_again = await retained;
   if retained_again.value != 19 then return 5; fi
   return selected.value + 20;
