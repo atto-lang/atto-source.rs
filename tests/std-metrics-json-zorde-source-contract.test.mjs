@@ -239,3 +239,21 @@ test("JSON only allocates decoded string scratch for object keys (source only)",
   assert.ok(j.includes("read_string(false)"));
   assert.ok(j.includes("read_string(true)"));
 });
+
+test("Zorde fixed prefix uses checked scalar reads instead of a temporary array", () => {
+  const z = modules.zorde;
+  const start = z.indexOf("pub fnc decode_frame(Array<int> wire)");
+  const end = z.indexOf("let schema_result = r.read_varuint()", start);
+  assert.ok(start >= 0 && end > start);
+  const prefix = z.slice(start, end);
+  assert.equal((prefix.match(/r\.read_byte\(\)/g) || []).length, 5);
+  assert.ok(!prefix.includes("read_bytes(5)"));
+  assert.ok(prefix.includes("checked_reader(wire)"));
+  for (const [name, byte] of [["magic_z",90],["magic_o",79],["magic_r",82],["magic_d",68],["format_version",1]]) {
+    assert.ok(prefix.includes(name + ".is_err()"));
+    assert.ok(prefix.includes(name + ".unwrap() != " + byte));
+  }
+  assert.ok(prefix.includes('Err("TruncatedHeader")'));
+  assert.ok(prefix.includes('Err("InvalidMagicOrVersion")'));
+  // Source structure only: guest execution and allocation counts are separate.
+});
