@@ -286,20 +286,22 @@ fnc __resume(int t): void {
     __set_state(0);
     __store(t, 40, __fsp());
     __store(t, 16, 1);
-  else
-    // A finished call must have retired all lexical span guards. Do not
-    // unlink an unfinished cleanup or recycle its frame storage.
-    if __load(t, 72) != 0 then
-      __span_cancel_all();
-      __panic(12);
-    fi
-    __task_release_stack(t);
-    __store(t, 24, 0);
-    __store(t, 56, 0);
-    __store(t, 64, 0);
-    __store(t, 16, 2);
-    __fut_done(__load(t, 0), r);
+    __set_rt(1, 0);
+    return;
   fi
+  // A finished call must have retired all lexical span guards. Do not
+  // unlink an unfinished cleanup or recycle its frame storage. Keep this
+  // separate from the preceding if: else-if is parsed as an elif arm.
+  if __load(t, 72) != 0 then
+    __span_cancel_all();
+    __panic(12);
+  fi
+  __task_release_stack(t);
+  __store(t, 24, 0);
+  __store(t, 56, 0);
+  __store(t, 64, 0);
+  __store(t, 16, 2);
+  __fut_done(__load(t, 0), r);
   __set_rt(1, 0);
 }
 
