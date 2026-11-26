@@ -9,6 +9,8 @@
 pub mod ast;
 pub mod check;
 pub mod diag;
+/// Host/compiler UUID catalog and public ordinal translation; not guest transport.
+pub mod distributed_symbol_manifest;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
