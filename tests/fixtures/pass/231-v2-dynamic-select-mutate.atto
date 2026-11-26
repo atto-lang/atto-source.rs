@@ -19,7 +19,7 @@ pub suspends fnc main(): int {
   while round < 300 do
     plan.put(0, SelectCase.read(first_channel));
     writech first_channel, 42;
-    val SelectResult next = select fair from plan;
+    val SelectResult next = await select fair from plan;
     if next.index != 0 then return 1; fi
     if next.value != 42 then return 2; fi
     round = round + 1;
