@@ -70,9 +70,9 @@ fn rejects_private_and_unbound_namespace_exports() {
 #[test]
 fn denies_entry_binding_collisions_path_traversal_and_internal_symbol_spoofing() {
     let collision = r#"
-import * as types from "./types.atto";
-pub fnc types() -> int { return 0; }
-pub fnc main() -> int { return types.int_value_bits(); }
+import * as type_lib from "./types.atto";
+pub fnc type_lib() -> int { return 0; }
+pub fnc main() -> int { return type_lib.int_value_bits(); }
 "#;
     let error = compile_entry(collision, EXPLICIT_NAMESPACE)
         .expect_err("import cannot shadow local callable");
@@ -145,4 +145,16 @@ fn rejects_duplicate_and_late_headers_in_imported_files() {
         let err = compile_with_imported(bad).expect_err("namespace placement must fail before Wasm emission");
         assert_eq!(err.code, error_code, "{err}");
     }
+}
+
+#[test]
+fn contextual_types_preserves_keyword_and_header_identity() {
+    let same = r#"use namespace types;
+import * as types from "./types.atto";
+pub fnc main() -> int { return types.int_value_bits(); }"#;
+    assert!(compile_entry(same, EXPLICIT_NAMESPACE).unwrap().starts_with(b"\0asm"));
+    let reserved = "pub fnc types() -> int { return 0; }";
+    assert_eq!(atto_compiler::compile(reserved).unwrap_err().code, "E_RESERVED");
+    assert!(atto_compiler::compile("pub fnc main() -> int { return types; }").is_err());
+    assert!(atto_compiler::compile("pub fnc main() -> int { return types.missing(); }").is_err());
 }
