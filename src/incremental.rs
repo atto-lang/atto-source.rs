@@ -116,12 +116,13 @@ fn push_field(buf: &mut Vec<u8>, bytes: &[u8]) {
 /// make the encoding injective (no path/source concatenation ambiguity).
 pub fn build_key(entry: &str, units: &[LinkUnit<'_>]) -> R<BuildKey> {
     let graph = ImportGraph::build(units)?;
-    build_key_with_graph(entry, units, &graph)
+    graph.reachable(entry)?;
+    Ok(encode_build_key(entry, units))
 }
 
-fn build_key_with_graph(entry: &str, units: &[LinkUnit<'_>], graph: &ImportGraph) -> R<BuildKey> {
-    // Validates the entry exists; the graph also proves paths are unique.
-    graph.reachable(entry)?;
+// Only called with a unique, bounded inventory containing the entry.
+// The public API and cache misses still run the original graph validator.
+fn encode_build_key(entry: &str, units: &[LinkUnit<'_>]) -> BuildKey {
     let by_path: BTreeMap<&str, &LinkUnit<'_>> = units.iter().map(|u| (u.path, u)).collect();
     let mut buf = Vec::with_capacity(256);
     buf.extend_from_slice(KEY_DOMAIN);
@@ -138,7 +139,19 @@ fn build_key_with_graph(entry: &str, units: &[LinkUnit<'_>], graph: &ImportGraph
         push_field(&mut buf, unit.package.as_bytes());
         push_field(&mut buf, &sha256::sha256(unit.source.as_bytes()));
     }
-    Ok(BuildKey(sha256::sha256(&buf)))
+    BuildKey(sha256::sha256(&buf))
+}
+
+// Reject ambiguous inventories before constructing the canonical key.
+// On invalid shape, use the original validator for diagnostic precedence.
+fn has_keyable_inventory(entry: &str, units: &[LinkUnit<'_>]) -> bool {
+    if units.is_empty() || units.len() > MAX_UNITS {
+        return false;
+    }
+    let mut paths = BTreeSet::new();
+    units.iter().all(|unit| {
+        unit.source.len() <= crate::SOURCE_CAP && paths.insert(unit.path)
+    }) && paths.contains(entry)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -157,6 +170,7 @@ pub struct IncrementalCompiler {
     order: VecDeque<BuildKey>,
     last_digests: BTreeMap<String, [u8; 32]>,
     stats: CacheStats,
+    graph_validations: u64,
 }
 
 impl Default for IncrementalCompiler {
@@ -185,11 +199,17 @@ impl IncrementalCompiler {
             order: VecDeque::new(),
             last_digests: BTreeMap::new(),
             stats: CacheStats::default(),
+            graph_validations: 0,
         })
     }
 
     pub fn stats(&self) -> CacheStats {
         self.stats
+    }
+
+    /// Count actual import-graph admission attempts (not linker-internal parsing).
+    pub fn graph_validations(&self) -> u64 {
+        self.graph_validations
     }
 
     /// Accounted retained payload, excluding container/allocator overhead.
@@ -218,7 +238,15 @@ impl IncrementalCompiler {
         if crate::borrow_export::enabled() {
             return linker::compile_linked(entry, units);
         }
-        let key = build_key(entry, units)?;
+        if !has_keyable_inventory(entry, units) {
+            self.graph_validations += 1;
+            // Preserve original admission diagnostics, including their order.
+            return match build_key(entry, units) {
+                Err(error) => Err(error),
+                Ok(_) => linker::compile_linked(entry, units),
+            };
+        }
+        let key = encode_build_key(entry, units);
         let paths: Vec<String> = units.iter().map(|u| u.path.to_string()).collect();
         if let Some((prior_order, found, _)) = self.entries.get(&key) {
             // The linker may report the first invalid supplied input in
@@ -228,6 +256,10 @@ impl IncrementalCompiler {
                 return found.clone();
             }
         }
+        // An exact hit is backed by prior full graph admission. A miss,
+        // including an order-sensitive diagnostic miss, must validate anew.
+        self.graph_validations += 1;
+        ImportGraph::build(units)?.reachable(entry)?;
         if let Some((_, _, bytes)) = self.entries.remove(&key) {
             self.retained_bytes -= bytes;
             self.order.retain(|old| old != &key);

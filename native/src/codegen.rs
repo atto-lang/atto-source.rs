@@ -28,6 +28,17 @@ fn emit_object_with_arithmetic_mode(
     program: &Module,
     checked_i64: bool,
 ) -> Result<Vec<u8>, String> {
+    // Do not let callers constructing MIR directly turn package metadata
+    // into a public native symbol or use the implicit main exception.
+    for export in &program.exports {
+        let function = program.functions.iter().find(|f| f.symbol == export.name)
+            .ok_or_else(|| format!("unresolved native export '{}'", export.name))?;
+        if export.scope == crate::frontend::ExportScope::Package
+            && (function.exported || function.symbol == "main")
+        {
+            return Err(format!("package export '{}' cannot have public linkage", export.name));
+        }
+    }
     let isa = native::builder()
         .map_err(|e| e.to_string())?
         .finish(settings::Flags::new(settings::builder()))

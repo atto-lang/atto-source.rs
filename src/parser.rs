@@ -2138,6 +2138,43 @@ impl Parser {
         }
     }
 
+    /// A single default has no readiness operands, registration or suspension.
+    /// Reuse the typed lexical block so return/break/continue retain their
+    /// enclosing targets. Every real arbitration or value form stays gated.
+    fn parse_default_select(&mut self, pos: Pos) -> R<Stmt> {
+        self.expect_word("do")?;
+        self.expect_word("select")?;
+        if matches!(self.word_at(0), Some("first" | "fair" | "random")) {
+            self.advance();
+        }
+        let braces = if self.eat(&Tok::LBrace) {
+            true
+        } else if self.eat_word("over") {
+            false
+        } else {
+            return Err(unsupported(pos, "procedural select requires a single default arm in braces or over/end"));
+        };
+        if !self.eat_word("default") {
+            return Err(unsupported(pos, "procedural select currently supports only a single default arm; channel/Future arbitration is not lowered"));
+        }
+        self.expect(Tok::Colon, "':' after select default")?;
+        self.eat(&Tok::Arrow);
+        if *self.peek() != Tok::LBrace {
+            return Err(self.expected("a braced select default body with at most one slim arrow"));
+        }
+        let body = self.parse_block()?;
+        if (braces && *self.peek() != Tok::RBrace) || (!braces && !self.is_word("end")) {
+            return Err(unsupported(pos, "procedural select currently supports only a single default arm"));
+        }
+        if braces {
+            self.expect(Tok::RBrace, "'}' after select")?;
+        } else {
+            self.expect_word("end")?;
+        }
+        self.eat(&Tok::Semi);
+        Ok(Stmt::Block(body))
+    }
+
     fn parse_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
         if *self.peek() == Tok::At {
@@ -2281,7 +2318,8 @@ impl Parser {
                 self.advance();
                 self.parse_match(true)
             }
-            Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
+            Some("do") if self.word_at(1) == Some("select") => self.parse_default_select(pos),
+            Some("do") if matches!(self.word_at(1), Some("switch" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
             // Narrow, executable Writable<string/int/bool/float> builtin.
@@ -3195,6 +3233,18 @@ impl Parser {
         while *self.peek() == Tok::PipeGt {
             let pos = self.pos();
             self.advance();
+            if self.eat_word("await") {
+                if matches!(self.peek(), Tok::LParen | Tok::Lt) {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "pipeline await takes only the left-hand value"));
+                }
+                // This compiler has no Future suspension lowering. A checked
+                // non-converting int ascription is the immediate identity.
+                self.grow(1)?;
+                links += 1;
+                c = Expr { kind: ExprKind::Ascribe(Box::new(c), Type::Int, false), pos };
+                continue;
+            }
             let stage = self.parse_postfix()?;
             let (name, mut args) = match stage.kind {
                 ExprKind::Var(name) => (name, Vec::new()),
@@ -3583,7 +3633,11 @@ impl Parser {
                     "'++' and '--' exist only in a for update clause",
                 ))
             }
-            Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            Tok::Ident(s) if s == "await" => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ascribe(Box::new(inner), Type::Int, false), pos });
+            },
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
@@ -4022,7 +4076,7 @@ impl Parser {
                 "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
-                w if is_reserved(w) => {
+                w if is_reserved(w) && !(w == "types" && *self.peek_at(1) == Tok::Dot) => {
                     return Err(Diagnostic::new(
                         pos,
                         "E_SYNTAX",
