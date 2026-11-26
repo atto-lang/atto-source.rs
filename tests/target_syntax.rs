@@ -76,7 +76,19 @@ fn comments_strings_and_plain_headers_do_not_forge_actors() {
     let p = parse("// declare actor Shadow;\ndeclare actor Real;\
         fnc f(): void { val s = \"declare actor Fake;\"; }");
     assert_eq!(p.actors, vec!["Real"]);
-    assert_eq!(atto_compiler::compile("use namespace workers; pub fnc main(): int {return 42;}")
+    // Verified file namespace identity is now executable; a plain header
+    // does not grant actor or receiver authority. Execute the real guest.
+    let wasm = atto_compiler::compile("use namespace workers; pub fnc main(): int {return 42;}").unwrap();
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("node").arg("-e").arg(
+        "const fs=require('node:fs');WebAssembly.instantiate(fs.readFileSync(0),{}).then(({instance})=>{if(instance.exports.main()!==42n)throw Error('guest mismatch');}).catch(e=>{console.error(e);process.exitCode=1;});"
+    ).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("Node required for namespace guest");
+    child.stdin.take().unwrap().write_all(&wasm).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(atto_compiler::compile("use namespace workers; declare actor Real; pub fnc main(): int {return 42;}")
         .unwrap_err().code, "E_UNSUPPORTED");
 }
 
