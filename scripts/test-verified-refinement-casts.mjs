@@ -94,7 +94,7 @@ strictCases.push(
  ["and-two-holes","fnc f(int n) -> int { if n != 0 && n != -1 { return -9223372036854775808 / n; } return 0; } "+main("f(2)"),-4611686018427387904n],
  ["negated-comparison","fnc f(int n) -> int { if !(n == 0) { return 42 / n; } return 0; } "+main("f(1)"),42n],
  ["precedence","fnc f(int n) -> int { if n == 0 || n != -1 && 42 / n > 0 { return 42; } return 0; } "+main("f(0)"),42n],
- ["grouped","fnc f(int n) -> int { if (n != 0 && (n != -1 || n > 0)) { return -9223372036854775808 / n; } return 0; } "+main("f(2)"),-4611686018427387904n],
+ ["grouped","fnc f(int n) -> int { if (n != 0 && (n < -1 || n > 0)) { return -9223372036854775808 / n; } return 0; } "+main("f(2)"),-4611686018427387904n],
  ["min-overflow-remains","fnc f(int n) -> int { if n != 0 { return -9223372036854775808 / n; } return 0; } "+main("f(-1)"),"E_VERIFY_UNPROVEN"],
  ["wrong-and-edge","fnc f(int n) -> int { if n == 0 && 42 / n > 0 { return 1; } return 0; } "+main("f(0)"),"E_VERIFY_UNPROVEN"],
  ["wrong-or-edge","fnc f(int n) -> int { if n != 0 || 42 / n > 0 { return 1; } return 0; } "+main("f(0)"),"E_VERIFY_UNPROVEN"],
