@@ -321,11 +321,12 @@ fn atom_base(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Fun
         let value = atom(p, aliases, locals, funcs, depth+1)?;
         return cast(p,aliases,value,&target,pos,false);
     }
+    let neg_pos = p.token().pos;
     if p.take(Tok::Minus) {
         if p.token().tok == Tok::Int(None) { return literal(p, true); }
         let value = atom(p, aliases, locals, funcs, depth+1)?;
         if p.strict && value.range.lo == i64::MIN {
-            return Err(error(pos, "E_VERIFY_UNPROVEN", "signed negation may overflow"));
+            return Err(error(neg_pos, "E_VERIFY_UNPROVEN", "signed negation may overflow"));
         }
         let range = Range::normal_bounds(-(value.range.hi as i128),-(value.range.lo as i128));
         return Ok(Checked { unit: value.unit, range, ir: int(TExpr::Neg(Box::new(value.ir))) });
