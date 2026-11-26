@@ -107,6 +107,52 @@ impl ImportGraph {
     }
 }
 
+/// Editor-only refresh planning. Retains both old and new graph edges across
+/// an edit, including removed and rebound dependencies. Not a semantic cache
+/// authorization: compile_linked still validates the entire supplied graph.
+#[derive(Default)]
+pub struct RefreshPlanner {
+    graph: ImportGraph,
+    digests: BTreeMap<String, [u8; 32]>,
+}
+
+impl RefreshPlanner {
+    /// A failed graph admission does not commit the next snapshot. Missing
+    /// dependencies are retained as edges for negative-lookup refresh.
+    pub fn update(&mut self, units: &[LinkUnit<'_>]) -> R<BTreeSet<String>> {
+        let next = ImportGraph::build(units)?;
+        let digests: BTreeMap<String, [u8; 32]> = units.iter().map(|unit| {
+            let mut identity = Vec::new();
+            push_field(&mut identity, unit.package.as_bytes());
+            // Avoid retaining a second full source copy in the key framing.
+            push_field(&mut identity, &sha256::sha256(unit.source.as_bytes()));
+            (unit.path.to_string(), sha256::sha256(&identity))
+        }).collect();
+        let mut changed = BTreeSet::new();
+        for (path, digest) in &digests {
+            if self.digests.get(path) != Some(digest) {
+                changed.insert(path.clone());
+            }
+        }
+        for path in self.digests.keys() {
+            if !digests.contains_key(path) {
+                changed.insert(path.clone());
+            }
+        }
+        let mut union = self.graph.clone();
+        for (path, deps) in &next.edges {
+            let edges = union.edges.entry(path.clone()).or_default();
+            edges.extend(deps.iter().cloned());
+            edges.sort();
+            edges.dedup();
+        }
+        let affected = union.affected_by(&changed);
+        self.graph = next;
+        self.digests = digests;
+        Ok(affected)
+    }
+}
+
 fn push_field(buf: &mut Vec<u8>, bytes: &[u8]) {
     buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
     buf.extend_from_slice(bytes);
