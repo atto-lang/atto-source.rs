@@ -117,6 +117,11 @@ impl Cursor<'_> {
             _ => Err(self.err("E_SYNTAX", "expected an identifier")),
         }
     }
+    // `types` remains reserved for ordinary declarations, but the canonical
+    // core/types file identity is legal in namespace components.
+    fn namespace_ident(&mut self) -> R<String> {
+        if self.take_word("types") { Ok("types".to_owned()) } else { self.ident() }
+    }
     /// Parse a comma-separated list of static public export paths.
     /// This stage only records the *local* bindings: it does not resolve
     /// packages, export paths, visibility, or run any imported code.
@@ -507,12 +512,12 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                     "namespace declaration must precede all imports and declarations"));
             }
             c.expect_word("namespace")?;
-            let mut components = vec![c.ident()?];
+            let mut components = vec![c.namespace_ident()?];
             while c.take(&Tok::Dot) {
                 if components.len() >= 32 {
                     return Err(c.err("E_NAMESPACE_DEPTH", "namespace has more than 32 components"));
                 }
-                components.push(c.ident()?);
+                components.push(c.namespace_ident()?);
             }
             out.namespace = Some(components.join("."));
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
