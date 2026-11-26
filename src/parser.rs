@@ -628,6 +628,7 @@ impl Parser {
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
+        crate::lexer::reject_unsafe_guest_tokens(&self.toks)?;
         let mut prog = Program::default();
         let mut decls = 0usize;
         while *self.peek() != Tok::Eof {
