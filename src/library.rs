@@ -72,8 +72,25 @@ pub fn set_target_os(os: TargetOs) {
     TARGET_OS.store(if os == TargetOs::Windows { 2 } else { 1 }, Ordering::Relaxed);
 }
 
+thread_local! {
+    static SCOPED_TARGET_OS: std::cell::Cell<Option<TargetOs>> = const { std::cell::Cell::new(None) };
+}
+
 pub fn target_os() -> TargetOs {
-    if TARGET_OS.load(Ordering::Relaxed) == 2 { TargetOs::Windows } else { TargetOs::Posix }
+    SCOPED_TARGET_OS.with(|slot| slot.get()).unwrap_or_else(||
+        if TARGET_OS.load(Ordering::Relaxed) == 2 { TargetOs::Windows } else { TargetOs::Posix })
+}
+
+/// Pin a build's target on the current synchronous compiler thread, without
+/// changing the global default for concurrent builds. Restore on unwind.
+pub(crate) fn with_target_os<T>(os: TargetOs, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<TargetOs>);
+    impl Drop for Restore {
+        fn drop(&mut self) { SCOPED_TARGET_OS.with(|slot| slot.set(self.0)); }
+    }
+    let old = SCOPED_TARGET_OS.with(|slot| slot.replace(Some(os)));
+    let _restore = Restore(old);
+    f()
 }
 
 fn err(pos: Pos, code: &'static str, msg: impl Into<String>) -> Diagnostic {
