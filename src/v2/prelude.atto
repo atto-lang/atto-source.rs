@@ -481,7 +481,8 @@ fnc __plan_try(int p, int fairMode): int {
     val ch = __load(p, 48 + 8 * i);
     if ch != 0 then
       live = live + 1;
-      if __load(ch, 8) > 0 then
+      val bufferedCount = __load(ch, 8);
+      if bufferedCount > 0 then
         viable = viable + 1;
         val option = __chan_try(ch);
         if option != 0 then
@@ -495,8 +496,10 @@ fnc __plan_try(int p, int fairMode): int {
           fi
           return __some(winner);
         fi
-      else
-        // One closed-and-drained case cannot mask another ready case.
+      fi
+      // Use separate predicates: an else followed by if is an elif in
+      // the parser, not a nested statement with an additional closing fi.
+      if bufferedCount == 0 then
         if __load(ch, 32) == 0 then viable = viable + 1; fi
       fi
     fi
