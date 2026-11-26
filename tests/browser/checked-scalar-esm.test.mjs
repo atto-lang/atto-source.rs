@@ -14,11 +14,14 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
     assert.ok(bytes.length<=api.input_capacity());
     new Uint8Array(api.memory.buffer,api.input_ptr(),bytes.length).set(bytes);
     const status=api[target](bytes.length);
-    return {status,bytes:new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice()};
+    const errorBytes=new Uint8Array(api.memory.buffer,api.error_ptr(),512);
+    const end=errorBytes.indexOf(0);
+    const diagnostic=status===0?'':new TextDecoder().decode(errorBytes.subarray(0,end<0?512:end));
+    return {status,diagnostic,bytes:new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice()};
   };
   const run=async source=>{
     const js=compile(source);
-    assert.equal(js.status,0,source);
+    assert.equal(js.status,0,js.diagnostic+'\n'+source);
     const esm=await import('data:text/javascript;base64,'+Buffer.from(js.bytes).toString('base64'));
     assert.deepEqual(esm.actorNames,[]);
     return esm.instantiate().exports;
@@ -84,7 +87,7 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
   // Capture the exact typed host calls, including binary64 signed zero and NaN.
   async function outputGuest(source,target){
     const result=compile(source,target);
-    assert.equal(result.status,0,source);
+    assert.equal(result.status,0,result.diagnostic+'\n'+source);
     const events=[];
     let exports;
     const atto={
@@ -145,6 +148,33 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
   assert.throws(()=>jsEx.memory.grow(1),RangeError);
   console.log('DUAL_TARGET_OUTPUT_FIXTURES=8');
   console.log('DUAL_TARGET_STRING_HEAP_EXHAUSTION_PASS');
+  // Compare both direct and mutual recursion at the exact logical edge quota.
+  for(const prefix of [
+    'fnc recur(int n): int { if n eq 0 then return 42; fi return recur(n-1); }',
+    'fnc recur(int n): int { if n eq 0 then return 42; fi return other(n-1); } fnc other(int n): int { if n eq 0 then return 42; fi return recur(n-1); }'
+  ]){
+    for(const n of [0,1,1023,1024,1025]){
+      const source=prefix+' pub fnc main(): int { return recur('+n+'); }';
+      const js=await run(source);
+      const wasm=compile(source,'compile');
+      assert.equal(wasm.status,0,wasm.diagnostic);
+      const guest=new WebAssembly.Instance(new WebAssembly.Module(wasm.bytes),{}).exports;
+      if(n<=1024){
+        assert.equal(js.main(),42n);
+        assert.equal(guest.main(),42n);
+        assert.equal(js.main(),42n,'quota must be released on success');
+        assert.equal(guest.main(),42n);
+        assert.equal(js.panic_code.value,0);
+        assert.equal(guest.panic_code.value,0);
+      }else{
+        assert.throws(()=>js.main(),/E_PANIC:6/);
+        assert.throws(()=>guest.main(),WebAssembly.RuntimeError);
+        assert.equal(js.panic_code.value,6);
+        assert.equal(guest.panic_code.value,6);
+      }
+    }
+  }
+  console.log('DUAL_TARGET_RECURSION_CASES=10');
   const overflow=await run('pub fnc main(): int { return 9223372036854775807+1; }');
   assert.throws(()=>overflow.main(),/E_PANIC:1/);
   assert.equal(overflow.panic_code.value,1);
