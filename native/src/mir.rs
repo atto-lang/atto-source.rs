@@ -107,6 +107,26 @@ fn validate_expr(
         Expr::Negate(expr) => validate_expr(expr, variables, signatures),
     }
 }
+// Closed, uniformly unsigned MIR. The underlying scalar syntax and MIR store
+// i64 bit patterns; the wrapper fixes the mathematical type for every value.
+// No public conversion exposes it to signed codegen or signed facts exporters.
+pub(crate) struct UnsignedModule(Module);
+impl UnsignedModule {
+    pub(crate) fn inner(&self) -> &Module { &self.0 }
+}
+pub(crate) fn lower_unsigned(source: &str) -> Result<UnsignedModule, String> {
+    let ast = crate::frontend::parse_unsigned(source).map_err(|e| e.to_string())?;
+    let module = lower(ast).map_err(|e| e.to_string())?;
+    let entry = module.functions.iter().find(|f| f.symbol == "main").ok_or("unsigned main missing")?;
+    if !entry.exported || !entry.params.is_empty() || module.functions.iter().any(|f| f.symbol == "atto_guest_main") {
+        return Err("unsigned profile requires a public zero-argument main and no reserved observer symbol".into());
+    }
+    // This reuses the existing bounded expression traversal only, not its
+    // signed effect facts as a certificate.
+    let _ = crate::effects::export_effect_ir_checked(&module)?;
+    Ok(UnsignedModule(module))
+}
+
 pub fn lower(program: Program) -> Result<Module, SemanticError> {
     lower_with_ref_layout(program, ManagedRefLayout::default())
 }
