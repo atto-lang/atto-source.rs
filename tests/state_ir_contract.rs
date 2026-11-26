@@ -92,3 +92,54 @@ fn returned_write_snapshots_scalar_under_one_lease_and_returns_outside_it() {
         assert!(matches!(&result.e, TExpr::Local(s) if s == slot));
     }
 }
+
+
+#[test]
+fn state_aliases_preserve_identical_wasm_for_every_admitted_mode() {
+    let template = r#"
+define state container Account as
+  state { let int balance: 0; let int transactions: 0; }
+  pub deposit(int amount): void {
+    WRITE |view| -> {
+      view.balance = view.balance + amount;
+      view.transactions = view.transactions + 1;
+    });
+  }
+  pub add(int amount): int {
+    return WRITE |view| -> {
+      view.balance = view.balance + amount;
+      return view.balance;
+    });
+  }
+  pub read_balance(): int {
+    return READ |view| -> view.balance);
+  }
+  pub read_transactions(): int {
+    return READ |view| -> { return view.transactions; });
+  }
+end
+pub fnc main(): int {
+  val a = new Account();
+  a.deposit(40);
+  val balance = a.add(2);
+  return balance + a.read_balance() + a.read_transactions();
+}
+"#;
+    // The existing compiler API is also used by the fixture runner. Compare
+    // binary output rather than just checking whether each spelling parses.
+    let source = template.replace("WRITE ", "handle_state(critical-write ")
+                         .replace("READ ", "handle_state(critical-read ");
+    let baseline = atto_compiler::compile(&source).unwrap();
+    for (write, read) in [
+        ("state_w(", "state_ro("),
+        ("handle_state_w(", "handle_state_ro("),
+        ("self.state_w(", "self.state_ro("),
+        ("self.handle_state_w(", "self.handle_state_ro("),
+        ("self.handle_state(critical-write ", "self.handle_state(critical-read "),
+        ("handle_state(critical ", "handle_state(critical-read "),
+    ] {
+        let source = template.replace("WRITE ", write).replace("READ ", read);
+        let candidate = atto_compiler::compile(&source).unwrap();
+        assert!(baseline == candidate, "alias changed compiled output: {write} / {read}");
+    }
+}
