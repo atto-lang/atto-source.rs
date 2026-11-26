@@ -22,6 +22,7 @@ export function createStateRuntime({
       !Number.isSafeInteger(maxTickets) || maxTickets < 1) {
     fail('invalid admission capacities');
   }
+  if (onEvent !== null && typeof onEvent !== 'function') fail('invalid state observer');
   if (nextRuntimeId >= MAX_RUNTIME_ID) fail('runtime identity exhausted');
   const actorIncarnation = ++nextRuntimeId;
   let nextContainerId = 0;
@@ -29,10 +30,28 @@ export function createStateRuntime({
   let retired = false;
   const containers = new Map(); // private pointer -> host-owned generation
   const active = new Map(); // opaque i64 ticket -> host-authenticated authority
-  const emit = event => { if (onEvent) onEvent(event); };
+  // Telemetry is non-authoritative: an observer must not interrupt a
+  // committed transition or reenter a mutating API before its caller returns.
+  let notifying = false;
+  let observerFailures = 0;
+  function assertNotNotifying() {
+    if (notifying) fail('state observer cannot mutate admission');
+  }
+  const emit = event => {
+    if (!onEvent) return;
+    notifying = true;
+    try {
+      onEvent(Object.freeze(event));
+    } catch {
+      observerFailures = Math.min(observerFailures + 1, Number.MAX_SAFE_INTEGER);
+    } finally {
+      notifying = false;
+    }
+  };
   const isPtr = ptr => Number.isInteger(ptr) && ptr >= 0 && ptr % 8 === 0;
 
   function register(ptr) {
+    assertNotNotifying();
     if (retired) fail('register after retirement');
     if (!isPtr(ptr)) fail('unaligned or invalid state pointer');
     if (containers.has(ptr)) fail('state pointer reused without retirement');
@@ -47,6 +66,7 @@ export function createStateRuntime({
   }
 
   function enter(ptr, mode) {
+    assertNotNotifying();
     if (retired) fail('guest execution retired');
     if (!isPtr(ptr) || !containers.has(ptr)) fail('unknown state container');
     if (mode !== 0 && mode !== 1) fail('invalid lease mode');
@@ -71,6 +91,7 @@ export function createStateRuntime({
   }
 
   function leave(ticket) {
+    assertNotNotifying();
     if (typeof ticket !== 'bigint') fail('invalid ticket type');
     const claim = active.get(ticket);
     if (!claim) fail('missing or replayed admission ticket');
@@ -85,6 +106,7 @@ export function createStateRuntime({
   }
 
   function beginRetire(ptr) {
+    assertNotNotifying();
     if (!isPtr(ptr) || !containers.has(ptr)) fail('unknown state container');
     const meta = containers.get(ptr);
     meta.retired = true;
@@ -99,6 +121,7 @@ export function createStateRuntime({
 
   /** Successful physical completion cannot silently abandon a live ticket. */
   function complete() {
+    assertNotNotifying();
     if (active.size) fail('guest returned with unreleased state tickets');
     retired = true;
     for (const meta of containers.values()) meta.retired = true;
@@ -107,6 +130,7 @@ export function createStateRuntime({
 
   /** Only invoke AFTER a synchronous guest turn has physically unwound. */
   function abort() {
+    assertNotNotifying();
     retired = true;
     active.clear();
     for (const meta of containers.values()) meta.retired = true;
@@ -127,5 +151,6 @@ export function createStateRuntime({
       state_leave: leave,
     }),
     beginRetire, quiescent, complete, abort, snapshot,
+    observerFailureCount: () => observerFailures,
   });
 }
