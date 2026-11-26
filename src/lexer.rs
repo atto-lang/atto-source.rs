@@ -129,6 +129,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if out.len() >= MAX_TOKENS {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many tokens"));
         }
+        if matches!(c, '⧖' | '∂') {
+            bump!();
+            out.push(Token { tok: Tok::Ident("suspends".to_owned()), pos });
+            continue;
+        }
         if c.is_alphabetic() || c == '_' {
             let mut s = String::new();
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
@@ -141,7 +146,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 bump!();
                 Tok::YieldStar
             } else {
-                Tok::Ident(s)
+                Tok::Ident(if s == "susp" { "suspends".to_owned() } else { s })
             };
             out.push(Token { tok, pos });
             continue;
@@ -400,4 +405,26 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         pos: Pos { line, col },
     });
     Ok(out)
+}
+
+#[cfg(test)]
+mod suspension_alias_lex_tests {
+    use super::*;
+    #[test]
+    fn exact_aliases_share_the_existing_effect_word() {
+        for spelling in ["suspends", "susp", "⧖", "∂"] {
+            let source = format!("{spelling} fnc");
+            let tokens = lex(&source).expect("valid alias");
+            assert_eq!(tokens[0].tok, Tok::Ident("suspends".into()));
+            assert_eq!(tokens[1].tok, Tok::Ident("fnc".into()));
+            assert_eq!(tokens[0].pos.col, 1);
+            assert_eq!(tokens[1].pos.col, spelling.chars().count() as u32 + 2);
+        }
+        let tokens = lex("suspension susp2 π \"⧖ ∂ susp\" // ⧖ ∂").unwrap();
+        for (i, name) in ["suspension", "susp2", "π"].iter().enumerate() {
+            assert_eq!(tokens[i].tok, Tok::Ident((*name).into()));
+        }
+        assert_eq!(tokens[3].tok, Tok::Str("⧖ ∂ susp".into()));
+        assert_eq!(tokens[4].tok, Tok::Eof);
+    }
 }
