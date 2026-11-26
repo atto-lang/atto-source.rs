@@ -664,3 +664,25 @@ fn cleanup_factory_pipeline_rejects_invalid_callbacks_and_captures() {
         assert!(compile(s).is_err(), "invalid registration syntax emitted guest Wasm: {s}");
     }
 }
+
+#[test]
+fn cleanup_pipeline_chain_preserves_scalar_call_checks() {
+    pass(r#"fnc inc(int x): int { return x + 1; }
+        pub fnc main(): int {
+            defer (4) |> inc |> (|int x| -> || -> { stdio.println(x); });
+            recover 41 |> inc |> (|int x| -> |err, cursor| -> { return x; });
+            raise Error("original");
+        }"#);
+    reject("E_TYPE", r#"fnc inc(int x): int { return x + 1; }
+        pub fnc main(): int {
+            defer "wrong" |> inc |> (|int x| -> || -> {});
+            return 0;
+        }"#);
+    for src in [
+        r#"pub fnc main(): int { defer 5 |> await |> (|int x| -> || -> {}); return 0; }"#,
+        r#"pub fnc main(): int { defer (1, 2) |> unknown |> (|int x| -> || -> {}); return 0; }"#,
+        r#"pub fnc main(): int { recover 5 |> (|int x| -> |err, cursor| -> { return x; }) |> unknown; return 0; }"#,
+    ] {
+        assert!(compile(src).is_err(), "unsupported callback pipeline emitted guest Wasm: {src}");
+    }
+}
