@@ -65,7 +65,7 @@ try {
   // Carry forward #411's unique signed compound boundaries without
   // replacing this branch's named Boolean reduction implementation.
   const vectors = [
-    ['ordinary', 'let x: int = 12; x ^^= 10; ^ x;', 6n],
+    ['ordinary', 'let x: int = 12; x ^^= 10; return x;', 6n],
     ['min-max', 'let x: int = -9223372036854775808; x ^^= -1; return x;', 9223372036854775807n],
     ['max-min', 'let x: int = 9223372036854775807; x ^^= -1; return x;', -9223372036854775808n],
     ['self', 'let x: int = -9223372036854775808; x ^^= x; return x;', 0n],
