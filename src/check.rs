@@ -4172,11 +4172,30 @@ impl<'a> FnCx<'a> {
                 }
                 if a.ty == Type::Int && b.ty == Type::Int {
                     if *op == BinOp::Div {
-                        return Err(Diagnostic::new(
-                            pos,
-                            "E_UNSUPPORTED",
-                            "'/' on two ints is not admitted: whether int / int yields float or int is undecided (spec S-25); write a float operand, e.g. 7.0 / 2",
-                        ));
+                        // Canonical signed quotient truncates toward zero. Until
+                        // the guest ordinary-error ABI handles arithmetic, only
+                        // admit operands proved safe here. Do not emit Wasm
+                        // div_s traps or turn an ordinary error into a panic.
+                        fn literal(v: &TE) -> Option<i64> {
+                            match &v.e {
+                                TExpr::I64(n) => Some(*n),
+                                TExpr::Neg(inner) => match &inner.e {
+                                    TExpr::I64(n) => n.checked_neg(),
+                                    _ => None,
+                                },
+                                _ => None,
+                            }
+                        }
+                        if let (Some(lhs), Some(rhs)) = (literal(&a), literal(&b)) {
+                            if let Some(value) = lhs.checked_div(rhs) {
+                                return Ok(TE { e: TExpr::I64(value), ty: Type::Int });
+                            }
+                            let reason = if rhs == 0 { "division_by_zero" } else { "integer_overflow" };
+                            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                                format!("checked signed quotient: {reason}; typed ordinary guest error lowering required")));
+                        }
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "checked signed quotient requires proven safe literal operands or typed ordinary guest error lowering"));
                     }
                 } else {
                     // Java binary numeric promotion: an int operand widens to float.
@@ -4203,7 +4222,7 @@ impl<'a> FnCx<'a> {
             }
             let ty = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
-                BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::Div => unreachable!("int / int folded or rejected above"),
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr =>
                     unreachable!("bitwise operations handled before numeric promotion"),
