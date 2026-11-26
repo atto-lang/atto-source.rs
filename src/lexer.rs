@@ -51,6 +51,7 @@ pub enum Tok {
     YieldStar,
     Slash,
     Bang,
+    UnicodeNot,
     Question,
     Pipe,
     PipeGt,
@@ -73,6 +74,15 @@ pub const MAX_TOKENS: usize = 32_768;
 pub const MAX_STRING_BYTES: usize = 4_096;
 
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    // Scan raw source before comments or quoted literals can hide controls.
+    let (mut raw_line, mut raw_col) = (1u32, 1u32);
+    for c in source.chars() {
+        if matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            return Err(Diagnostic::new(Pos { line: raw_line, col: raw_col },
+                "E_SOURCE_BIDI", "bidirectional Unicode control in source"));
+        }
+        if c == '\n' { raw_line += 1; raw_col = 1; } else { raw_col += 1; }
+    }
     let chars: Vec<char> = source.chars().collect();
     let mut out = Vec::new();
     let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
@@ -129,9 +139,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if out.len() >= MAX_TOKENS {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many tokens"));
         }
-        if c.is_alphabetic() || c == '_' {
+        if c.is_alphabetic() || c == '_' || c == '〇' {
             let mut s = String::new();
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '〇') {
                 s.push(chars[i]);
                 bump!();
             }
@@ -166,7 +176,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     bump!();
                 }
                 if bits.is_empty() || i < chars.len() &&
-                    (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '〇') {
                     return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL",
                         "malformed binary integer literal"));
                 }
@@ -218,14 +228,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     bump!();
                 }
             }
-            if i < chars.len() && chars[i] == 'i' && !chars.get(i + 1).is_some_and(|d| d.is_alphanumeric() || *d == '_') {
+            if i < chars.len() && chars[i] == 'i' && !chars.get(i + 1).is_some_and(|d| d.is_alphanumeric() || *d == '_' || *d == '〇') {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED_TYPE",
                     "imaginary literals are not supported by the browser compiler yet",
                 ));
             }
-            if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_') {
+            if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_' || chars[i] == '〇') {
                 return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL", "malformed integer literal"));
             }
             if floating {
@@ -344,6 +354,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            ('¬', _) => (Tok::UnicodeNot, 1),
             // Keep the last bracket of '<<<=' / '>>>=' separate from
             // '='. This also protects unspaced triple generic closers
             // (e.g. T<U<V<W>>>=value) from becoming comparison tokens.
