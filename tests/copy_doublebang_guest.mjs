@@ -17,6 +17,7 @@ const positives = [
   '996-copy-doublebang-constructor-state.atto',
   '997-copy-doublebang-private-state.atto',
   '998-move-bang-scalar.atto',
+  '998-copy-shallow-flat-no-opt-in.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
@@ -25,6 +26,7 @@ const negatives = [
   '997-copy-doublebang-nested-array-no-runtime.atto',
   '998-move-bang-use-after-transfer.atto',
   '999-deep-copy-missing-opt-in.atto',
+  '153-copy-noncopy-class.atto',
 ];
 const imports = {
   atto: {
