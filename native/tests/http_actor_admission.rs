@@ -18,7 +18,7 @@ fn rejected(source: &str) {
 
 #[test]
 fn shared_http_actor_3x4_atto_fixture_fails_closed() {
-    rejected(include_str!("fixtures/http-actor-unsupported.atto"));
+    rejected(include_str!("../../tests/fixtures/http-actor-unsupported.atto"));
 }
 
 #[test]
