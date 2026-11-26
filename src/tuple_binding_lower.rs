@@ -118,10 +118,11 @@ fn create_class(name: &str, shape: &Shape) -> String {
 fn rewrite_types(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R<()> {
     let mut i = 0usize;
     while i + 1 < tokens.len() {
-        if !word(&tokens[i], "Tuple") || tokens[i + 1].tok != Tok::Lt {
+        if !word(&tokens[i], "Tuple") || !matches!(tokens[i + 1].tok, Tok::Lt | Tok::LBracket) {
             i += 1;
             continue;
         }
+        let closing = if tokens[i + 1].tok == Tok::Lt { Tok::Gt } else { Tok::RBracket };
         // 'Tuple < expression' must remain an ordinary comparison when
         // Tuple is a local identifier. Rewrite generic types only in a
         // type-introducing context; never classify expressions by spelling.
@@ -137,11 +138,11 @@ fn rewrite_types(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R<()> {
                     // an identifier binder, as in '(Tuple<int> value)'.
                     let mut j = i + 2;
                     while j < tokens.len()
-                        && tokens[j].tok != Tok::Gt
+                        && tokens[j].tok != closing
                         && tokens[j].tok != Tok::RParen
                         && tokens[j].tok != Tok::Semi
                     { j += 1; }
-                    tokens.get(j).is_some_and(|t| t.tok == Tok::Gt)
+                    tokens.get(j).is_some_and(|t| t.tok == closing)
                         && tokens.get(j + 1).is_some_and(|t|
                             matches!(&t.tok, Tok::Ident(w) if w != "then"))
                 }
@@ -155,7 +156,7 @@ fn rewrite_types(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R<()> {
         let start = i;
         i += 2;
         let mut ts = Vec::new();
-        if tokens.get(i).is_some_and(|x| x.tok != Tok::Gt) {
+        if tokens.get(i).is_some_and(|x| x.tok != closing) {
             loop {
                 let t = tokens.get(i).and_then(id)
                     .and_then(primitive).ok_or_else(|| error(tokens[start].pos,
@@ -169,8 +170,8 @@ fn rewrite_types(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R<()> {
                 break;
             }
         }
-        if !tokens.get(i).is_some_and(|x| x.tok == Tok::Gt) {
-            return Err(error(tokens[start].pos, "E_SYNTAX", "expected '>' after tuple element types"));
+        if !tokens.get(i).is_some_and(|x| x.tok == closing) {
+            return Err(error(tokens[start].pos, "E_SYNTAX", "expected matching closing delimiter after tuple element types"));
         }
         let name = shape_for(ts, shapes, tokens[start].pos)?;
         let pos = tokens[start].pos;
