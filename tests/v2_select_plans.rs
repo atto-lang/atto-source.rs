@@ -43,7 +43,7 @@ fn select_plans_reject_unsafe_or_unimplemented_forms_without_emitting_guest() {
 #[test]
 fn select_plans_compile_runtime_panics_as_real_guests() {
     // Actual trap codes are checked by Node and Chromium. This gate proves
-    // all seven cases compile into executable Wasm rather than diagnostics.
+    // all eight cases compile into executable Wasm rather than diagnostics.
     for (name, source) in [
         ("empty-unwrap", include_str!("fixtures/panic/233-v2-select-empty-unwrap.atto")),
         ("all-closed", include_str!("fixtures/panic/234-v2-select-all-closed.atto")),
@@ -52,6 +52,7 @@ fn select_plans_compile_runtime_panics_as_real_guests() {
         ("claimed-after-plan", include_str!("fixtures/panic/237-v2-select-pipe-claimed-after-plan.atto")),
         ("claimed-on-put", include_str!("fixtures/panic/238-v2-dynamic-select-put-pipe-owned.atto")),
         ("abandoned-future", include_str!("fixtures/panic/239-v2-select-abandoned-future.atto")),
+        ("timeout-retirement", include_str!("fixtures/panic/240-v2-select-timeout-retirement.atto")),
     ] {
         let guest = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
