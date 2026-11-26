@@ -16,12 +16,15 @@ const positives = [
   '995-copy-doublebang-flat-class-mixed-fields.atto',
   '996-copy-doublebang-constructor-state.atto',
   '997-copy-doublebang-private-state.atto',
+  '998-move-bang-scalar.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
   '992-copy-doublebang-mut-invalid.atto',
   '996-copy-doublebang-exclusive-loan.atto',
   '997-copy-doublebang-nested-array-no-runtime.atto',
+  '998-move-bang-use-after-transfer.atto',
+  '999-deep-copy-missing-opt-in.atto',
 ];
 const imports = {
   atto: {
