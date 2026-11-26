@@ -400,6 +400,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('<', Some('=')) if i >= 2 && chars[i - 1] == '<' && chars[i - 2] == '<' =>
                 (Tok::Lt, 1),
             ('<', Some('-')) => (Tok::LeftArrow, 2),
+            ('•', _) => (Tok::LeftArrow, 1),
             ('<', Some('|')) => (Tok::PipeLt, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),

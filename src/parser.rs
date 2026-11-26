@@ -669,6 +669,12 @@ impl Parser {
                 }
             }
             match (self.word_at(at), self.word_at(at + 1)) {
+                (Some("define"), Some("fnc")) => {
+                    prog.funcs.push(self.parse_func()?);
+                }
+                (Some("define"), Some("pub")) if !public && self.word_at(at + 2) == Some("fnc") => {
+                    prog.funcs.push(self.parse_func()?);
+                }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
@@ -1586,7 +1592,13 @@ impl Parser {
             return Err(unsupported(self.pos(), "annotations"));
         }
         let start = self.pos();
-        self.eat_word("pub");
+        let public_prefix = self.eat_word("pub");
+        if self.eat_word("define") {
+            if !public_prefix { self.eat_word("pub"); }
+            if !self.is_word("fnc") {
+                return Err(self.expected("'fnc' after 'define'"));
+            }
+        }
         let is_pure = self.eat_word("pure");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
