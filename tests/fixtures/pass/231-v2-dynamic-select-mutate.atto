@@ -21,7 +21,7 @@ pub suspends fnc main(): int {
   val SelectResult retained_first = await retained;
   if retained_first.value != 19 then return 4; fi
   let round = 0;
-  while round < 300 do
+  while round < 2048 do
     plan.put(0, SelectCase.read(first_channel));
     writech first_channel, 42;
     val SelectResult next = await select fair from plan;
@@ -29,7 +29,16 @@ pub suspends fnc main(): int {
     if next.value != 42 then return 2; fi
     round = round + 1;
   done
-  if plan.version() != 302 then return 3; fi
+  if plan.version() != 2050 then return 3; fi
+  // Zero is valid payload, not the internal raw-result miss sentinel.
+  writech first_channel, 0;
+  val SelectResult zero_hit = await select first from plan;
+  if zero_hit.value != 0 then return 8; fi
+  writech first_channel, -7;
+  val Option<SelectResult> signed_hit = try select first from plan;
+  if signed_hit.unwrap().value != -7 then return 9; fi
+  val Option<SelectResult> miss = try select first from plan;
+  
   // Recycled queue nodes must not leave stale tails in either channel.
   writech second, 11;
   writech first_channel, 31;
