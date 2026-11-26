@@ -2670,11 +2670,29 @@ impl Parser {
             return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
                 "critical-read block requires a single returned scalar projection"));
         }
-        let (projector, pos) = self.ident("state binder field projection")?;
-        if projector != binder { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "critical-read requires a field of its own lease binder")); }
-        self.expect(Tok::Dot, "'.' in state projection")?;
-        let (field, _) = self.ident("state field")?;
+        // Only the tuple lowerer's reserved, compiler-generated scalar
+        // constructor can be used here. Capture its projections, not a call
+        // or allocation in the lease. The source gate reserves this prefix.
+        let projection = if self.eat_word("new") {
+            let (class, class_pos) = self.ident("generated scalar tuple type")?;
+            if !class.starts_with("__atto_tuple_private_") {
+                return Err(Diagnostic::new(class_pos, "E_STATE_BORROW",
+                    "critical-read cannot construct arbitrary objects under a lease"));
+            }
+            self.expect(Tok::LParen, "'(' after tuple type")?;
+            let mut fields = Vec::new();
+            loop {
+                if fields.len() >= 16 {
+                    return Err(Diagnostic::new(class_pos, "E_SOURCE_LIMIT", "state snapshot tuple exceeds 16 fields"));
+                }
+                fields.push(self.parse_state_projection_field(&binder)?);
+                if !self.eat(&Tok::Comma) { break; }
+            }
+            self.expect(Tok::RParen, "')' after tuple fields")?;
+            StateProjection::Tuple { class, fields }
+        } else {
+            StateProjection::Scalar(self.parse_state_projection_field(&binder)?)
+        };
         if block {
             self.eat(&Tok::Semi);
             if !self.eat(&Tok::RBrace) {
@@ -2683,7 +2701,16 @@ impl Parser {
             }
         }
         self.expect(Tok::RParen, "')' after critical-read")?;
-        Ok(ExprKind::StateRead(field))
+        Ok(ExprKind::StateRead(projection))
+    }
+
+    fn parse_state_projection_field(&mut self, binder: &str) -> R<String> {
+        let (projector, pos) = self.ident("state binder field projection")?;
+        if projector != binder { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "critical-read requires a field of its own lease binder")); }
+        self.expect(Tok::Dot, "'.' in state projection")?;
+        let (field, _) = self.ident("state field")?;
+        Ok(field)
     }
 
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
