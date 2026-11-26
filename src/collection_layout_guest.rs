@@ -288,8 +288,7 @@ fn try_primitive(toks: &[Token]) -> Result<Option<TProgram>, Diagnostic> {
     }
     let pos = p.pos();
     let owner = p.ident()?;
-    if ["_", "int", "bool", "Array", "main", "return", "val", "let",
-        "pub", "fnc", "true", "false", "if", "do", "fi"].contains(&owner.as_str()) {
+    if crate::parser::is_reserved(&owner) || ["_", "int", "bool", "Array", "main"].contains(&owner.as_str()) {
         return Err(error(pos, "E_BINDING", "reserved primitive Array binding"));
     }
     p.expect(Tok::Assign, "'=' after Array binding")?;
@@ -460,5 +459,20 @@ fnc main() -> int {
         assert!(compiler(&bad).is_err());
         let bad = PROGRAM.replace("particles[0].x += 5;", "let unsafe_alias = particles.columns.x;");
         assert!(compiler(&bad).is_err());
+    }
+    #[test]
+    fn primitive_array_types_have_identical_checked_storage() {
+        let source = "pub fnc main(): int { val Array[int] a = [10,42,-1]; return a[1]; }";
+        let a = compiler(source).unwrap();
+        assert_eq!(a, compiler(&source.replace("Array[int]", "Array<int>")).unwrap());
+        assert_eq!(a, compiler(&source.replace("Array[int]", "Array<T=int,layout=aos>")).unwrap());
+        let typed = try_lower(&crate::lexer::lex(source).unwrap()).unwrap().unwrap();
+        assert!(typed.heap);
+        assert!(matches!(&typed.funcs[0].body[1], TStmt::CollectionStore {offset:0,..}));
+        assert!(matches!(&typed.funcs[0].body[2], TStmt::CollectionStore {offset:8,..}));
+        for bad in ["a[3]", "a[-1]", "a[true]", "other[1]"] {
+            assert!(compiler(&source.replace("a[1]",bad)).is_err(), "{bad}");
+        }
+        assert!(compiler(&source.replace("[10,42,-1]", "[10,true,-1]")).is_err());
     }
 }
