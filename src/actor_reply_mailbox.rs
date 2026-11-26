@@ -106,6 +106,15 @@ impl<M, R> UnaryMailbox<M, R> {
         self.reply.receive(&receipt.ticket)
     }
 
+    /// Explicit caller abandonment, not a promise that already-running
+    /// application side effects can be undone. Remove queued payloads and
+    /// fence inflight completion before this slot can be reused.
+    pub fn abandon(&mut self, receipt: &ReplyReceipt) -> Result<(), SlotFault> {
+        self.reply.abandon(&receipt.ticket)?;
+        self.queue.retain(|d| d.reply_permit != receipt.ticket);
+        Ok(())
+    }
+
     pub fn expire(&mut self, now: u64) -> usize { self.reply.expire(now) }
 
     /// Close admission, discard pending application mail and fail every
