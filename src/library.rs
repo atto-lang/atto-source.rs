@@ -216,6 +216,13 @@ fn parse_builtin_clause(body: &[Token]) -> R<Option<LibImport>> {
             selector = Some(format!("{}.{}", ident(source.first()).unwrap(), ident(source.get(2)).unwrap()));
         }
         if selector.is_some() {
+            // The bounded const linker owns quoted file selectors. Do not
+            // reinterpret a typed constant import as a builtin namespace
+            // binding or erase the import before its path validation.
+            if ident(body.get(1)) == Some("const") {
+                return Err(err(pos, "E_IMPORT_PATH",
+                    "constant file import needs a project-relative ./ or ../ .atto path"));
+            }
             let mut left = &body[1..at - 1];
             legacy_module = ident(left.first()) == Some("module");
             if legacy_module || ident(left.first()) == Some("namespace") { left = &left[1..]; }
