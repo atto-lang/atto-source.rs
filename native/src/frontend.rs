@@ -93,6 +93,12 @@ enum Kind {
     Minus,
     #[token("*")]
     Star,
+    #[token("%")]
+    RemovedModulo,
+    #[token("^^")]
+    RemovedDoubleCaret,
+    #[token("^")]
+    RemovedCaret,
     #[regex(r"[0-9][0-9_]*")]
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
@@ -255,6 +261,13 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             });
         }
         match kind {
+            Kind::RemovedModulo | Kind::RemovedCaret | Kind::RemovedDoubleCaret => {
+                return Err(ParseError {
+                    offset: range.start,
+                    class: "removed_operator",
+                    message: "operator is reserved; use named arithmetic functions".into(),
+                });
+            }
             Kind::LParen => {
                 paren_depth += 1;
                 if paren_depth > MAX_PAREN_NESTING {
@@ -346,8 +359,17 @@ impl Parser {
         let mut params = Vec::new();
         if self.peek() != Some(Kind::RParen) {
             loop {
-                self.expect(Kind::Int)?;
-                params.push(self.expect(Kind::Identifier)?.text);
+                // Both canonical scalar parameter spellings lower identically.
+                let name = if self.peek() == Some(Kind::Int) {
+                    self.expect(Kind::Int)?;
+                    self.expect(Kind::Identifier)?.text
+                } else {
+                    let name = self.expect(Kind::Identifier)?.text;
+                    self.expect(Kind::Colon)?;
+                    self.expect(Kind::Int)?;
+                    name
+                };
+                params.push(name);
                 if self.peek() == Some(Kind::Comma) {
                     self.expect(Kind::Comma)?;
                 } else {
