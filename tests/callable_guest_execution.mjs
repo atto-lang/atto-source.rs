@@ -1,7 +1,7 @@
 // Runs native-compiler-generated Wasm guests for all currently implemented callable forms.
 // In particular, this checks *execution* rather than just compiler acceptance.
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,6 +70,40 @@ try {
     assert.equal(actual, BigInt(want), name + ': wrong guest return value');
     assert.equal(guest.exports.panic_code.value, 0, name + ': unexpected panic');
     console.log('PASS guest execution', name, String(actual));
+  }
+  // Compile every form separately; compare guest bytes and execute every
+  // artifact. No host-side model of the language is accepted as evidence.
+  for (const [index, signature, lambda, args, tuple] of [
+    [0, '(int,int)=>int', '|int a,int b| :int -> a+b', '20,22', '(20,22)'],
+    [1, '(int,bool)=>int', '|int a,bool b| :int -> a+2', '40,true', '(40,true)'],
+    [2, '(int)=>int', '|int a| :int -> a+2', '40', '(40,)'],
+    [3, '()=>int', '|| :int -> 42', '', '()'],
+  ]) {
+    let baseline;
+    for (const [form, expression] of [
+      ['direct', 'f(' + args + ')'],
+      ['call', 'f.call(' + args + ')'],
+      ['apply', 'f.apply(' + tuple + ')'],
+    ]) {
+      const path = join(work, 'intrinsic-' + index + '-' + form + '.atto');
+      const out = path + '.wasm';
+      await writeFile(path, 'type F=' + signature + '; pub fnc main():int { const F f=' + lambda + '; return ' + expression + '; }');
+      const built = run(path, out);
+      assert.equal(built.status, 0, path + ': ' + built.stderr);
+      const wasm = await readFile(out);
+      assert.ok(WebAssembly.validate(wasm), path + ': invalid guest');
+      if (baseline) assert.deepEqual(wasm, baseline, path + ': changed guest bytes');
+      else baseline = wasm;
+      const module = new WebAssembly.Module(wasm);
+      for (const imp of WebAssembly.Module.imports(module)) {
+        assert.equal(imp.module, 'atto');
+        assert.ok(allowed.has(imp.name));
+      }
+      const guest = new WebAssembly.Instance(module, imports);
+      assert.equal(guest.exports.main(), 42n, path + ': result');
+      assert.equal(guest.exports.panic_code.value, 0, path + ': unexpected panic');
+      console.log('PASS guest intrinsic execution', index, form);
+    }
   }
   for (const name of negative) {
     const path = fileURLToPath(new URL('./fixtures/fail/' + name, import.meta.url));
