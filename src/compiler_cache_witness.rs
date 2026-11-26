@@ -8,12 +8,18 @@ pub(crate) struct Prepared {
     pub(crate) key: [u8;32],
     linked: String,
     target: TargetOs,
+    pub(crate) memo: package_resolver::SnapshotMemo,
+    pub(crate) work: package_resolver::SnapshotWork,
 }
 fn error(detail:&str)->Diagnostic{Diagnostic::new(Pos::default(),"E_CACHE_KEY",detail)}
 pub(crate) fn prepare(entry:&str,manifest:&str,lock:&str,pin:&str,inputs:&[SnapshotSource<'_>],
     target:TargetOs,compiler_digest:&str,toolchain_digest:&str)->Result<Prepared,Diagnostic>{
+    prepare_memoized(entry,manifest,lock,pin,inputs,target,compiler_digest,toolchain_digest,&package_resolver::SnapshotMemo::default())
+}
+pub(crate) fn prepare_memoized(entry:&str,manifest:&str,lock:&str,pin:&str,inputs:&[SnapshotSource<'_>],
+    target:TargetOs,compiler_digest:&str,toolchain_digest:&str,previous:&package_resolver::SnapshotMemo)->Result<Prepared,Diagnostic>{
     library::with_target_os(target,|| {
-        let graph=package_resolver::prepare_locked_snapshot(entry,manifest,lock,pin,inputs)?;
+        let graph=package_resolver::prepare_locked_snapshot_memoized(entry,manifest,lock,pin,inputs,previous)?;
         let target_digest=hex_digest(format!("atto-wasm-stage-v1|wasm32|abi={}|os={}",
             crate::ABI_VERSION,match target{TargetOs::Posix=>"posix",TargetOs::Windows=>"windows"}).as_bytes());
         let configuration=hex_digest(b"locked-snapshot-v1|single-package|no-external-host-grants|ordinary-compiler");
@@ -26,7 +32,7 @@ pub(crate) fn prepare(entry:&str,manifest:&str,lock:&str,pin:&str,inputs:&[Snaps
         for (i,b) in bytes.iter_mut().enumerate(){
             *b=u8::from_str_radix(&encoded[i*2..i*2+2],16).map_err(|_|error("invalid encoded key"))?;
         }
-        Ok(Prepared{key:bytes,linked:graph.linked,target})
+        Ok(Prepared{key:bytes,linked:graph.linked,target,memo:graph.memo,work:graph.work})
     })
 }
 impl Prepared {

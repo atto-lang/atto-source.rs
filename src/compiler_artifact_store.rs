@@ -564,11 +564,14 @@ end"#;
             SnapshotSource{path:"lib/m10.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m10.atto")},
         ];
         let lock=package_lock(&inputs);let source_pin=hex_digest(lock.as_bytes());
-        let build=|mode,lock:&str,source_pin:&str,inputs:&[SnapshotSource<'_>]|session.build(mode,&authority,&pin,SECRET,"src/main.atto",MANIFEST,lock,source_pin,inputs);
+        let mut memo=crate::package_resolver::SnapshotMemo::default();
+        let mut build=|mode,lock:&str,source_pin:&str,inputs:&[SnapshotSource<'_>]|session.build_memoized(mode,&authority,&pin,SECRET,"src/main.atto",MANIFEST,lock,source_pin,inputs,&mut memo);
         let cold=build(Mode::Cold,&lock,&source_pin,&inputs).unwrap();
         assert_eq!(cold.outcome,Outcome::Compiled);
+        assert_eq!((cold.source_work.rewritten,cold.source_work.reused),(12,0));
         let warm=build(Mode::Incremental,&lock,&source_pin,&inputs).unwrap();
         assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(warm.bytes,cold.bytes);
+        assert_eq!((warm.source_work.rewritten,warm.source_work.reused),(0,12));
         let path=host.join("fixture.wasm");fs::write(&path,&warm.bytes).unwrap();execute_wasm(&path);
         let edited=inputs[11].source.replace("return 2;","return 3;");
         let mut changed=inputs;changed[11].source=&edited;
@@ -576,11 +579,21 @@ end"#;
         let updated_lock=package_lock(&changed);let updated_pin=hex_digest(updated_lock.as_bytes());
         let next=build(Mode::Incremental,&updated_lock,&updated_pin,&changed).unwrap();
         assert_eq!(next.outcome,Outcome::Compiled);
+        assert_eq!((next.source_work.rewritten,next.source_work.reused),(1,11));
         assert_eq!(next.bytes,crate::package_resolver::compile_locked_snapshot("src/main.atto",MANIFEST,&updated_lock,&updated_pin,&changed).unwrap());
         fs::write(&path,&next.bytes).unwrap();execute_wasm_result(&path,"43");
-        assert_eq!(build(Mode::Incremental,&updated_lock,&updated_pin,&changed).unwrap().outcome,Outcome::Reused);
-        // This is whole-package output reuse, NOT proof of 11 per-unit
-        // parse/type/codegen reuses. Keep those independent gates open.
-        println!("CACHE_TWELVE_SOURCE|three-namespace-headers|two-unnamespaced|cold-warm=42|edit=43|whole-package-reuse-only");
+        let hot=build(Mode::Incremental,&updated_lock,&updated_pin,&changed).unwrap();
+        assert_eq!(hot.outcome,Outcome::Reused);
+        assert_eq!((hot.source_work.rewritten,hot.source_work.reused),(0,12));
+        let invalid=edited.replace("return 3;","return true;");
+        let mut bad=changed;bad[11].source=&invalid;
+        let bad_lock=package_lock(&bad);let bad_pin=hex_digest(bad_lock.as_bytes());
+        let clean_error=crate::package_resolver::compile_locked_snapshot("src/main.atto",MANIFEST,&bad_lock,&bad_pin,&bad).unwrap_err();
+        assert_eq!(build(Mode::Incremental,&bad_lock,&bad_pin,&bad).unwrap_err().code,clean_error.code);
+        let after=build(Mode::Incremental,&updated_lock,&updated_pin,&changed).unwrap();
+        assert_eq!(after.bytes,next.bytes);assert_eq!((after.source_work.rewritten,after.source_work.reused),(0,12));
+        // Actual per-file source rewrite/import-path memo only. Full linker
+        // admission and semantic checking/codegen on a miss are unchanged.
+        println!("CACHE_TWELVE_SOURCE|cold=12/0|warm=0/12|edit=1/11|failed-edit-rollback|guest=42/43|source-transform-only");
     }
 }
