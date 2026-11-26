@@ -124,7 +124,54 @@ pub(crate) fn lower_unsigned(source: &str) -> Result<UnsignedModule, String> {
     // This reuses the existing bounded expression traversal only, not its
     // signed effect facts as a certificate.
     let _ = crate::effects::export_effect_ir_checked(&module)?;
+    validate_unsigned_work(&module)?;
     Ok(UnsignedModule(module))
+}
+
+// Match the JS unsigned candidate's closed acyclic execution profile. Charge
+// every syntactic expression and each invocation, including unused locals
+// and functions. Postorder memoization avoids expanding repeated callees.
+fn validate_unsigned_work(module: &Module) -> Result<(), String> {
+    const MAX_FUNCTIONS: usize = 32;
+    const MAX_EXPANDED: usize = 10_000;
+    if module.functions.len() > MAX_FUNCTIONS {
+        return Err("unsigned function budget exceeded".into());
+    }
+    let index: HashMap<&str, usize> = module.functions.iter().enumerate()
+        .map(|(i, f)| (f.symbol.as_str(), i)).collect();
+    let mut costs = vec![None; module.functions.len()];
+    let mut active = vec![false; module.functions.len()];
+    fn cost(i: usize, module: &Module, index: &HashMap<&str, usize>,
+        costs: &mut [Option<usize>], active: &mut [bool]) -> Result<usize, String> {
+        if active[i] { return Err("recursive unsigned call graph".into()); }
+        if let Some(n) = costs[i] { return Ok(n); }
+        active[i] = true;
+        let function = &module.functions[i];
+        let mut pending: Vec<&Expr> = function.locals.iter().map(|(_, e)| e).collect();
+        pending.push(&function.return_value);
+        let mut total = 0usize;
+        while let Some(expr) = pending.pop() {
+            total += 1;
+            match expr {
+                Expr::Integer(_) | Expr::Name(_) => {}
+                Expr::Negate(_) => return Err("signed negation in unsigned MIR".into()),
+                Expr::Add(a,b) | Expr::Subtract(a,b) | Expr::Multiply(a,b) => {
+                    pending.push(a); pending.push(b);
+                }
+                Expr::Call { name, args } => {
+                    let target = *index.get(name.as_str()).ok_or("unknown unsigned callee")?;
+                    total += cost(target, module, index, costs, active)?;
+                    pending.extend(args.iter());
+                }
+            }
+            if total > MAX_EXPANDED { return Err("unsigned expanded work budget exceeded".into()); }
+        }
+        active[i] = false;
+        costs[i] = Some(total);
+        Ok(total)
+    }
+    for i in 0..module.functions.len() { cost(i, module, &index, &mut costs, &mut active)?; }
+    Ok(())
 }
 
 pub fn lower(program: Program) -> Result<Module, SemanticError> {

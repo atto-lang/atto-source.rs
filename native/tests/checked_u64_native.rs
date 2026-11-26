@@ -52,3 +52,23 @@ fn signed_and_unsigned_admission_remain_separate() {
     ] { assert!(compile_checked_u64(source).is_err(), "{source}"); }
     assert!(compile_checked_i64("pub fnc main():u64{return 1;}").is_err());
 }
+
+#[test]
+fn unsigned_call_graph_is_closed_and_bounded() {
+    for source in [
+        "pub fnc main():u64{return main();}",
+        "pub fnc main():u64{return 42;} fnc a():u64{return b();} fnc b():u64{return a();}",
+        "pub fnc main():u64{return 42;} fnc unused():u64{return unused();}",
+    ] {
+        assert!(compile_checked_u64(source).unwrap_err().contains("recursive unsigned call graph"));
+    }
+    let mut source = String::from("fnc f0():u64{return 0;}");
+    for i in 1..=14 {
+        source.push_str(&format!("fnc f{i}():u64{{return f{}()+f{}();}}",i-1,i-1));
+    }
+    source.push_str("pub fnc main():u64{return f14();}");
+    assert!(compile_checked_u64(&source).unwrap_err().contains("expanded work budget"));
+    let result=execute("pub fnc main():u64{return f(20)+f(21);} fnc f(u64 n):u64{return n+1;}");
+    assert!(result.status.success());
+    assert_eq!(result.stdout,b"43\n");
+}
