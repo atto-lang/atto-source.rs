@@ -25,6 +25,8 @@ pub mod shape_lower;
 pub mod shape_witness;
 /// Non-emitting all-member structural witness, including checked method signatures.
 pub mod structural_member_witness;
+/// Compiler-only static marker/brand constraints; no guest ABI.
+pub mod structural_tags;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
