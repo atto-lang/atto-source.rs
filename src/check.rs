@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::*;
+use crate::actor_send_effect_graph::{audit_effect, EffectNode};
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
@@ -890,6 +891,20 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
     }
     for a in &p.actors {
+        // Parsing and AST metadata are not proof of host isolation. This
+        // browser guest ABI currently has only the trusted shared actor path.
+        // Never erase a requested isolated or untrusted class at codegen.
+        match a.domain {
+            ActorExecutionDomain::Shared => {},
+            ActorExecutionDomain::Isolated => {
+                return Err(Diagnostic::new(a.pos, "E_ACTOR_DOMAIN_RUNTIME_UNAVAILABLE",
+                    "isolated actors need private worker-pool admission and actor-incarnation fencing"));
+            }
+            ActorExecutionDomain::Untrusted => {
+                return Err(Diagnostic::new(a.pos, "E_UNTRUSTED_SANDBOX_UNAVAILABLE",
+                    "untrusted actors require verified TenantVM confinement and host capability admission"));
+            }
+        }
         if a.persistence != ActorPersistenceMode::Volatile {
             // Validate an AOT-friendly scalar snapshot schema first. No guest
             // emission may silently treat durable/persistent as volatile.
@@ -1143,7 +1158,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let payload = match &a.receive {
             Some(r) => {
                 let t = res(r.payload)?;
-                if !matches!(t, Type::Int | Type::Bool) {
+                if crate::actor_isolation_witness::prove_payload(
+                    actor_mail_shape(t),
+                    crate::actor_isolation_witness::TransferIntent::GuestScalarCopy,
+                ).is_err() {
                     return Err(Diagnostic::new(
                         r.pos,
                         "E_UNSUPPORTED_TYPE",
@@ -1157,6 +1175,30 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
             None => Type::Void,
         };
+        if let Some(declared) = a.receives {
+            let expected = res(declared)?;
+            if a.receive.is_none() {
+                return Err(Diagnostic::new(a.pos, "E_ACTOR_RECEIVES",
+                    format!("actor '{}' declares receives but has no receive handler", a.name)));
+            }
+            if expected != payload {
+                return Err(Diagnostic::new(a.pos, "E_ACTOR_RECEIVES",
+                    format!("actor '{}' declares receives {} but its ActorMail handler expects {}",
+                        a.name,
+                        tn_plain(expected, tn, &class_names, &p.enums, &actor_names),
+                        tn_plain(payload, tn, &class_names, &p.enums, &actor_names))));
+            }
+        }
+        if let Some(declared) = a.sends {
+            // Defense in depth: a forged/lowered AST must not introduce
+            // Payload(void), even though the parser rejects "sends void".
+            if let ActorSendEffect::Payload(payload_type) = declared {
+                if res(payload_type)? == Type::Void {
+                    return Err(Diagnostic::new(a.pos, "E_ACTOR_SEND_CONTRACT",
+                        "an actor's outbound DATA payload may not be void"));
+                }
+            }
+        }
         actors.push(ActorInfo {
             name: a.name.clone(),
             fields,
@@ -1509,6 +1551,60 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 format!("pure fnc '{}' cannot perform I/O, use shared state, or call an impure function", f.name)));
         }
     }
+    // An explicit sends clause is an upper bound on ALL reachable actor
+    // application-send operations, including calls through actor methods and
+    // ordinary helpers. Inspect typed IR, not source-token string matching.
+    // There are no dynamic call targets in this browser subset; unknown
+    // indices fail closed instead of silently skipping an effect.
+    // The same byte-pinned, independently unit-tested DATA graph closure is
+    // used in both frontends. Caller metadata is type-checked before this point.
+    let send_graph: Vec<EffectNode<Type>> = funcs.iter().map(|f| {
+        let sends = std::cell::RefCell::new(Vec::<Type>::new());
+        let calls = std::cell::RefCell::new(Vec::<u32>::new());
+        let _ = any_in_stmts(&f.body, &|node| {
+            match &node.e {
+                TExpr::Send { value, .. } => sends.borrow_mut().push(value.ty),
+                TExpr::Call(index, _) => calls.borrow_mut().push(*index),
+                _ => {}
+            }
+            false
+        });
+        EffectNode { sends: sends.into_inner(), calls: calls.into_inner() }
+    }).collect();
+    for (ai, actor) in p.actors.iter().enumerate() {
+        let Some(clause) = actor.sends else { continue };
+        // None is an *explicit* Never, not an omitted declaration.
+        let allowed: Option<Type> = match clause {
+            ActorSendEffect::Never => None,
+            ActorSendEffect::Payload(message_type) => Some(res(message_type)?),
+        };
+        let info = &g.actors[ai];
+        let mut roots = Vec::<u32>::new();
+        if let Some(entry) = info.receive_idx { roots.push(entry); }
+        roots.extend(info.methods.iter().map(|m| m.idx));
+        // Field expressions and their reachable helpers belong to this same
+        // outbound effect. A post-lowering initializer must not bypass it.
+        let mut initializers = Vec::<EffectNode<Type>>::new();
+        for (_, init) in &tactors[ai].inits {
+            let sends = std::cell::RefCell::new(Vec::<Type>::new());
+            let calls = std::cell::RefCell::new(Vec::<u32>::new());
+            let _ = any_in(init, &|node| {
+                match &node.e {
+                    TExpr::Send { value, .. } => sends.borrow_mut().push(value.ty),
+                    TExpr::Call(index, _) => calls.borrow_mut().push(*index),
+                    _ => {}
+                }
+                false
+            });
+            initializers.push(EffectNode {
+                sends: sends.into_inner(), calls: calls.into_inner(),
+            });
+        }
+        audit_effect(allowed, &send_graph, &roots, &initializers)
+            .map_err(|e| Diagnostic::new(actor.pos, "E_ACTOR_SEND_CONTRACT",
+                format!("actor '{}' has an invalid transitive DATA send effect: {e:?}",
+                    actor.name)))?;
+    }
     let strings = funcs
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
@@ -1777,6 +1873,48 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
 }
 
 /// Actors are isolated from sibling classes, enums and other actors.
+/// Detect every consuming take! in a prospective mailbox payload before
+/// the type checker mutates the sender's move ledger. This conservative
+/// preflight is necessary while ActorSend has no Result/escrow guest ABI.
+fn actor_send_has_take(payload: &Expr) -> bool {
+    let mut pending = vec![payload];
+    while let Some(expr) = pending.pop() {
+        match &expr.kind {
+            ExprKind::Ownership(OwnershipOp::Take, _, _) => return true,
+            ExprKind::Unary(_, inner) | ExprKind::Trap(inner) |
+            ExprKind::Propagate(inner) | ExprKind::Ownership(_, _, inner) |
+            ExprKind::Member(inner, _) => pending.push(inner),
+            ExprKind::Binary(_, a, b) => { pending.push(a); pending.push(b); }
+            ExprKind::Ternary(c, yes, no) => {
+                pending.push(c); pending.push(yes); pending.push(no);
+            }
+            ExprKind::Call(_, args) | ExprKind::New(_, args) |
+            ExprKind::Array(args) => pending.extend(args),
+            ExprKind::MethodCall(base, _, args) => {
+                pending.push(base);
+                pending.extend(args);
+            }
+            // Lambda bodies are already forbidden in this guest compiler.
+            // Never reclassify them as authorizing a take! transfer.
+            ExprKind::Lambda { .. } => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+// Derive a mailbox shape from *resolved compiler types*, never from a
+// user-provided Sendable/Shareable/Serializable name or source trait.
+fn actor_mail_shape(t: Type) -> crate::actor_isolation_witness::PayloadShape {
+    use crate::actor_isolation_witness::PayloadShape;
+    match t {
+        Type::Int => PayloadShape::Int,
+        Type::Bool => PayloadShape::Bool,
+        Type::ActorRef(_) | Type::NamedRef(_) => PayloadShape::ActorCapability,
+        _ => PayloadShape::NonScalar,
+    }
+}
+
 fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     match t {
         Type::Class(i) => Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
@@ -4848,6 +4986,15 @@ impl<'a> FnCx<'a> {
                 }
                 let (payload, actor_name) = (actor.payload, actor.name.clone());
                 self.arity("ActorRef.send", 1, args.len(), pos)?;
+                // The current guest ABI has actor_send(i32, i64) -> void.
+                // It cannot distinguish accepted mail from full/closed/revoked
+                // admission and cannot refund an affine owner on failure.
+                // Scan the WHOLE payload expression before marking local moves;
+                // a nested take! must not escape via arithmetic or a helper.
+                if actor_send_has_take(&args[0]) {
+                    return Err(Diagnostic::new(args[0].pos, "E_ACTOR_TRANSFER_UNSUPPORTED",
+                        "send(take! value) needs transactional admission and recoverable ownership; the void actor_send ABI cannot commit or refund a move"));
+                }
                 let v = self.value(&args[0])?;
                 if v.ty != payload {
                     return Err(type_err(
@@ -4859,6 +5006,17 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
+                // This proof is derived from the checked, resolved payload
+                // type only. The guest actor_send ABI can copy int/bool; it
+                // cannot convey a moved owner, immutable Arc or remote
+                // capability. Do not trust user-declared Sendable markers.
+                let _copy_proof = crate::actor_isolation_witness::prove_payload(
+                    actor_mail_shape(v.ty),
+                    crate::actor_isolation_witness::TransferIntent::GuestScalarCopy,
+                ).map_err(|_| Diagnostic::new(args[0].pos,
+                    "E_ACTOR_SEND_NOT_SENDABLE",
+                    "actor_send ABI only admits compiler-proven int/bool copy; no actor reference, owned handle, frozen share or wire payload"
+                ))?;
                 self.imports.push(Import::ActorSend);
                 Ok(TE {
                     e: TExpr::Send {

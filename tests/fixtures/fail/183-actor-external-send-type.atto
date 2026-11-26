@@ -1,0 +1,10 @@
+// The caller's send is checked against the destination's receives.
+// expect-error: E_TYPE
+define actor Router receives int sends bool as
+    receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int {
+    val router = spawn Router();
+    router.send(true);
+    return 0;
+}

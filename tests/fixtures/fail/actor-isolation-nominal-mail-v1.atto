@@ -1,0 +1,9 @@
+// Unique ownership/Sendable proof for nominal mutable classes is not implemented.
+// expect-error: E_UNSUPPORTED_TYPE
+define class Parcel as
+  int id: 42;
+end
+define actor Worker receives Parcel as
+  receive(ActorMail<Parcel> mail): void { return; }
+end
+pub fnc main(): int { return 0; }

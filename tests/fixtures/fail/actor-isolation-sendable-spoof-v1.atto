@@ -1,0 +1,6 @@
+// A user-defined marker class cannot forge compiler-controlled Sendable authority.
+// expect-error: E_UNSUPPORTED_TYPE
+define class Sendable as
+  int token: 1;
+end
+pub fnc main(): int { return 0; }

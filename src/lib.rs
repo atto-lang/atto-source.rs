@@ -7,6 +7,16 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Pure bounded typed-IR DATA send-effect closure, shared with peer frontend.
+pub mod actor_send_effect_graph;
+/// Compiler-minted scalar DATA witness, not host TenantVM authorization.
+pub mod actor_isolation_witness;
+/// Host-only typed transactional mailbox reference; NOT connected to guest actor_send.
+pub mod actor_owned_admission;
+/// Bounded UTF-8 DATA frame candidate; NOT connected to the actor Wasm guest ABI.
+pub mod actor_string_mail;
+/// Checked candidate dedicated Wasm string-mail page plan; guest still unsupported.
+pub mod actor_string_memory_plan;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Bounded static synchronous actor call graphs; not continuation lowering.

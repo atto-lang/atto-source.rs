@@ -1,0 +1,6 @@
+// Domain modifier must precede persistence modifier.
+// expect-error: E_ACTOR_PERSISTENCE_MODIFIER
+define durable isolated actor Bad receives int as
+    susp receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 0; }

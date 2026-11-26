@@ -1,0 +1,16 @@
+// Target: explicit shared must preserve existing trusted actor behavior.
+// This alone does NOT prove untrusted actor sandboxing.
+// expect-exit: 0
+// expect-stdout: 42
+define shared actor Router receives int sends int as
+    susp receive(ActorMail<int> mail): void {
+        stdio.println(mail.value);
+        return;
+    }
+end
+
+pub susp fnc main(): int {
+    val router = spawn Router();
+    router.send(42);
+    return 0;
+}

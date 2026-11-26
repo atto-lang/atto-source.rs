@@ -105,6 +105,7 @@ const RESERVED: &[&str] = &[
     "durable",
     "isoactor",
     "shared",
+    "isolated",
     "untrusted",
     "spawn",
     "stop",
@@ -214,6 +215,11 @@ const UNLOWERED_OWNERSHIP_TYPES: &[&str] = &[
     "Arc", "Weak", "Box", "Rc",
     "Mutex", "RwLock", "MutexGuard", "RwLockReadGuard", "RwLockWriteGuard",
     "UnsafeCell",
+    // Compiler-controlled actor-boundary witnesses are not user-definable
+    // marker classes. Neither declaring nor naming one may grant mailbox
+    // transfer, immutable sharing or a trusted serialization contract.
+    // This restricted compiler does not yet prove/lower these witnesses.
+    "Sendable", "Shareable", "Serializable",
 ];
 
 pub fn is_unlowered_ownership_intrinsic(name: &str) -> bool {
@@ -620,8 +626,18 @@ impl Parser {
         let mut p = Self::new(toks.to_vec());
         p.i = offset;
         p.expect_word("define")?;
+        let domain = if p.eat_word("shared") {
+            ActorExecutionDomain::Shared
+        } else if p.eat_word("isolated") {
+            ActorExecutionDomain::Isolated
+        } else if p.eat_word("untrusted") {
+            ActorExecutionDomain::Untrusted
+        } else {
+            ActorExecutionDomain::Shared
+        };
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile)?;
+        let mut decl = p.parse_actor(true, ActorPersistenceMode::Volatile)?;
+        decl.domain = domain;
         Ok((decl, p.i))
     }
 
@@ -642,29 +658,53 @@ impl Parser {
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
-            // Canonical 'define [pub] (persistent | durable) actor'.
-            // Also retain legacy 'pub define ...' visibility placement.
-            // Never downgrade a qualified actor to ordinary volatile state.
+            // Domain and storage modifiers are orthogonal and ordered:
+            // define [pub] [shared|isolated|untrusted] [persistent|durable] actor.
+            // The declared domain is metadata, NOT host-authenticated authority.
             if self.word_at(at) == Some("define") {
-                let mut qualifier = at + 1;
-                if self.word_at(qualifier) == Some("pub") {
-                    qualifier += 1;
+                let mut next = at + 1;
+                let post_define_public = self.word_at(next) == Some("pub");
+                if post_define_public {
+                    next += 1;
                 }
-                let mode = match self.word_at(qualifier) {
+                let (domain, domain_provided) = match self.word_at(next) {
+                    Some("shared") => (ActorExecutionDomain::Shared, true),
+                    Some("isolated") => (ActorExecutionDomain::Isolated, true),
+                    Some("untrusted") => (ActorExecutionDomain::Untrusted, true),
+                    _ => (ActorExecutionDomain::Shared, false),
+                };
+                if domain_provided {
+                    next += 1;
+                }
+                let mode = match self.word_at(next) {
                     Some("persistent") => Some(ActorPersistenceMode::Persistent),
                     Some("durable") => Some(ActorPersistenceMode::Durable),
                     _ => None,
                 };
-                if let Some(mode) = mode {
-                    if self.word_at(qualifier + 1) != Some("actor") {
-                        return Err(Diagnostic::new(
-                            start, "E_ACTOR_PERSISTENCE_MODIFIER",
-                            "persistent/durable must occur once before 'actor'; not a class modifier",
-                        ));
+                if mode.is_some() {
+                    next += 1;
+                }
+                if self.word_at(next) == Some("actor") {
+                    // Restricted subset does not have a public actor ABI.
+                    // Do not accept syntax and accidentally drop visibility.
+                    if public || post_define_public {
+                        return Err(unsupported(start, "'pub' actors"));
                     }
-                    self.i += qualifier + 2;
-                    prog.actors.push(self.parse_actor(true, mode)?);
+                    self.i += next + 1;
+                    let mut decl = self.parse_actor(
+                        true, mode.unwrap_or(ActorPersistenceMode::Volatile)
+                    )?;
+                    decl.domain = domain;
+                    prog.actors.push(decl);
                     continue;
+                }
+                if mode.is_some() {
+                    return Err(Diagnostic::new(start, "E_ACTOR_PERSISTENCE_MODIFIER",
+                        "persistent/durable must occur once after the domain modifier and before 'actor'"));
+                }
+                if domain_provided {
+                    return Err(Diagnostic::new(start, "E_ACTOR_DOMAIN_MODIFIER",
+                        "actor execution class must occur once, immediately before optional storage and 'actor'"));
                 }
             }
             match (self.word_at(at), self.word_at(at + 1)) {
@@ -825,6 +865,33 @@ impl Parser {
         let (name, pos) = self.ident("an actor name")?;
         reject_intrinsic_type_name(&name, pos)?;
         self.decl_head("actor")?;
+        // Header types are message contracts, not actor/recipient counts.
+        // Preserve the legacy unannotated actor form as a compatibility mode.
+        let receives = if self.eat_word("receives") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        // Never is a distinct application-DATA effect, NOT Type::Void.
+        // An omitted clause still means inferred effect, not Any.
+        let sends = if self.eat_word("sends") {
+            if self.eat_word("never") {
+                Some(ActorSendEffect::Never)
+            } else {
+                let ty = self.parse_type()?;
+                if ty == Type::Void {
+                    return Err(Diagnostic::new(self.pos(), "E_ACTOR_SEND_CONTRACT",
+                        "sends void is invalid; use sends never for an empty application effect"));
+                }
+                Some(ActorSendEffect::Payload(ty))
+            }
+        } else {
+            None
+        };
+        if self.is_word("receives") || self.is_word("sends") {
+            return Err(Diagnostic::new(self.pos(), "E_ACTOR_CONTRACT",
+                "duplicate or out-of-order actor message clause; use 'receives T sends U'"));
+        }
         let close = if defined {
             self.expect_word("as")?;
             "end"
@@ -845,6 +912,9 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            receives,
+            sends,
+            domain: ActorExecutionDomain::Shared,
             persistence,
             persistence_hooks: m.persistence_hooks,
             fields: m.fields,
@@ -1036,6 +1106,14 @@ impl Parser {
                 FieldVisibility::Private
             } else { FieldVisibility::Private };
             let public = visibility == FieldVisibility::Public;
+            // The mailbox entrypoint may be marked susp. The browser subset
+            // still rejects unsupported suspension expressions in its body.
+            if actor && self.is_word("susp")
+                && self.word_at(1) == Some("receive")
+                && *self.peek_at(2) == Tok::LParen
+            {
+                self.advance();
+            }
             let word = self.word_at(0).map(str::to_owned);
             if visibility == FieldVisibility::Package
                 && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "receive"))
@@ -1586,6 +1664,9 @@ impl Parser {
         }
         let start = self.pos();
         self.eat_word("pub");
+        // A susp callable with no actual suspended operation is a valid
+        // executable subset; unsupported await/suspend lowering still fails closed.
+        let _susp = self.eat_word("susp");
         let is_pure = self.eat_word("pure");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));

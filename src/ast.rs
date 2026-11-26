@@ -220,6 +220,17 @@ pub struct Receive {
     pub body: Vec<Stmt>,
 }
 
+/// Source-declared execution class; the host principal is a separate,
+/// non-downgradable runtime admission security floor. No actor marker cast
+/// can make a malicious guest trusted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActorExecutionDomain {
+    #[default]
+    Shared,
+    Isolated,
+    Untrusted,
+}
+
 /// Actor persistence is nominal and cannot be inferred from user code.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ActorPersistenceMode {
@@ -240,11 +251,28 @@ pub struct ActorPersistenceHook {
     pub body_provided: bool,
 }
 
+/// Checked actor outbound application DATA effect.
+/// The absence of a clause is distinct from an explicit empty effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActorSendEffect {
+    /// `sends never`: no application DATA sends, including via helpers.
+    Never,
+    /// `sends T`: application DATA may only carry payload T.
+    Payload(Type),
+}
+
 /// `define actor Name as ... end` or `actor Name ... end` (Java Parser).
 #[derive(Clone, Debug)]
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    /// Optional application mailbox type declared with `receives T`.
+    /// Existing ActorMail<T> is still the nominal receive-handler envelope.
+    pub receives: Option<Type>,
+    /// Optional outbound application send effect, not a recipient count.
+    pub sends: Option<ActorSendEffect>,
+    /// Verified backend dispatch may never erase Isolated or Untrusted into Shared.
+    pub domain: ActorExecutionDomain,
     pub persistence: ActorPersistenceMode,
     pub persistence_hooks: Vec<ActorPersistenceHook>,
     pub fields: Vec<Field>,

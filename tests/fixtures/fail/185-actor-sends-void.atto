@@ -1,0 +1,6 @@
+// void is not an application payload effect.
+// expect-error: E_ACTOR_SEND_CONTRACT
+define actor Router receives int sends void as
+    receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 0; }

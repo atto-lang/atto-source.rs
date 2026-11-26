@@ -1,0 +1,6 @@
+// Declared receives must match the attached ActorMail payload.
+// expect-error: E_ACTOR_RECEIVES
+define actor Router receives bool sends int as
+    receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 0; }
