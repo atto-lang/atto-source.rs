@@ -1,0 +1,28 @@
+// expect-exit: 42
+// expect-stdout: 1
+// expect-stdout: 3
+// expect-stdout: 5
+// expect-stdout: 6
+// expect-stdout: 7
+// expect-stdout: 8
+fnc mark(bool value, int n): bool {
+  stdio.println(n);
+  return value;
+}
+pub fnc main(): int {
+  val bool a = Xor(true, false);
+  val bool b = And(true, false);
+  val bool c = Or(true, false);
+  val bool d = Xor([true, false]);
+  val bool e = And([true, false, true, true, true]);
+  val bool f = Or([true, false, true, false]);
+  if !a || b || !c || !d || e || !f then return 1; fi
+  if !And([]) || Or([]) || Xor([]) then return 2; fi
+  if And([false]) || !Or([true]) || !Xor([true]) || Xor([false]) then return 3; fi
+  if !Xor([true, true, true]) || Xor([true, true]) then return 4; fi
+  if And(mark(false, 1), mark(true, 2)) then return 5; fi
+  if !Or(mark(true, 3), mark(false, 4)) then return 6; fi
+  if !Xor(mark(false, 5), mark(true, 6), mark(false, 7)) then return 7; fi
+  if And(mark(true, 8), false) then return 8; fi
+  return 42;
+}
