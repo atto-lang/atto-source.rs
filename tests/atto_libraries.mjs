@@ -55,8 +55,9 @@ const missing = REQUIRED_CASES.filter(name => !cases.includes(name));
 if (missing.length) throw new Error('missing required library cases: ' + missing.join(', '));
 const work = mkdtempSync(join(tmpdir(), 'atto-libs-'));
 try {
-for (const name of cases) {
+  for (const name of cases) {
   const meta = headers(readFileSync(join(dir, name), 'utf8'));
+  if (REQUIRED_CASES.includes(name) && Boolean(meta.reject) !== name.startsWith('neg_')) { failures.push(name + ': unexpected fixture polarity'); continue; }
   if (!meta.reject && meta.exit === undefined) { failures.push(name + ': missing explicit expected exit'); continue; }
   const out = join(work, name.replace(/\.atto$/, '.wasm'));
   const compiled = spawnSync(attoc, [...meta.flags, name, '-o', out], { cwd: dir, encoding: 'utf8', timeout: 120000 });
