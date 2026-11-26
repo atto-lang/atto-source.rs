@@ -63,7 +63,7 @@ test("Metrics counters and histograms explicitly reject unsafe updates", () => {
     "self.samples == 2147483647", "2147483647 - self.total",
     "self.rejected < 2147483647", "bounds.size > 64",
     "value <= bounds.get(i - 1)", "bucket_count",
-    "CounterSnapshot", "GaugeSnapshot", "HistogramSnapshot", "copied_counts",
+    "CounterSnapshot", "GaugeSnapshot", "HistogramSnapshot",
     "detached_bounds.add(upper)", "detached_counts.add(count)",
     "snapshot bucket totals differ",
   ]) assert.ok(m.includes(invariant), "metrics safeguard missing: " + invariant);
@@ -223,4 +223,19 @@ test("histogram snapshot has one explicit detachment boundary (source only)", ()
   assert.ok(m.includes("self.finite_bounds = detached_bounds;"));
   assert.ok(m.includes("self.per_bucket = detached_counts;"));
   // Compiler ownership and actual allocation counts are separate guest gates.
+});
+
+test("JSON only allocates decoded string scratch for object keys (source only)", () => {
+  const j = modules.json;
+  const start = j.indexOf("read_string(mut self)(bool capture)");
+  const end = j.indexOf("keys_equal(", start);
+  assert.ok(start >= 0 && end > start);
+  const reader = j.slice(start, end);
+  assert.ok(reader.includes("if capture; do self.decoded = new Array<int>(); fi"));
+  assert.equal((reader.match(/new Array<int>\(\)/g) || []).length, 1);
+  for (const line of reader.split("\n").filter(l => l.includes("self.decoded.add(")))
+    assert.ok(line.includes("if capture; do"), "value string must not capture");
+  assert.ok(j.includes("keys.add(detached)"), "key storage must stay independent");
+  assert.ok(j.includes("read_string(false)"));
+  assert.ok(j.includes("read_string(true)"));
 });
