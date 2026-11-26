@@ -48,7 +48,33 @@ const overloadMain = `pub fnc main(): int {
 const branching = decl.replace('self.x = x; self.y = y;', 'if x > 0 { self.x = x; } else { self.x = 0 - x; } fi self.y = self.x + y;');
 const nestedBranching = decl.replace('self.x = x; self.y = y;', 'if x > 0 { if y > 0 { self.x = x; } else { self.x = y; } fi } else { self.x = 0; } fi self.y = self.x + y;');
 const skippedTrap = decl.replace('self.x = x; self.y = y;', 'if x > 0 { self.x = x; } else { self.x = 9223372036854775807 + (y + 1); } fi self.y = y;');
+const mutating = decl.replace('    mtd int • sum()', `    mut mtd shift(int n): void { self.x = self.x + n; self.y = self.y + n; }
+    mut mtd swap(int old_x, int old_y): void { self.x = old_y; self.y = old_x; return; }
+    mtd int • sum()`);
+const mutationMain = `pub fnc main(): int {
+    let mut p = Point(10, 20);
+    let q = p;
+    let mut r = copy! p;
+    p.shift(5);
+    r.shift(2);
+    stdio.println(p.sum());
+    stdio.println(q.sum());
+    stdio.println(r.sum());
+    return 0;
+}`;
+const snapshotMain = `pub fnc main(): int {
+    let mut p = Point(10, 20);
+    p.swap(p.sum(), p.product());
+    stdio.println(p.product());
+    stdio.println(p.sum());
+    stdio.println(p.is_origin());
+    return 0;
+}`;
 const positives = [
+    ['mutable-copy-isolation', mutating + '\n' + mutationMain, '40\n30\n34\n'],
+    ['mutable-snapshot-arguments', mutating + '\n' + snapshotMain, '6000\n230\nfalse\n'],
+    ['mutable-val-authority', mutating + '\n' + mutationMain.replace('let mut p =', 'val p ='), '40\n30\n34\n'],
+
     ['constructor-branch-true', branching + '\n' + main, '40\n300\nfalse\n'],
     ['constructor-branch-false', branching + '\n' + main.replace('10, 20', '-10, 20'), '40\n300\nfalse\n'],
     ['constructor-nested-branch', nestedBranching + '\n' + main.replace('10, 20', '10, -2'), '-6\n8\nfalse\n'],
@@ -69,6 +95,17 @@ const positives = [
     ['origin', decl + '\n' + main.replace('10, 20', '0, 0'), '0\n0\ntrue\n'],
 ];
 const negatives = [
+    ['mut-readonly-owner', mutating + '\n' + mutationMain.replace('let mut p =', 'let p =')],
+    ['mut-readonly-copy', mutating + '\n' + mutationMain.replace('p.shift(5);', 'q.shift(5);')],
+    ['mut-wrong-argument', mutating + '\n' + mutationMain.replace('p.shift(5)', 'p.shift(true)')],
+    ['mut-escape-borrow', mutating + '\n' + mutationMain.replace('let q = p;', 'let q = borrow! mut p;')],
+    ['mut-unused-invalid-body', mutating.replace('self.x = old_y;', 'self.x = true;') + '\n' + mutationMain],
+    ['mut-unknown-field', mutating.replace('self.x = old_y;', 'self.z = old_y;') + '\n' + mutationMain],
+    ['mut-no-expression-result', mutating + '\n' + mutationMain.replace('p.shift(5);', 'let v = p.shift(5);')],
+    ['mut-no-unmarked-write', mutating.replace('mut mtd shift', 'mtd shift') + '\n' + mutationMain],
+    ['mut-no-callback', mutating.replace('self.x = old_y;', 'self.x = self.sum();') + '\n' + mutationMain],
+    ['mut-duplicate-readonly-signature', mutating.replace('mut mtd shift', 'mtd int • shift(int n) { return n; } mut mtd shift') + '\n' + mutationMain],
+
     ['constructor-missing-branch-field', branching.replace('else { self.x = 0 - x; }', 'else {}') + '\n' + main],
     ['constructor-branch-read-before-init', branching.replace('self.x = 0 - x;', 'self.x = self.y;') + '\n' + main],
     ['constructor-branch-double-init', branching.replace('self.y = self.x + y;', 'self.x = x; self.y = y;') + '\n' + main],
