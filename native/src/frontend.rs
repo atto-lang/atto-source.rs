@@ -6,7 +6,27 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     pub functions: Vec<Function>,
+    pub exports: Vec<Export>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportScope {
+    Public,
+    Package,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportKind {
+    Function,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Export {
+    pub name: String,
+    pub scope: ExportScope,
+    pub kind: ExportKind,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
     pub name: String,
@@ -51,6 +71,12 @@ impl std::error::Error for ParseError {}
 enum Kind {
     #[token("pub")]
     Pub,
+    #[token("export")]
+    Export,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token("define")]
     Define,
     #[token("static")]
@@ -93,11 +119,19 @@ enum Kind {
     Minus,
     #[token("*")]
     Star,
+    // Explicitly classify removed operators instead of letting a generic
+    // lexer error obscure the canonical Java/LLVM diagnostic family.
+    #[token("%")]
+    RemovedModulo,
+    #[token("^^")]
+    RemovedDoubleCaret,
+    #[token("^")]
+    RemovedCaret,
     #[regex(r"[0-9][0-9_]*")]
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f]+|//[^\r\n]*", logos::skip, allow_greedy = true)]
+    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -106,6 +140,23 @@ struct Token {
     text: String,
     start: usize,
 }
+// Keep source comments aligned with the Logos lexer, which recognizes
+// CR, LF, NEL (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR. Offsets stay
+// byte-based so a // comment cannot hide a later /* block or actor declaration.
+fn line_break_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b'\r' | b'\n') => 1,
+        Some(0xc2) if bytes.get(at + 1) == Some(&0x85) => 2,
+        Some(0xe2)
+            if bytes.get(at + 1) == Some(&0x80)
+                && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) =>
+        {
+            3
+        }
+        _ => 0,
+    }
+}
+
 /// Strip nested block comments without moving token offsets. Unsupported Unicode
 /// inside a comment becomes ASCII whitespace; outside stays byte-identical.
 fn without_block_comments(source: &str) -> Result<String, ParseError> {
@@ -118,7 +169,7 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
         // A block opener inside a // line comment is not a block comment.
         // Leave the line untouched for Logos to skip; preserve source offsets.
         if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
-            while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+            while i < src.len() && line_break_width(src, i) == 0 {
                 i += 1;
             }
         } else if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
@@ -180,6 +231,9 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+/// Bound recursive primary parsing and left-associated AST depth.
+pub const MAX_PRIMARY_DEPTH: usize = 128;
+pub const MAX_INFIX_OPERATORS: usize = 256;
 
 /// Execution-domain words reserved by every Oreslang backend (Java and LLVM
 /// reject them as identifiers too).
@@ -228,6 +282,87 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// Source HTTP actors require request/mail ownership, state-loan, cancellation
+/// and physical shutdown lowering. An optional host HTTP server is not proof
+/// of an executable source actor. Only examine actual lexer tokens, not text
+/// inside comments; preserve normal user identifiers such as `http`.
+fn reject_http_actor_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define {
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut http = false;
+        while let Some(next) = tokens.get(cursor) {
+            let modifier = match next.kind {
+                Kind::Pub => true,
+                Kind::Identifier => matches!(
+                    next.text.as_str(),
+                    "private"
+                        | "shared"
+                        | "untrusted"
+                        | "serial"
+                        | "http"
+                        | "tcp"
+                        | "websocket"
+                        | "ws"
+                        | "stream"
+                        | "unary"
+                        | "abstract"
+                ),
+                _ => false,
+            };
+            if !modifier {
+                break;
+            }
+            http |= next.text == "http";
+            cursor += 1;
+        }
+        if http {
+            if let Some(next) = tokens.get(cursor) {
+                if next.kind == Kind::Identifier
+                    && matches!(next.text.as_str(), "actor" | "isoactor")
+                {
+                    return Err(ParseError {
+                        offset: next.start,
+                        class: "http_actor_backend_unsupported",
+                        message: "HTTP_ACTOR_BACKEND_UNSUPPORTED: Rust scalar compiler cannot lower source HTTP actor request/mail lifetimes, guarded state, or physical shutdown".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// This scalar backend has no singleton identity or guarded shared-memory lowering.
+/// The word stays contextual for ordinary scalar identifiers.
+fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (i, token) in tokens.iter().enumerate() {
+        let after = match token.kind {
+            Kind::Define => {
+                if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Pub) {
+                    i + 2
+                } else {
+                    i + 1
+                }
+            }
+            Kind::Pub if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Define) => i + 2,
+            _ => continue,
+        };
+        if let Some(next) = tokens.get(after) {
+            if next.kind == Kind::Identifier && next.text == "singleton" {
+                return Err(ParseError {
+                    offset: next.start,
+                    class: "singleton_unsupported",
+                    message: "ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and owned shared-region RW lowering".into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -253,6 +388,13 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             });
         }
         match kind {
+            Kind::RemovedModulo | Kind::RemovedCaret | Kind::RemovedDoubleCaret => {
+                return Err(ParseError {
+                    offset: range.start,
+                    class: "removed_operator",
+                    message: "operator is reserved; use named arithmetic functions".into(),
+                });
+            }
             Kind::LParen => {
                 paren_depth += 1;
                 if paren_depth > MAX_PAREN_NESTING {
@@ -274,15 +416,24 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
+    reject_singleton_declarations(&tokens)?;
     reject_execution_domains(&tokens)?;
+    reject_http_actor_declarations(&tokens)?;
     let mut parser = Parser {
         tokens,
         cursor: 0,
         source_len: source.len(),
+        primary_depth: 0,
+        infix_operators: 0,
     };
     let mut functions = Vec::new();
+    let mut directives = Vec::new();
     while parser.peek().is_some() {
-        functions.push(parser.function()?);
+        if parser.peek() == Some(Kind::Export) {
+            directives.push(parser.export_directive()?);
+        } else {
+            functions.push(parser.function()?);
+        }
     }
     if functions.is_empty() {
         return Err(ParseError {
@@ -291,12 +442,40 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "expected a function declaration".into(),
         });
     }
-    Ok(Program { functions })
+    // Resolve against the complete file, including trailing declarations.
+    // A package export is a tree-shaker root, never a public object symbol.
+    let mut exports = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (export, offset) in directives {
+        let err = |class, message: &str| ParseError {
+            offset,
+            class,
+            message: message.into(),
+        };
+        if !seen.insert(export.name.clone()) {
+            return Err(err("duplicate_export", "duplicate export name"));
+        }
+        let mut matches = functions.iter_mut().filter(|f| f.name == export.name);
+        let function = matches.next().ok_or_else(|| err("export_unresolved", "export must name a local function"))?;
+        if matches.next().is_some() {
+            return Err(err("duplicate_declaration", "ambiguous local function export"));
+        }
+        if export.scope == ExportScope::Package && (function.exported || function.name == "main") {
+            return Err(err("export_visibility_conflict", "package export cannot name a public function or native entry point"));
+        }
+        if export.scope == ExportScope::Public {
+            function.exported = true;
+        }
+        exports.push(export);
+    }
+    Ok(Program { functions, exports })
 }
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
+    primary_depth: usize,
+    infix_operators: usize,
 }
 impl Parser {
     fn peek(&self) -> Option<Kind> {
@@ -319,6 +498,40 @@ impl Parser {
         self.cursor += 1;
         Ok(token)
     }
+    fn export_directive(&mut self) -> Result<(Export, usize), ParseError> {
+        let offset = self.expect(Kind::Export)?.start;
+        self.expect(Kind::Pub)?;
+        let scope = if self.peek() == Some(Kind::LBracket) {
+            self.expect(Kind::LBracket)?;
+            let scope = self.expect(Kind::Identifier)?;
+            if scope.text != "pkg" {
+                return Err(ParseError {
+                    offset: scope.start,
+                    class: "export_visibility_conflict",
+                    message: "expected package visibility 'pkg'".into(),
+                });
+            }
+            self.expect(Kind::RBracket)?;
+            ExportScope::Package
+        } else {
+            ExportScope::Public
+        };
+        if self.peek() == Some(Kind::Fnc) {
+            self.expect(Kind::Fnc)?;
+        } else if self.tokens.get(self.cursor).is_some_and(|t|
+            t.kind == Kind::Identifier && matches!(t.text.as_str(), "class" | "actor" | "enum" | "module" | "struct"))
+        {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "export_kind_mismatch",
+                message: "native scalar compiler only admits function exports".into(),
+            });
+        }
+        let name = self.expect(Kind::Identifier)?.text;
+        self.expect(Kind::Semicolon)?;
+        Ok((Export { name, scope, kind: ExportKind::Function }, offset))
+    }
+
     fn function(&mut self) -> Result<Function, ParseError> {
         // Canonical AttoLang permits both "define pub fnc" and
         // "pub define fnc"; the declaration still must be a scalar fnc.
@@ -342,8 +555,16 @@ impl Parser {
         let mut params = Vec::new();
         if self.peek() != Some(Kind::RParen) {
             loop {
-                self.expect(Kind::Int)?;
-                params.push(self.expect(Kind::Identifier)?.text);
+                let name = if self.peek() == Some(Kind::Int) {
+                    self.expect(Kind::Int)?;
+                    self.expect(Kind::Identifier)?.text
+                } else {
+                    let name = self.expect(Kind::Identifier)?.text;
+                    self.expect(Kind::Colon)?;
+                    self.expect(Kind::Int)?;
+                    name
+                };
+                params.push(name);
                 if self.peek() == Some(Kind::Comma) {
                     self.expect(Kind::Comma)?;
                 } else {
@@ -441,15 +662,28 @@ impl Parser {
             expression,
         })
     }
+    fn charge_infix(&mut self) -> Result<(), ParseError> {
+        if self.infix_operators >= MAX_INFIX_OPERATORS {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "resource_limit",
+                message: "infix operator count exceeds prototype limit".into(),
+            });
+        }
+        self.infix_operators += 1;
+        Ok(())
+    }
     fn expression(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.product()?;
         loop {
             lhs = match self.peek() {
                 Some(Kind::Plus) => {
+                    self.charge_infix()?;
                     self.expect(Kind::Plus)?;
                     Expr::Add(Box::new(lhs), Box::new(self.product()?))
                 }
                 Some(Kind::Minus) => {
+                    self.charge_infix()?;
                     self.expect(Kind::Minus)?;
                     Expr::Subtract(Box::new(lhs), Box::new(self.product()?))
                 }
@@ -461,13 +695,31 @@ impl Parser {
     fn product(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.primary()?;
         while self.peek() == Some(Kind::Star) {
+            self.charge_infix()?;
             self.expect(Kind::Star)?;
             lhs = Expr::Multiply(Box::new(lhs), Box::new(self.primary()?));
         }
         Ok(lhs)
     }
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        if self.primary_depth >= MAX_PRIMARY_DEPTH {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "resource_limit",
+                message: "primary expression depth exceeds prototype limit".into(),
+            });
+        }
+        self.primary_depth += 1;
+        let result = self.primary_inner();
+        self.primary_depth -= 1;
+        result
+    }
+    fn primary_inner(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
+            Some(Kind::Plus) => {
+                self.expect(Kind::Plus)?;
+                self.primary()
+            }
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
                 let integer =

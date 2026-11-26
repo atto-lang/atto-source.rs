@@ -67,24 +67,26 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
         if head.tok == Tok::Eof {
             return Err(fail(pos, "E_EOF", "unterminated statically checked Any match"));
         }
-        if !word(t, j, "on") {
+        let explicit_on = word(t, j, "on");
+        if !explicit_on && !word(t, j, "is") {
             return Err(fail(head.pos, "E_UNSUPPORTED",
-                "monomorphic Any match admits only on-is-Type or on-_ arms"));
+                "monomorphic Any match requires 'is', 'on is' or 'on _'"));
         }
+        let pattern_at = j + usize::from(explicit_on);
         arms += 1;
         if arms > MAX_TYPE_ARMS {
             return Err(fail(head.pos, "E_SOURCE_LIMIT", "Any match has too many type arms"));
         }
-        let typed = word(t, j + 1, "is");
-        let wildcard = word(t, j + 1, "_");
+        let typed = word(t, pattern_at, "is");
+        let wildcard = explicit_on && word(t, pattern_at, "_");
         if !typed && !wildcard {
             return Err(fail(head.pos, "E_UNSUPPORTED",
                 "Any match requires a type pattern ('on is int') or wildcard"));
         }
         // Typed arms may negate the type test, and may bind a proven scalar.
         // Bind only after the type test succeeds: failed arms cannot leak names.
-        let negated = typed && matches!(t.get(j + 2).map(|x| &x.tok), Some(Tok::Bang));
-        let type_at = j + 2 + usize::from(negated);
+        let negated = typed && matches!(t.get(pattern_at + 1).map(|x| &x.tok), Some(Tok::Bang));
+        let type_at = pattern_at + 1 + usize::from(negated);
         let arm_ty = if typed {
             let ty = match t.get(type_at).map(|x| &x.tok) {
                 Some(Tok::Ident(s)) => scalar_type(s),
@@ -93,7 +95,7 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
             Some(ty.ok_or_else(|| fail(head.pos, "E_UNSUPPORTED_TYPE",
                 "runtime object type patterns are not implemented; only provable scalar tags are supported"))?)
         } else { None };
-        let after_type = if typed { type_at + 1 } else { j + 2 };
+        let after_type = if typed { type_at + 1 } else { pattern_at + 1 };
         let binding = if typed && word(t, after_type, "as") {
             if !word(t, after_type + 1, "val") {
                 return Err(fail(t[after_type].pos, "E_SYNTAX",
@@ -151,12 +153,12 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
             wildcard_covered = true;
         }
         if compatible && !selected {
-            output.push(t[j].clone()); // on
+            output.push(Token { tok: Tok::Ident("on".into()), pos: head.pos });
             if typed {
-                output.push(binding.unwrap_or(Token { tok: Tok::Ident("_".into()), pos: t[j + 1].pos }));
+                output.push(binding.unwrap_or(Token { tok: Tok::Ident("_".into()), pos: t[pattern_at].pos }));
                 output.extend_from_slice(&t[header_end..end]);
             } else {
-                output.extend_from_slice(&t[j + 1..end]);
+                output.extend_from_slice(&t[pattern_at..end]);
             }
             if !guarded { selected = true; }
         }

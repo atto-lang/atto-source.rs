@@ -9,7 +9,7 @@ const compiler=process.env.ATTOC ?? fileURLToPath(new URL('../target/debug/attoc
 const fixtures=fileURLToPath(new URL('./fixtures/core-types-v1/',import.meta.url));
 const work=await mkdtemp(join(tmpdir(),'core-types-rs-'));
 try{
-  for(const fixture of ['edge-positive.atto','edge-matrix-positive.atto']){
+  for(const fixture of ['edge-positive.atto','edge-matrix-positive.atto','bool-call-composition-positive.atto']){
     const source=join(fixtures,fixture),out=join(work,fixture+'.wasm');
     const positive=spawnSync(compiler,[source,'-o',out],{encoding:'utf8',timeout:120000});
     assert.equal(positive.status,0,fixture+': real attoc failed to link core/types: '+positive.stderr);

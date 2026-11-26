@@ -118,6 +118,8 @@ pub enum StrOp {
 #[derive(Clone, Debug)]
 pub enum TExpr {
     I64(i64),
+    /// Checked inclusive signed-i64 refinement; evaluate the child exactly once.
+    RefinementCheck(Box<TE>, i64, i64, i32),
     F64(f64),
     Bool(bool),
     /// string value `offset << 32 | len` into the module's string data
@@ -1569,7 +1571,7 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::CollectionAlloc(_)
         | TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. }
         | TExpr::Spawn(_) => EscapeEffects::default(),
-        TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
+        TExpr::RefinementCheck(v, _, _, _) | TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
         | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
@@ -2292,7 +2294,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
     match &value.e {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
-        TExpr::IntToFloat(a) | TExpr::FNeg(a) |
+        TExpr::RefinementCheck(a, _, _, _) | TExpr::IntToFloat(a) | TExpr::FNeg(a) |
         TExpr::Neg(a) | TExpr::Not(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
@@ -2405,7 +2407,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
-        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
+        TExpr::RefinementCheck(a, _, _, _) | TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
@@ -3771,6 +3773,16 @@ impl<'a> FnCx<'a> {
                 // argument position (see args()). A standalone borrow! must
                 // never become an owned return or a stored carrier handle.
                 let value = self.value(inner)?;
+                // A concrete Copy carrier can be read from a named owner,
+                // not borrowed from a temporary. Do not turn borrow! into
+                // a general expression-copy operator for ADT temporaries.
+                if matches!(value.ty, Type::OptionInt | Type::ResultIntStr
+                    | Type::ResultIntInt | Type::OptionResultIntStr)
+                    && !matches!(&inner.kind, ExprKind::Var(_))
+                {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "borrow! of a concrete ADT requires a named owner"));
+                }
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
                         tr.borrow_escaping(*slot, false, pos);

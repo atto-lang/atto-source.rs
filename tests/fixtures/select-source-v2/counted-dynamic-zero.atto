@@ -1,0 +1,1 @@
+suspends fnc main(): int { val Channel<int> incoming = Channel.new<int>(1); writech incoming, 42; val int count = 0; val Future<Array<int>> pending = select<int>(count) { when readch incoming: int value -> { return value * 2; } }; val Array[int] values = await pending; if values.size == 0 then return readch incoming; fi return 0; }
