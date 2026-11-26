@@ -535,6 +535,7 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                 };
                 if locals.contains_key(&name) { return Err(p.err("E_UNIT_DUPLICATE", "duplicate strict binding")); }
                 if is_let && wanted.is_none() { return Err(p.err("E_VERIFY_UNSUPPORTED", "mutable binding needs explicit type")); }
+                if p.token().tok==Tok::Semi {return Err(p.err("E_MISSING_INITIALIZER","explicit initializer required"));}
                 p.expect(Tok::Assign)?;
                 if matches!(&p.token().tok,Tok::Ident(n) if n=="Array") {
                     if !is_val || wanted.is_some() || depth!=0 {
