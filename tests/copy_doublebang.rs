@@ -31,7 +31,7 @@ fn generated_flat_class_copier_emits_real_wasm_bytes() {
     wasm(include_str!("fixtures/pass/995-copy-doublebang-flat-class-mixed-fields.atto"));
     wasm(include_str!("fixtures/pass/996-copy-doublebang-constructor-state.atto"));
     wasm(include_str!("fixtures/pass/997-copy-doublebang-private-state.atto"));
-    wasm("define class Parcel as pub let int value = 1; end pub fnc main(): int { val q = copy!! (new Parcel()); return q.value; }");
+    wasm("define class Parcel implements DeepCopyable<Parcel> as pub let int value = 1; end pub fnc main(): int { val q = copy!! (new Parcel()); return q.value; }");
 }
 
 #[test]
@@ -66,9 +66,29 @@ fn copy_deep_disallows_mut_qualifier_and_missing_operand() {
 fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
     // A shallow class copy without verified Copyable witness must still
     // fail. The deep path is independently admitted for this flat class.
-    let prefix = "define class Parcel as pub let int value = 1; end pub fnc main(): int { val p = new Parcel(); ";
+    let prefix = "define class Parcel implements DeepCopyable<Parcel> as pub let int value = 1; end pub fnc main(): int { val p = new Parcel(); ";
     let shallow = format!("{prefix}val q = copy! p; return 0; }}");
     assert_eq!(compile(&shallow).unwrap_err().code, "E_COPY");
     let deep = format!("{prefix}val q = copy!! p; return q.value; }}");
     wasm(&deep);
+}
+
+#[test]
+fn flat_class_without_consent_is_rejected_before_emission() {
+    let source = "define class Parcel as pub let int value = 42; end pub fnc main(): int { val p = new Parcel(); val q = copy!! p; return q.value; }";
+    let error = compile(source).expect_err("structural flatness is not consent");
+    assert_eq!(error.code, "E_COPY_OPT_IN_REQUIRED", "{error}");
+    wasm(&source.replace("class Parcel as", "class Parcel implements DeepCopyable<Parcel> as"));
+}
+
+#[test]
+fn marker_cannot_be_forged_or_name_a_different_class() {
+    for source in [
+        "define class DeepCopyable as end pub fnc main(): int { return 42; }",
+        "define interface DeepCopyable as end pub fnc main(): int { return 42; }",
+        "define class Wrong implements DeepCopyable<Other> as end pub fnc main(): int { return 42; }",
+    ] {
+        let error = compile(source).expect_err("reserved core marker");
+        assert!(matches!(error.code, "E_RESERVED_TYPE" | "E_COPY_OPT_IN_REQUIRED"), "{error}");
+    }
 }
