@@ -21,6 +21,11 @@ pub mod structural_syntax;
 pub mod readonly_shape;
 /// Executable bounded by-value class field snapshot calls (not general loan ABI).
 pub mod structural_call_lower;
+/// Shared checked witness modules, byte-identical to #221.
+pub mod shape_witness;
+pub mod structural_member_witness;
+pub mod structural_tags;
+mod structural_tag_guest;
 pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
@@ -40,7 +45,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let toks = lexer::lex(source)?;
+    let toks = lexer::lex_tagged(source)?;
     // Detect target declarations at any file-scope position, not only at
     // source byte zero. Ignore comments/strings (the lexer already tokenizes
     // them) and ignore nested brace bodies so a string or local expression
@@ -63,7 +68,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    let program = if let Some(tagged) = structural_tag_guest::parse_if_tagged(&toks)? {
+        tagged
+    } else if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
