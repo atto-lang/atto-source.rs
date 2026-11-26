@@ -101,3 +101,18 @@ fn committed_core_future_negative_fixtures_produce_stable_diagnostics() {
         assert_eq!(code(source),code_expected,"real compiler-core diagnostic must match authored fixture");
     }
 }
+
+#[test]
+fn provisional_async_backend_cannot_replace_external_receipt_denial() {
+    for (source, expected) in [
+        ("pub suspends fnc f(take! TaskFuture<int> receipt) -> int { return await receipt; }", "E_UNSUPPORTED_TYPE"),
+        ("pub suspends fnc f(TaskFuture<int> receipt) -> int { return await receipt; }", "E_OWNERSHIP"),
+        ("pub suspends fnc f(take! ActorFuture<int> receipt) -> int { val int n = await receipt; return await receipt; }", "E_MOVED"),
+        ("pub suspends fnc f(take! ActorFuture<int> receipt) -> int { val loan = borrow! receipt; return await receipt; }", "E_BORROW"),
+    ] {
+        assert_eq!(code(source), expected, "{source}");
+    }
+    let local = "pub suspends fnc main(): int { val future: Future<int> = task { return 42; }; return await future; }";
+    assert!(compile_with_path(local, Path::new("src/main.atto")).is_ok(),
+        "bounded in-guest Future remains supported by v2");
+}

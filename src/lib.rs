@@ -167,6 +167,19 @@ fn with_v2_fallback(source_tokens: Vec<lexer::Token>, primary: Result<Vec<u8>, D
     if !has_explicit_async_frontend(&source_tokens) {
         return Err(first);
     }
+    // V2 currently implements only the bounded in-guest Future scheduler.
+    // External affine ActorFuture/TaskFuture receipts need a trusted runtime
+    // ABI, so a failed core ownership preflight is authoritative here. Do not
+    // let a farther provisional parser error mask the denial, or a future
+    // fallback accidentally emit code for an unproved receipt.
+    let external_receipt = source_tokens.windows(2).any(|pair| matches!(
+        (&pair[0].tok, &pair[1].tok),
+        (lexer::Tok::Ident(name), lexer::Tok::Lt)
+            if name == "ActorFuture" || name == "TaskFuture"
+    ));
+    if external_receipt {
+        core_future_ownership::preflight(&source_tokens)?;
+    }
     match v2::compile(source_tokens) {
         Ok(bytes) if bytes.len() <= wasm::MAX_OUTPUT => Ok(bytes),
         Ok(_) => Err(Diagnostic::new(Pos { line: 1, col: 1 },
