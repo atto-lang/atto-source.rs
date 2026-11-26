@@ -118,7 +118,19 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
         // A block opener inside a // line comment is not a block comment.
         // Leave the line untouched for Logos to skip; preserve source offsets.
         if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
+            // Mask the comment and its Unicode line terminator without
+            // changing byte offsets. Do not let Logos swallow the next line.
             while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+                let width = if src[i..].starts_with(&[0xc2, 0x85]) { 2 }
+                    else if src[i..].starts_with(&[0xe2, 0x80, 0xa8])
+                        || src[i..].starts_with(&[0xe2, 0x80, 0xa9]) { 3 }
+                    else { 0 };
+                if width != 0 {
+                    bytes[i..i + width].fill(b' ');
+                    i += width;
+                    break;
+                }
+                bytes[i] = b' ';
                 i += 1;
             }
         } else if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
@@ -273,6 +285,29 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             text: prepared[range.clone()].to_owned(),
             start: range.start,
         });
+    }
+    // Contextual HTTP actor declarations are unsupported in this native
+    // subset. Keep ordinary scalar identifiers named http available.
+    for (i, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define { continue; }
+        let mut http = false;
+        for next in &tokens[i + 1..] {
+            match next.text.as_str() {
+                "http" => http = true,
+                "actor" | "isoactor" => {
+                    if http {
+                        return Err(ParseError {
+                            offset: next.start,
+                            class: "http_actor_backend_unsupported",
+                            message: "HTTP_ACTOR_BACKEND_UNSUPPORTED: no native HTTP actor lowering".into(),
+                        });
+                    }
+                    break;
+                }
+                "pub" | "private" | "serial" | "shared" | "untrusted" | "tcp" | "stream" => {},
+                _ => break,
+            }
+        }
     }
     reject_execution_domains(&tokens)?;
     let mut parser = Parser {
