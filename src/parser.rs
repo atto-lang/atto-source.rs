@@ -2194,7 +2194,12 @@ impl Parser {
             self.terminator()?;
             return Ok(Stmt::YieldFrom(source, pos));
         }
-        let word = self.word_at(0).map(str::to_owned);
+        let word = if *self.peek() == Tok::Caret {
+            // Statement-leading caret is precisely the ordinary return path.
+            Some("return".to_owned())
+        } else {
+            self.word_at(0).map(str::to_owned)
+        };
         match word.as_deref() {
             Some("using") if self.word_at(1) == Some("telemetry")
                 && self.peek_at(2) == &Tok::Dot && self.word_at(3) == Some("span") =>
