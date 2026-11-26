@@ -1,0 +1,10 @@
+// expect-error: E_BORROW
+// java: rejects
+// borrow! never upgrades a readonly alias to writable authority.
+define class Counter as pub mut int value = 0; end
+pub fnc main(): int {
+  let counter = new Counter();
+  val view = borrow! counter;
+  view.value = 42;
+  return 0;
+}

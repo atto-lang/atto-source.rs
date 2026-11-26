@@ -1,0 +1,10 @@
+// expect-error: E_MOVED
+// java: rejects
+// borrow! never revives the lifetime of a moved class owner.
+define class Parcel as pub let int value = 42; end
+fnc inspect(p: Borrow<Parcel>): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val removed = take! parcel;
+  return inspect(borrow! parcel) + removed.value;
+}

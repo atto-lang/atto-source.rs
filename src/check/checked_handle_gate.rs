@@ -16,6 +16,11 @@ use super::R;
 /// Bounded traversal, including manually built ASTs using check::check().
 const MAX_VISITS: usize = 65_536;
 const MAX_DEPTH: usize = 128;
+/// An operator or postfix receiver spine is not 128 nested lexical scopes.
+/// Keep its admission walk iterative and bounded at 256 links (250-term
+/// valid stress cases pass; 300-term adversarial shapes still fail) independently of true
+/// structural nesting. Existing >3,000-term stress cases still fail closed.
+const MAX_EXPRESSION_SPINE: usize = 256;
 
 struct Scan {
     visits: usize,
@@ -45,7 +50,56 @@ impl Scan {
         Ok(())
     }
 
+    /// Walk linear expression receiver/operator spines without treating
+    /// each left-associated operator or chained .member/.method() as a
+    /// fresh *semantic* nesting level. A 250-term chain should compile.
+    ///
+    /// Every AST node is still visited, including RHS expressions, method
+    /// arguments and unreachable branches. The global work budget and an
+    /// independent spine budget bound adversarial/manual ASTs.
     fn expr(&mut self, e: &Expr, depth: usize) -> R<()> {
+        enum Tail<'a> {
+            Operand(&'a Expr),
+            Arguments(&'a [Expr]),
+        }
+
+        let mut node = e;
+        let mut tail = Vec::new();
+        let mut spine_len = 0usize;
+        loop {
+            let (next, extra) = match &node.kind {
+                ExprKind::Binary(_, left, right) =>
+                    (left.as_ref(), Some(Tail::Operand(right.as_ref()))),
+                ExprKind::Member(receiver, _) => (receiver.as_ref(), None),
+                ExprKind::MethodCall(receiver, _, args) =>
+                    (receiver.as_ref(), Some(Tail::Arguments(args))),
+                _ => break,
+            };
+            if spine_len >= MAX_EXPRESSION_SPINE {
+                return Err(Diagnostic::new(node.pos, "E_NESTING",
+                    "expression receiver/operator chain exceeds checked-handle admission limit"));
+            }
+            self.enter(node.pos, depth)?;
+            spine_len += 1;
+            if let Some(extra) = extra { tail.push(extra); }
+            node = next;
+        }
+        // Leftmost expression first, then deferred operands in original
+        // order: the first unverified checked handle cannot disappear behind
+        // another diagnostic from a later source operand.
+        self.expr_leaf(node, depth)?;
+        for extra in tail.into_iter().rev() {
+            match extra {
+                Tail::Operand(value) => self.expr(value, depth + 1)?,
+                Tail::Arguments(values) => self.exprs(values, depth + 1)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// All genuinely nested expression nodes still increment MAX_DEPTH.
+    /// Binary, member and method spines are already unwrapped in expr().
+    fn expr_leaf(&mut self, e: &Expr, depth: usize) -> R<()> {
         self.enter(e.pos, depth)?;
         let next = depth + 1;
         match &e.kind {
@@ -61,12 +115,9 @@ impl Scan {
             }
             ExprKind::Unary(_, value) | ExprKind::Trap(value) |
             ExprKind::Ownership(_, _, value) |
-            ExprKind::Propagate(value) | ExprKind::Member(value, _) =>
-                self.expr(value, next),
-            ExprKind::Binary(_, left, right) => {
-                self.expr(left, next)?;
-                self.expr(right, next)
-            }
+            ExprKind::Propagate(value) => self.expr(value, next),
+            ExprKind::Binary(..) | ExprKind::Member(..) | ExprKind::MethodCall(..) =>
+                unreachable!("expr() peels all expression receiver/operator spines"),
             ExprKind::Ternary(cond, yes, no) => {
                 self.expr(cond, next)?;
                 self.expr(yes, next)?;
@@ -74,10 +125,6 @@ impl Scan {
             }
             ExprKind::Call(_, args) | ExprKind::New(_, args) |
             ExprKind::Array(args) => self.exprs(args, next),
-            ExprKind::MethodCall(receiver, _, args) => {
-                self.expr(receiver, next)?;
-                self.exprs(args, next)
-            }
             ExprKind::Lambda { body, .. } => match body {
                 LambdaBody::Expression(value) => self.expr(value, next),
                 LambdaBody::Statement(stmt) => self.stmt(stmt, next),

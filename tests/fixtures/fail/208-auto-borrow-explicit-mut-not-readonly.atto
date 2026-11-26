@@ -1,0 +1,10 @@
+// expect-error: E_BORROW
+// java: rejects
+// Exclusive borrow! mut is NOT permission to pass an exclusive loan as a
+// readonly Borrow<Person> without an authenticated parameter mode.
+define class Person as pub let int age = 21; end
+fnc inspect(p: Borrow<Person>): int { return p.age; }
+pub fnc main(): int {
+  let person = new Person();
+  return inspect(borrow! mut person);
+}

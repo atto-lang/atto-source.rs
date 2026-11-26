@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// Independent named roots retain independent lifetimes and loan rights.
+define class Left as pub let int value = 20; end
+define class Right as pub let int value = 22; end
+fnc sum(a: Borrow<Left>, b: Borrow<Right>): int {
+  return a.value + b.value;
+}
+pub fnc main(): int {
+  let left = new Left();
+  let right = new Right();
+  return sum(borrow! left, right);
+}

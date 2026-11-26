@@ -1,0 +1,5 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Person as pub let int age = 42; end
+fnc change(p: Borrow<Person>): void { p.age = 1; }
+pub fnc main(): int { let p = new Person(); change(p); return 0; }

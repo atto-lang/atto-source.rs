@@ -1,0 +1,11 @@
+// expect-exit: 42
+// java: rejects
+define class Person as
+  pub let int age = 40;
+end
+fnc inspect(p: Borrow<Person>, count: int): int { return p.age + count; }
+pub fnc main(): int {
+  let person = new Person();
+  let a = inspect(person, 2);
+  return a + person.age - 40;
+}

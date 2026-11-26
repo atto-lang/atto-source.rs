@@ -1,0 +1,16 @@
+// expect-exit: 42
+// java: rejects
+define class Person as
+  pub let int age = 20;
+end
+define class Pet as
+  pub let int years = 22;
+end
+fnc together(p: Borrow<Person>, pet: Borrow<Pet>): int {
+  return p.age + pet.years;
+}
+pub fnc main(): int {
+  let p = new Person();
+  let pet = new Pet();
+  return together(p, pet) + p.age - p.age;
+}

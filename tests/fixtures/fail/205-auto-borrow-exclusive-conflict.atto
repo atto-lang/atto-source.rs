@@ -1,0 +1,11 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Person as pub int age: 42; end
+fnc inspect(p: Borrow<Person>, n: int): int { return p.age + n; }
+pub fnc main(): int {
+  let p = new Person();
+  val writer = borrow! mut p;
+  let value = inspect(p, 0);
+  writer.age = value;
+  return p.age;
+}

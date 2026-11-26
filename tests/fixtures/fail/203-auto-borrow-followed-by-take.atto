@@ -1,0 +1,8 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Person as pub let int age = 42; end
+fnc pair(a: Borrow<Person>, b: Person): int { return a.age + b.age; }
+pub fnc main(): int {
+  let p = new Person();
+  return pair(p, take! p);
+}

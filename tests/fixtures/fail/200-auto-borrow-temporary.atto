@@ -1,0 +1,5 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Person as pub let int age = 42; end
+fnc inspect(p: Borrow<Person>): int { return p.age; }
+pub fnc main(): int { return inspect(new Person()); }
