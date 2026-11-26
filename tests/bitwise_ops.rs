@@ -11,11 +11,23 @@ fn bitwise_operations_compile_and_emit_wasm() {
         "12 & 10", "12 | 10", "12 ^^ 10", "~12",
         "8 <<< 2", "32 >>> 2", "-8 ashr 1",
         "1 + 2 <<< 3", "64 >>> 1 + 1",
-        "1 <<< 64", "-1 >>> 1",
+        "1 <<< 63", "-1 >>> 1", "-1 >>> 63", "-1 ashr 63",
         "12 & 10 | 2 ^^ 6", "(1 | 2) <<< 1",
     ] {
         let bytes = compile(&source(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
         assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0", "{expr}");
+    }
+}
+
+// atto-spec language/bitwise-and-stream-operators-v1.md, BW-008:
+// invalid shift distances must fail, never inherit Wasm's modulo-64 rule.
+#[test]
+fn invalid_literal_shift_distances_are_rejected() {
+    for op in ["<<<", ">>>", "ashr"] {
+        for count in ["-1", "64", "65", "9223372036854775807"] {
+            let expr = format!("1 {op} {count}");
+            assert_eq!(compile(&source(&expr)).unwrap_err().code, "E_SHIFT_DISTANCE", "{expr}");
+        }
     }
 }
 

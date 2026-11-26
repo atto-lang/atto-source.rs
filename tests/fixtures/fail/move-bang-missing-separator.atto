@@ -1,0 +1,3 @@
+// expect-error: E_BANG_KEYWORD_WHITESPACE
+// java: rejects
+pub fnc main(): int { val x = 42; return move!x; }
