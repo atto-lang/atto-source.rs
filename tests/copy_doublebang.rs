@@ -64,11 +64,26 @@ fn copy_deep_disallows_mut_qualifier_and_missing_operand() {
 
 #[test]
 fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
-    // A shallow class copy without verified Copyable witness must still
-    // fail. The deep path is independently admitted for this flat class.
+    // Flat class layouts have separate generated shallow/deep witnesses.
     let prefix = "define class Parcel as pub let int value = 1; end pub fnc main(): int { val p = new Parcel(); ";
     let shallow = format!("{prefix}val q = copy! p; return 0; }}");
-    assert_eq!(compile(&shallow).unwrap_err().code, "E_COPY");
+    wasm(&shallow);
     let deep = format!("{prefix}val q = copy!! p; return q.value; }}");
     wasm(&deep);
+}
+
+#[test]
+fn flat_shallow_copy_has_independent_root_and_distinct_witness() {
+    wasm(include_str!("fixtures/pass/998-copy-shallow-flat-class.atto"));
+    let rejected = include_str!("fixtures/fail/153-copy-noncopy-class.atto");
+    assert_eq!(compile(rejected).unwrap_err().code, "E_COPY_OVERRIDE");
+    let deep = rejected.replace("copy! parcel", "copy!! parcel");
+    wasm(&deep);
+}
+
+#[test]
+fn shallow_copy_cannot_read_exclusively_borrowed_owner() {
+    let source = include_str!("fixtures/fail/996-copy-doublebang-exclusive-loan.atto")
+        .replace("copy!! original", "copy! original");
+    assert_eq!(compile(&source).unwrap_err().code, "E_BORROW");
 }
