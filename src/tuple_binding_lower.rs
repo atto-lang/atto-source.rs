@@ -445,7 +445,7 @@ struct PatternLower<'a> {
     helpers: Vec<Token>,
     count: usize,
 }
-impl<'a> PatternLower<'a> {
+impl PatternLower<'_> {
     fn tok(&self, i: usize) -> Option<&Tok> { self.tokens.get(i).map(|t| &t.tok) }
     fn candidate(&self, i: usize) -> bool {
         self.tok(i) == Some(&Tok::LParen) &&

@@ -1,0 +1,14 @@
+suspends fnc main(): int {
+  val Channel<int> a = Channel.new<int>(2);
+  val Channel<int> b = Channel.new<int>(2);
+  writech a, 1;
+  writech a, 3;
+  writech b, 2;
+  writech b, 99;
+  val Array[int] values = await select<int>(3) fair over
+    when readch a: int n -> { return n + 10; }
+    when readch b: int n -> { return n + 20; }
+  end;
+  if values[0] == 11 && values[1] == 22 && values[2] == 13 then return readch b - 57; fi
+  return 0;
+}
