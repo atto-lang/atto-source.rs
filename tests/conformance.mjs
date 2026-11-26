@@ -199,6 +199,35 @@ function check(label, fn) {
 const digests = [];
 
 
+// ---- canonical unchanged Pointer<int> source guest evidence ------------------
+// SOURCE_BYTES: the two files are Git-blob-identical to PRL-001 and PRL-002
+// from atto-platform-conformance. This block compiles through the wasm32
+// hosted production compiler and executes actual guest modules; it never
+// runs a source-string interpreter.
+let pointerExactGuestCount = 0;
+let pointerExactGuestBytes = null;
+for (const id of ['PRL-001', 'PRL-002']) {
+  const path = join(here, 'pointer_local_spec_exact', id + '.atto');
+  const src = await readFile(path, 'utf8');
+  check('pointer-local-exact/' + id, () => {
+    const r = compile(src);
+    assert.ok(r.ok, r.message);
+    assert.ok(WebAssembly.validate(r.wasm));
+    const g = runGuest(r.wasm);
+    assert.equal(g.ok, true, g.error);
+    assert.equal(g.value, 42n, 'actual checked Wasm guest returns 42');
+    assert.equal(g.stdout, '');
+    if (pointerExactGuestBytes) assert.deepEqual(pointerExactGuestBytes, r.wasm,
+      'rt and bang aliases must produce identical wasm guest bytes');
+    else pointerExactGuestBytes = r.wasm;
+    if (attoc) assert.deepEqual(nativeBytes(path), r.wasm,
+      'native Rust and wasm32 compiler artifact equivalence');
+    pointerExactGuestCount++;
+  });
+}
+check('pointer-local-exact/full-pair', () =>
+  assert.equal(pointerExactGuestCount, 2, 'both exact sources executed as guests'));
+
 // ---- reviewed site source: compiler byte parity and real guest outcomes ----
 const siteDir = join(here, 'playground_site_examples');
 const siteManifest = JSON.parse(await readFile(join(siteDir, 'manifest.json'), 'utf8'));
@@ -425,9 +454,9 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Canonical ^ is a statement-leading return; ^^ is integer XOR.
+// Removed % and infix ^ must reject without guest bytes.
+for (const op of ['%', '^', '^ ^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
@@ -436,6 +465,18 @@ for (const op of ['%', '^', '^^']) {
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+
+check('canonical-integer-xor', () => {
+  for (const source of [
+    'pub fnc main(): int { return 40 ^^ 2; }',
+    'pub fnc main(): int { let x = 40; x ^^= 2; return x; }',
+    'pub fnc main(): int { ^ 42; }'
+  ]) {
+    const r = compile(source);
+    assert.ok(r.ok, r.message);
+    assert.equal(runGuest(r.wasm).value, 42n);
+  }
+});
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {

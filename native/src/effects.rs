@@ -136,6 +136,7 @@ mod tests {
             expression = Expr::Negate(Box::new(expression));
         }
         let module = Module {
+            exports: vec![],
             managed_refs: crate::ref_layout::ManagedRefLayout::default(),
             functions: vec![crate::mir::Function {
                 symbol: "x".into(),
