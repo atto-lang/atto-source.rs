@@ -135,6 +135,21 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(chars[i]);
                 bump!();
             }
+            // Reconcile the exception-keyword subset of #449/#331 here.
+            // Do not change existing ownership-bang spellings or comparisons.
+            if matches!(s.as_str(), "trap" | "throw" | "raise" | "panic")
+                && chars.get(i) == Some(&'!')
+                && chars.get(i + 1) != Some(&'=')
+                && !(chars.get(i + 1) == Some(&'e') && chars.get(i + 2) == Some(&'q')
+                    && chars.get(i + 3).map_or(true, |c| !c.is_alphanumeric() && *c != '_'))
+            {
+                if !chars.get(i + 1).is_some_and(|c| matches!(*c, ' ' | '\t' | '\r' | '\n' | '\u{b}' | '\u{c}')) {
+                    return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
+                        "whitespace required after bang keyword"));
+                }
+                s.push('!');
+                bump!();
+            }
             // Generator delegation is a single contiguous lexical spelling.
             // Do not consume a separated star: `yield *value` is not `yield*`.
             let tok = if s == "yield" && chars.get(i) == Some(&'*') {
