@@ -309,3 +309,55 @@ fn foreign_collection_does_not_destroy_caller_receipt() {
     assert_eq!(b.collect(&rb), Ok(ReplyOutcome::Failure(ReplyFailure::TimedOut)));
     assert_eq!(b.reply_slots_free(), 1);
 }
+
+#[test]
+fn abandoning_queued_request_reclaims_both_budgets_and_fences_receipt() {
+    let mut m: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let old = m.admit(10, 20, 100, 1).unwrap();
+    assert_eq!(m.abandon(&old), Ok(()));
+    assert_eq!(m.pending(), 0);
+    assert_eq!(m.reply_slots_free(), 1);
+    assert_eq!(m.poll(&old), Err(SlotFault::Stale));
+    assert_eq!(m.abandon(&old), Err(SlotFault::Stale));
+    let next = m.admit(11, 20, 100, 2).unwrap();
+    let delivery = m.next(2).unwrap();
+    assert_eq!(*delivery.payload(), 11);
+    m.stage(&delivery, 42, 3).unwrap();
+    m.complete(delivery, 4).unwrap();
+    assert_eq!(m.collect(&next), Ok(ReplyOutcome::Value(42)));
+}
+
+#[test]
+fn abandoning_inflight_staged_request_rejects_late_permit_after_reuse() {
+    let mut m: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let old = m.admit(1, 20, 100, 1).unwrap();
+    let delivery = m.next(1).unwrap();
+    m.stage(&delivery, 90, 2).unwrap();
+    m.abandon(&old).unwrap();
+    let next = m.admit(2, 20, 100, 3).unwrap();
+    assert_eq!(m.stage(&delivery, 99, 3), Err(SlotFault::Stale));
+    assert_eq!(m.complete(delivery, 3), Err(SlotFault::Stale));
+    assert_eq!(m.poll(&next), Ok(None));
+    let current = m.next(3).unwrap();
+    m.stage(&current, 42, 4).unwrap();
+    m.complete(current, 5).unwrap();
+    assert_eq!(m.collect(&next), Ok(ReplyOutcome::Value(42)));
+}
+
+#[test]
+fn foreign_abandon_does_not_remove_local_queue_and_settled_abandon_reclaims() {
+    let mut a: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let mut b: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
+    let foreign = a.admit(1, 20, 100, 1).unwrap();
+    let local = b.admit(2, 20, 100, 1).unwrap();
+    assert_eq!(b.abandon(&foreign), Err(SlotFault::Stale));
+    assert_eq!(b.pending(), 1);
+    assert_eq!(b.reply_slots_free(), 0);
+    let turn = b.next(1).unwrap();
+    b.stage(&turn, 42, 2).unwrap();
+    b.complete(turn, 3).unwrap();
+    assert_eq!(b.abandon(&local), Ok(()));
+    assert_eq!(b.collect(&local), Err(SlotFault::Stale));
+    assert_eq!(b.reply_slots_free(), 1);
+    assert_eq!(a.poll(&foreign), Ok(None));
+}
