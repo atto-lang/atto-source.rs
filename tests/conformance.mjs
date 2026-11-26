@@ -193,17 +193,34 @@ const attoc = process.env.ATTOC;
 // evidence. Even fixtures with documented backend differences require a real
 // completed reference execution, never truncated stdout.
 const JAVA_SHUTDOWN_RACE = 'The context is currently executing on another thread';
-function runJava(path) {
-  const r = spawnSync(java, [path], { encoding: 'utf8', timeout: 60_000 });
+function invokeJava(args) {
+  const r = spawnSync(java, args, { encoding: 'utf8', timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
   assert.ifError(r.error);
   assert.equal(r.signal, null, 'Java reference terminated by signal');
   assert.ok(Number.isInteger(r.status), 'Java reference did not report an exit status');
   assert.equal(typeof r.stdout, 'string', 'Java reference stdout unavailable');
   assert.equal(typeof r.stderr, 'string', 'Java reference stderr unavailable');
-  const all = r.stderr + r.stdout;
-  assert.ok(!all.includes(JAVA_SHUTDOWN_RACE), 'Java reference shutdown race: incomplete execution');
-  const rejected = all.split('\n').some(l => /oreslang: /.test(l));
-  return { status: r.status, stdout: r.stdout, rejected };
+  assert.ok(!r.stderr.includes(JAVA_SHUTDOWN_RACE), 'Java reference shutdown race: incomplete execution');
+  return r;
+}
+// Use the reference CLI's validation-only path. Guest stdout and runtime
+// errors are never evidence that the compiler rejected a source program.
+function checkJava(path) {
+  const r = invokeJava(['--check', path]);
+  assert.equal(r.stdout, '', 'Java check unexpectedly produced stdout');
+  assert.ok(r.status === 0 || r.status === 1,
+    'Java check returned an unexpected status: ' + r.status);
+  const diagnostic = r.stderr.split('\n').find(l => /^.+:\d+:\d+: error: .+/.test(l));
+  if (r.status === 1) assert.ok(diagnostic,
+    'Java check failed without positioned compiler diagnostic: ' + r.stderr.slice(0, 500));
+  else assert.ok(!diagnostic, 'Java check succeeded with compiler error diagnostic');
+  return { rejected: r.status === 1, diagnostic: diagnostic || '' };
+}
+function runJava(path) {
+  const r = invokeJava([path]);
+  assert.ok(!r.stderr.split('\n').some(l => /^oreslang: /.test(l)),
+    'Java reference runtime/launcher error: ' + r.stderr.slice(0, 500));
+  return { status: r.status, stdout: r.stdout };
 }
 function nativeBytes(path) {
   const r = spawnSync(attoc, [path], { maxBuffer: 1 << 22 });
@@ -299,18 +316,19 @@ for (const f of await fixtures('pass')) {
       nativeChecked++;
     }
     if (java) {
-      const j = runJava(f.path);
+      const admission = checkJava(f.path);
       const claim = header(f.source, 'java')[0];
       if (claim === 'llvm-design') {
         // spelling from the oreslang-source.llvm v1 design contracts; tracked
         // so this fixture is revisited when the Java parser admits it
-        assert.ok(j.rejected, 'Java now accepts this LLVM-design spelling: update the fixture claim');
+        assert.ok(admission.rejected, 'Java now accepts this LLVM-design spelling: update the fixture claim');
       } else if (claim === 'rejects') {
         // A passing Rust/Wasm guest must not be reported as Java parity
         // while the Java compiler still rejects this newer Atto construct.
-        assert.ok(j.rejected, 'Java now accepts this Rust/Wasm-positive fixture: update its parity claim');
+        assert.ok(admission.rejected, 'Java now accepts this Rust/Wasm-positive fixture: update its parity claim');
       } else {
-        assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
+        assert.ok(!admission.rejected, `Java reference rejected it: ${admission.diagnostic}`);
+        const j = runJava(f.path);
         {
           assert.equal(j.status, Number(BigInt.asUintN(8, g.value)), 'Java exit status agrees');
           if (header(f.source, 'stdout-order')[0] === 'unordered') {
@@ -348,10 +366,11 @@ for (const f of await fixtures('fail')) {
     }
     if (java) {
       const claim = header(f.source, 'java')[0];
-      const j = runJava(f.path);
-      if (claim === 'rejects') assert.ok(j.rejected, `Java reference accepted it (exit ${j.status})`);
-      else if (claim === 'accepts') assert.ok(!j.rejected, 'Java reference rejected it');
-      else throw new Error('fixture lacks a "// java:" claim');
+      if (claim !== 'rejects' && claim !== 'accepts')
+        throw new Error('fixture lacks a "// java:" claim');
+      const admission = checkJava(f.path);
+      if (claim === 'rejects') assert.ok(admission.rejected, 'Java reference accepted it');
+      else assert.ok(!admission.rejected, 'Java reference rejected it: ' + admission.diagnostic);
       javaChecked++;
     }
   });
