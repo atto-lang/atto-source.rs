@@ -631,6 +631,9 @@ impl Parser {
         let mut prog = Program::default();
         let mut decls = 0usize;
         while *self.peek() != Tok::Eof {
+            // Only this file-root production can consume a checked directive.
+            // Class/actor members, callable bodies and signatures cannot.
+            if self.eat(&Tok::CheckedFileExport) { continue; }
             if decls >= MAX_FUNCS {
                 return Err(Diagnostic::new(
                     self.pos(),
