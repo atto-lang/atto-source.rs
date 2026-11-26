@@ -559,10 +559,11 @@ fnc __plan_from_list(int cases, int dynamic): int {
   return p;
 }
 
-// Return Option<SelectResult>. Each SelectResult occupies [index, value].
+// Internal probe returns a raw SelectResult pointer (0 on miss).
+// Each SelectResult occupies [index, value]; no temporary Option is needed.
 // The case-to-read handoff is atomic within this cooperative guest runtime.
 // FAIR only advances when a read commits; first is stable lexical priority.
-fnc __plan_try(int p, int fairMode): int {
+fnc __plan_probe(int p, int fairMode): int {
   val n = __load(p, 0);
   // A live plan may have all its dynamic slots removed; never spin forever.
   if n == 0 then __panic(10); fi
@@ -583,19 +584,17 @@ fnc __plan_try(int p, int fairMode): int {
       live = live + 1;
       val bufferedCount = __load(ch, 8);
       if bufferedCount > 0 then
-        viable = viable + 1;
-        val option = __chan_try(ch);
-        if option != 0 then
-          val winner = __alloc(16);
-          __store(winner, 0, i);
-          __store(winner, 8, __load(option, 0));
-          if fairMode != 0 then
-            let next = i + 1;
-            if next >= n then next = 0; fi
-            __store(__load(p, 40), 0, next);
-          fi
-          return __some(winner);
+        // All ownership checks and readiness observation are in this
+        // non-suspending turn. Allocate the escaping result BEFORE consuming.
+        val winner = __alloc(16);
+        __store(winner, 0, i);
+        __store(winner, 8, __chan_take(ch));
+        if fairMode != 0 then
+          let next = i + 1;
+          if next >= n then next = 0; fi
+          __store(__load(p, 40), 0, next);
         fi
+        return winner;
       fi
       // Separate predicates avoid parser treating else-if as elif.
       if bufferedCount == 0 then
@@ -608,6 +607,13 @@ fnc __plan_try(int p, int fairMode): int {
   // No open/readable cases: report a closed stream rather than sleeping.
   if viable == 0 then __panic(9); fi
   return 0;
+}
+
+// Only the public immediate probe exposes Option<SelectResult>.
+fnc __plan_try(int p, int fairMode): int {
+  val winner = __plan_probe(p, fairMode);
+  if winner == 0 then return 0; fi
+  return __some(winner);
 }
 
 fnc __plan_size(int p): int {
@@ -766,9 +772,9 @@ fnc __plan_retire_snapshot(int p, int snapshot): void {
 // Each invocation pins descriptors plus the shared generation FAIR cell.
 // Both current and retired generations arbitrate from their own last commit;
 // no suspended invocation ever publishes cursor credit into a different cell.
-suspends fnc __plan_wait_opt(int snapshot, int fairMode): int {
+suspends fnc __plan_wait_result(int snapshot, int fairMode): int {
   loop do
-    val got = __plan_try(snapshot, fairMode);
+    val got = __plan_probe(snapshot, fairMode);
     if got != 0 then return got; fi
     __suspend();
   done
@@ -778,17 +784,17 @@ suspends fnc __plan_wait_opt(int snapshot, int fairMode): int {
 // after this point cannot retarget a registered waiter to a replacement slot.
 suspends fnc __plan_wait(int p, int fairMode): int {
   val snapshot = __plan_snapshot(p);
-  val result = await __plan_wait_opt(snapshot, fairMode);
+  val result = await __plan_wait_result(snapshot, fairMode);
   __plan_retire_snapshot(p, snapshot);
-  return __load(result, 0);
+  return result;
 }
 
 fnc __plan_nb(int p, int fairMode): int {
   val snapshot = __plan_snapshot(p);
   return task {
-    val answer = await __plan_wait_opt(snapshot, fairMode);
+    val answer = await __plan_wait_result(snapshot, fairMode);
     __plan_retire_snapshot(p, snapshot);
-    return __load(answer, 0);
+    return answer;
   };
 }
 
