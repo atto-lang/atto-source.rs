@@ -19,7 +19,8 @@
 // 72 active span guard stack. For a select poll record, 24 is the retained
 // descriptor block, 40 is FAIR policy, and no physical frame stack is used.
 // Free records use offset 48 as free-list next.
-// Future record (16 bytes): 0 done, 8 value. Never reuse a Future address.
+// Future record (16 bytes): 0 terminal state (0 pending, 1 value,
+// 2 terminal shutdown cancellation), 8 value. Never reuse a Future address.
 
 fnc __box(int tag, int v): int {
   val b = __alloc(16);
@@ -116,6 +117,7 @@ fnc __fut_new(): int {
 }
 
 fnc __fut_done(int f, int v): void {
+  if __load(f, 0) != 0 then __panic(10); fi
   __store(f, 8, v);
   __store(f, 0, 1);
   __set_rt(4, 1);
@@ -125,6 +127,7 @@ suspends fnc __await(int f): int {
   while __load(f, 0) == 0 do
     __suspend();
   done
+  if __load(f, 0) != 1 then __panic(6); fi
   __set_rt(4, 1);
   return __load(f, 8);
 }
@@ -213,6 +216,47 @@ fnc __task_spawn_plan(int p, int snapshot, int fairMode): int {
   return future;
 }
 
+// One scheduler-owned terminal transition for stackless select records.
+// The stable Future and live plan fields must still belong to this record.
+// No cancellation path may roll back an already committed read.
+fnc __plan_finish_poll(int t, int answer, int cancelled): void {
+  val plan_root = __load(t, 8);
+  val snapshot = __load(t, 24);
+  val future = __load(t, 0);
+  if plan_root == 0 then __panic(10); fi
+  if snapshot == 0 then __panic(10); fi
+  if __load(future, 0) != 0 then __panic(10); fi
+  if __load(t, 16) == 2 then __panic(10); fi
+  __plan_retire_snapshot(plan_root, snapshot);
+  __store(t, 8, 0);
+  __store(t, 24, 0);
+  __store(t, 40, 0);
+  __store(t, 16, 2);
+  if cancelled != 0 then
+    __store(future, 8, 0);
+    __store(future, 0, 2);
+  else
+    __fut_done(future, answer);
+  fi
+}
+
+// Terminal scheduler shutdown only; no user-visible cancel API yet.
+// The active list is stable in this non-suspending guest turn.
+fnc __plan_cancel_all_pending(): void {
+  let t = __rt(2);
+  while t != 0 do
+    if __load(t, 8) != 0 then
+      __plan_finish_poll(t, 0, 1);
+    fi
+    t = __load(t, 48);
+  done
+}
+
+fnc __sched_terminal_cleanup(): void {
+  __plan_cancel_all_pending();
+  __span_cancel_all();
+}
+
 // Run one task until it finishes or suspends.
 fnc __resume(int t): void {
   __set_rt(1, t);
@@ -221,12 +265,7 @@ fnc __resume(int t): void {
     val snapshot = __load(t, 24);
     val answer = __plan_probe(snapshot, __load(t, 40), 0);
     if answer != 0 then
-      __plan_retire_snapshot(plan_root, snapshot);
-      __store(t, 8, 0);
-      __store(t, 24, 0);
-      __store(t, 40, 0);
-      __store(t, 16, 2);
-      __fut_done(__load(t, 0), answer);
+      __plan_finish_poll(t, answer, 0);
     else
       __store(t, 16, 1);
     fi
@@ -329,11 +368,11 @@ fnc __sched(int main): int {
       done
       if limit != 0 then
         if wake == 0 then
-          __span_cancel_all();
+          __sched_terminal_cleanup();
           __panic(7);
         fi
         if limit <= wake then
-          __span_cancel_all();
+          __sched_terminal_cleanup();
           __panic(7);
         fi
       fi
@@ -344,12 +383,13 @@ fnc __sched(int main): int {
     fi
   done
   if __load(main, 0) == 0 then
+    __sched_terminal_cleanup();
     __panic(6);
   fi
   // A bound-but-abandoned pending selection is not successful termination.
   // v2 cannot yet cancel and settle it recoverably. Fail closed at quiescence.
   if __rt(9) != 0 then
-    __span_cancel_all();
+    __sched_terminal_cleanup();
     __panic(6);
   fi
   return __load(main, 8);
