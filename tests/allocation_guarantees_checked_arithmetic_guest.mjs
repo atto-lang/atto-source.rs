@@ -5,9 +5,26 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const compiler = resolve(process.env.ATTOC || 'target/release/attoc');
+const compilerPath = process.env.ATTO_WASM_COMPILER || fileURLToPath(new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm', import.meta.url));
+const compilerModule = new WebAssembly.Module(readFileSync(compilerPath));
+assert.deepEqual(WebAssembly.Module.imports(compilerModule), []);
+const {exports:api}=new WebAssembly.Instance(compilerModule,{});
+assert.equal(api.abi_version(),2);
+const encoder=new TextEncoder();
+function compileBrowser(source) {
+  const input=encoder.encode(source);
+  assert.ok(input.length<=api.input_capacity());
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  const status=api.compile(input.length);
+  if(status!==0){assert.equal(api.result_length(),0);return null;}
+  const output=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(output.length>8);
+  return Buffer.from(output);
+}
 const dir = mkdtempSync(join(tmpdir(), 'atto-memoryless-arithmetic-'));
 const hi = (1n << 63n) - 1n, lo = -(1n << 63n);
 const literal = n => n === lo ? '(-9223372036854775807-1)' : '(' + n + ')';
@@ -65,7 +82,10 @@ try {
     const {result,output}=compile(source);
     assert.equal(result.status,0,result.stderr);
     assert.ok(existsSync(output));
-    const module=verifyMemoryless(readFileSync(output));
+    const nativeBytes=readFileSync(output);
+    const browserBytes=compileBrowser(source);
+    assert.deepEqual(browserBytes,nativeBytes,'native vs wasm32 compiler byte parity');
+    const module=verifyMemoryless(nativeBytes);
     const instance=new WebAssembly.Instance(module,{});
     assert.equal(instance.exports.panic_code.value,0);
     if(expected===null) {
@@ -76,8 +96,13 @@ try {
       assert.equal(instance.exports.panic_code.value,0);
     }
   }
-  const denied=compile('@noalloc\nfnc f(x:int):int { return x/2; } pub fnc main():int { return f(42); }');
+  const rejectedSource='@noalloc\nfnc f(x:int):int { return x/2; } pub fnc main():int { return f(42); }';
+  const denied=compile(rejectedSource);
+  assert.equal(compileBrowser(rejectedSource),null,'browser compiler must deny division');
+  const recovered=compileBrowser('@noalloc\npub fnc main():int { return 42; }');
+  assert.ok(recovered,'browser compiler must recover after denial');
+  assert.equal(new WebAssembly.Instance(verifyMemoryless(recovered),{}).exports.main(),42n);
   assert.equal(denied.result.status,1,denied.result.stderr);
   assert.ok(!existsSync(denied.output),'denial emitted an artifact');
-  console.log('MEMORYLESS_CHECKED_ARITHMETIC_GUEST_PASS '+cases.length+' guests + 1 denial');
+  console.log('MEMORYLESS_CHECKED_ARITHMETIC_GUEST_PASS '+cases.length+' byte-identical guests + 1 dual denial + recovery');
 } finally { rmSync(dir,{recursive:true,force:true}); }
