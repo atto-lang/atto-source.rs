@@ -30,7 +30,7 @@ fn identifier(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !is_reserved(value)
+        && (!is_reserved(value) || value == "types")
 }
 
 fn folder_names(path: Option<&Path>, depth: usize, pos: Pos) -> R<Vec<String>> {

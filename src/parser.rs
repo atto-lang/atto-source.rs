@@ -4095,7 +4095,7 @@ impl Parser {
                 "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
-                w if is_reserved(w) => {
+                w if is_reserved(w) && !(w == "types" && *self.peek_at(1) == Tok::Dot) => {
                     return Err(Diagnostic::new(
                         pos,
                         "E_SYNTAX",
