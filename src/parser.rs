@@ -1843,8 +1843,24 @@ impl Parser {
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
 
+    // Parameter patterns are one root slot, not multiple scalar parameters.
+    // Until the guest backend carries a checked aggregate projection plan,
+    // distinguish this unsupported capability from ordinary malformed names.
+    fn reject_unlowered_callable_pattern(&self) -> R<()> {
+        let opener = match self.peek() {
+            Tok::LParen | Tok::LBrace => Some(self.peek()),
+            Tok::Ident(_) if *self.peek_at(1) == Tok::LBrace => Some(self.peek_at(1)),
+            _ => None,
+        };
+        if opener.is_some() {
+            return Err(unsupported(self.pos(), "callable aggregate parameter patterns (typed root projections)"));
+        }
+        Ok(())
+    }
+
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
+        self.reject_unlowered_callable_pattern()?;
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
@@ -3901,6 +3917,7 @@ impl Parser {
                 if params.len() >= MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
                 }
+                self.reject_unlowered_callable_pattern()?;
                 let (name, pos) = self.ident("a lambda parameter")?;
                 if params.contains(&name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
