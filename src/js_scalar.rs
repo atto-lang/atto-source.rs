@@ -99,7 +99,7 @@ fn stmts(body: &[TStmt], out: &mut String, void_main: bool, loops: &mut Vec<usiz
             }
             TStmt::If(arms, other) => {
                 for (i, (cond, body)) in arms.iter().enumerate() {
-                    writeln!(out, "{}if({}){{", if i == 0 { "" } else { "else " }, expr(cond)?).unwrap();
+                    writeln!(out, "{}if({}){{", if i == 0 { "" } else { "else " }, expr(cond, recursive)?).unwrap();
                     stmts(body, out, void_main, loops, next, recursive)?;
                     out.push_str("}\n");
                 }
