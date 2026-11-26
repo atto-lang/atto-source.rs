@@ -2138,6 +2138,43 @@ impl Parser {
         }
     }
 
+    /// A single default has no readiness operands, registration or suspension.
+    /// Reuse the typed lexical block so return/break/continue retain their
+    /// enclosing targets. Every real arbitration or value form stays gated.
+    fn parse_default_select(&mut self, pos: Pos) -> R<Stmt> {
+        self.expect_word("do")?;
+        self.expect_word("select")?;
+        if matches!(self.word_at(0), Some("first" | "fair" | "random")) {
+            self.advance();
+        }
+        let braces = if self.eat(&Tok::LBrace) {
+            true
+        } else if self.eat_word("over") {
+            false
+        } else {
+            return Err(unsupported(pos, "procedural select requires a single default arm in braces or over/end"));
+        };
+        if !self.eat_word("default") {
+            return Err(unsupported(pos, "procedural select currently supports only a single default arm; channel/Future arbitration is not lowered"));
+        }
+        self.expect(Tok::Colon, "':' after select default")?;
+        self.eat(&Tok::Arrow);
+        if *self.peek() != Tok::LBrace {
+            return Err(self.expected("a braced select default body with at most one slim arrow"));
+        }
+        let body = self.parse_block()?;
+        if (braces && *self.peek() != Tok::RBrace) || (!braces && !self.is_word("end")) {
+            return Err(unsupported(pos, "procedural select currently supports only a single default arm"));
+        }
+        if braces {
+            self.expect(Tok::RBrace, "'}' after select")?;
+        } else {
+            self.expect_word("end")?;
+        }
+        self.eat(&Tok::Semi);
+        Ok(Stmt::Block(body))
+    }
+
     fn parse_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
         if *self.peek() == Tok::At {
@@ -2281,7 +2318,8 @@ impl Parser {
                 self.advance();
                 self.parse_match(true)
             }
-            Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
+            Some("do") if self.word_at(1) == Some("select") => self.parse_default_select(pos),
+            Some("do") if matches!(self.word_at(1), Some("switch" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
             // Narrow, executable Writable<string/int/bool/float> builtin.
