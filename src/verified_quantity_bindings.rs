@@ -70,7 +70,7 @@ impl Range {
                 let v = [a*c,a*d,b*c,b*d];
                 fits(*v.iter().min().unwrap(),*v.iter().max().unwrap())
             }
-            BinOp::Div => !other.has(0) && !(self.has(i64::MIN) && other.has(-1)),
+            BinOp::Div => !(other.has(0) || (self.has(i64::MIN) && other.has(-1))),
             _ => false,
         }
     }
@@ -425,6 +425,8 @@ fn strict_backedge(p: &Parser<'_>, facts: &Locals, declared: &Aliases) -> R<()> 
     }
     Ok(())
 }
+// Keep proof state, mutable locals and loop-exit authority explicit at recursion sites.
+#[allow(clippy::too_many_arguments)]
 fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
     slots: &mut Vec<Type>, param_count: usize, depth: usize, loops: &mut Vec<StrictLoopExit>, end_delimited: bool) -> R<(Vec<TStmt>, bool)> {
