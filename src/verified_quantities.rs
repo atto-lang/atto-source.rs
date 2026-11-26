@@ -56,7 +56,7 @@ fn convert(value: Value, unit: Unit, pos: Pos) -> R<Value> {
 }
 
 pub(crate) fn has_declarations(tokens: &[Token]) -> bool {
-    matches!(&tokens.first().map(|t| &t.tok),Some(Tok::Ident(n)) if n=="type") && tokens.get(4).is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if n=="where")) || tokens.windows(2).any(|w| matches!((&w[0].tok,&w[1].tok),
+    tokens.first().is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if n=="type")) && tokens.get(2).is_some_and(|t|t.tok==Tok::Assign) && tokens.get(3).is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if matches!(n.as_str(),"int"|"i64"|"i32"))) && tokens.get(4).is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if n=="where")) || tokens.windows(2).any(|w| matches!((&w[0].tok,&w[1].tok),
         (Tok::Ident(a),Tok::Ident(b)) if a == "define" && (b == "dimension" || b == "unit")))
 }
 pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Lowered>> {
