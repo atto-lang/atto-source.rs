@@ -12,10 +12,13 @@
 // 10 free frame-stack blocks (each 4096 bytes), 11 free task records,
 // 12 free queue nodes.
 //
-// Task record (80 bytes): 0 stable Future pointer, 8 reserved, 16 status
+// Task record (80 bytes): 0 stable Future pointer, 8 plan root (0 for
+// ordinary closure task), 16 status
 // (0 new, 1 suspended, 2 finished), 24 entry closure, 32 frame-stack base,
 // 40 saved frame-stack top, 48 next task, 56 wake time, 64 deadline,
-// 72 active span guard stack. Free records use offset 48 as free-list next.
+// 72 active span guard stack. For a select poll record, 24 is the retained
+// descriptor block, 40 is FAIR policy, and no physical frame stack is used.
+// Free records use offset 48 as free-list next.
 // Future record (16 bytes): 0 done, 8 value. Never reuse a Future address.
 
 fnc __box(int tag, int v): int {
@@ -177,12 +180,7 @@ fnc __task_release_record(int t): void {
   __set_rt(11, t);
 }
 
-fnc __task_spawn(int clo): int {
-  val future = __fut_new();
-  val t = __task_acquire_record();
-  __store(t, 0, future);
-  __store(t, 24, clo);
-  __store(t, 32, __task_acquire_stack());
+fnc __task_enqueue(int t): void {
   if __rt(2) == 0 then
     __set_rt(2, t);
   else
@@ -190,12 +188,51 @@ fnc __task_spawn(int clo): int {
   fi
   __set_rt(3, t);
   __set_rt(4, 1);
+}
+
+fnc __task_spawn(int clo): int {
+  val future = __fut_new();
+  val t = __task_acquire_record();
+  __store(t, 0, future);
+  __store(t, 24, clo);
+  __store(t, 32, __task_acquire_stack());
+  __task_enqueue(t);
+  return future;
+}
+
+// A read-only plan has a non-suspending poll, not a guest continuation.
+// Preserve FIFO scheduler admission without constructing a closure or stack.
+fnc __task_spawn_plan(int p, int snapshot, int fairMode): int {
+  val future = __fut_new();
+  val t = __task_acquire_record();
+  __store(t, 0, future);
+  __store(t, 8, p);
+  __store(t, 24, snapshot);
+  __store(t, 40, fairMode);
+  __task_enqueue(t);
   return future;
 }
 
 // Run one task until it finishes or suspends.
 fnc __resume(int t): void {
   __set_rt(1, t);
+  val plan_root = __load(t, 8);
+  if plan_root != 0 then
+    val snapshot = __load(t, 24);
+    val answer = __plan_probe(snapshot, __load(t, 40), 0);
+    if answer != 0 then
+      __plan_retire_snapshot(plan_root, snapshot);
+      __store(t, 8, 0);
+      __store(t, 24, 0);
+      __store(t, 40, 0);
+      __store(t, 16, 2);
+      __fut_done(__load(t, 0), answer);
+    else
+      __store(t, 16, 1);
+    fi
+    __set_rt(1, 0);
+    return;
+  fi
   val base = __load(t, 32);
   __set_fend(base + 4096);
   if __load(t, 16) == 0 then
@@ -559,11 +596,12 @@ fnc __plan_from_list(int cases, int dynamic): int {
   return p;
 }
 
-// Internal probe returns a raw SelectResult pointer (0 on miss).
+// Internal probe returns a raw SelectResult pointer (0 on miss), or the
+// public Option wrapper when requested; all escaping storage precedes commit.
 // Each SelectResult occupies [index, value]; no temporary Option is needed.
 // The case-to-read handoff is atomic within this cooperative guest runtime.
 // FAIR only advances when a read commits; first is stable lexical priority.
-fnc __plan_probe(int p, int fairMode): int {
+fnc __plan_probe(int p, int fairMode, int wrapResult): int {
   val n = __load(p, 0);
   // A live plan may have all its dynamic slots removed; never spin forever.
   if n == 0 then __panic(10); fi
@@ -587,6 +625,8 @@ fnc __plan_probe(int p, int fairMode): int {
         // All ownership checks and readiness observation are in this
         // non-suspending turn. Allocate the escaping result BEFORE consuming.
         val winner = __alloc(16);
+        let result = winner;
+        if wrapResult != 0 then result = __some(winner); fi
         __store(winner, 0, i);
         __store(winner, 8, __chan_take(ch));
         if fairMode != 0 then
@@ -594,7 +634,7 @@ fnc __plan_probe(int p, int fairMode): int {
           if next >= n then next = 0; fi
           __store(__load(p, 40), 0, next);
         fi
-        return winner;
+        return result;
       fi
       // Separate predicates avoid parser treating else-if as elif.
       if bufferedCount == 0 then
@@ -611,9 +651,7 @@ fnc __plan_probe(int p, int fairMode): int {
 
 // Only the public immediate probe exposes Option<SelectResult>.
 fnc __plan_try(int p, int fairMode): int {
-  val winner = __plan_probe(p, fairMode);
-  if winner == 0 then return 0; fi
-  return __some(winner);
+  return __plan_probe(p, fairMode, 1);
 }
 
 fnc __plan_size(int p): int {
@@ -774,7 +812,7 @@ fnc __plan_retire_snapshot(int p, int snapshot): void {
 // no suspended invocation ever publishes cursor credit into a different cell.
 suspends fnc __plan_wait_result(int snapshot, int fairMode): int {
   loop do
-    val got = __plan_probe(snapshot, fairMode);
+    val got = __plan_probe(snapshot, fairMode, 0);
     if got != 0 then return got; fi
     __suspend();
   done
@@ -791,11 +829,7 @@ suspends fnc __plan_wait(int p, int fairMode): int {
 
 fnc __plan_nb(int p, int fairMode): int {
   val snapshot = __plan_snapshot(p);
-  return task {
-    val answer = await __plan_wait_result(snapshot, fairMode);
-    __plan_retire_snapshot(p, snapshot);
-    return answer;
-  };
+  return __task_spawn_plan(p, snapshot, fairMode);
 }
 
 // ------------------------------------------------------------------ actors
