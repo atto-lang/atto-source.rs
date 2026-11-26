@@ -136,3 +136,19 @@ fn braced_and_expression_forms_preserve_body_kinds() {
         assert_eq!(actual, expected, "{source}");
     }
 }
+
+#[test]
+fn lambda_depth_budget_rejects_without_host_stack_growth() {
+    use atto_compiler::parser::MAX_LAMBDA_DEPTH;
+    for depth in [1, 4, 8, MAX_LAMBDA_DEPTH] {
+        let expr=format!("{}1", "|x| -> ".repeat(depth as usize));
+        assert!(parsed(&expr).is_ok(), "depth {depth}");
+    }
+    for depth in [MAX_LAMBDA_DEPTH+1, 150, 1000] {
+        let expr=format!("{}1", "|x| -> ".repeat(depth as usize));
+        assert_eq!(parsed(&expr).unwrap_err().code,"E_NESTING", "depth {depth}");
+    }
+    let deep_type=format!("{}int{}", "Box<".repeat(40), ">".repeat(40));
+    assert_eq!(parsed(&format!("|n| : {deep_type} -> n")).unwrap_err().code,"E_NESTING");
+    assert_eq!(parsed(&format!("|n| -> {deep_type} {{ return n; }}")).unwrap_err().code,"E_NESTING");
+}

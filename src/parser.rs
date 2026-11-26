@@ -10,6 +10,10 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+// Lambda bodies traverse the entire expression precedence stack per level.
+// Bound that expensive recursion independently of the general AST budget.
+pub const MAX_LAMBDA_DEPTH: u32 = 16;
+const MAX_LAMBDA_TYPE_DEPTH: u32 = 32;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -252,6 +256,8 @@ pub struct Parser {
     /// Scoped to the right operand of an Entry arrow. A following
     /// (as Entry<K,V>) annotates the whole Entry, never only the RHS.
     entry_rhs_depth: u32,
+    lambda_depth: u32,
+    lambda_type_depth: u32,
 }
 
 struct TypeFirstField {
@@ -306,6 +312,8 @@ impl Parser {
             state_method: false,
             state_binder: None,
             entry_rhs_depth: 0,
+            lambda_depth: 0,
+            lambda_type_depth: 0,
         }
     }
 
@@ -3093,7 +3101,11 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        if self.lambda_type_depth >= MAX_LAMBDA_TYPE_DEPTH {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING", "lambda type nesting budget exceeded"));
+        }
         self.enter()?;
+        self.lambda_type_depth += 1;
         let result = (|| {
             let mut name = match self.peek().clone() {
                 Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
@@ -3125,11 +3137,22 @@ impl Parser {
             }
             Ok(name)
         })();
+        self.lambda_type_depth -= 1;
         self.leave();
         result
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        if self.lambda_depth >= MAX_LAMBDA_DEPTH {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING", "lambda body nesting budget exceeded"));
+        }
+        self.lambda_depth += 1;
+        let result = self.parse_lambda_inner();
+        self.lambda_depth -= 1;
+        result
+    }
+
+    fn parse_lambda_inner(&mut self) -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
