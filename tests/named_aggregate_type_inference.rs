@@ -17,6 +17,13 @@ fn named_scalar_aggregate_reuse_emits_checked_guest() {
     let bytes=compile(POSITIVE).expect("named aggregate scalar guest");
     assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(bytes,compile(POSITIVE).unwrap());
+    assert_guest_result(&bytes, 42);
+    // The second literal's values must be observed, not the exemplars.
+    let different = POSITIVE.replace("c=10", "c=11")
+        .replace("false,\"abc\",12", "false,\"abc\",14")
+        .replace("c:20", "c:23");
+    let changed = compile(&different).expect("different aggregate values");
+    assert_guest_result(&changed, 48);
 }
 #[test]
 fn malformed_or_mismatched_shapes_emit_no_guest() {
@@ -43,4 +50,36 @@ fn no_whole_aggregate_or_runtime_identity_escape() {
         let source=format!("pub fnc main(): int {{ const Record<infer T> r=(a=1); return {result}; }}");
         assert!(compile(&source).is_err(),"{source}");
     }
+}
+
+// Execute the actual emitted bytes in the engine already used by browser CI.
+// No mock compiler, skipped engine, or magic-header-only success.
+fn assert_guest_result(bytes: &[u8], expected: i64) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("node")
+        .args(["-e", r#"
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+(async () => {
+  const bytes = fs.readFileSync(0);
+  assert.ok(WebAssembly.validate(bytes));
+  const {instance} = await WebAssembly.instantiate(bytes, {atto: {}});
+  assert.equal(typeof instance.exports.main, 'function');
+  assert.equal(instance.exports.main(), BigInt(process.argv[1]));
+  if (instance.exports.panic_code)
+    assert.equal(instance.exports.panic_code.value, 0);
+})().catch(err => { console.error(err); process.exitCode = 1; });
+"#])
+        .arg(expected.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Node is required for actual Wasm execution");
+    child.stdin.take().expect("guest stdin").write_all(bytes)
+        .expect("send Wasm bytes to engine");
+    let output = child.wait_with_output().expect("wait for Wasm engine");
+    assert!(output.status.success(), "guest execution failed: {}",
+        String::from_utf8_lossy(&output.stderr));
 }
