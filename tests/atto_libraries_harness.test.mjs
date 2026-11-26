@@ -32,3 +32,23 @@ test('missing baseline corpus cannot be reported as a pass', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Unix shell wrappers sometimes translate a killed process into an ordinary
+// numerical exit. Neither that status nor a diagnostic is proof of rejection.
+test('signal-style exits from compiler wrappers are not successful rejections', () => {
+  const root = mkdtempSync(join(tmpdir(), 'atto-library-abnormal-test-'));
+  try {
+    const script=join(root,'runner.mjs'), corpus=join(root,'atto_libraries');
+    copyFileSync(new URL('./atto_libraries.mjs',import.meta.url),script);
+    mkdirSync(corpus);
+    for (const name of names) writeFileSync(join(corpus,name+'.atto'),name.startsWith('neg_')?'// expect-reject\n// expect-error: type error\n':'// expect-exit: 42\n');
+    const compiler=join(root,'compiler');
+    for(const status of [1,128,137,139,255]) {
+      writeFileSync(compiler,'#!/bin/sh\nprintf "type error\\n" >&2\nexit '+status+'\n',{mode:0o700});
+      const result=spawnSync(process.execPath,[script,compiler],{encoding:'utf8',timeout:10000});
+      assert.equal(result.status,1);
+      assert.match(result.stdout,status===1?/7\/16 passed/:/0\/16 passed/);
+      if(status!==1) assert.match(result.stdout,/abnormal compiler exit/);
+    }
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
