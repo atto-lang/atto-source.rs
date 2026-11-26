@@ -4098,9 +4098,8 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
-        // Keep the recursive operand traversal out of the large typed
-        // construction frame. The parser's tree-height guard still applies,
-        // and evaluation order and ownership tracing remain left-to-right.
+        // Keep recursive traversal out of the large typed construction frame.
+        // Preserve left-to-right evaluation and the existing parser budget.
         let a = self.value(l)?;
         let b = self.value(r)?;
         self.binary_values(op, a, b, pos)
