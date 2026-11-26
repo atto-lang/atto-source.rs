@@ -148,3 +148,35 @@ fn unsupported_scopes_never_become_public_fields() {
         assert!(compile(&src).is_err(), "{scope} must fail closed");
     }
 }
+
+#[test]
+fn public_class_header_spellings_share_the_same_ast_and_guest_admission() {
+    for header in ["define pub class", "pub define class"] {
+        let src = format!("{header} Vault as pub int value: 42; end pub fnc main(): int {{ return new Vault().value; }}");
+        let mut parser = Parser::new(lex(&src).unwrap());
+        let program = parser.parse_program().unwrap();
+        assert_eq!(program.classes.len(), 1);
+        assert!(program.classes[0].public);
+        compiled(&src);
+        let private = src.replace("pub int value", "private int value");
+        rejected(&private, "E_PRIVATE");
+    }
+}
+
+#[test]
+fn canonical_class_header_never_widens_other_declaration_kinds() {
+    let private = "define class Vault as end pub fnc main(): int { return 42; }";
+    let mut parser = Parser::new(lex(private).unwrap());
+    assert!(!parser.parse_program().unwrap().classes[0].public);
+    for header in ["pub define pub class", "define pub pub class"] {
+        let src = format!("{header} Vault as end pub fnc main(): int {{ return 42; }}");
+        assert!(Parser::new(lex(&src).unwrap()).parse_program().is_err());
+        assert!(compile(&src).is_err());
+    }
+    for src in [
+        "define pub actor Worker as end pub fnc main(): int { return 42; }",
+        "define pub enum Status as Ready end pub fnc main(): int { return 42; }",
+    ] {
+        assert!(compile(src).is_err());
+    }
+}
