@@ -278,14 +278,14 @@ fn closing(t:&[Token],open:usize) -> R<usize> {
         return Err(error(pos,"E_SYNTAX","expected '(' for product arguments"));
     }
     let mut expected=Vec::<Tok>::new();
-    for i in open..t.len() {
-        match &t[i].tok {
+    for (i, token) in t.iter().enumerate().skip(open) {
+        match &token.tok {
             Tok::LParen=>expected.push(Tok::RParen),
             Tok::LBrace=>expected.push(Tok::RBrace),
             Tok::LBracket=>expected.push(Tok::RBracket),
             Tok::RParen|Tok::RBrace|Tok::RBracket=>{
-                if expected.pop().as_ref()!=Some(&t[i].tok) {
-                    return Err(error(t[i].pos,"E_SYNTAX","mismatched product argument delimiter"));
+                if expected.pop().as_ref()!=Some(&token.tok) {
+                    return Err(error(token.pos,"E_SYNTAX","mismatched product argument delimiter"));
                 }
                 if expected.is_empty() {return Ok(i);}
             }

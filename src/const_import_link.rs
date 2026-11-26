@@ -105,20 +105,21 @@ fn file_constants_tokens(tokens: &[Token]) -> R<BTreeMap<String, ConstExport>> {
 
 // The declaration scanner is shared by the relative and frozen registry lanes.
 // Function ranges exclude EOF and never include a constant declaration.
-fn provider_declarations(tokens: &[Token]) -> R<(BTreeMap<String, ConstExport>, Vec<std::ops::Range<usize>>)> {
+type ProviderDeclarations = (BTreeMap<String, ConstExport>, Vec<std::ops::Range<usize>>);
+fn provider_declarations(tokens: &[Token]) -> R<ProviderDeclarations> {
     reject_reserved(tokens)?;
     let mut functions = Vec::new();
     let mut i = 0usize;
     let mut exports = BTreeMap::new();
     while tokens.get(i).is_some_and(|t| t.tok != Tok::Eof) {
         let pos = tokens[i].pos;
-        if i == 0 && word(&tokens, i, "use") {
+        if i == 0 && word(tokens, i, "use") {
             i += 1;
-            expect_word(&tokens, &mut i, "namespace", pos)?;
-            get_ident(&tokens, &mut i, pos)?;
+            expect_word(tokens, &mut i, "namespace", pos)?;
+            get_ident(tokens, &mut i, pos)?;
             while tokens.get(i).is_some_and(|t| t.tok == Tok::Dot) {
                 i += 1;
-                get_ident(&tokens, &mut i, pos)?;
+                get_ident(tokens, &mut i, pos)?;
             }
             if tokens.get(i).is_none_or(|t| t.tok != Tok::Semi) {
                 return Err(fail(pos, "E_SYNTAX", "expected ';' after source namespace"));
@@ -127,13 +128,13 @@ fn provider_declarations(tokens: &[Token]) -> R<(BTreeMap<String, ConstExport>, 
             continue;
         }
         let declaration_start = i;
-        let public = if word(&tokens, i, "pub") { i += 1; true } else { false };
-        if word(&tokens, i, "fnc") {
+        let public = if word(tokens, i, "pub") { i += 1; true } else { false };
+        if word(tokens, i, "fnc") {
             // Preserve negative kind evidence without executing or linking
             // imported functions. Only braced direct callable declarations
             // are recognized; their bodies are never evaluated.
             i += 1;
-            let name = get_ident(&tokens, &mut i, pos)?;
+            let name = get_ident(tokens, &mut i, pos)?;
             let start = i;
             while tokens.get(i).is_some_and(|t| !matches!(t.tok, Tok::LBrace | Tok::Eof)) {
                 i += 1;
@@ -183,19 +184,19 @@ fn provider_declarations(tokens: &[Token]) -> R<(BTreeMap<String, ConstExport>, 
             }
             continue;
         }
-        expect_word(&tokens, &mut i, "define", pos)?;
-        let public_define = if word(&tokens, i, "pub") { i += 1; true } else { false };
+        expect_word(tokens, &mut i, "define", pos)?;
+        let public_define = if word(tokens, i, "pub") { i += 1; true } else { false };
         if public && public_define {
             return Err(fail(pos, "E_SYNTAX", "duplicate pub modifier on constant"));
         }
         let public = public || public_define;
-        expect_word(&tokens, &mut i, "const", pos)?;
-        let ty = get_ident(&tokens, &mut i, pos)?;
+        expect_word(tokens, &mut i, "const", pos)?;
+        let ty = get_ident(tokens, &mut i, pos)?;
         if !matches!(ty.as_str(), "int" | "bool" | "string") {
             return Err(fail(pos, "E_UNSUPPORTED", "only scalar int/bool/string file constants are linkable"));
         }
-        let name = get_ident(&tokens, &mut i, pos)?;
-        if tokens.get(i).is_some_and(|t| t.tok == Tok::Assign) || word(&tokens, i, "as") {
+        let name = get_ident(tokens, &mut i, pos)?;
+        if tokens.get(i).is_some_and(|t| t.tok == Tok::Assign) || word(tokens, i, "as") {
             i += 1;
         } else {
             return Err(fail(pos, "E_SYNTAX", "expected = or as in static constant"));

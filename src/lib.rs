@@ -72,6 +72,7 @@ mod secure_fs;
 pub mod sha256;
 /// Canonical cache-key envelope only; no artifact reuse authority.
 pub mod compiler_cache_key;
+pub mod incremental;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
