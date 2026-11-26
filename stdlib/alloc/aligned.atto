@@ -14,7 +14,7 @@ define pub module aligned as
   // -1 denotes invalid alignment, invalid address, or arithmetic overflow.
   pub fnc padding_for(int address, int alignment): int {
     if address < 0 || address > 2147483647 ||
-       !valid_alignment(alignment); do
+       !aligned.valid_alignment(alignment); do
       return -1;
     fi
     // Both inputs are checked nonnegative and alignment is strictly positive.
@@ -27,7 +27,7 @@ define pub module aligned as
   }
 
   pub fnc align_up(int value, int alignment): int {
-    val int padding = padding_for(value, alignment);
+    val int padding = aligned.padding_for(value, alignment);
     if padding < 0 || value > 2147483647 - padding; do
       return -1;
     fi
@@ -37,7 +37,7 @@ define pub module aligned as
   // Worst-case space needed for an aligned payload from an unknown base.
   // This is an OVERALLOCATION PLAN, not a physical aligned allocation.
   pub fnc backing_bytes(int payload_bytes, int alignment): int {
-    if payload_bytes < 0 || !valid_alignment(alignment); do
+    if payload_bytes < 0 || !aligned.valid_alignment(alignment); do
       return -1;
     fi
     if payload_bytes > 2147483647 - (alignment - 1); do
@@ -54,7 +54,7 @@ define pub module aligned as
        payload_bytes > backing_size; do
       return -1;
     fi
-    val int padding = padding_for(base_address, alignment);
+    val int padding = aligned.padding_for(base_address, alignment);
     if padding < 0 || padding > backing_size - payload_bytes; do
       return -1;
     fi
@@ -63,7 +63,7 @@ define pub module aligned as
 
   pub fnc pages_for(int bytes, int page_bytes): int {
     if bytes < 0 || bytes > 2147483647 ||
-       !valid_alignment(page_bytes); do
+       !aligned.valid_alignment(page_bytes); do
       return -1;
     fi
     if bytes == 0; do
