@@ -429,6 +429,35 @@ mod tests {
     }
 
     #[test]
+    fn production_ast_checks_detached_and_nested_unsafe_contexts() {
+        fn analyze_source(source: &str) -> Result<crate::ast::Program, Diagnostic> {
+            crate::parser::Parser::new(lexer::lex(source)?)
+                .parse_program_for_unsafe_analysis()
+        }
+        let decl = "pub unsafe fnc trusted(): int { return 42; } ";
+        for (body, expected) in [
+            ("unsafe { val callback = || -> trusted(); } return 42;", "E_UNSAFE_CALL"),
+            ("unsafe { val callback = |n|: Tuple<int, int, int, int, int, int, int, int, int, int, int, int> -> trusted(); } return 42;", "E_UNSAFE_CALL"),
+            ("unsafe { defer { trusted(); }; } return 42;", "E_UNSAFE_CALL"),
+            ("unsafe { unsafe { } } return trusted();", "E_UNSAFE_CONTEXT"),
+            ("unsafe { val callback = trusted; } return 42;", "E_UNSAFE_CALL"),
+        ] {
+            let source = format!("{decl}pub fnc main(): int {{ {body} }}");
+            assert_eq!(analyze_source(&source).unwrap_err().code, expected, "{source}");
+            assert!(compile(&source).is_err(), "guest must not admit unsafe source");
+        }
+        for body in [
+            "unsafe { unsafe { } return trusted(); }",
+            "unsafe { val callback = || -> { unsafe { return trusted(); } }; } return 42;",
+            "unsafe { defer { unsafe { trusted(); } }; } return 42;",
+        ] {
+            let source = format!("{decl}pub fnc main(): int {{ {body} }}");
+            let program = analyze_source(&source).expect("explicit AST scope is valid for analysis");
+            assert_eq!(crate::check::check(&program).unwrap_err().code, "E_UNSAFE_DOMAIN");
+        }
+    }
+
+    #[test]
     fn forged_nested_expression_lambdas_are_denied_before_lowering() {
         use crate::ast::{ClassDecl, Expr, ExprKind, Field, FieldBinding,
             FieldMode, FieldVisibility, LambdaBody, Stmt, Type};
