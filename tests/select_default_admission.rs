@@ -8,7 +8,7 @@ fn default_only_procedural_select_uses_normal_checked_blocks() {
         "pub fnc main(): int { do select first over default: { return 42; } end return 99; }",
         "pub fnc main(): int { let n: int = 40; do select fair { default: { n = n + 2; } } return n; }",
         "pub fnc main(): int { do select random over default: { do select { default: { return 42; } } } end return 99; }",
-        "pub fnc main(): int { let n: int = 0; loop { do select { default: { n = n + 1; if n < 42 { continue; } break; } } } return n; }",
+        "pub fnc main(): int { let n: int = 0; loop { do select { default: { n = n + 1; if n < 42 then continue; fi break; } } } return n; }",
     ] {
         let bytes = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
         assert!(bytes.starts_with(b"\0asm"), "{source}");
