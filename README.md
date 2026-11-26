@@ -1,5 +1,50 @@
 > **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/atto-lang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
 
+## Bounded relative-file constant import guest candidate (not CI-verified)
+
+This branch implements a first **scalar-literal-only** executable import path:
+
+```atto
+// config.atto
+define pub const int status_valid = 200;
+
+// main.atto
+import const status_valid as ok from "./config.atto";
+pub fnc main(): int { return ok; }
+```
+
+`src/const_import_link.rs` accepts only directly declared public/private
+`int`, `bool`, and `string` literal values in bounded one-hop relative
+`.atto` files. It checks declared type against the literal, visibility,
+duplicate aliases, assignment attempts, caller-supplied path normalization,
+and other unsupported uses. Proven scalar literals enter the existing
+production type checker and Wasm emitter, with no runtime mutable global.
+
+**Remaining unsupported:** package selector `"std.http"`, mixed kinds of
+import, initializer expressions, and runtime-once `std.env.read_env` /
+legacy `os.read_env`. In particular, the build host environment must
+**never** be substituted for a guest startup environment. These forms
+fail closed rather than producing an unverified guest executable.
+The native CLI must separately canonicalize the actual file it loads.
+
+The added Rust `tests/const_import_link.rs` and Node
+`tests/constant_import_guest.mjs` tests cover a Wasm guest and negative
+no-artifact paths, including symlink escape denial. Once source-owned CI
+admits a real runner, verify with:
+
+```sh
+cargo test --locked --test const_import_link
+cargo test --locked --test constant_import_syntax
+cargo build --locked --release --bin attoc
+ATTOC=target/release/attoc node tests/constant_import_guest.mjs
+```
+
+**Evidence:** not executed on exact head, no positive guest CI claim.
+The source repository's private-source export allowlist currently has
+zero destinations approved; do not use cross-org Git-tree mirroring
+without a separately authenticated, reviewed authorization and active
+export guard.
+
 ## Named callable return annotations (strict target)
 
 Under the new strict named-callable rule, every function, routine, class/actor method (including static and out-of-line methods) and actor `receive` handler must explicitly specify a result. Write `-> int`, `-> void`, or opt into `-> infer`. The `: T` / `: infer` spelling is also legal; concrete types are preferred. Missing annotations produce `E_RETURN_ANNOTATION`, never a silently inferred `void`. Constructors and contextual lambdas are separate grammar categories.
@@ -440,9 +485,38 @@ These are recorded in fixtures and checked by the differential run:
 v2 extends v1. Every v1 guest is still a valid v2 guest.
 
 - **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; 2 reserved; 3 = heap exhausted; 4 = invalid generator handle/state; 5 = generator dispatch budget; 6 = logical stack exhausted: a call on a recursive cycle would exceed 1024 live recursive frames per `main` or receive invocation, the same quota as the Java backend. Only calls on a recursive cycle of the call graph are counted, so modules without recursion are byte-identical to before). `memory` is exported when strings, classes, **or actors** exist. Scalar-only actor modules export one bounded 64 KiB Wasm32 memory per instance; allocating classes or concatenating strings uses the existing fixed 16-page (1 MiB) memory. This is guest linear memory, not a suspended Wasm execution stack. A string value is an `i64` `offset << 32 | len` into that memory.
-- **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)`, `print_newline()` and `print_f64(f64)` (the host renders Java `Double.toString`; `tests/java-double.mjs`), plus, when the program spawns actors, `actor_spawn(i32 type) -> i32 ref` and `actor_send(i32 ref, i64 value)`. There are no other capabilities.
+- **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)`, `print_newline()` and `print_f64(f64)` (the host renders Java `Double.toString`; `tests/java-double.mjs`), plus, when the program spawns actors, `actor_spawn(i32 type) -> i32 ref` and `actor_send(i32 ref, i64 value)`. Scoped telemetry adds `trace_span_begin(i32 offset, i32 length) -> i64` and `trace_span_end(i64 token)` for compiled scope sites.
 - **Actors:** a program with actors also exports `actor_init(i32 type)` and `actor_receive(i32 type, i64 value, i64 sequence)`, and carries a custom section `atto.actors` listing actor type names in type order. The host runs each spawned actor in its own instance of the same compiled module. Worker topology is a separate host concern; an upgraded tenant host can schedule multiple actor instances within one Worker. It calls `actor_init` once and then `actor_receive` once per message, in FIFO order with sequence numbers from 0. Actor state lives in that instance's globals, so actors share no memory. Bool mail is passed as 0 or 1.
 - **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.
+
+### Synchronous scoped spans
+
+`using telemetry.span("checkout") as span { ... }` accepts one nonempty
+string literal in a synchronous top-level function. The operation bytes are
+passed to the host using the guest's exported `memory`. The compiler keeps
+the token private and closes recorded scopes on fallthrough, return, `?`,
+or escaping guest exceptions. Scope observers, suspension and control
+transfers across an enclosing loop boundary require further lowering.
+
+Bind a recorder per instance using the reference host
+`runtime/scoped-telemetry.mjs`:
+
+```js
+import { createScopedTelemetry } from './runtime/scoped-telemetry.mjs';
+
+const telemetry = createScopedTelemetry();
+const guest = new WebAssembly.Instance(module, { atto: telemetry.imports });
+telemetry.bindMemory(guest.exports.memory);
+telemetry.setEnabled(true);
+const result = telemetry.invoke(guest.exports.main);
+const spans = telemetry.drain();
+```
+
+Hosts can supply the guest's other imports alongside the recorder. Recording
+starts disabled. A disabled begin returns token zero, and end accepts zero
+as a no-op. The host's `invoke` boundary retires any remaining frames after
+a fatal Wasm trap, preserving the trap. The reference host records bounded
+carrier-local receipts with parent token IDs.
 
 ## Compiler ABI v2 (wasm32 build)
 

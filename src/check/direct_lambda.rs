@@ -34,6 +34,7 @@ fn literal_type(e: &Expr) -> Option<Type> {
         ExprKind::Bool(_) => Some(Type::Bool),
         ExprKind::Float(_) => Some(Type::Float),
         ExprKind::Str(_) => Some(Type::Str),
+        ExprKind::Ascribe(inner, ty, _) => literal_type(inner).filter(|found| found == ty),
         ExprKind::Unary(UnOp::Plus | UnOp::Neg, inner) if
             matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_)) => literal_type(inner),
         _ => None,
@@ -259,6 +260,13 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
         }
         Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
             "direct lambda rewriting cannot cross a protected state loan")),
+        Stmt::UsingTelemetry { alias, body, pos, .. } => {
+            if *alias == d.source {
+                return Err(error(*pos, "E_TELEMETRY_ALIAS",
+                    "span alias cannot shadow a direct lambda"));
+            }
+            rewrite_statements(body, d)
+        }
         Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
             rewrite_expr(e, d),
         Stmt::Try { body, catch, finally, .. } => {
@@ -368,7 +376,8 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         // escape. Traverse their operand before the ordinary ownership checker
         // validates move/borrow/copy semantics.
         ExprKind::Ownership(_, _, x) | ExprKind::Unary(_, x) |
-        ExprKind::Trap(x) | ExprKind::Propagate(x) => rewrite_expr(x, d),
+        ExprKind::Trap(x) | ExprKind::Propagate(x) |
+        ExprKind::Ascribe(x, _, _) => rewrite_expr(x, d),
         ExprKind::Binary(_, x, y) => {
             rewrite_expr(x, d)?;
             rewrite_expr(y, d)
@@ -427,7 +436,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // otherwise a missed free-variable use could escape capture analysis.
         ExprKind::Int(_) | ExprKind::Float(_) |
         ExprKind::Bool(_) | ExprKind::Str(_) => {},
-        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) =>
+        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) |
+        ExprKind::Ascribe(a, _, _) =>
             free_names(a, names, depth + 1)?,
         ExprKind::Call(_, args) | ExprKind::New(_, args) |
         ExprKind::Array(args) => {
@@ -460,6 +470,7 @@ fn stmt_pos(s: &Stmt) -> Pos {
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
         Stmt::Raise(_, pos) | Stmt::Try { pos, .. } | Stmt::Defer { pos, .. } | Stmt::Recover { pos, .. } |
+        Stmt::UsingTelemetry { pos, .. } |
         Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) |
         Stmt::Return(_, pos) | Stmt::Break(pos) |
         Stmt::Continue(pos) => *pos,

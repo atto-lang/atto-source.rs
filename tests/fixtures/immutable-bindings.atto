@@ -1,0 +1,9 @@
+// Canonical immutable-by-default scalar binding spellings.
+pub fnc main(): int {
+  int base = 39;
+  const increment = 1;
+  const int additional = 1;
+  val result = base + increment + additional;
+  const final_value: int = result + 1;
+  return final_value;
+}

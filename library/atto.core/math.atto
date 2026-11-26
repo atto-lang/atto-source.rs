@@ -1,0 +1,21 @@
+// Rust/Wasm compiler-owned freestanding Atto core math candidate.
+// Checked int semantics; no host functions, allocator, OS or actor scheduler.
+define module math as
+  pub fnc min_int(int a, int b): int {
+    if a < b; do return a; fi
+    return b;
+  }
+  pub fnc max_int(int a, int b): int {
+    if a > b; do return a; fi
+    return b;
+  }
+  pub fnc signum_int(int n): int {
+    if n < 0; do return -1; fi
+    if n > 0; do return 1; fi
+    return 0;
+  }
+  pub fnc contains_closed_int(int n, int lo, int hi): bool {
+    if lo > hi; do return false; fi
+    return lo <= n && n <= hi;
+  }
+end

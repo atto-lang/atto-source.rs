@@ -1,0 +1,13 @@
+// expect-exit: 42
+import module option from "atto.core/option";
+import module result from "atto.core/result";
+pub fnc main(): int {
+  val int o = option.unwrap_or(option.or(option.from_bool(false, 1), option.from_bool(true, 30)), 0);
+  val int none_flag = option.is_none(option.from_bool(false, 1)) ? 1 : 0;
+  val int some_flag = option.is_some(option.from_bool(true, 1)) ? 1 : 0;
+  val int r = result.unwrap_or(result.or(option.ok_or(option.from_bool(false, 1), 5), option.ok_or(option.from_bool(true, 10), 0)), 0);
+  val int err_flag = result.is_err(option.ok_or(option.from_bool(false, 1), 5)) ? 1 : 0;
+  val int ok_flag = result.is_ok(option.ok_or(option.from_bool(true, 1), 5)) ? 1 : 0;
+  val int back = option.unwrap_or(result.ok(option.ok_or(option.from_bool(true, 30), 5)), 0);
+  return o + none_flag + some_flag + r + err_flag + ok_flag + back - 32;
+}

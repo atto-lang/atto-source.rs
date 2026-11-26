@@ -1,0 +1,8 @@
+// std/path, POSIX variant (Linux, macOS, BSD). Import as "std/path".
+define module path as
+  pub fnc separator_code(): int { return 47; }
+  pub fnc list_separator_code(): int { return 58; }
+  pub fnc is_separator_code(int code): bool { return code == 47; }
+  pub fnc is_windows(): bool { return false; }
+  pub fnc join(string parent, string child): string { return parent + "/" + child; }
+end

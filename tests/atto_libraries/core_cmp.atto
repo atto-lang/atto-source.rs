@@ -1,0 +1,7 @@
+// expect-exit: 42
+import module cmp from "atto.core/cmp";
+pub fnc main(): int {
+  val int order = cmp.compare(1, 2) + cmp.compare(2, 2) + cmp.compare(3, 2);
+  val int bounds = cmp.between(5, 1, 9) ? 30 : 0;
+  return order + bounds + cmp.min3(9, 4, 7) + cmp.max3(1, 8, 3);
+}
