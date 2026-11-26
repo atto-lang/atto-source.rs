@@ -97,8 +97,11 @@ impl<M, R> UnaryMailbox<M, R> {
         -> Result<Option<&ReplyOutcome<R>>, SlotFault> {
         self.reply.poll(&receipt.ticket)
     }
-    /// Consume exactly once and fence old delivery by bumping generation.
-    pub fn collect(&mut self, receipt: ReplyReceipt)
+    /// Consume the result exactly once and fence old delivery by bumping generation.
+    /// Borrow the caller receipt: a premature or foreign collection attempt must
+    /// not destroy the only authority able to cancel or reclaim a pending slot.
+    /// After success the retained receipt is stale and cannot collect again.
+    pub fn collect(&mut self, receipt: &ReplyReceipt)
         -> Result<ReplyOutcome<R>, SlotFault> {
         self.reply.receive(&receipt.ticket)
     }
