@@ -113,6 +113,8 @@ fn shift_distances_are_checked_not_masked() {
 fn xor_compound_requires_contiguous_tokens_and_integer_operands() {
     for body in ["let x: int = 12; x ^ ^= 3; return x;",
                  "let x: int = 12; x ^^ = 3; return x;",
+                 "let x: int = 12; x ^/*gap*/^= 3; return x;",
+                 "let x: int = 12; x ^^/*gap*/= 3; return x;",
                  "let x: int = 12; x ^^= true; return x;",
                  "let x: bool = true; x ^^= false; return 0;"] {
         let program = format!("pub fnc main(): int {{ {body} }}");

@@ -52,6 +52,8 @@ try {
     'let x: int = 12; x ^= 3; return x;',
     'let x: int = 12; x ^ ^= 3; return x;',
     'let x: int = 12; x ^^ = 3; return x;',
+    'let x: int = 12; x ^/*gap*/^= 3; return x;',
+    'let x: int = 12; x ^^/*gap*/= 3; return x;',
     'val x: int = 12; x ^^= 3; return x;',
     'let x: int = 12; x ^^= true; return x;',
     'return 1 <<< 64;',
@@ -82,7 +84,7 @@ try {
     assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
     assert.equal(instance.exports.panic_code.value, 7, operation);
   }
-  console.log('PASS', i, 'bitwise Wasm guests; 9 no-artifact and 3 runtime shift panic checks');
+  console.log('PASS', i, 'bitwise Wasm guests; 11 no-artifact and 3 runtime shift panic checks');
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }

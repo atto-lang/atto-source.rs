@@ -64,7 +64,9 @@ for (const body of ['val x: int = 12; x ^^= 10; return x;',
                     'let x: int = 12; x ^^= true; return x;',
                     'let x: int = 12; x ^= 10; return x;',
                     'let x: int = 12; x ^^ = 10; return x;',
-                    'let x: int = 12; x ^ ^= 10; return x;']) {
+                    'let x: int = 12; x ^ ^= 10; return x;',
+                    'let x: int = 12; x ^/*gap*/^= 10; return x;',
+                    'let x: int = 12; x ^^/*gap*/= 10; return x;']) {
   assert.equal(compile(`pub fnc main(): int { ${body} }`).ok, false, body);
 }
 
