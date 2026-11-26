@@ -1,0 +1,38 @@
+// expect-exit: 42
+// expect-stdout: returned once
+// expect-stdout: thrown once
+// Both paths preserve the original Error, with one evaluation per operand.
+fnc returned(Error original): Result<int,Error> {
+  stdio.println("returned once");
+  return Err(original);
+}
+fnc thrown(Error original): int throws(Error) {
+  stdio.println("thrown once");
+  throw original;
+}
+pub fnc main(): int {
+  val Error original = Error("same text");
+  val Error distinct = Error("same text");
+  val Result<int,Error> r = trap returned(original);
+  val Result<int,Error> t = trap thrown(original);
+  match r over
+    on Ok(v) -> { return 1; }
+    on Err(e) -> {
+      if e.is_same_instance(original) then
+        if e.is_same_instance(distinct) then return 2; fi
+      else return 3;
+      fi
+    }
+  end
+  match t over
+    on Ok(v) -> { return 4; }
+    on Err(e) -> {
+      if e.is_same_instance(original) then
+        if e.is_same_instance(distinct) then return 5;
+        else return 42;
+        fi
+      else return 6;
+      fi
+    }
+  end
+}
