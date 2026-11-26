@@ -32,7 +32,23 @@ const two = `pub fnc main(): int {
     stdio.println(q.is_origin());
     return 0;
 }`;
+const overloaded = decl.replace('    mtd int • sum()', `    constructor(bool flag, int y) { self.x = flag ? 1 : 0; self.y = y; }
+    mtd int • pick(int n) { return self.x + n; }
+    mtd pick(bool b) : int { return b ? self.y : self.x; }
+    mtd int • sum()`);
+const overloadMain = `pub fnc main(): int {
+    let enabled = true;
+    let p = Point(enabled, 20);
+    let q = Point(10, 20);
+    stdio.println(p.sum());
+    stdio.println(q.pick(p.is_origin()));
+    stdio.println(q.pick(p.sum()));
+    return 0;
+}`;
 const positives = [
+    ['same-arity-overloads', overloaded + '\n' + overloadMain, '21\n10\n31\n'],
+    ['exact-overload-expression-types', overloaded + '\n' + overloadMain.replace('Point(enabled, 20)', 'Point(1 == 1, 20)').replace('q.pick(p.sum())', 'q.pick(p.sum() + 1)'), '21\n10\n32\n'],
+
     ['type-first-binding', decl + '\n' + main.replace('let p =', 'let Point p ='), '30\n200\nfalse\n'],
     ['postfix-type-binding', decl + '\n' + main.replace('let p =', 'let p: Point ='), '30\n200\nfalse\n'],
     ['independent-scalar-copies', decl + '\n' + main.replace('    stdio.println(p.sum());', '    let Point q = p;\n    let r: Point = copy! q;\n    stdio.println(r.sum());'), '30\n200\nfalse\n'],
@@ -45,6 +61,11 @@ const positives = [
     ['origin', decl + '\n' + main.replace('10, 20', '0, 0'), '0\n0\ntrue\n'],
 ];
 const negatives = [
+    ['overload-no-exact-constructor', overloaded + '\n' + overloadMain.replace('Point(enabled, 20)', 'Point(enabled, true)')],
+    ['overload-no-exact-method', overloaded + '\n' + overloadMain.replace('q.pick(p.sum())', 'q.pick("bad")')],
+    ['overload-return-only-duplicate', overloaded.replace('mtd pick(bool b) : int', 'mtd pick(int b) : bool') + '\n' + overloadMain],
+    ['overload-wrong-typed-local', overloaded + '\n' + overloadMain.replace('let enabled = true;', 'let int enabled = true;')],
+
     ['wrong-owner-annotation', decl + '\n' + main.replace('let p =', 'let Other p =')],
     ['scalar-annotation-on-struct', decl + '\n' + main.replace('let p =', 'let int p =')],
     ['runtime-const-struct', decl + '\n' + main.replace('let p =', 'const p =')],
