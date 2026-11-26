@@ -1,0 +1,11 @@
+// Negative: the owner cannot be destroyed while a shared loan is live.
+define class Data as
+  let int value = 42;
+end
+
+pub fnc main(): int {
+  val owner = new Data();
+  val loan = borrow! owner;
+  drop! owner;
+  return 0;
+}

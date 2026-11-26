@@ -1,0 +1,51 @@
+// Pure ordering, safe at signed-int endpoints (no left-right subtraction).
+// compare_* returns -1, 0, or 1; not a numeric difference. All routines
+// preserve deterministic ordering with no I/O or allocator dependency.
+use namespace atto.core.cmp;
+  pub fnc compare_int(int left, int right): int {
+    if left < right then
+      return -1;
+    fi
+    if left > right then
+      return 1;
+    fi
+    return 0;
+  }
+
+  pub fnc compare_bool(bool left, bool right): int {
+    if left == right then
+      return 0;
+    fi
+    if !left then
+      return -1;
+    fi
+    return 1;
+  }
+
+  pub fnc min_int(int left, int right): int {
+    if left <= right then
+      return left;
+    fi
+    return right;
+  }
+
+  pub fnc max_int(int left, int right): int {
+    if left >= right then
+      return left;
+    fi
+    return right;
+  }
+
+  // Inverted bounds are not silently normalized.
+  pub fnc clamp_int(int value, int lower, int upper): Option<int> {
+    if lower > upper then
+      return None;
+    fi
+    if value < lower then
+      return Some(lower);
+    fi
+    if value > upper then
+      return Some(upper);
+    fi
+    return Some(value);
+  }

@@ -1,0 +1,4 @@
+// expect-reject
+// AttoLang library units are never reachable through ores.* spellings.
+import module num from "ores.core/num";
+pub fnc main(): int { return num.max(1, 2); }

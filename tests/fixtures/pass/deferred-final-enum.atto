@@ -8,7 +8,7 @@ define class Task as
     constructor(Phase phase) { self.state = phase; }
 end
 pub fnc main(): int {
-    val task = new Task(Phase.Ready);
-    if task.state eq Phase.Ready then return 42; fi
+    val job = new Task(Phase.Ready);
+    if job.state eq Phase.Ready then return 42; fi
     return 0;
 }

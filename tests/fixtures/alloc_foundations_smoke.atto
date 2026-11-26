@@ -1,0 +1,40 @@
+// Future positive guest fixture. Do not claim executed guest coverage until
+// the backend resolves compiler-owned atto.alloc/* and actually runs main.
+import module aligned from "atto.alloc/aligned";
+import module stats from "atto.alloc/stats";
+import module secure from "atto.alloc/secure";
+
+pub fnc main(): int {
+  if !aligned.valid_alignment(4096) ||
+     aligned.valid_alignment(3) ||
+     aligned.align_up(13, 8) != 16 ||
+     aligned.align_up(2147483647, 8) != -1 ||
+     aligned.padding_for(13, 8) != 3 ||
+     aligned.backing_bytes(13, 8) != 20 ||
+     aligned.payload_offset(13, 20, 13, 8) != 3 ||
+     aligned.payload_offset(13, 15, 13, 8) != -1 ||
+     aligned.pages_for(4097, 4096) != 2; do
+    return 1;
+  fi
+
+  let mut ledger = stats.ledger(64);
+  if ledger.record_release(1) || !ledger.record_allocation(20) ||
+     !ledger.record_allocation(40) || ledger.record_allocation(5) ||
+     ledger.live() != 60 || ledger.peak() != 60 ||
+     ledger.outstanding_count() != 2 ||
+     !ledger.record_failure() || ledger.failure_count() != 1 ||
+     !ledger.record_release(40) || !ledger.record_release(20) ||
+     ledger.live() != 0 || ledger.outstanding_count() != 0 ||
+     stats.fragmented_free_bytes(100, 40) != 60; do
+    return 2;
+  fi
+
+  let mut buf = secure.scrub_buffer(2);
+  if !buf.append(12) || !buf.append(255) || buf.append(1) ||
+     buf.read_at(1) != 255 || !buf.logical_clear() ||
+     !buf.is_closed() || !buf.elements_are_zero() ||
+     buf.logical_clear(); do
+    return 3;
+  fi
+  return 42;
+}
