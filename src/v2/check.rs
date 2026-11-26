@@ -1004,9 +1004,9 @@ impl<'a> Checker<'a> {
                 // Starting a pending selection and immediately discarding its
                 // Future loses the only cancellation/retirement handle. Fail
                 // closed until structured task lifetime is guaranteed.
-                if matches!(&e.kind, Ex::PlanSelect { mode: PlanMode::Nb, .. }) {
+                if matches!(&e.kind, Ex::PlanSelect { mode: PlanMode::Future | PlanMode::Nb, .. }) {
                     return Err(err(e.pos, "E_UNSUPPORTED",
-                        "discarded 'nb select' would leave an unowned pending selection; bind and await its Future"));
+                        "discarded select would leave an unowned pending selection; bind and await its Future"));
                 }
                 let (ir, ty) = self.expr(e, None)?;
                 self.flush(out);
@@ -1539,11 +1539,10 @@ impl<'a> Checker<'a> {
                 let found = Ty::Option(Box::new(Ty::SelectResult));
                 match mode {
                     PlanMode::Try => Ok((self.rt("__plan_try", vec![p, policy]), found)),
-                    PlanMode::Nb => Ok((self.rt("__plan_nb", vec![p, policy]), Ty::Future(Box::new(found)))),
-                    PlanMode::Wait => {
-                        self.need_suspends(pos, "'select'")?;
-                        Ok((self.rt_scall("__plan_wait", vec![p, policy]), Ty::SelectResult))
-                    }
+                    PlanMode::Future | PlanMode::Nb => Ok((
+                        self.rt("__plan_nb", vec![p, policy]),
+                        Ty::Future(Box::new(Ty::SelectResult)),
+                    )),
                 }
             }
             Ex::ReadCh(mode, ch) => {
