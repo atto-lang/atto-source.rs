@@ -67,6 +67,16 @@ pub const MAX_TOKENS: usize = 32_768;
 pub const MAX_STRING_BYTES: usize = 4_096;
 
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    lex_inner(source, false)
+}
+
+/// Only compile() calls this: tagged identifier tokens must be consumed by
+/// the closed structural-tag admission pass before the ordinary parser.
+pub(crate) fn lex_tagged(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    lex_inner(source, true)
+}
+
+fn lex_inner(source: &str, allow_tag_names: bool) -> Result<Vec<Token>, Diagnostic> {
     let chars: Vec<char> = source.chars().collect();
     let mut out = Vec::new();
     let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
@@ -122,6 +132,19 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         }
         if out.len() >= MAX_TOKENS {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many tokens"));
+        }
+        if allow_tag_names && c == '#' {
+            bump!();
+            if !chars.get(i).is_some_and(|ch| ch.is_alphabetic() || *ch == '_') {
+                return Err(Diagnostic::new(pos, "E_TAG_UNSUPPORTED", "expected identifier immediately after '#'"));
+            }
+            let mut name = String::from("#");
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                name.push(chars[i]);
+                bump!();
+            }
+            out.push(Token { tok: Tok::Ident(name), pos });
+            continue;
         }
         if c.is_alphabetic() || c == '_' {
             let mut s = String::new();
