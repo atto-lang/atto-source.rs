@@ -269,7 +269,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
                         if matches!(original_tokens.get(i+1).map(|t| &t.tok),
                             Some(lexer::Tok::Ident(w)) if w == "with") {
                             if start != 0 || !matches!(tokens.first().map(|t| &t.tok),
-                                Some(lexer::Tok::Ident(w)) if w == "type") || logical_path.is_some() {
+                                Some(lexer::Tok::Ident(w)) if w == "type") {
                                 return Err(Diagnostic::new(original_tokens[start].pos, "E_UNSUPPORTED",
                                     "attached struct execution is restricted to one standalone file-local declaration"));
                             }
