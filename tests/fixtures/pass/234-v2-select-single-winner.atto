@@ -9,10 +9,10 @@ pub suspends fnc main(): int {
   val SelectPlan plan = SelectPlan.from_list([
     SelectCase.read(left), SelectCase.read(right)
   ]);
-  val Option<SelectResult> first = try select first from plan;
+  val Option<SelectResult> first_hit = try select first from plan;
   // The losing right case must still be readable from the *same* plan.
   val Option<SelectResult> second = try select fair from plan;
-  stdio.println(first.unwrap().index);
+  stdio.println(first_hit.unwrap().index);
   stdio.println(second.unwrap().index);
-  return first.unwrap().value + second.unwrap().value;
+  return first_hit.unwrap().value + second.unwrap().value;
 }
