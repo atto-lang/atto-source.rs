@@ -122,7 +122,29 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
   const actual=await outputGuest(unicode,'compile_js');
   assert.deepEqual(actual,await outputGuest(unicode,'compile'));
   assert.deepEqual(actual,{value:42n,events:[['str','⧖ ∂ π'],['newline'],['f64',-0],['newline'],['f64',NaN],['newline']]});
-  console.log('DUAL_TARGET_OUTPUT_FIXTURES=5');
+  for(const file of ['74-string-values.atto','75-string-edges.atto','82-string-concat-compare.atto']){
+    const source=readFileSync(new URL('../fixtures/pass/'+file,import.meta.url),'utf8');
+    const js=await outputGuest(source,'compile_js');
+    const wasm=await outputGuest(source,'compile');
+    assert.equal(js.value,0n,file);
+    assert.deepEqual(js,wasm,file);
+    assert.ok(js.events.length>0,file);
+  }
+  // Both emitters must trap instead of growing the bounded string heap.
+  const exhaustion='pub fnc main(): int { let s: string = "a"; for (let i=0; i<22; i=i+1) { s=s+s; } return 42; }';
+  const jsEx=await run(exhaustion);
+  const wasmEx=compile(exhaustion,'compile');
+  assert.equal(wasmEx.status,0);
+  const wasmGuest=new WebAssembly.Instance(new WebAssembly.Module(wasmEx.bytes),{}).exports;
+  assert.equal(jsEx.memory.buffer.byteLength,1048576);
+  assert.throws(()=>jsEx.main(),/E_PANIC:3/);
+  assert.throws(()=>wasmGuest.main(),WebAssembly.RuntimeError);
+  assert.equal(jsEx.panic_code.value,3);
+  assert.equal(wasmGuest.panic_code.value,3);
+  assert.equal(jsEx.memory.buffer.byteLength,wasmGuest.memory.buffer.byteLength);
+  assert.throws(()=>jsEx.memory.grow(1),RangeError);
+  console.log('DUAL_TARGET_OUTPUT_FIXTURES=8');
+  console.log('DUAL_TARGET_STRING_HEAP_EXHAUSTION_PASS');
   const overflow=await run('pub fnc main(): int { return 9223372036854775807+1; }');
   assert.throws(()=>overflow.main(),/E_PANIC:1/);
   assert.equal(overflow.panic_code.value,1);
@@ -134,7 +156,7 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
   for(const source of [
     'pub fnc main(): int { return "not an int"; }',
     'pub fnc main(): int { return 1/0; }',
-    'pub fnc main(): int { val string s = "a"; stdio.println(s); return 42; }'
+    'pub fnc main(): int { return true; }'
   ]){
     const denied=compile(source);
     assert.notEqual(denied.status,0,source);
