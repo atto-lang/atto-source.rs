@@ -1,0 +1,11 @@
+// expect-error: E_STATE_BORROW
+define class Cell as
+    pub let int n = 0;
+end
+define state container Account as
+    state { let int balance = 0; }
+    pub snapshot(): Cell {
+        return state_ro(|s| -> { return new Cell(); });
+    }
+end
+pub fnc main(): int { return 0; }
