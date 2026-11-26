@@ -76,3 +76,26 @@ fn filesystem_package_resolver_injects_builtin_without_disk_shadow() {
     assert_eq!(pkg, compile(ENTRY).expect("same canonical source graph"));
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn compiled_alignment_and_page_rounding_execute_for_all_admitted_powers() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut source = String::from("import module aligned from \"atto.alloc/aligned\"; pub fnc main(): int {");
+    for n in 0..=16 {
+        let page = 1i64 << n;
+        for bytes in [0, 1, page - 1, page, page + 1, 2147483647] {
+            let expected = if bytes == 0 { 0 } else { (bytes - 1) / page + 1 };
+            source.push_str(&format!("if aligned.pages_for({bytes},{page}) != {expected} then return 1; fi "));
+        }
+        let address = 2147483647i64;
+        let pad = (page - address % page) % page;
+        source.push_str(&format!("if aligned.padding_for({address},{page}) != {pad} then return 2; fi "));
+    }
+    source.push_str("if aligned.pages_for(42,3) != -1 then return 3; fi if aligned.pages_for(-1,8) != -1 then return 4; fi if aligned.align_up(2147483647,8) != -1 then return 5; fi return 42; }");
+    let wasm = compile(&source).expect("compile full bounded alignment matrix");
+    let mut child = Command::new("node").arg("-e").arg("const fs=require('node:fs');const m=new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(0)),{});if(m.exports.main()!==42n)process.exitCode=1;")
+        .stdin(Stdio::piped()).spawn().expect("Node required for guest execution");
+    child.stdin.take().unwrap().write_all(&wasm).unwrap();
+    assert!(child.wait().unwrap().success(), "compiled alignment guest failed");
+}
