@@ -30,6 +30,13 @@ fn explicit_host_api_compiles_and_reuses_from_a_separate_library_client(){
     assert_eq!(cold.bytes,compile_locked_snapshot("main.atto",MANIFEST,&lockfile,&trusted,&sources).unwrap());
     let warm=session.build(Mode::Incremental,&pin,MASTER,snapshot()).unwrap();
     assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(warm.reused_source_transforms,1);assert_eq!(warm.bytes,cold.bytes);
+    atto_compiler::borrow_export::begin();
+    for mode in [Mode::Cold,Mode::Incremental]{
+        assert_eq!(session.build(mode,&pin,MASTER,snapshot()).unwrap_err().code,"E_CACHE_EVIDENCE_MODE");
+    }
+    assert!(atto_compiler::borrow_export::finish().is_empty());
+    assert_eq!(session.build(Mode::Incremental,&pin,MASTER,snapshot()).unwrap().outcome,Outcome::Reused);
+    println!("CACHE_EVIDENCE_MODE|locked-cold-warm-denied|accepted-memo-retained");
     drop(session);
     let mut reopened=open();let warm=reopened.build(Mode::Incremental,&pin,MASTER,snapshot()).unwrap();
     assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(warm.rewritten_sources,1);assert_eq!(warm.bytes,cold.bytes);

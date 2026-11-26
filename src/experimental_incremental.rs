@@ -128,6 +128,9 @@ impl HostSession {
         snapshot:Snapshot<'_>,dependencies:&[RegistryDependency<'_>])->Result<RegistryBuild,Diagnostic>{
         use crate::{compiler_cache_registry as registry,compiler_artifact_receipt as receipt,diag::Pos};
         let err=|code|Diagnostic::new(Pos::default(),code,"registry cache admission or storage failed");
+        // Isolated-check memoization also changes evidence side effects.
+        // Require a separate real clean compilation in evidence mode.
+        if crate::borrow_export::enabled(){return Err(err("E_CACHE_EVIDENCE_MODE"));}
         let lease=self.authority.lease(&self.scope,current_pin,master).map_err(|_|err("E_CACHE_LEDGER"))?;
         let secret=lease.secret();
         let empty=registry::RegistryMemo::default();

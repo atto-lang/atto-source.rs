@@ -35,6 +35,10 @@ impl Session<'_>{
     pub(crate) fn build_memoized(&self,mode:Mode,authority:&Authority,current_pin:&[u8;32],master:[u8;32],
         entry:&str,manifest:&str,lock:&str,source_pin:&str,inputs:&[SnapshotSource<'_>],
         memo:&mut crate::package_resolver::SnapshotMemo)->Result<Build,Diagnostic>{
+        // A final-artifact hit cannot recreate the ownership event stream.
+        // Do not let cold mode publish partial evidence either: the caller
+        // must use an ordinary clean compiler invocation for evidence.
+        if crate::borrow_export::enabled(){return Err(cache_error("E_CACHE_EVIDENCE_MODE"));}
         authority.distinct_from(self.store).map_err(|_|cache_error("E_CACHE_LEDGER"))?;
         let lease=authority.lease(self.scope,current_pin,master).map_err(|_|cache_error("E_CACHE_LEDGER"))?;
         let secret=lease.secret();

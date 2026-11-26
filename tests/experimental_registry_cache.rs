@@ -50,6 +50,17 @@ fn locked_registry_application_cold_warm_edit_and_authority_denials(){
     assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(warm.bytes,cold.bytes);
     assert_eq!((warm.rebuilt_provider_views,warm.reused_provider_views),(0,2));
     assert_eq!((warm.checked_namespaces,warm.reused_namespace_checks),(0,2));
+    let before_evidence=files(&cache);
+    atto_compiler::borrow_export::begin();
+    for mode in [Mode::Cold,Mode::Incremental]{
+        assert_eq!(session.build_registry(mode,&pin,MASTER,root(),&[p(),q()]).unwrap_err().code,"E_CACHE_EVIDENCE_MODE");
+    }
+    assert!(atto_compiler::borrow_export::finish().is_empty());
+    assert_eq!(files(&cache),before_evidence);
+    let still_warm=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[p(),q()]).unwrap();
+    assert_eq!(still_warm.outcome,Outcome::Reused);
+    assert_eq!((still_warm.checked_namespaces,still_warm.reused_namespace_checks),(0,2));
+    println!("CACHE_EVIDENCE_MODE|registry-cold-warm-denied|disk-and-memo-unchanged");
     drop(session);let mut session=open();
     let reopened=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[p(),q()]).unwrap();
     assert_eq!(reopened.outcome,Outcome::Reused);
