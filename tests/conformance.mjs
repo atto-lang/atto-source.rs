@@ -568,7 +568,7 @@ check('robustness/random-garbage-never-traps-compiler', () => {
   }
 });
 
-check('boolean/short-circuit-vs-eager-builtin-real-guest', () => {
+check('boolean/named-short-circuit-and-eager-xor-real-guest', () => {
   const source = [
     'fnc touched(): bool { stdio.println("RHS"); return true; }',
     'pub fnc main(): int {',
@@ -577,6 +577,10 @@ check('boolean/short-circuit-vs-eager-builtin-real-guest', () => {
     '  stdio.println(true && touched());',
     '  stdio.println(false || touched());',
     '  stdio.println(And(false, touched()));',
+    '  stdio.println(Or(true, touched()));',
+    '  stdio.println(Xor(false, touched()));',
+    '  stdio.println(And(true, touched()));',
+    '  stdio.println(Or(false, touched()));',
     '  return 0;',
     '}',
   ].join('\n');
@@ -584,7 +588,7 @@ check('boolean/short-circuit-vs-eager-builtin-real-guest', () => {
   assert.equal(compiled.ok, true, compiled.message);
   const result = runGuest(compiled.wasm);
   assert.equal(result.value, 0n);
-  assert.equal(result.stdout, 'false\ntrue\nRHS\ntrue\nRHS\ntrue\nRHS\nfalse\n');
+  assert.equal(result.stdout, 'false\ntrue\nRHS\ntrue\nRHS\ntrue\nfalse\ntrue\nRHS\ntrue\nRHS\ntrue\nRHS\ntrue\n');
 });
 check('formal/compiled-guest-trace-nonvacuous', () => {
   assert.ok(tracedActorInstances >= 1, 'no compiled actor guest actually executed');
