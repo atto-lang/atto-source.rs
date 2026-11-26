@@ -412,13 +412,70 @@ fn restrict(r: Range, op: BinOp, n: i64) -> Range {
     };
     candidate.and_then(|x|r.intersect(x)).unwrap_or(r)
 }
+fn join_facts(mut a: Locals, b: &Locals) -> Locals {
+    for (name, (_, fact)) in &mut a {
+        fact.range = fact.range.join(b.get(name).expect("same condition scope").1.range);
+    }
+    a
+}
+// The lexer emits two punctuation tokens; require contiguous spelling, not & &.
+fn take_bool_pair(p: &mut Parser<'_>, tok: Tok) -> bool {
+    let a = p.token();
+    let Some(b) = p.tokens.get(p.at+1) else { return false; };
+    if a.tok == tok && b.tok == tok &&
+        a.pos.line == b.pos.line && a.pos.col.checked_add(1) == Some(b.pos.col) {
+        p.at += 2;
+        true
+    } else { false }
+}
+fn bool_ir(e: TExpr) -> TE { TE { ty:Type::Bool, e } }
 fn strict_condition(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals,
     funcs: &Functions) -> R<(TE,Locals,Locals)> {
-    let parens = p.take(Tok::LParen);
+    strict_or(p, aliases, locals, funcs, 0)
+}
+fn strict_or(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals,
+    funcs: &Functions, depth: usize) -> R<(TE,Locals,Locals)> {
+    let (mut ir, mut yes, mut no) = strict_and(p, aliases, locals, funcs, depth)?;
+    while take_bool_pair(p, Tok::Pipe) {
+        let (rhs, ry, rn) = strict_and(p, aliases, &no, funcs, depth)?;
+        // OR evaluates RHS only on the left-false edge.
+        ir = bool_ir(TExpr::Ternary(Box::new(ir),
+            Box::new(bool_ir(TExpr::Bool(true))), Box::new(rhs)));
+        yes = join_facts(yes, &ry);
+        no = rn;
+    }
+    Ok((ir,yes,no))
+}
+fn strict_and(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals,
+    funcs: &Functions, depth: usize) -> R<(TE,Locals,Locals)> {
+    let (mut ir, mut yes, mut no) = strict_predicate(p, aliases, locals, funcs, depth)?;
+    while take_bool_pair(p, Tok::Amp) {
+        let (rhs, ry, rn) = strict_predicate(p, aliases, &yes, funcs, depth)?;
+        // AND evaluates RHS only on the left-true edge.
+        ir = bool_ir(TExpr::Ternary(Box::new(ir), Box::new(rhs),
+            Box::new(bool_ir(TExpr::Bool(false)))));
+        no = join_facts(no, &rn);
+        yes = ry;
+    }
+    Ok((ir,yes,no))
+}
+fn strict_predicate(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals,
+    funcs: &Functions, depth: usize) -> R<(TE,Locals,Locals)> {
+    if depth > 16 || p.budget == 0 {
+        return Err(p.err("E_UNIT_LIMIT","strict Boolean condition budget"));
+    }
+    p.budget -= 1;
+    if p.take(Tok::Bang) {
+        let (ir,yes,no) = strict_predicate(p,aliases,locals,funcs,depth+1)?;
+        return Ok((bool_ir(TExpr::Not(Box::new(ir))),no,yes));
+    }
+    if p.take(Tok::LParen) {
+        let result = strict_or(p,aliases,locals,funcs,depth+1)?;
+        p.expect(Tok::RParen)?;
+        return Ok(result);
+    }
     let pos = p.token().pos;
-    let name = identifier(p)?;
-    let (slot, fact) = locals.get(&name).ok_or_else(||error(pos,"E_VERIFY_UNSUPPORTED",
-        "strict condition requires a local scalar"))?;
+    let left = expr(p,aliases,locals,funcs,0,0)?;
     let op = match &p.token().tok {
         Tok::Lt => BinOp::Lt, Tok::Le => BinOp::Le,
         Tok::Gt => BinOp::Gt, Tok::Ge => BinOp::Ge,
@@ -428,18 +485,8 @@ fn strict_condition(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals,
         _ => return Err(p.err("E_VERIFY_UNSUPPORTED", "strict condition requires a comparison")),
     };
     p.at += 1;
-    let right = atom(p, aliases, locals, funcs, 0)?;
-    compatible(&fact.unit, &right.unit, pos)?;
-    // Admit exact literals only, including a syntactic negative literal.
-    let n = match &right.ir.e {
-        TExpr::I64(n) => *n,
-        TExpr::Neg(v) => match &v.e {
-            TExpr::I64(n) => n.checked_neg().ok_or_else(||error(pos,"E_VERIFY_UNPROVEN","condition overflow"))?,
-            _ => return Err(p.err("E_VERIFY_UNSUPPORTED","condition requires a literal")),
-        },
-        _ => return Err(p.err("E_VERIFY_UNSUPPORTED","condition requires a literal")),
-    };
-    if parens { p.expect(Tok::RParen)?; }
+    let right = expr(p,aliases,locals,funcs,0,0)?;
+    compatible(&left.unit,&right.unit,pos)?;
     let inverse = match op {
         BinOp::Lt => BinOp::Ge, BinOp::Le => BinOp::Gt,
         BinOp::Gt => BinOp::Le, BinOp::Ge => BinOp::Lt,
@@ -447,9 +494,18 @@ fn strict_condition(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals,
         _ => return Err(p.err("E_VERIFY_UNSUPPORTED","condition comparison")),
     };
     let mut yes = locals.clone(); let mut no = locals.clone();
-    yes.get_mut(&name).expect("resolved local").1.range = restrict(fact.range,op,n);
-    no.get_mut(&name).expect("resolved local").1.range = restrict(fact.range,inverse,n);
-    let cond = TE { ty:Type::Bool, e:TExpr::Bin(op,Box::new(int(TExpr::Local(*slot))),Box::new(right.ir)) };
+    // Refine only a resolved local compared with a singleton value.
+    // Calls are closed, scalar by value and already safety-checked.
+    // Arithmetic or other RHSs cannot manufacture a refinement.
+    if let TExpr::Local(slot) = &left.ir.e {
+        if right.range.lo == right.range.hi {
+            if let Some((name,(_,fact))) = locals.iter().find(|(_, (s,_))| s == slot) {
+                yes.get_mut(name).expect("resolved local").1.range = restrict(fact.range,op,right.range.lo);
+                no.get_mut(name).expect("resolved local").1.range = restrict(fact.range,inverse,right.range.lo);
+            }
+        }
+    }
+    let cond = bool_ir(TExpr::Bin(op,Box::new(left.ir),Box::new(right.ir)));
     Ok((cond,yes,no))
 }
 
