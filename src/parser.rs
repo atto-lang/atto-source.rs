@@ -1828,7 +1828,8 @@ impl Parser {
             let params = self.parse_cleanup_factory_params()?;
             self.expect(Tok::Arrow, "'->' after the defer factory parameters")?;
             if !self.eat_word("_") {
-                return Err(self.expected("'_' for the zero-argument deferred cleanup"));
+                self.expect(Tok::Pipe, "'_' or '||' for the zero-argument deferred cleanup")?;
+                self.expect(Tok::Pipe, "empty '||' lambda in defer factory")?;
             }
             self.expect(Tok::Arrow, "'->' before the deferred cleanup body")?;
             let body = self.parse_block()?;
@@ -1836,7 +1837,25 @@ impl Parser {
             let args = self.parse_args()?;
             (params, body, args)
         } else {
-            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+            // Bounded synchronous profile: a direct call or simple assignment
+            // is delayed as a single statement in the existing cleanup body.
+            // No implicit callable-value invocation, by-reference capture or
+            // await is admitted until its typed lifetime/effect lowering exists.
+            let expr = self.parse_expr()?;
+            let stmt = if self.eat(&Tok::Assign) {
+                let ExprKind::Var(name) = expr.kind else {
+                    return Err(Diagnostic::new(pos, "E_ASSIGN_TARGET",
+                        "braceless defer assignment requires a simple local target"));
+                };
+                let value = self.parse_expr()?;
+                Stmt::Assign { name, value, pos }
+            } else if matches!(&expr.kind, ExprKind::Call(..)) {
+                Stmt::Expr(expr)
+            } else {
+                return Err(unsupported(pos,
+                    "defer callable values or other braceless forms without typed callback lowering"));
+            };
+            (Vec::new(), vec![stmt], Vec::new())
         };
         self.terminator()?;
         Ok(Stmt::Defer { params, body, args, pos })
