@@ -1,4 +1,5 @@
-// expect-error: E_COPY
+// expect-error: E_UNSUPPORTED_TYPE
+// Nested storage is unavailable before ownership lowering; not lexical-loan proof.
 // java: rejects
 define class Child as
     pub let int value = 42;
