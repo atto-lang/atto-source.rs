@@ -115,7 +115,9 @@ export function runGuest(wasm) {
     value = main.exports.main();
     assert.equal(typeof value, 'bigint');
   } catch (error) {
-    return { ok: false, panic: main.exports.panic_code.value, error: String(error), stdout: out };
+    const memory = main.exports.memory;
+    const planPending = memory && memory.buffer.byteLength >= 80 ? Number(new DataView(memory.buffer).getBigInt64(72, true)) : 0;
+    return { ok: false, panic: main.exports.panic_code.value, error: String(error), stdout: out, planPending };
   }
   for (const a of actors) {
     for (let seq = 0; seq < a.queue.length; seq++) {
@@ -266,6 +268,8 @@ for (const f of await fixtures('panic')) {
     const g = runGuest(r.wasm);
     assert.equal(g.ok, false, 'expected a panic');
     assert.equal(g.panic, Number(header(f.source, 'expect-panic')[0]), 'panic code');
+    const planPending = header(f.source, 'expect-plan-pending')[0];
+    if (planPending !== undefined) assert.equal(g.planPending, Number(planPending), 'actual guest pending plan accounting after trap');
     assert.equal(g.stdout, expectedStdout(f.source));
     if (attoc) { assert.deepEqual(nativeBytes(f.path), r.wasm); nativeChecked++; }
   });

@@ -376,8 +376,13 @@ impl Parser {
                 match inner {
                     Type::Int => Type::OptionInt,
                     Type::ResultIntStr => Type::OptionResultIntStr,
-                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
+                    _ => {
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_UNSUPPORTED_TYPE",
+                            "browser ADT admits only Option<int> and Option<Result<int,string>>",
+                        ))
+                    }
                 }
             }
             "Generator" => {
@@ -385,8 +390,11 @@ impl Parser {
                 let inner = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Generator item type")?;
                 if inner != Type::Int {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "the browser generator frontend currently recognizes only Generator<int>"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "the browser generator frontend currently recognizes only Generator<int>",
+                    ));
                 }
                 Type::GeneratorInt
             }
@@ -397,11 +405,14 @@ impl Parser {
                 let bad = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Result types")?;
                 if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "browser ADT v1 admits only Result<int,string>",
+                    ));
                 }
                 Type::ResultIntStr
-            },
+            }
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
@@ -965,8 +976,11 @@ impl Parser {
         let params = self.parse_params()?;
         let ret = self.parse_return_spec()?;
         if is_generator && ret != Type::GeneratorInt {
-            return Err(Diagnostic::new(pos, "E_TYPE",
-                "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_TYPE",
+                "a 'fnc *gen' declaration must return Generator<int> in this frontend stage",
+            ));
         }
         self.in_generator = is_generator;
         let body = self.parse_block()?;
@@ -1093,8 +1107,11 @@ impl Parser {
         // Contiguous yield* is a dedicated token, not multiplication.
         if *self.peek() == Tok::YieldStar {
             if !self.in_generator {
-                return Err(Diagnostic::new(pos, "E_YIELD",
-                    "'yield*' is only valid inside a 'fnc *gen' generator"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_YIELD",
+                    "'yield*' is only valid inside a 'fnc *gen' generator",
+                ));
             }
             self.advance();
             let source = self.parse_expr()?;
@@ -1305,8 +1322,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
-                    && *self.peek_at(1) == Tok::Lt))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef")) && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
             // 'Option' as a variable name and '<' as a comparison.
@@ -1515,8 +1531,11 @@ impl Parser {
                 "None" => {
                     self.advance();
                     if *self.peek() == Tok::LParen {
-                        return Err(Diagnostic::new(self.pos(), "E_ARITY",
-                            "None is a zero-payload variant; write 'on None'"));
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_ARITY",
+                            "None is a zero-payload variant; write 'on None'",
+                        ));
                     }
                     Ok(Pattern::Adt(w, None))
                 }
@@ -1526,7 +1545,7 @@ impl Parser {
                     let (name, _) = self.ident("a payload binding name")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
                     Ok(Pattern::Adt(w, Some(name)))
-                },
+                }
                 "_" => {
                     self.advance();
                     Ok(Pattern::Wild)
@@ -1743,7 +1762,10 @@ impl Parser {
             self.grow(1)?;
             links += 1;
             args.insert(0, c);
-            c = Expr { kind: ExprKind::Call(name, args), pos };
+            c = Expr {
+                kind: ExprKind::Call(name, args),
+                pos,
+            };
         }
         self.height -= links;
         match self.peek() {
@@ -1899,7 +1921,10 @@ impl Parser {
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
-                return Ok(Expr { kind: ExprKind::Trap(Box::new(inner)), pos });
+                return Ok(Expr {
+                    kind: ExprKind::Trap(Box::new(inner)),
+                    pos,
+                });
             }
             _ => return self.parse_postfix(),
         };
@@ -1956,9 +1981,7 @@ impl Parser {
                 Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
                 Tok::Colon if depth == 0 => return true,
                 Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
-                Tok::Ident(w) if depth == 0 && matches!(
-                    w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
-                ) => return false,
+                Tok::Ident(w) if depth == 0 && matches!(w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else") => return false,
                 _ => {}
             }
         }
@@ -2033,7 +2056,10 @@ impl Parser {
                     self.advance();
                     self.grow(1)?;
                     *chain += 1;
-                    e = Expr { kind: ExprKind::Propagate(Box::new(e)), pos: question };
+                    e = Expr {
+                        kind: ExprKind::Propagate(Box::new(e)),
+                        pos: question,
+                    };
                 }
                 Tok::Question => break, // true ternary: parsed by parse_ternary
 

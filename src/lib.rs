@@ -74,11 +74,11 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
                 return Err(first);
             }
             match v2::compile(toks) {
-            Ok(bytes) => bytes,
-            Err(second) => {
-                let later = (second.pos.line, second.pos.col) > (first.pos.line, first.pos.col);
-                return Err(if later { second } else { first });
-            }
+                Ok(bytes) => bytes,
+                Err(second) => {
+                    let later = (second.pos.line, second.pos.col) > (first.pos.line, first.pos.col);
+                    return Err(if later { second } else { first });
+                }
             }
         }
     };

@@ -9,7 +9,7 @@ pub suspends fnc main(): int {
     SelectCase.read(original)
   ]);
   val worker = task {
-    val SelectResult chosen = select first from plan;
+    val SelectResult chosen = await select first from plan;
     return chosen.value;
   };
   // Force the guest scheduler to run the worker into its pending select

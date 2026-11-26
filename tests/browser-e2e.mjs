@@ -192,12 +192,19 @@ try{
     ['236-v2-select-pipe-owned-at-construction.atto',10],
     ['237-v2-select-pipe-claimed-after-plan.atto',10],
     ['238-v2-dynamic-select-put-pipe-owned.atto',10],
+    ['239-v2-select-abandoned-future.atto',6],
+    ['240-v2-select-timeout-retirement.atto',7],
+    ['241-v2-select-closed-poll-retirement.atto',9],
+    ['242-v2-select-admission-retirement.atto',10],
   ]) {
     const src = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
     assert.match(await run(src, 'E_PANIC'), /^E_PANIC:/,
       filename + ': SelectPlan must trap in the actual guest');
     assert.equal(await evaluate('window.__attoLastPanicCode'), expectedPanic,
       filename + ': mismatched guest panic code');
+    if (src.includes('// expect-plan-pending: 0')) {
+      assert.equal(await evaluate('window.__attoLastPlanPending'),0,filename + ': guest plan credit drained before trap');
+    }
     console.log('PASS browser: real SelectPlan panic ' + expectedPanic + ' ' + filename);
   }
 

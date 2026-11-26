@@ -56,6 +56,10 @@ try {
     ['236-v2-select-pipe-owned-at-construction.atto',10],
     ['237-v2-select-pipe-claimed-after-plan.atto',10],
     ['238-v2-dynamic-select-put-pipe-owned.atto',10],
+    ['239-v2-select-abandoned-future.atto',6],
+    ['240-v2-select-timeout-retirement.atto',7],
+    ['241-v2-select-closed-poll-retirement.atto',9],
+    ['242-v2-select-admission-retirement.atto',10],
   ]) {
     const guest=join(tmp,'denied.wasm');
     const compiled=spawnSync(compiler,[resolve('tests/fixtures/panic',name),'-o',guest],
@@ -76,6 +80,11 @@ try {
       name+': expected an actual guest panic');
     assert.equal(instance.exports.panic_code.value,expectedPanic,
       name+': wrong guest panic code');
+    const source=readFileSync(resolve('tests/fixtures/panic',name),'utf8');
+    if(source.includes('// expect-plan-pending: 0')) {
+      assert.equal(new DataView(instance.exports.memory.buffer).getBigInt64(72,true),0n,
+        name+': pending plan accounting must drain before trap');
+    }
     console.log('REAL_WASM_SELECT_PLAN_PANIC_'+expectedPanic+' '+name);
   }
 } finally {

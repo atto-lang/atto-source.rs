@@ -131,7 +131,11 @@ pub enum TExpr {
     EnumVal(u32),
     /// Immutable tagged ADT value: 16-byte allocation, i32 tag at 0,
     /// i64 payload at 8; no payload for None. tmp is a fresh i32 local.
-    AdtNew { tag: u32, payload: Option<Box<TE>>, tmp: u32 },
+    AdtNew {
+        tag: u32,
+        payload: Option<Box<TE>>,
+        tmp: u32,
+    },
     /// Typed prefix trap: the operand is evaluated exactly once before
     /// allocating Some; only the private guest ordinary-throw tag yields None.
     /// All temporaries are function-local to avoid shared error state.
@@ -142,12 +146,19 @@ pub enum TExpr {
         none_tmp: u32,
     },
     /// Compare the discriminant with a known variant tag.
-    AdtIs { obj: Box<TE>, tag: u32 },
+    AdtIs {
+        obj: Box<TE>,
+        tag: u32,
+    },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
-    AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
+    AdtPropagate {
+        source: Box<TE>,
+        tmp: u32,
+        success_tag: u32,
+    },
     /// load a field of a class instance
     FieldGet {
         obj: Box<TE>,
@@ -478,29 +489,30 @@ fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
         match stmt {
             Stmt::Yield(expr, _) => {
                 if matches!(&expr.kind, ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_)) {
-                    return Err(Diagnostic::new(expr.pos, "E_TYPE",
-                        "Generator<int> can only yield int items"));
+                    return Err(Diagnostic::new(expr.pos, "E_TYPE", "Generator<int> can only yield int items"));
                 }
             }
-            Stmt::YieldFrom(expr, _) => {
-                match &expr.kind {
-                    ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_) => {
-                        return Err(Diagnostic::new(expr.pos, "E_TYPE",
-                            "yield* requires a generator/iterator, not a scalar"));
-                    }
-                    ExprKind::Call(name, args) => {
-                        if let Some(target) = funcs.iter().find(|f|
-                            f.name == *name && f.params.len() == args.len())
-                        {
-                            if !target.is_generator || target.ret != Type::GeneratorInt {
-                                return Err(Diagnostic::new(expr.pos, "E_TYPE",
-                                    format!("yield* target '{name}' is not a Generator<int>")));
-                            }
+            Stmt::YieldFrom(expr, _) => match &expr.kind {
+                ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_) => {
+                    return Err(Diagnostic::new(
+                        expr.pos,
+                        "E_TYPE",
+                        "yield* requires a generator/iterator, not a scalar",
+                    ));
+                }
+                ExprKind::Call(name, args) => {
+                    if let Some(target) = funcs.iter().find(|f| f.name == *name && f.params.len() == args.len()) {
+                        if !target.is_generator || target.ret != Type::GeneratorInt {
+                            return Err(Diagnostic::new(
+                                expr.pos,
+                                "E_TYPE",
+                                format!("yield* target '{name}' is not a Generator<int>"),
+                            ));
                         }
                     }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             Stmt::If { arms, otherwise, .. } => {
                 for (_, branch) in arms {
                     precheck_generator_body(branch, funcs)?;
@@ -509,8 +521,7 @@ fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
                     precheck_generator_body(branch, funcs)?;
                 }
             }
-            Stmt::While { body, .. } | Stmt::Loop { body, .. }
-            | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
+            Stmt::While { body, .. } | Stmt::Loop { body, .. } | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
                 precheck_generator_body(body, funcs)?;
             }
             Stmt::For { body, .. } => precheck_generator_body(body, funcs)?,
@@ -532,25 +543,22 @@ fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
 /// instance, and no guest iterator is allowed to escape that instance.
 fn generator_forin_scalar_expr(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
-        ExprKind::Str(_) | ExprKind::Var(_) => true,
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) => true,
         ExprKind::Unary(_, a) => generator_forin_scalar_expr(a),
-        ExprKind::Binary(_, a, b) => generator_forin_scalar_expr(a)
-            && generator_forin_scalar_expr(b),
-        ExprKind::Ternary(a, b, c) => generator_forin_scalar_expr(a)
-            && generator_forin_scalar_expr(b) && generator_forin_scalar_expr(c),
+        ExprKind::Binary(_, a, b) => generator_forin_scalar_expr(a) && generator_forin_scalar_expr(b),
+        ExprKind::Ternary(a, b, c) => generator_forin_scalar_expr(a) && generator_forin_scalar_expr(b) && generator_forin_scalar_expr(c),
         _ => false,
     }
 }
 
 fn generator_forin_safe_body(body: &[Stmt]) -> bool {
     body.iter().all(|s| match s {
-        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } =>
-            generator_forin_scalar_expr(init),
-        Stmt::If { arms, otherwise, .. } =>
-            arms.iter().all(|(cond, branch)|
-                generator_forin_scalar_expr(cond) && generator_forin_safe_body(branch))
-                && otherwise.as_ref().is_none_or(|b| generator_forin_safe_body(b)),
+        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } => generator_forin_scalar_expr(init),
+        Stmt::If { arms, otherwise, .. } => {
+            arms.iter()
+                .all(|(cond, branch)| generator_forin_scalar_expr(cond) && generator_forin_safe_body(branch))
+                && otherwise.as_ref().is_none_or(|b| generator_forin_safe_body(b))
+        }
         Stmt::Block(b) => generator_forin_safe_body(b),
         Stmt::Return(Some(e), _) => generator_forin_scalar_expr(e),
         Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => true,
@@ -563,16 +571,23 @@ fn generator_forin_safe_body(body: &[Stmt]) -> bool {
 /// The admitted graph is statically resolved and each frame has at most
 /// one live delegated child; depth is bounded independently of wasm stacks.
 fn validate_generator_graph(gens: &[TGenerator], p: &Program) -> R<()> {
-    fn visit(node: usize, depth: u32, colors: &mut [u8],
-             gens: &[TGenerator], p: &Program) -> R<()> {
+    fn visit(node: usize, depth: u32, colors: &mut [u8], gens: &[TGenerator], p: &Program) -> R<()> {
         if colors[node] == 1 {
-            return Err(Diagnostic::new(p.funcs[node].pos, "E_GENERATOR_CYCLE",
-                "generator yield* delegation must be acyclic"));
+            return Err(Diagnostic::new(
+                p.funcs[node].pos,
+                "E_GENERATOR_CYCLE",
+                "generator yield* delegation must be acyclic",
+            ));
         }
-        if colors[node] == 2 { return Ok(()); }
+        if colors[node] == 2 {
+            return Ok(());
+        }
         if depth > 64 {
-            return Err(Diagnostic::new(p.funcs[node].pos, "E_NESTING",
-                "generator delegation chain exceeds 64 frames"));
+            return Err(Diagnostic::new(
+                p.funcs[node].pos,
+                "E_NESTING",
+                "generator delegation chain exceeds 64 frames",
+            ));
         }
         colors[node] = 1;
         if let Some(gen) = gens.iter().find(|g| g.function as usize == node) {
@@ -595,24 +610,65 @@ fn validate_generator_graph(gens: &[TGenerator], p: &Program) -> R<()> {
 /// Only one immutable int parameter and one mutable counter are admitted.
 /// A C-style for must use i <= limit, i++, and yield i without side effects.
 fn generator_count_loop(f: &Func, stmt: &Stmt) -> Option<i64> {
-    if f.params.len() != 1 || f.params[0].ty != Type::Int { return None; }
-    let Stmt::For { init: Some(init), cond: Some(cond),
-                    update: Some(update), body, .. } = stmt else { return None; };
-    let Stmt::Bind { kind: BindKind::Let, name, ty, init: initial, .. } =
-        init.as_ref() else { return None; };
-    if ty.is_some_and(|t| t != Type::Int) { return None; }
-    let ExprKind::Int(Some(start)) = &initial.kind else { return None; };
-    if *start > i64::MAX as u64 { return None; }
-    let ExprKind::Binary(BinOp::Le, left, right) = &cond.kind else { return None; };
-    if !matches!(&left.kind, ExprKind::Var(s) if s == name)
-        || !matches!(&right.kind, ExprKind::Var(s) if s == &f.params[0].name) { return None; }
-    let Stmt::Assign { name: update_name, value, .. } = update.as_ref() else { return None; };
-    if update_name != name { return None; }
-    let ExprKind::Binary(BinOp::Add, left, right) = &value.kind else { return None; };
-    if !matches!(&left.kind, ExprKind::Var(s) if s == name)
-        || !matches!(&right.kind, ExprKind::Int(Some(1))) { return None; }
-    if body.len() != 1 || !matches!(&body[0],
-        Stmt::Yield(Expr { kind: ExprKind::Var(s), .. }, _) if s == name) { return None; }
+    if f.params.len() != 1 || f.params[0].ty != Type::Int {
+        return None;
+    }
+    let Stmt::For {
+        init: Some(init),
+        cond: Some(cond),
+        update: Some(update),
+        body,
+        ..
+    } = stmt
+    else {
+        return None;
+    };
+    let Stmt::Bind {
+        kind: BindKind::Let,
+        name,
+        ty,
+        init: initial,
+        ..
+    } = init.as_ref()
+    else {
+        return None;
+    };
+    if ty.is_some_and(|t| t != Type::Int) {
+        return None;
+    }
+    let ExprKind::Int(Some(start)) = &initial.kind else {
+        return None;
+    };
+    if *start > i64::MAX as u64 {
+        return None;
+    }
+    let ExprKind::Binary(BinOp::Le, left, right) = &cond.kind else {
+        return None;
+    };
+    if !matches!(&left.kind, ExprKind::Var(s) if s == name) || !matches!(&right.kind, ExprKind::Var(s) if s == &f.params[0].name) {
+        return None;
+    }
+    let Stmt::Assign {
+        name: update_name, value, ..
+    } = update.as_ref()
+    else {
+        return None;
+    };
+    if update_name != name {
+        return None;
+    }
+    let ExprKind::Binary(BinOp::Add, left, right) = &value.kind else {
+        return None;
+    };
+    if !matches!(&left.kind, ExprKind::Var(s) if s == name) || !matches!(&right.kind, ExprKind::Int(Some(1))) {
+        return None;
+    }
+    if body.len() != 1
+        || !matches!(&body[0],
+        Stmt::Yield(Expr { kind: ExprKind::Var(s), .. }, _) if s == name)
+    {
+        return None;
+    }
     Some(*start as i64)
 }
 
@@ -621,11 +677,10 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
     match (target.params.as_slice(), args) {
         ([], []) => Some(TGenArg::None),
         ([p], [arg]) if p.ty == Type::Int => match &arg.kind {
-            ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 =>
-                Some(TGenArg::Literal(*n as i64)),
-            ExprKind::Var(name) if f.params.len() == 1
-                && f.params[0].ty == Type::Int && *name == f.params[0].name =>
-                Some(TGenArg::Parameter),
+            ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 => Some(TGenArg::Literal(*n as i64)),
+            ExprKind::Var(name) if f.params.len() == 1 && f.params[0].ty == Type::Int && *name == f.params[0].name => {
+                Some(TGenArg::Parameter)
+            }
             _ => None,
         },
         _ => None,
@@ -644,55 +699,82 @@ pub fn check(p: &Program) -> R<TProgram> {
             let plan = crate::generator_cfg::lower(&f.body)?;
             // Preflight the AST-visible slots. The final codegen must repeat
             // this check using all typed locals and hidden scratch slots.
-            let declared_locals = plan.instructions.iter().filter(|op|
-                matches!(op, crate::generator_cfg::Instruction::Evaluate(Stmt::Bind { .. }))
-            ).count() as u32;
-            let _frame = crate::generator_frame::GeneratorFrameLayout::new(
-                f.params.len() as u32, declared_locals, plan.delegate_slots, f.pos
-            )?;
+            let declared_locals = plan
+                .instructions
+                .iter()
+                .filter(|op| matches!(op, crate::generator_cfg::Instruction::Evaluate(Stmt::Bind { .. })))
+                .count() as u32;
+            let _frame =
+                crate::generator_frame::GeneratorFrameLayout::new(f.params.len() as u32, declared_locals, plan.delegate_slots, f.pos)?;
             // Bounded single-int-parameter and live counter profile.
             let count_loops = f.body.iter().filter(|s| matches!(s, Stmt::For { .. })).count();
             let admitted = f.params.len() <= 1
                 && f.params.iter().all(|p| p.ty == Type::Int)
-                && count_loops <= 1 && plan.delegate_slots <= 1
-                && f.body.iter().enumerate().all(|(i, stmt)| {
-                    match stmt {
-                        Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
-                            *n <= i64::MAX as u64,
-                        Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) =>
-                            p.funcs.iter().any(|target| target.is_generator
-                                && target.name == *name
-                                && generator_arg(f, target, args).is_some()),
-                        Stmt::For { .. } => generator_count_loop(f, stmt).is_some(),
-                        Stmt::Return(None, _) => i + 1 == f.body.len(),
-                        _ => false,
-                    }
+                && count_loops <= 1
+                && plan.delegate_slots <= 1
+                && f.body.iter().enumerate().all(|(i, stmt)| match stmt {
+                    Stmt::Yield(
+                        Expr {
+                            kind: ExprKind::Int(Some(n)),
+                            ..
+                        },
+                        _,
+                    ) => *n <= i64::MAX as u64,
+                    Stmt::YieldFrom(
+                        Expr {
+                            kind: ExprKind::Call(name, args),
+                            ..
+                        },
+                        _,
+                    ) => p
+                        .funcs
+                        .iter()
+                        .any(|target| target.is_generator && target.name == *name && generator_arg(f, target, args).is_some()),
+                    Stmt::For { .. } => generator_count_loop(f, stmt).is_some(),
+                    Stmt::Return(None, _) => i + 1 == f.body.len(),
+                    _ => false,
                 });
             if !admitted && generator_lower::lower(f)?.is_none() {
-                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
-                    "generator source requires typed, owned continuation lowering not yet implemented"));
+                return Err(Diagnostic::new(
+                    f.pos,
+                    "E_UNSUPPORTED",
+                    "generator source requires typed, owned continuation lowering not yet implemented",
+                ));
             }
         }
-        if (!f.is_generator && f.ret == Type::GeneratorInt)
-            || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
-            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
-                "Generator<int> requires a compiled generator continuation"));
+        if (!f.is_generator && f.ret == Type::GeneratorInt) || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+            return Err(Diagnostic::new(
+                f.pos,
+                "E_UNSUPPORTED_TYPE",
+                "Generator<int> requires a compiled generator continuation",
+            ));
         }
     }
     for c in &p.classes {
-        if c.methods.iter().any(|m| m.ret == Type::GeneratorInt
-            || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
-            || c.ctor.as_ref().is_some_and(|ctor|
-                ctor.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
-            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
-                "generator methods and parameters require a compiled iterator continuation"));
+        if c.methods
+            .iter()
+            .any(|m| m.ret == Type::GeneratorInt || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
+            || c.ctor
+                .as_ref()
+                .is_some_and(|ctor| ctor.params.iter().any(|p| p.ty == Type::GeneratorInt))
+        {
+            return Err(Diagnostic::new(
+                c.pos,
+                "E_UNSUPPORTED_TYPE",
+                "generator methods and parameters require a compiled iterator continuation",
+            ));
         }
     }
     for a in &p.actors {
-        if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
-            || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
-            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
-                "actor generator methods require a compiled iterator continuation"));
+        if a.methods
+            .iter()
+            .any(|m| m.ret == Type::GeneratorInt || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
+        {
+            return Err(Diagnostic::new(
+                a.pos,
+                "E_UNSUPPORTED_TYPE",
+                "actor generator methods require a compiled iterator continuation",
+            ));
         }
     }
     let tn = &p.type_names;
@@ -945,36 +1027,63 @@ pub fn check(p: &Program) -> R<TProgram> {
                 plan.function = i as u32;
                 generators.push(plan);
                 funcs[i] = Some(TFunc {
-                    name: f.name.clone(), params, ret,
-                    locals: Vec::new(), body: Vec::new(),
+                    name: f.name.clone(),
+                    params,
+                    ret,
+                    locals: Vec::new(),
+                    body: Vec::new(),
                 });
                 continue;
             }
             // Original bounded CountTo/direct yield* fallback.
-            let steps = f.body.iter().filter_map(|stmt| match stmt {
-                Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
-                    Some(TGenStep::Yield(TE {
-                        e: TExpr::I64(*n as i64), ty: Type::Int
+            let steps = f
+                .body
+                .iter()
+                .filter_map(|stmt| match stmt {
+                    Stmt::Yield(
+                        Expr {
+                            kind: ExprKind::Int(Some(n)),
+                            ..
+                        },
+                        _,
+                    ) => Some(TGenStep::Yield(TE {
+                        e: TExpr::I64(*n as i64),
+                        ty: Type::Int,
                     })),
-                Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) => {
-                    let target = p.funcs.iter().find(|target| target.is_generator
-                        && target.name == *name && target.params.len() == args.len())
-                        .expect("source validated before declaration lowering");
-                    let arg = generator_arg(f, target, args)
-                        .expect("argument validated before declaration lowering");
-                    let idx = g.sigs.get(&(name.clone(), args.len()))
-                        .expect("declared generator target").0;
-                    Some(TGenStep::Delegate { function: idx, arg })
-                }
-                Stmt::For { .. } => Some(TGenStep::CountTo {
-                    start: generator_count_loop(f, stmt).expect("verified counter loop")
-                }),
-                _ => None,
-            }).collect();
-            generators.push(TGenerator { function: i as u32, steps, locals: 0, live_after: Vec::new() });
+                    Stmt::YieldFrom(
+                        Expr {
+                            kind: ExprKind::Call(name, args),
+                            ..
+                        },
+                        _,
+                    ) => {
+                        let target = p
+                            .funcs
+                            .iter()
+                            .find(|target| target.is_generator && target.name == *name && target.params.len() == args.len())
+                            .expect("source validated before declaration lowering");
+                        let arg = generator_arg(f, target, args).expect("argument validated before declaration lowering");
+                        let idx = g.sigs.get(&(name.clone(), args.len())).expect("declared generator target").0;
+                        Some(TGenStep::Delegate { function: idx, arg })
+                    }
+                    Stmt::For { .. } => Some(TGenStep::CountTo {
+                        start: generator_count_loop(f, stmt).expect("verified counter loop"),
+                    }),
+                    _ => None,
+                })
+                .collect();
+            generators.push(TGenerator {
+                function: i as u32,
+                steps,
+                locals: 0,
+                live_after: Vec::new(),
+            });
             funcs[i] = Some(TFunc {
-                name: f.name.clone(), params, ret,
-                locals: Vec::new(), body: Vec::new(),
+                name: f.name.clone(),
+                params,
+                ret,
+                locals: Vec::new(),
+                body: Vec::new(),
             });
             continue;
         }
@@ -1188,10 +1297,12 @@ pub fn check(p: &Program) -> R<TProgram> {
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
-    let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
-    let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
-        || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
+    let adt_alloc = funcs
+        .iter()
+        .any(|f| any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+    let guest_eh = funcs
+        .iter()
+        .any(|f| guest_eh_in_stmts(&f.body) || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     Ok(TProgram {
         funcs,
         main,
@@ -1356,10 +1467,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
 fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Throw(_) => true,
-        TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b))
-            || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
-        TStmt::Loop { body, update, .. } =>
-            guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
+        TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b)) || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
+        TStmt::Loop { body, update, .. } => guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
         TStmt::ForIn { body, .. } => guest_eh_in_stmts(body),
         TStmt::Block(b) => guest_eh_in_stmts(b),
         _ => false,
@@ -1516,8 +1625,11 @@ impl<'a> FnCx<'a> {
                 }
                 // Unowned generator-valued locals could escape a close path.
                 if v.ty == Type::GeneratorInt {
-                    return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
-                        "generator handles must be consumed by for-in until owned bindings support close"));
+                    return Err(Diagnostic::new(
+                        *pos,
+                        "E_GENERATOR_OWNERSHIP",
+                        "generator handles must be consumed by for-in until owned bindings support close",
+                    ));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
                 TStmt::Set(slot, v)
@@ -1549,38 +1661,57 @@ impl<'a> FnCx<'a> {
             Stmt::Expr(e) => {
                 let v = self.expr(e)?;
                 if v.ty == Type::GeneratorInt {
-                    return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
-                        "discarding an unclosed generator handle is prohibited"));
+                    return Err(Diagnostic::new(
+                        e.pos,
+                        "E_GENERATOR_OWNERSHIP",
+                        "discarding an unclosed generator handle is prohibited",
+                    ));
                 }
                 TStmt::Expr(v)
             }
             Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
             Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
-                return Err(Diagnostic::new(*pos, "E_YIELD",
-                    "yield and yield* require a compiled generator continuation"));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_YIELD",
+                    "yield and yield* require a compiled generator continuation",
+                ));
             }
             Stmt::ForIn { name, source, body, pos } => {
                 let gen = self.consume(source)?;
                 if gen.ty != Type::GeneratorInt {
-                    return Err(type_err(source.pos,
-                        format!("for-in expects Generator<int>, found {}", self.tn(gen.ty))));
+                    return Err(type_err(
+                        source.pos,
+                        format!("for-in expects Generator<int>, found {}", self.tn(gen.ty)),
+                    ));
                 }
                 if !generator_forin_safe_body(body) {
-                    return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                        "generator for-in body has effects requiring exception/cancellation-safe unwinding"));
+                    return Err(Diagnostic::new(
+                        *pos,
+                        "E_UNSUPPORTED",
+                        "generator for-in body has effects requiring exception/cancellation-safe unwinding",
+                    ));
                 }
                 // This first slice owns a fresh handle produced by a direct
                 // generator call. No aliasing or escaping local handles.
                 if !matches!(gen.e, TExpr::Call(_, _)) {
-                    return Err(Diagnostic::new(source.pos, "E_GENERATOR_OWNERSHIP",
-                        "for-in currently requires a fresh generator call"));
+                    return Err(Diagnostic::new(
+                        source.pos,
+                        "E_GENERATOR_OWNERSHIP",
+                        "for-in currently requires a fresh generator call",
+                    ));
                 }
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
                 self.scopes.push(Vec::new());
                 let checked = (|| {
                     let value_slot = self.declare(name, Type::Int, false, *pos)?;
                     let body = self.looped(body)?;
-                    Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
+                    Ok(TStmt::ForIn {
+                        source: gen,
+                        handle_slot,
+                        value_slot,
+                        body,
+                    })
                 })();
                 self.scopes.pop();
                 checked?
@@ -1779,8 +1910,7 @@ impl<'a> FnCx<'a> {
                         None,
                     )
                 }
-                Pattern::Adt(name, _) => return Err(type_err(arm.pos,
-                    format!("ADT pattern '{name}' cannot match a {}", self.tn(sty)))),
+                Pattern::Adt(name, _) => return Err(type_err(arm.pos, format!("ADT pattern '{name}' cannot match a {}", self.tn(sty)))),
                 Pattern::Variant(en, var) => {
                     let ev = self.enum_value(en, var, arm.pos, arm.pos)?;
                     if ev.ty != sty {
@@ -1891,22 +2021,27 @@ impl<'a> FnCx<'a> {
         ]))
     }
 
-
     /// Check a concrete tagged ADT match. Only v1 profiles are admitted:
     /// Option<int> and Result<int,string>. Each variant has a unique tag;
     /// the payload read occurs only inside its matching guarded arm.
     fn match_adt(&mut self, subj: TE, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let sty = subj.ty;
         let tmp = self.temp(sty, pos)?;
-        let get = || TE { e: TExpr::Local(tmp), ty: sty };
+        let get = || TE {
+            e: TExpr::Local(tmp),
+            ty: sty,
+        };
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             if covered {
-                return Err(Diagnostic::new(arm.pos, "E_MATCH",
-                    format!("unreachable match arm {}: prior arms cover every variant", i + 1)));
+                return Err(Diagnostic::new(
+                    arm.pos,
+                    "E_MATCH",
+                    format!("unreachable match arm {}: prior arms cover every variant", i + 1),
+                ));
             }
             let (key, payload_name, payload_ty) = match &arm.pattern {
                 Pattern::Wild => (None, None, None),
@@ -1919,24 +2054,31 @@ impl<'a> FnCx<'a> {
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
                         (Type::OptionResultIntStr, "None") => (0, None),
                         (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
-                        _ => return Err(type_err(arm.pos,
-                            format!("variant '{name}' is not part of {}", self.tn(sty)))),
+                        _ => return Err(type_err(arm.pos, format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
                     if bind.is_some() != needed.is_some() {
-                        return Err(Diagnostic::new(arm.pos, "E_ARITY",
-                            format!("pattern '{name}' has incorrect payload arity")));
+                        return Err(Diagnostic::new(
+                            arm.pos,
+                            "E_ARITY",
+                            format!("pattern '{name}' has incorrect payload arity"),
+                        ));
                     }
                     (Some(tag), bind.as_deref(), needed)
                 }
-                _ => return Err(type_err(arm.pos,
-                    format!("pattern is not a variant of {}", self.tn(sty)))),
+                _ => return Err(type_err(arm.pos, format!("pattern is not a variant of {}", self.tn(sty)))),
             };
             if key.is_some_and(|tag| seen.contains(&tag)) {
-                return Err(Diagnostic::new(arm.pos, "E_MATCH",
-                    format!("unreachable match arm {}: variant already covered", i + 1)));
+                return Err(Diagnostic::new(
+                    arm.pos,
+                    "E_MATCH",
+                    format!("unreachable match arm {}: variant already covered", i + 1),
+                ));
             }
             let test = key.map(|tag| TE {
-                e: TExpr::AdtIs { obj: Box::new(get()), tag: tag as u32 },
+                e: TExpr::AdtIs {
+                    obj: Box::new(get()),
+                    tag: tag as u32,
+                },
                 ty: Type::Bool,
             });
             self.scopes.push(Vec::new());
@@ -1948,7 +2090,10 @@ impl<'a> FnCx<'a> {
                     let value = if key.is_none() {
                         get()
                     } else {
-                        TE { e: TExpr::AdtPayload(Box::new(get())), ty }
+                        TE {
+                            e: TExpr::AdtPayload(Box::new(get())),
+                            ty,
+                        }
                     };
                     body.push(TStmt::Set(slot, value));
                 }
@@ -1962,15 +2107,22 @@ impl<'a> FnCx<'a> {
                     after.extend(self.moved.iter().copied());
                 }
                 self.moved = at_arm;
-                let truth = TE { e: TExpr::Bool(true), ty: Type::Bool };
+                let truth = TE {
+                    e: TExpr::Bool(true),
+                    ty: Type::Bool,
+                };
                 let cond = match (test, guard) {
                     (None, None) => truth,
                     (Some(t), None) => t,
                     (None, Some(g)) => g,
                     (Some(t), Some(g)) => TE {
                         e: TExpr::Ternary(
-                            Box::new(t), Box::new(g),
-                            Box::new(TE { e: TExpr::Bool(false), ty: Type::Bool }),
+                            Box::new(t),
+                            Box::new(g),
+                            Box::new(TE {
+                                e: TExpr::Bool(false),
+                                ty: Type::Bool,
+                            }),
                         ),
                         ty: Type::Bool,
                     },
@@ -1983,7 +2135,9 @@ impl<'a> FnCx<'a> {
                 match key {
                     Some(k) => {
                         seen.insert(k);
-                        if seen.len() == 2 { covered = true; }
+                        if seen.len() == 2 {
+                            covered = true;
+                        }
                     }
                     None => covered = true,
                 }
@@ -1991,8 +2145,11 @@ impl<'a> FnCx<'a> {
             out.push((cond, body));
         }
         if !covered {
-            return Err(Diagnostic::new(pos, "E_MATCH",
-                format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
+            return Err(Diagnostic::new(
+                pos,
+                "E_MATCH",
+                format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty)),
+            ));
         }
         self.moved = after;
         Ok(TStmt::Block(vec![
@@ -2102,8 +2259,11 @@ impl<'a> FnCx<'a> {
         let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
             ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
                 if args.len() != 1 {
-                    return Err(Diagnostic::new(e.pos, "E_ARITY",
-                        format!("{name} requires one payload argument, got {}", args.len())));
+                    return Err(Diagnostic::new(
+                        e.pos,
+                        "E_ARITY",
+                        format!("{name} requires one payload argument, got {}", args.len()),
+                    ));
                 }
                 (name.as_str(), Some(&args[0]))
             }
@@ -2117,8 +2277,7 @@ impl<'a> FnCx<'a> {
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
             (Type::OptionResultIntStr, "None") => (0, None),
             (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
-            _ => return Err(type_err(e.pos,
-                format!("variant '{variant}' is not valid for {}", self.tn(want)))),
+            _ => return Err(type_err(e.pos, format!("variant '{variant}' is not valid for {}", self.tn(want)))),
         };
         let payload = match (argument, payload_type) {
             (Some(arg), Some(ty)) => {
@@ -2126,8 +2285,10 @@ impl<'a> FnCx<'a> {
                 // expected inner Result type; constructors are contextual.
                 let value = self.consume_expected(arg, ty)?;
                 if value.ty != ty {
-                    return Err(type_err(arg.pos,
-                        format!("'{variant}' payload must be {}, found {}", self.tn(ty), self.tn(value.ty))));
+                    return Err(type_err(
+                        arg.pos,
+                        format!("'{variant}' payload must be {}, found {}", self.tn(ty), self.tn(value.ty)),
+                    ));
                 }
                 Some(Box::new(value))
             }
@@ -2135,7 +2296,10 @@ impl<'a> FnCx<'a> {
             _ => unreachable!("variant arity checked above"),
         };
         let tmp = self.temp(want, e.pos)?;
-        Ok(TE { e: TExpr::AdtNew { tag, payload, tmp }, ty: want })
+        Ok(TE {
+            e: TExpr::AdtNew { tag, payload, tmp },
+            ty: want,
+        })
     }
 
     /// An expression used as a value (not void).
@@ -2170,21 +2334,37 @@ impl<'a> FnCx<'a> {
     #[inline(never)]
     fn trap_value(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
         if self.owner != Owner::TopLevel {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "caller-side trap inside class/actor requires lifecycle integration"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                "caller-side trap inside class/actor requires lifecycle integration",
+            ));
         }
         let value = self.consume(inner)?;
         let option_ty = match value.ty {
             Type::Int => Type::OptionInt,
             Type::ResultIntStr => Type::OptionResultIntStr,
-            _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                format!("browser trap supports only int and Result<int,string> operands, found {}", self.tn(value.ty)))),
+            _ => {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED_TYPE",
+                    format!(
+                        "browser trap supports only int and Result<int,string> operands, found {}",
+                        self.tn(value.ty)
+                    ),
+                ))
+            }
         };
         let value_tmp = self.temp(value.ty, pos)?;
         let some_tmp = self.temp(option_ty, pos)?;
         let none_tmp = self.temp(option_ty, pos)?;
         Ok(TE {
-            e: TExpr::Trap { value: Box::new(value), value_tmp, some_tmp, none_tmp },
+            e: TExpr::Trap {
+                value: Box::new(value),
+                value_tmp,
+                some_tmp,
+                none_tmp,
+            },
             ty: option_ty,
         })
     }
@@ -2192,21 +2372,34 @@ impl<'a> FnCx<'a> {
     #[inline(never)]
     fn guest_throw(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
         if self.owner != Owner::TopLevel {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "ordinary throw in class and actor methods needs supervisor/cleanup integration"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                "ordinary throw in class and actor methods needs supervisor/cleanup integration",
+            ));
         }
         let args = match &error.kind {
             ExprKind::Call(name, args) if name == "Error" => args,
-            _ => return Err(type_err(error.pos,
-                "throw requires an Error subclass; this browser slice admits only throw Error(message)")),
+            _ => {
+                return Err(type_err(
+                    error.pos,
+                    "throw requires an Error subclass; this browser slice admits only throw Error(message)",
+                ))
+            }
         };
         if args.len() != 1 {
-            return Err(Diagnostic::new(error.pos, "E_ARITY",
-                "Error(message) requires exactly one string argument"));
+            return Err(Diagnostic::new(
+                error.pos,
+                "E_ARITY",
+                "Error(message) requires exactly one string argument",
+            ));
         }
         if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
-            return Err(Diagnostic::new(error.pos, "E_RESERVED",
-                "the guest Error constructor cannot be shadowed"));
+            return Err(Diagnostic::new(
+                error.pos,
+                "E_RESERVED",
+                "the guest Error constructor cannot be shadowed",
+            ));
         }
         let msg = self.value(&args[0])?;
         if msg.ty != Type::Str {
@@ -2230,17 +2423,35 @@ impl<'a> FnCx<'a> {
                 let success_tag = match value.ty {
                     Type::ResultIntStr => 0,
                     Type::OptionInt => 1,
-                    _ => return Err(type_err(e.pos,
-                        format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
+                    _ => {
+                        return Err(type_err(
+                            e.pos,
+                            format!(
+                                "postfix '?' requires Option<int> or Result<int,string>, found {}",
+                                self.tn(value.ty)
+                            ),
+                        ))
+                    }
                 };
                 if self.ret != value.ty {
-                    return Err(type_err(e.pos,
-                        format!("postfix '?' can propagate {} only from a function returning the same type; found {}", self.tn(value.ty), self.tn(self.ret))));
+                    return Err(type_err(
+                        e.pos,
+                        format!(
+                            "postfix '?' can propagate {} only from a function returning the same type; found {}",
+                            self.tn(value.ty),
+                            self.tn(self.ret)
+                        ),
+                    ));
                 }
                 let tmp = self.temp(value.ty, e.pos)?;
-                Ok(TE { e: TExpr::AdtPropagate {
-                    source: Box::new(value), tmp, success_tag
-                }, ty: Type::Int })
+                Ok(TE {
+                    e: TExpr::AdtPropagate {
+                        source: Box::new(value),
+                        tmp,
+                        success_tag,
+                    },
+                    ty: Type::Int,
+                })
             }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
@@ -2407,7 +2618,10 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+                    if matches!(
+                        a.ty,
+                        Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr
+                    ) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
@@ -2523,9 +2737,7 @@ impl<'a> FnCx<'a> {
                     ty: Type::Str,
                 }
             }
-            ExprKind::Var(name) if name == "None" => {
-                return Err(type_err(pos, "None requires a contextual Option<int> type"))
-            }
+            ExprKind::Var(name) if name == "None" => return Err(type_err(pos, "None requires a contextual Option<int> type")),
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(l) if l.mail.is_some() => {
                     return Err(Diagnostic::new(
@@ -2559,10 +2771,12 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
-            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
-            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
-                return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
+            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..) | ExprKind::Propagate(..) => {
+                unreachable!("handled by expr")
+            }
+            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") => {
+                return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type")))
+            }
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::SelfRef => {
                 return Err(match self.owner {

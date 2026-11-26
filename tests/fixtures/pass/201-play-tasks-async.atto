@@ -10,6 +10,18 @@ suspends fnc twice(int n): int {
 
 pub suspends fnc main(): int {
   val result = await twice(21);
+  // A finishing tail task may append a child before scheduler unlink.
+  // That child must survive even though its parent's stack is recycled.
+  val nested: Future<Future<int>> = task {
+    val child: Future<int> = task {
+      return 7;
+    };
+    return child;
+  };
+  val child = await nested;
+  val value = await child;
+  if value != 7 then return 1; fi
+  if (await child) != 7 then return 2; fi
   do task {
     stdio.println(result);
   };

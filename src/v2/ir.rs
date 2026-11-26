@@ -87,7 +87,10 @@ pub enum IrStmt {
     Expr(Ir),
     If(Ir, Vec<IrStmt>, Vec<IrStmt>),
     /// Infinite loop left by `Break`; `Continue` runs `update` first.
-    Loop { body: Vec<IrStmt>, update: Vec<IrStmt> },
+    Loop {
+        body: Vec<IrStmt>,
+        update: Vec<IrStmt>,
+    },
     Break,
     Continue,
     Return(Ir),

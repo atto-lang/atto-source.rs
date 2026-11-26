@@ -13,17 +13,40 @@ pub suspends fnc main(): int {
   val Option<SelectResult> got = try select first from plan;
   val SelectResult selected = got.unwrap();
   stdio.println(plan.size());
-  // More sequential invocations than the live-snapshot quota: completed
-  // selections must return their slots, rather than exhaust admission.
+  // More sequential Future-first calls than the live-selection quota and
+  // more than the old 1 MiB heap could fit with one 4 KiB stack per call.
+  // Keep an old Future alive across stack reuse and await it again.
+  writech first_channel, 19;
+  val Future<SelectResult> retained = select first from plan;
+  val SelectResult retained_first = await retained;
+  if retained_first.value != 19 then return 4; fi
   let round = 0;
-  while round < 300 do
+  while round < 2048 do
     plan.put(0, SelectCase.read(first_channel));
     writech first_channel, 42;
-    val SelectResult next = select fair from plan;
+    val SelectResult next = await select fair from plan;
     if next.index != 0 then return 1; fi
     if next.value != 42 then return 2; fi
     round = round + 1;
   done
-  if plan.version() != 302 then return 3; fi
+  if plan.version() != 2050 then return 3; fi
+  // Zero is valid payload, not the internal raw-result miss sentinel.
+  writech first_channel, 0;
+  val SelectResult zero_hit = await select first from plan;
+  if zero_hit.value != 0 then return 8; fi
+  writech first_channel, -7;
+  val Option<SelectResult> signed_hit = try select first from plan;
+  if signed_hit.unwrap().value != -7 then return 9; fi
+  val Option<SelectResult> miss = try select first from plan;
+  
+  // Recycled queue nodes must not leave stale tails in either channel.
+  writech second, 11;
+  writech first_channel, 31;
+  val Option<SelectResult> left_reuse = try select first from plan;
+  val Option<SelectResult> right_reuse = try select first from plan;
+  if left_reuse.unwrap().value != 31 then return 6; fi
+  if right_reuse.unwrap().value != 11 then return 7; fi
+  val SelectResult retained_again = await retained;
+  if retained_again.value != 19 then return 5; fi
   return selected.value + 20;
 }

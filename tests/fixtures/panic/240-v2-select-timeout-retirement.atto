@@ -1,0 +1,12 @@
+// expect-panic: 7
+// expect-plan-pending: 0
+import sleep from pkg "std.time";
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  val plan = SelectPlan.from_list([SelectCase.read(ch)]);
+  val Future<SelectResult> pending = select fair from plan;
+  with timeout(1) {
+    await sleep(2);
+  }
+  return 42;
+}

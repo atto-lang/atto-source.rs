@@ -7,12 +7,20 @@
 // address the bump heap.
 //
 // Runtime root slots (`__rt`): 1 current task, 2 first task, 3 last task,
-// 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes.
+// 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes,
+// 9 admitted live plan invocations (guest-wide, including unawaited Futures),
+// 10 free frame-stack blocks (each 4096 bytes), 11 free task records,
+// 12 free queue nodes.
 //
-// Task record (80 bytes): 0 done, 8 value, 16 status (0 new, 1 suspended,
-// 2 finished), 24 entry closure, 32 frame-stack base, 40 saved frame-stack
-// top, 48 next task, 56 wake time, 64 deadline, 72 active span guard stack. A task is also a Future:
-// the first two words are the Future layout.
+// Task record (80 bytes): 0 stable Future pointer, 8 plan root (0 for
+// ordinary closure task), 16 status
+// (0 new, 1 suspended, 2 finished), 24 entry closure, 32 frame-stack base,
+// 40 saved frame-stack top, 48 next task, 56 wake time, 64 deadline,
+// 72 active span guard stack. For a select poll record, 24 is the retained
+// descriptor block, 40 is FAIR policy, and no physical frame stack is used.
+// Free records use offset 48 as free-list next.
+// Future record (16 bytes): 0 terminal state (0 pending, 1 value,
+// 2 terminal shutdown cancellation), 8 value. Never reuse a Future address.
 
 fnc __box(int tag, int v): int {
   val b = __alloc(16);
@@ -72,8 +80,14 @@ fnc __gate(int list, int kind): int {
 // A queue is a [head, tail] pair of singly linked 16-byte nodes.
 
 fnc __q_push(int q, int v): void {
-  val n = __alloc(16);
+  let n = __rt(12);
+  if n == 0 then
+    n = __alloc(16);
+  else
+    __set_rt(12, __load(n, 8));
+  fi
   __store(n, 0, v);
+  __store(n, 8, 0);
   if __load(q, 0) == 0 then
     __store(q, 0, n);
   else
@@ -84,8 +98,16 @@ fnc __q_push(int q, int v): void {
 
 fnc __q_pop(int q): int {
   val n = __load(q, 0);
-  __store(q, 0, __load(n, 8));
-  return __load(n, 0);
+  if n == 0 then __panic(10); fi
+  val v = __load(n, 0);
+  val next_node = __load(n, 8);
+  __store(q, 0, next_node);
+  // The empty queue must not retain a pointer to a recycled tail.
+  if next_node == 0 then __store(q, 8, 0); fi
+  __store(n, 0, 0);
+  __store(n, 8, __rt(12));
+  __set_rt(12, n);
+  return v;
 }
 
 // ----------------------------------------------------------------- futures
@@ -95,6 +117,7 @@ fnc __fut_new(): int {
 }
 
 fnc __fut_done(int f, int v): void {
+  if __load(f, 0) != 0 then __panic(10); fi
   __store(f, 8, v);
   __store(f, 0, 1);
   __set_rt(4, 1);
@@ -104,16 +127,63 @@ suspends fnc __await(int f): int {
   while __load(f, 0) == 0 do
     __suspend();
   done
+  if __load(f, 0) != 1 then __panic(6); fi
   __set_rt(4, 1);
   return __load(f, 8);
 }
 
 // ------------------------------------------------------------------- tasks
 
-fnc __task_spawn(int clo): int {
-  val t = __alloc(80);
-  __store(t, 24, clo);
-  __store(t, 32, __alloc(4096));
+// Only physical frame storage is recycled. The task's Future identity and
+// settled result remain at their original addresses for repeated await.
+fnc __task_acquire_stack(): int {
+  val free = __rt(10);
+  if free == 0 then return __alloc(4096); fi
+  __set_rt(10, __load(free, 0));
+  __store(free, 0, 0);
+  return free;
+}
+
+fnc __task_release_stack(int t): void {
+  val base = __load(t, 32);
+  if base == 0 then __panic(10); fi
+  // Reclaim only after the native guest call has fully returned. No saved
+  // frames or local references may remain in a recycled stack block.
+  let offset = 0;
+  while offset < 4096 do
+    __store(base, offset, 0);
+    offset = offset + 8;
+  done
+  __store(t, 32, 0);
+  __store(t, 40, 0);
+  __set_fsp(0);
+  __set_fend(0);
+  __store(base, 0, __rt(10));
+  __set_rt(10, base);
+}
+
+fnc __task_acquire_record(): int {
+  val free = __rt(11);
+  if free == 0 then return __alloc(80); fi
+  __set_rt(11, __load(free, 48));
+  __store(free, 48, 0);
+  return free;
+}
+
+fnc __task_release_record(int t): void {
+  if __load(t, 16) != 2 then __panic(10); fi
+  if __load(t, 32) != 0 then __panic(10); fi
+  if __load(t, 72) != 0 then __panic(10); fi
+  let offset = 0;
+  while offset < 80 do
+    __store(t, offset, 0);
+    offset = offset + 8;
+  done
+  __store(t, 48, __rt(11));
+  __set_rt(11, t);
+}
+
+fnc __task_enqueue(int t): void {
   if __rt(2) == 0 then
     __set_rt(2, t);
   else
@@ -121,12 +191,87 @@ fnc __task_spawn(int clo): int {
   fi
   __set_rt(3, t);
   __set_rt(4, 1);
-  return t;
+}
+
+fnc __task_spawn(int clo): int {
+  val future = __fut_new();
+  val t = __task_acquire_record();
+  __store(t, 0, future);
+  __store(t, 24, clo);
+  __store(t, 32, __task_acquire_stack());
+  __task_enqueue(t);
+  return future;
+}
+
+// A read-only plan has a non-suspending poll, not a guest continuation.
+// Preserve FIFO scheduler admission without constructing a closure or stack.
+fnc __task_spawn_plan(int p, int snapshot, int fairMode): int {
+  val future = __fut_new();
+  val t = __task_acquire_record();
+  __store(t, 0, future);
+  __store(t, 8, p);
+  __store(t, 24, snapshot);
+  __store(t, 40, fairMode);
+  __task_enqueue(t);
+  return future;
+}
+
+// One scheduler-owned terminal transition for stackless select records.
+// The stable Future and live plan fields must still belong to this record.
+// No cancellation path may roll back an already committed read.
+fnc __plan_finish_poll(int t, int answer, int cancelled): void {
+  val plan_root = __load(t, 8);
+  val snapshot = __load(t, 24);
+  val future = __load(t, 0);
+  if plan_root == 0 then __panic(10); fi
+  if snapshot == 0 then __panic(10); fi
+  if __load(future, 0) != 0 then __panic(10); fi
+  if __load(t, 16) == 2 then __panic(10); fi
+  __plan_retire_snapshot(plan_root, snapshot);
+  __store(t, 8, 0);
+  __store(t, 24, 0);
+  __store(t, 40, 0);
+  __store(t, 16, 2);
+  if cancelled != 0 then
+    __store(future, 8, 0);
+    __store(future, 0, 2);
+  else
+    __fut_done(future, answer);
+  fi
+}
+
+// Terminal scheduler shutdown only; no user-visible cancel API yet.
+// The active list is stable in this non-suspending guest turn.
+fnc __plan_cancel_all_pending(): void {
+  let t = __rt(2);
+  while t != 0 do
+    if __load(t, 8) != 0 then
+      __plan_finish_poll(t, 0, 1);
+    fi
+    t = __load(t, 48);
+  done
+}
+
+fnc __sched_terminal_cleanup(): void {
+  __plan_cancel_all_pending();
+  __span_cancel_all();
 }
 
 // Run one task until it finishes or suspends.
 fnc __resume(int t): void {
   __set_rt(1, t);
+  val plan_root = __load(t, 8);
+  if plan_root != 0 then
+    val snapshot = __load(t, 24);
+    val answer = __plan_probe(snapshot, __load(t, 40), 0);
+    if answer != 0 then
+      __plan_finish_poll(t, answer, 0);
+    else
+      __store(t, 16, 1);
+    fi
+    __set_rt(1, 0);
+    return;
+  fi
   val base = __load(t, 32);
   __set_fend(base + 4096);
   if __load(t, 16) == 0 then
@@ -141,12 +286,23 @@ fnc __resume(int t): void {
     __set_state(0);
     __store(t, 40, __fsp());
     __store(t, 16, 1);
-  else
-    __store(t, 16, 2);
-    __store(t, 8, r);
-    __store(t, 0, 1);
-    __set_rt(4, 1);
+    __set_rt(1, 0);
+    return;
   fi
+  // A finished call must have retired all lexical span guards. Do not
+  // unlink an unfinished cleanup or recycle its frame storage. Keep this
+  // separate from the preceding if: else-if is parsed as an elif arm.
+  if __load(t, 72) != 0 then
+    __span_cancel_all();
+    __panic(12);
+  fi
+  __task_release_stack(t);
+  __store(t, 24, 0);
+  __store(t, 56, 0);
+  __store(t, 64, 0);
+  __store(t, 16, 2);
+  __fut_done(__load(t, 0), r);
+  __set_rt(1, 0);
 }
 
 // Cooperative round-robin scheduler. Each round resumes every unfinished,
@@ -158,13 +314,29 @@ fnc __sched(int main): int {
   loop do
     __set_rt(4, 0);
     let t = __rt(2);
+    let previous = 0;
     while t != 0 do
       if __load(t, 16) != 2 then
         if __load(t, 56) <= __rt(5) then
           __resume(t);
         fi
       fi
-      t = __load(t, 48);
+      // Read next AFTER resume: a running tail task may have appended
+      // another task. Unlink the settled record without dropping its Future.
+      val next_task = __load(t, 48);
+      if __load(t, 16) == 2 then
+        if previous == 0 then
+          __set_rt(2, next_task);
+        else
+          __store(previous, 48, next_task);
+        fi
+        if __rt(3) == t then __set_rt(3, previous); fi
+        // The list no longer references t, and its settled Future is separate.
+        __task_release_record(t);
+      else
+        previous = t;
+      fi
+      t = next_task;
     done
     if __rt(4) == 0 then
       let wake = 0;
@@ -198,11 +370,11 @@ fnc __sched(int main): int {
       done
       if limit != 0 then
         if wake == 0 then
-          __span_cancel_all();
+          __sched_terminal_cleanup();
           __panic(7);
         fi
         if limit <= wake then
-          __span_cancel_all();
+          __sched_terminal_cleanup();
           __panic(7);
         fi
       fi
@@ -213,6 +385,13 @@ fnc __sched(int main): int {
     fi
   done
   if __load(main, 0) == 0 then
+    __sched_terminal_cleanup();
+    __panic(6);
+  fi
+  // A bound-but-abandoned pending selection is not successful termination.
+  // v2 cannot yet cancel and settle it recoverably. Fail closed at quiescence.
+  if __rt(9) != 0 then
+    __sched_terminal_cleanup();
     __panic(6);
   fi
   return __load(main, 8);
@@ -421,10 +600,21 @@ fnc __chan_close(int c): void {
 // claimed as an actor DATA port. Check at construction, mutation, and on
 // EVERY select before consuming ANY case so later forbidden cases cannot be
 // masked by an earlier winner. The bounded scan is non-suspending.
+// Guest-terminal faults must retire scheduler-owned polls before trapping.
+fnc __plan_terminal_invalid(): void {
+  __sched_terminal_cleanup();
+  __panic(10);
+}
+
+fnc __plan_terminal_closed(): void {
+  __sched_terminal_cleanup();
+  __panic(9);
+}
+
 fnc __plan_check_case(int ch): void {
-  if ch == 0 then __panic(10); fi
-  if __load(ch, 56) != 0 then __panic(10); fi
-  if __load(ch, 64) != 0 then __panic(10); fi
+  if ch == 0 then __plan_terminal_invalid(); fi
+  if __load(ch, 56) != 0 then __plan_terminal_invalid(); fi
+  if __load(ch, 64) != 0 then __plan_terminal_invalid(); fi
 }
 
 fnc __plan_preflight(int p): void {
@@ -439,8 +629,8 @@ fnc __plan_preflight(int p): void {
 // ready-case scan, the chosen read, or the cursor update: only one case commits.
 fnc __plan_from_list(int cases, int dynamic): int {
   val n = __load(cases, 0);
-  if n <= 0 then __panic(10); fi
-  if n > 256 then __panic(10); fi
+  if n <= 0 then __plan_terminal_invalid(); fi
+  if n > 256 then __plan_terminal_invalid(); fi
   val p = __alloc(2128);
   __store(p, 0, n);
   __store(p, 8, n);
@@ -459,13 +649,15 @@ fnc __plan_from_list(int cases, int dynamic): int {
   return p;
 }
 
-// Return Option<SelectResult>. Each SelectResult occupies [index, value].
+// Internal probe returns a raw SelectResult pointer (0 on miss), or the
+// public Option wrapper when requested; all escaping storage precedes commit.
+// Each SelectResult occupies [index, value]; no temporary Option is needed.
 // The case-to-read handoff is atomic within this cooperative guest runtime.
 // FAIR only advances when a read commits; first is stable lexical priority.
-fnc __plan_try(int p, int fairMode): int {
+fnc __plan_probe(int p, int fairMode, int wrapResult): int {
   val n = __load(p, 0);
   // A live plan may have all its dynamic slots removed; never spin forever.
-  if n == 0 then __panic(10); fi
+  if n == 0 then __plan_terminal_invalid(); fi
   // Fail before one channel read if any other active case has become a
   // pipeline-owned channel since the plan/snapshot was created.
   __plan_preflight(p);
@@ -483,32 +675,36 @@ fnc __plan_try(int p, int fairMode): int {
       live = live + 1;
       val bufferedCount = __load(ch, 8);
       if bufferedCount > 0 then
-        viable = viable + 1;
-        val option = __chan_try(ch);
-        if option != 0 then
-          val winner = __alloc(16);
-          __store(winner, 0, i);
-          __store(winner, 8, __load(option, 0));
-          if fairMode != 0 then
-            let next = i + 1;
-            if next >= n then next = 0; fi
-            __store(__load(p, 40), 0, next);
-          fi
-          return __some(winner);
+        // All ownership checks and readiness observation are in this
+        // non-suspending turn. Allocate the escaping result BEFORE consuming.
+        val winner = __alloc(16);
+        let result = winner;
+        if wrapResult != 0 then result = __some(winner); fi
+        __store(winner, 0, i);
+        __store(winner, 8, __chan_take(ch));
+        if fairMode != 0 then
+          let next = i + 1;
+          if next >= n then next = 0; fi
+          __store(__load(p, 40), 0, next);
         fi
+        return result;
       fi
-      // Use separate predicates: an else followed by if is an elif in
-      // the parser, not a nested statement with an additional closing fi.
+      // Separate predicates avoid parser treating else-if as elif.
       if bufferedCount == 0 then
         if __load(ch, 32) == 0 then viable = viable + 1; fi
       fi
     fi
     k = k + 1;
   done
-  if live == 0 then __panic(10); fi
+  if live == 0 then __plan_terminal_invalid(); fi
   // No open/readable cases: report a closed stream rather than sleeping.
-  if viable == 0 then __panic(9); fi
+  if viable == 0 then __plan_terminal_closed(); fi
   return 0;
+}
+
+// Only the public immediate probe exposes Option<SelectResult>.
+fnc __plan_try(int p, int fairMode): int {
+  return __plan_probe(p, fairMode, 1);
 }
 
 fnc __plan_size(int p): int {
@@ -572,14 +768,14 @@ fnc __plan_invalidate_cache(int p): void {
 
 fnc __plan_next_version(int p): int {
   val version = __load(p, 24);
-  if version == 9223372036854775807 then __panic(10); fi
+  if version == 9223372036854775807 then __plan_terminal_invalid(); fi
   return version + 1;
 }
 
 fnc __plan_remove(int p, int key): int {
-  if __load(p, 32) == 0 then __panic(10); fi
-  if key < 0 then __panic(10); fi
-  if key >= __load(p, 0) then __panic(10); fi
+  if __load(p, 32) == 0 then __plan_terminal_invalid(); fi
+  if key < 0 then __plan_terminal_invalid(); fi
+  if key >= __load(p, 0) then __plan_terminal_invalid(); fi
   if __load(p, 48 + 8 * key) == 0 then return 0; fi
   val version = __plan_next_version(p);
   __plan_invalidate_cache(p);
@@ -592,9 +788,9 @@ fnc __plan_remove(int p, int key): int {
 }
 
 fnc __plan_put(int p, int key, int ch): void {
-  if __load(p, 32) == 0 then __panic(10); fi
-  if key < 0 then __panic(10); fi
-  if key >= __load(p, 0) then __panic(10); fi
+  if __load(p, 32) == 0 then __plan_terminal_invalid(); fi
+  if key < 0 then __plan_terminal_invalid(); fi
+  if key >= __load(p, 0) then __plan_terminal_invalid(); fi
   __plan_check_case(ch);
   val version = __plan_next_version(p);
   __plan_invalidate_cache(p);
@@ -613,13 +809,16 @@ fnc __plan_put(int p, int key, int ch): void {
 fnc __plan_snapshot(int p): int {
   // Independent pending-operation quota; no effect on an immediate probe.
   val active = __load(p, 2112);
-  if active >= 256 then __panic(10); fi
-  if __load(p, 8) == 0 then __panic(10); fi
+  if active >= 256 then __plan_terminal_invalid(); fi
+  val guest_active = __rt(9);
+  if guest_active >= 256 then __plan_terminal_invalid(); fi
+  if __load(p, 8) == 0 then __plan_terminal_invalid(); fi
   __plan_preflight(p);
   val cached = __load(p, 2120);
   if cached != 0 then
     __store(cached, 32, __load(cached, 32) + 1);
     __store(p, 2112, active + 1);
+    __set_rt(9, guest_active + 1);
     return cached;
   fi
   let copy = __load(p, 2096);
@@ -631,6 +830,7 @@ fnc __plan_snapshot(int p): int {
   val cell = __load(p, 40);
   __store(cell, 8, __load(cell, 8) + 1);
   __store(p, 2112, active + 1);
+  __set_rt(9, guest_active + 1);
   let i = 0;
   while i < 48 do
     __store(copy, i, __load(p, i));
@@ -653,16 +853,19 @@ fnc __plan_snapshot(int p): int {
 fnc __plan_retire_snapshot(int p, int snapshot): void {
   val active = __load(p, 2112);
   if active <= 0 then __panic(10); fi
+  val guest_active = __rt(9);
+  if guest_active <= 0 then __panic(10); fi
   __plan_release_descriptors(p, snapshot);
   __store(p, 2112, active - 1);
+  __set_rt(9, guest_active - 1);
 }
 
 // Each invocation pins descriptors plus the shared generation FAIR cell.
 // Both current and retired generations arbitrate from their own last commit;
 // no suspended invocation ever publishes cursor credit into a different cell.
-suspends fnc __plan_wait_opt(int snapshot, int fairMode): int {
+suspends fnc __plan_wait_result(int snapshot, int fairMode): int {
   loop do
-    val got = __plan_try(snapshot, fairMode);
+    val got = __plan_probe(snapshot, fairMode, 0);
     if got != 0 then return got; fi
     __suspend();
   done
@@ -672,18 +875,14 @@ suspends fnc __plan_wait_opt(int snapshot, int fairMode): int {
 // after this point cannot retarget a registered waiter to a replacement slot.
 suspends fnc __plan_wait(int p, int fairMode): int {
   val snapshot = __plan_snapshot(p);
-  val result = await __plan_wait_opt(snapshot, fairMode);
+  val result = await __plan_wait_result(snapshot, fairMode);
   __plan_retire_snapshot(p, snapshot);
-  return __load(result, 0);
+  return result;
 }
 
 fnc __plan_nb(int p, int fairMode): int {
   val snapshot = __plan_snapshot(p);
-  return task {
-    val answer = await __plan_wait_opt(snapshot, fairMode);
-    __plan_retire_snapshot(p, snapshot);
-    return answer;
-  };
+  return __task_spawn_plan(p, snapshot, fairMode);
 }
 
 // ------------------------------------------------------------------ actors

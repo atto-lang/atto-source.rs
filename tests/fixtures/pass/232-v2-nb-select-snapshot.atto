@@ -8,7 +8,7 @@ pub suspends fnc main(): int {
   val DynamicSelectPlan<int> plan = DynamicSelectPlan<int>.from_list([
     SelectCase.read(left), SelectCase.read(right)
   ]);
-  val Future<Option<SelectResult>> pending = nb select fair from plan;
+  val Future<SelectResult> pending = select fair from plan;
   val bool removed = plan.remove(0);
   plan.put(0, SelectCase.read(replacement));
   // A new case cannot redirect the pending ticket captured before put().
@@ -16,12 +16,12 @@ pub suspends fnc main(): int {
     writech left, 42;
     return 0;
   };
-  val Option<SelectResult> got = await pending;
+  val SelectResult got = await pending;
   await worker;
   writech replacement, 7;
   writech right, 9;
   // Both live cases are ready. A stale snapshot must not move FAIR to slot 1.
-  val SelectResult live = select fair from plan;
+  val SelectResult live = await select fair from plan;
   // Two ready channels, with enough left data to expose a stale FAIR probe.
   val a = Channel<int>.bounded(2);
   val b = Channel<int>.bounded(1);
@@ -31,14 +31,14 @@ pub suspends fnc main(): int {
   val SelectPlan shared = SelectPlan.from_list([
     SelectCase.read(a), SelectCase.read(b)
   ]);
-  val Future<Option<SelectResult>> waiting = nb select fair from shared;
+  val Future<SelectResult> waiting = nb select fair from shared;
   val Option<SelectResult> immediate = try select fair from shared;
-  val Option<SelectResult> deferred = await waiting;
+  val SelectResult deferred = await waiting;
   // Regardless of whether the task ran before the immediate probe,
   // the two committed reads must use different slots and total 42.
-  val prior = got.unwrap().value + live.value - 7
-    + immediate.unwrap().value + deferred.unwrap().value - 42
-    + immediate.unwrap().index + deferred.unwrap().index - 1;
+  val prior = got.value + live.value - 7
+    + immediate.unwrap().value + deferred.value - 42
+    + immediate.unwrap().index + deferred.index - 1;
   // Two old-generation waiters must share their retired FAIR cursor.
   val old_a = Channel<int>.bounded(2);
   val old_b = Channel<int>.bounded(1);
@@ -47,28 +47,28 @@ pub suspends fnc main(): int {
   val DynamicSelectPlan<int> retired = DynamicSelectPlan<int>.from_list([
     SelectCase.read(old_a), SelectCase.read(old_b)
   ]);
-  val Future<Option<SelectResult>> old_first = nb select fair from retired;
-  val Future<Option<SelectResult>> old_second = nb select fair from retired;
+  val Future<SelectResult> old_first = select fair from retired;
+  val Future<SelectResult> old_second = select fair from retired;
   retired.put(0, SelectCase.read(new_a));
   retired.put(1, SelectCase.read(new_b));
   writech old_a, 20;
   writech old_a, 99;
   writech old_b, 22;
-  val Option<SelectResult> x = await old_first;
-  val Option<SelectResult> y = await old_second;
+  val SelectResult x = await old_first;
+  val SelectResult y = await old_second;
   writech new_a, 7;
   writech new_b, 9;
   val Option<SelectResult> fresh = try select fair from retired;
   // Reuse the current cached descriptor after one invocation retires.
   // The second current-channel message must remain ready and win next.
-  val SelectResult follow = select fair from retired;
+  val SelectResult follow = await select fair from retired;
   if follow.index != 1 then return 4; fi
   if follow.value != 9 then return 5; fi
   // A structural mutation must invalidate the cache even without waiters.
   retired.put(0, SelectCase.read(old_a));
-  val SelectResult recycled = select first from retired;
+  val SelectResult recycled = await select first from retired;
   if recycled.index != 0 then return 6; fi
   if recycled.value != 99 then return 7; fi
-  return prior + x.unwrap().value + y.unwrap().value - 42
-    + x.unwrap().index + y.unwrap().index - 1 + fresh.unwrap().value - 7;
+  return prior + x.value + y.value - 42
+    + x.index + y.index - 1 + fresh.unwrap().value - 7;
 }

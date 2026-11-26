@@ -1,0 +1,12 @@
+// Multiple retired/current generations must be retired at terminal quiescence.
+// expect-panic: 6
+// expect-plan-pending: 0
+pub suspends fnc main(): int {
+  val old_ch = Channel<int>.bounded(1);
+  val new_ch = Channel<int>.bounded(1);
+  val DynamicSelectPlan<int> plan = DynamicSelectPlan<int>.from_list([SelectCase.read(old_ch)]);
+  val Future<SelectResult> old_pending = select fair from plan;
+  plan.put(0, SelectCase.read(new_ch));
+  val Future<SelectResult> new_pending = select fair from plan;
+  return 42;
+}

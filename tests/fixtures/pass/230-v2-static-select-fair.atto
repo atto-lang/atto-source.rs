@@ -12,8 +12,8 @@ pub suspends fnc main(): int {
     SelectCase.read(left),
     SelectCase.read(right)
   ]);
-  val SelectResult first_hit = select fair from plan;
-  val SelectResult second = select fair from plan;
+  val SelectResult first_hit = await select fair from plan;
+  val SelectResult second = await select fair from plan;
   stdio.println(first_hit.value);
   stdio.println(second.value);
   return first_hit.value + second.value + second.index + 11;

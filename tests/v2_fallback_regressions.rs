@@ -4,8 +4,7 @@
 
 fn v2_diagnostic(source: &str) -> atto_compiler::Diagnostic {
     let tokens = atto_compiler::lexer::lex(source).expect("fixture should lex");
-    atto_compiler::v2::compile(tokens)
-        .expect_err("invalid Atto source must never emit a v2 Wasm artifact")
+    atto_compiler::v2::compile(tokens).expect_err("invalid Atto source must never emit a v2 Wasm artifact")
 }
 
 #[test]
@@ -31,17 +30,16 @@ fn excessively_long_expression_chains_remain_nesting_errors() {
 
 #[test]
 fn excessive_elif_chain_remains_nesting_error() {
-    let arms = (1..300).map(|i| format!("elif x eq {i} then return {i};"))
-        .collect::<Vec<_>>().join("\n");
-    let source = format!(
-        "pub fnc main(): int {{\nval x = 1;\nif x eq 0 then return 0;\n{arms}\nfi\nreturn 0;\n}}"
-    );
+    let arms = (1..300)
+        .map(|i| format!("elif x eq {i} then return {i};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let source = format!("pub fnc main(): int {{\nval x = 1;\nif x eq 0 then return 0;\n{arms}\nfi\nreturn 0;\n}}");
     let v2 = v2_diagnostic(&source);
     assert_eq!(v2.code, "E_NESTING");
     let public = atto_compiler::compile(&source).expect_err("overlong elif compiled");
     assert_eq!(public.code, "E_NESTING");
 }
-
 
 #[test]
 fn v2_fallback_never_reinterprets_legacy_negative_fixtures_without_async_opt_in() {
@@ -66,8 +64,7 @@ fn v2_fallback_never_reinterprets_legacy_negative_fixtures_without_async_opt_in(
             .parse_program()
             .and_then(|program| atto_compiler::check::check(&program))
             .expect_err("the original frontend must reject this source");
-        let public = atto_compiler::compile(&source)
-            .expect_err("v2 fallback made previously invalid source executable");
+        let public = atto_compiler::compile(&source).expect_err("v2 fallback made previously invalid source executable");
         assert_eq!(public.code, legacy.code, "{name}: must preserve legacy diagnostic");
     }
 }
@@ -101,15 +98,13 @@ fn explicit_suspends_declaration_reaches_real_v2_compiler() {
     assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0", "emit a real guest Wasm module");
 }
 
-
 #[test]
 fn removed_boolean_xor_fails_closed_in_both_compiler_frontends() {
     for source in [
         "pub fnc main(): int { return 1 ^^ 2; }",
         "pub suspends fnc main(): int { return 1 ^^ 2; }",
     ] {
-        let d = atto_compiler::compile(source)
-            .expect_err("removed ^^ operator must never emit executable Wasm");
+        let d = atto_compiler::compile(source).expect_err("removed ^^ operator must never emit executable Wasm");
         assert_eq!(d.code, "E_UNSUPPORTED");
         assert!(d.pos.line >= 1 && d.pos.col >= 1);
     }

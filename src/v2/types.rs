@@ -24,7 +24,9 @@ pub enum Ty {
     /// A read descriptor owns exactly one checked Channel<int> handle.
     SelectCase,
     /// Immutable plan or explicitly mutable DynamicSelectPlan<int>.
-    SelectPlan { dynamic: bool },
+    SelectPlan {
+        dynamic: bool,
+    },
     /// Current ordinal result, not a keyed map result.
     SelectResult,
     /// Provisional single-tenant, compiler-issued checked DATA graph handle.

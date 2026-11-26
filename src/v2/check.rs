@@ -186,20 +186,33 @@ pub fn check(prog: &Program, prelude: &Program) -> R<Module> {
     c.run()
 }
 
-impl<'a> Checker<'a> {
+impl Checker<'_> {
     // ------------------------------------------------------------- driver
 
     fn run(&mut self) -> R<Module> {
         let prog = self.prog;
         for imp in &prog.imports {
             match (imp.module.as_str(), imp.export.as_str()) {
-                ("core.telemetry", "span") | ("std.time", "sleep") => {},
-                _ => return Err(err(imp.pos, "E_MODULE", format!("package '{}' has no supported export '{}'", imp.module, imp.export))),
+                ("core.telemetry", "span") | ("std.time", "sleep") => {}
+                _ => {
+                    return Err(err(
+                        imp.pos,
+                        "E_MODULE",
+                        format!("package '{}' has no supported export '{}'", imp.module, imp.export),
+                    ))
+                }
             }
             if matches!(imp.local.as_str(), "stdio" | "time" | "telemetry" | "timeout")
-                || self.named_imports.insert(imp.local.clone(), (imp.module.clone(), imp.export.clone())).is_some()
+                || self
+                    .named_imports
+                    .insert(imp.local.clone(), (imp.module.clone(), imp.export.clone()))
+                    .is_some()
             {
-                return Err(err(imp.pos, "E_DUPLICATE", format!("import alias '{}' conflicts with another binding or builtin", imp.local)));
+                return Err(err(
+                    imp.pos,
+                    "E_DUPLICATE",
+                    format!("import alias '{}' conflicts with another binding or builtin", imp.local),
+                ));
             }
         }
         for (path, pos) in &prog.uses {
@@ -234,7 +247,12 @@ impl<'a> Checker<'a> {
             });
         }
         for (i, o) in prog.objects.iter().enumerate() {
-            let void = FnSig { params: Vec::new(), ret: Ty::Void, suspends: false, async_gen: None };
+            let void = FnSig {
+                params: Vec::new(),
+                ret: Ty::Void,
+                suspends: false,
+                async_gen: None,
+            };
             self.objs[i].ctor = self.reserve(void.clone());
             self.objs[i].dispose = self.reserve(void.clone());
             // Resolve canonical actor port types from the AST before lowering
@@ -253,19 +271,22 @@ impl<'a> Checker<'a> {
                     return Err(type_err(declared.pos(), "a receives port needs a concrete value type"));
                 }
                 let Some(r) = &o.receive else {
-                    return Err(type_err(o.pos,
-                        "an actor declaring 'receives T' must define receive(ActorMail<T>)"));
+                    return Err(type_err(o.pos, "an actor declaring 'receives T' must define receive(ActorMail<T>)"));
                 };
                 let actual = self.resolve(&r.payload, false)?;
                 if want != actual {
-                    return Err(type_err(r.pos,
-                        format!("declared receives {} differs from ActorMail<{}>",
-                            self.tn(&want), self.tn(&actual))));
+                    return Err(type_err(
+                        r.pos,
+                        format!("declared receives {} differs from ActorMail<{}>", self.tn(&want), self.tn(&actual)),
+                    ));
                 }
             }
             if let Some(r) = &o.receive {
                 self.objs[i].mail = self.resolve(&r.payload, false)?;
-                self.objs[i].receive = Some(self.reserve(FnSig { suspends: true, ..void.clone() }));
+                self.objs[i].receive = Some(self.reserve(FnSig {
+                    suspends: true,
+                    ..void.clone()
+                }));
             }
             for m in &o.methods {
                 self.reserved_name(&m.name, m.pos)?;
@@ -280,7 +301,11 @@ impl<'a> Checker<'a> {
         for f in &prog.funcs {
             self.reserved_name(&f.name, f.pos)?;
             if self.named_imports.contains_key(&f.name) {
-                return Err(err(f.pos, "E_DUPLICATE", format!("function '{}' collides with a named import", f.name)));
+                return Err(err(
+                    f.pos,
+                    "E_DUPLICATE",
+                    format!("function '{}' collides with a named import", f.name),
+                ));
             }
             if self.user.contains_key(&f.name) || self.objs.iter().any(|o| o.name == f.name) {
                 return Err(err(f.pos, "E_DUPLICATE", format!("'{}' is already defined", f.name)));
@@ -361,14 +386,23 @@ impl<'a> Checker<'a> {
         if async_gen.is_some() && !f.suspends {
             return Err(type_err(f.pos, "a function returning AsyncGenerator<T> is declared 'suspends'"));
         }
-        Ok(FnSig { params, ret, suspends: f.suspends, async_gen })
+        Ok(FnSig {
+            params,
+            ret,
+            suspends: f.suspends,
+            async_gen,
+        })
     }
 
     /// The exported `main`: the user's `main` itself for a purely synchronous
     /// program, otherwise a wrapper that runs it as the first task.
     fn entry(&mut self) -> R<u32> {
         let Some(&main) = self.user.get("main") else {
-            return Err(err(Pos { line: 1, col: 1 }, "E_MAIN", "program needs a 'pub fnc main(): int' entry point"));
+            return Err(err(
+                Pos { line: 1, col: 1 },
+                "E_MAIN",
+                "program needs a 'pub fnc main(): int' entry point",
+            ));
         };
         let sig = self.sigs[main as usize].clone();
         let pos = self.prog.funcs.iter().find(|f| f.name == "main").map(|f| f.pos).unwrap();
@@ -381,18 +415,31 @@ impl<'a> Checker<'a> {
         if !sig.suspends && !self.needs_sched {
             return Ok(main);
         }
-        let none = FnSig { params: vec![Ty::Raw], ret: Ty::Raw, suspends: true, async_gen: None };
+        let none = FnSig {
+            params: vec![Ty::Raw],
+            ret: Ty::Raw,
+            suspends: true,
+            async_gen: None,
+        };
         let task = self.reserve(none.clone());
         let body = if sig.suspends {
             vec![IrStmt::SCall(Some(1), main, Vec::new()), IrStmt::Return(Ir::Local(1))]
         } else {
             vec![IrStmt::Return(Ir::Call(main, Vec::new()))]
         };
-        self.fns[task as usize] =
-            Some(IrFn { name: "atto.main_task".into(), params: 1, locals: 2, body, suspends: sig.suspends });
+        self.fns[task as usize] = Some(IrFn {
+            name: "atto.main_task".into(),
+            params: 1,
+            locals: 2,
+            body,
+            suspends: sig.suspends,
+        });
         let slot = self.table.len() as i64;
         self.table.push(task);
-        let start = self.reserve(FnSig { params: Vec::new(), ..none });
+        let start = self.reserve(FnSig {
+            params: Vec::new(),
+            ..none
+        });
         let run = self.rt_id("__main");
         self.fns[start as usize] = Some(IrFn {
             name: "atto.start".into(),
@@ -437,8 +484,15 @@ impl<'a> Checker<'a> {
         if let Some(id) = self.rt_ids.get(name) {
             return *id;
         }
-        let idx = self.prelude.funcs.iter().position(|f| f.name == name).unwrap_or_else(|| panic!("runtime function {name}"));
-        let sig = self.signature(&self.prelude.funcs[idx], true).expect("prelude signatures are valid");
+        let idx = self
+            .prelude
+            .funcs
+            .iter()
+            .position(|f| f.name == name)
+            .unwrap_or_else(|| panic!("runtime function {name}"));
+        let sig = self
+            .signature(&self.prelude.funcs[idx], true)
+            .expect("prelude signatures are valid");
         let id = self.reserve(sig);
         self.rt_ids.insert(name.to_owned(), id);
         self.rt_work.push((idx, id));
@@ -471,7 +525,11 @@ impl<'a> Checker<'a> {
         if self.cur().suspends {
             Ok(())
         } else {
-            Err(err(pos, "E_AWAIT", format!("{what} is only valid inside a 'suspends' function, a task or an actor handler")))
+            Err(err(
+                pos,
+                "E_AWAIT",
+                format!("{what} is only valid inside a 'suspends' function, a task or an actor handler"),
+            ))
         }
     }
 
@@ -507,7 +565,11 @@ impl<'a> Checker<'a> {
             Ty::PipeHandle => "PipeHandle".into(),
             Ty::PipeSetupError => "PipeSetupError".into(),
             Ty::AsyncGen(a) => format!("AsyncGenerator<{}>", self.tn(a)),
-            Ty::Fn(p, r) => format!("fnc({}) -> {}", p.iter().map(|x| self.tn(x)).collect::<Vec<_>>().join(", "), self.tn(r)),
+            Ty::Fn(p, r) => format!(
+                "fnc({}) -> {}",
+                p.iter().map(|x| self.tn(x)).collect::<Vec<_>>().join(", "),
+                self.tn(r)
+            ),
             Ty::Actor(i) => format!("ActorRef<{}>", self.objs[*i].name),
             Ty::Object(i) => self.objs[*i].name.clone(),
             Ty::Observable(a) => format!("Observable<{}>", self.tn(a)),
@@ -547,11 +609,14 @@ impl<'a> Checker<'a> {
             ("SelectPlan", 0) => Ty::SelectPlan { dynamic: false },
             ("DynamicSelectPlan", 1) => {
                 if self.resolve(&args[0], false)? != Ty::Int {
-                    return Err(err(pos, "E_UNSUPPORTED",
-                        "DynamicSelectPlan currently supports only int list slots; keyed-map lowering is not implemented"));
+                    return Err(err(
+                        pos,
+                        "E_UNSUPPORTED",
+                        "DynamicSelectPlan currently supports only int list slots; keyed-map lowering is not implemented",
+                    ));
                 }
                 Ty::SelectPlan { dynamic: true }
-            },
+            }
             ("SelectResult", 0) => Ty::SelectResult,
             ("PipeHandle", 0) => Ty::PipeHandle,
             ("PipeSetupError", 0) => Ty::PipeSetupError,
@@ -561,10 +626,12 @@ impl<'a> Checker<'a> {
             ("Subscription", 0) => Ty::Subscription,
             ("Span", 0) => Ty::Span,
             ("ActorRef", 1) => match &args[0] {
-                TyEx::Name(a, inner, _) if inner.is_empty() => match self.objs.iter().position(|o| o.name == *a && o.kind == ObjKind::Actor) {
-                    Some(i) => Ty::Actor(i),
-                    None => return Err(type_err(pos, format!("unknown actor '{a}'"))),
-                },
+                TyEx::Name(a, inner, _) if inner.is_empty() => {
+                    match self.objs.iter().position(|o| o.name == *a && o.kind == ObjKind::Actor) {
+                        Some(i) => Ty::Actor(i),
+                        None => return Err(type_err(pos, format!("unknown actor '{a}'"))),
+                    }
+                }
                 _ => return Err(type_err(pos, "ActorRef<A> names an actor")),
             },
             ("Generator", _) => return Err(unsupported(pos, "Generator<T> together with async/pattern features")),
@@ -595,14 +662,18 @@ impl<'a> Checker<'a> {
             Ty::Int => Ok(TAG_INT),
             Ty::Bool => Ok(TAG_BOOL),
             Ty::Str => Ok(TAG_STR),
-            other => Err(type_err(pos, format!("only int, bool and string values convert to Any, not {}", self.tn(other)))),
+            other => Err(type_err(
+                pos,
+                format!("only int, bool and string values convert to Any, not {}", self.tn(other)),
+            )),
         }
     }
 
     // ---------------------------------------------------------- variables
 
     fn declare(&mut self, name: &str, ty: Ty, mutable: bool, pos: Pos) -> R<u32> {
-        self.reserved_name(name, pos).or_else(|e| if self.cur().prelude { Ok(()) } else { Err(e) })?;
+        self.reserved_name(name, pos)
+            .or_else(|e| if self.cur().prelude { Ok(()) } else { Err(e) })?;
         if ty.has_hole() {
             return Err(type_err(pos, format!("cannot infer the type of '{name}'; add a type annotation")));
         }
@@ -618,12 +689,23 @@ impl<'a> Checker<'a> {
         }
         let slot = c.nlocals;
         c.nlocals += if matches!(ty, Ty::Mail(_)) { 2 } else { 1 };
-        c.scopes.last_mut().unwrap().push(Var { name: name.to_owned(), slot, ty, mutable });
+        c.scopes.last_mut().unwrap().push(Var {
+            name: name.to_owned(),
+            slot,
+            ty,
+            mutable,
+        });
         Ok(slot)
     }
 
     fn find_at(&mut self, depth: usize, name: &str, pos: Pos) -> R<Option<Var>> {
-        if let Some(v) = self.cx[depth].scopes.iter().rev().flat_map(|s| s.iter().rev()).find(|v| v.name == name) {
+        if let Some(v) = self.cx[depth]
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|s| s.iter().rev())
+            .find(|v| v.name == name)
+        {
             return Ok(Some(v.clone()));
         }
         if !self.cx[depth].is_closure || depth == 0 {
@@ -640,13 +722,22 @@ impl<'a> Checker<'a> {
             ));
         }
         if matches!(outer.ty, Ty::Mail(_)) {
-            return Err(err(pos, "E_CAPTURE", format!("copy '{name}.value' into a 'val' before using it in a task or lambda")));
+            return Err(err(
+                pos,
+                "E_CAPTURE",
+                format!("copy '{name}.value' into a 'val' before using it in a task or lambda"),
+            ));
         }
         let c = &mut self.cx[depth];
         let slot = c.nlocals;
         c.nlocals += 1;
         c.captures.push((outer.slot, slot));
-        let v = Var { name: name.to_owned(), slot, ty: outer.ty, mutable: false };
+        let v = Var {
+            name: name.to_owned(),
+            slot,
+            ty: outer.ty,
+            mutable: false,
+        };
         c.scopes[0].push(v.clone());
         Ok(Some(v))
     }
@@ -674,7 +765,12 @@ impl<'a> Checker<'a> {
         let (Ty::Actor(i) | Ty::Object(i)) = this.ty else {
             return Ok(None);
         };
-        Ok(self.objs[i].fields.iter().find(|f| f.name == name).cloned().map(|f| (add(Ir::Local(this.slot), f.offset as i64), f)))
+        Ok(self.objs[i]
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .cloned()
+            .map(|f| (add(Ir::Local(this.slot), f.offset as i64), f)))
     }
 
     // ---------------------------------------------------------- functions
@@ -687,7 +783,11 @@ impl<'a> Checker<'a> {
         let mut cx = FnCx::new(sig.ret.clone(), sig.suspends, prelude);
         self.cx.push(cx_take(&mut cx));
         if let Some(i) = owner {
-            let ty = if self.objs[i].kind == ObjKind::Actor { Ty::Actor(i) } else { Ty::Object(i) };
+            let ty = if self.objs[i].kind == ObjKind::Actor {
+                Ty::Actor(i)
+            } else {
+                Ty::Object(i)
+            };
             self.declare("self", ty, false, f.pos)?;
         }
         for (p, t) in f.params.iter().zip(&sig.params) {
@@ -697,9 +797,19 @@ impl<'a> Checker<'a> {
         let (body, diverges) = self.stmts(&f.body)?;
         let cx = self.cx.pop().unwrap();
         if sig.ret != Ty::Void && !diverges {
-            return Err(err(f.pos, "E_RETURN", format!("function '{}' must return a value on every path", f.name)));
+            return Err(err(
+                f.pos,
+                "E_RETURN",
+                format!("function '{}' must return a value on every path", f.name),
+            ));
         }
-        self.fns[id as usize] = Some(IrFn { name: f.name.clone(), params, locals: cx.nlocals, body, suspends: cx.has_susp });
+        self.fns[id as usize] = Some(IrFn {
+            name: f.name.clone(),
+            params,
+            locals: cx.nlocals,
+            body,
+            suspends: cx.has_susp,
+        });
         Ok(())
     }
 
@@ -719,7 +829,13 @@ impl<'a> Checker<'a> {
         body.push(IrStmt::Expr(spawn));
         body.push(IrStmt::Return(Ir::Local(ch)));
         let cx = self.cx.pop().unwrap();
-        self.fns[id as usize] = Some(IrFn { name: f.name.clone(), params, locals: cx.nlocals, body, suspends: false });
+        self.fns[id as usize] = Some(IrFn {
+            name: f.name.clone(),
+            params,
+            locals: cx.nlocals,
+            body,
+            suspends: false,
+        });
         Ok(())
     }
 
@@ -737,7 +853,12 @@ impl<'a> Checker<'a> {
         gen_item: Option<Ty>,
         pos: Pos,
     ) -> R<(Ir, Ty)> {
-        let id = self.reserve(FnSig { params: Vec::new(), ret: Ty::Void, suspends, async_gen: None });
+        let id = self.reserve(FnSig {
+            params: Vec::new(),
+            ret: Ty::Void,
+            suspends,
+            async_gen: None,
+        });
         let prelude = self.cur().prelude;
         let mut cx = FnCx::new(ret.clone().unwrap_or(Ty::Infer), suspends, prelude);
         cx.ret_infer = ret.is_none();
@@ -762,20 +883,36 @@ impl<'a> Checker<'a> {
             stmts.push(close);
         }
         let cx = self.cx.pop().unwrap();
-        let ret = if cx.ret_infer && cx.ret == Ty::Infer { Ty::Void } else { cx.ret.clone() };
+        let ret = if cx.ret_infer && cx.ret == Ty::Infer {
+            Ty::Void
+        } else {
+            cx.ret.clone()
+        };
         if ret != Ty::Void && !diverges {
             return Err(err(pos, "E_RETURN", "this block must return a value on every path"));
         }
-        let mut full: Vec<IrStmt> =
-            cx.captures.iter().enumerate().map(|(k, (_, inner))| IrStmt::Set(*inner, load(Ir::Local(0), 8 + 8 * k as i64))).collect();
+        let mut full: Vec<IrStmt> = cx
+            .captures
+            .iter()
+            .enumerate()
+            .map(|(k, (_, inner))| IrStmt::Set(*inner, load(Ir::Local(0), 8 + 8 * k as i64)))
+            .collect();
         full.extend(stmts);
-        self.fns[id as usize] =
-            Some(IrFn { name: format!("{name}.closure"), params: nparams, locals: cx.nlocals, body: full, suspends: cx.has_susp });
+        self.fns[id as usize] = Some(IrFn {
+            name: format!("{name}.closure"),
+            params: nparams,
+            locals: cx.nlocals,
+            body: full,
+            suspends: cx.has_susp,
+        });
         let slot = self.table.len() as i64;
         self.table.push(id);
         let t = self.temp();
         let c = self.c();
-        c.pre.push(IrStmt::Set(t, Ir::Helper(Helper::Alloc, vec![Ir::Const(8 + 8 * cx.captures.len() as i64)])));
+        c.pre.push(IrStmt::Set(
+            t,
+            Ir::Helper(Helper::Alloc, vec![Ir::Const(8 + 8 * cx.captures.len() as i64)]),
+        ));
         c.pre.push(IrStmt::Store(Ir::Local(t), Ir::Const(slot)));
         for (k, (outer, _)) in cx.captures.iter().enumerate() {
             c.pre.push(IrStmt::Store(add(Ir::Local(t), 8 + 8 * k as i64), Ir::Local(*outer)));
@@ -824,12 +961,20 @@ impl<'a> Checker<'a> {
                 None => ir,
             };
             if ty.has_hole() {
-                return Err(type_err(f.pos, format!("cannot infer the type of field '{}'; add a type annotation", f.name)));
+                return Err(type_err(
+                    f.pos,
+                    format!("cannot infer the type of field '{}'; add a type annotation", f.name),
+                ));
             }
             self.flush(&mut body);
             let offset = base + 8 * k as u32;
             body.push(IrStmt::Store(add(Ir::Local(this), offset as i64), ir));
-            self.objs[i].fields.push(FieldInfo { name: f.name.clone(), ty, mutable: f.mutable, offset });
+            self.objs[i].fields.push(FieldInfo {
+                name: f.name.clone(),
+                ty,
+                mutable: f.mutable,
+                offset,
+            });
         }
         if actor {
             // start the actor's mailbox loop as a task
@@ -846,7 +991,13 @@ impl<'a> Checker<'a> {
         body.push(IrStmt::Return(Ir::Local(this)));
         let cx = self.cx.pop().unwrap();
         let ctor = self.objs[i].ctor;
-        self.fns[ctor as usize] = Some(IrFn { name: format!("{}.new", o.name), params: 0, locals: cx.nlocals, body, suspends: false });
+        self.fns[ctor as usize] = Some(IrFn {
+            name: format!("{}.new", o.name),
+            params: 0,
+            locals: cx.nlocals,
+            body,
+            suspends: false,
+        });
 
         // dispose: stop every actor this object owns through a field
         let mut stop = Vec::new();
@@ -858,23 +1009,37 @@ impl<'a> Checker<'a> {
             }
         }
         let dispose = self.objs[i].dispose;
-        self.fns[dispose as usize] =
-            Some(IrFn { name: format!("{}.dispose", o.name), params: 1, locals: 1, body: stop, suspends: false });
+        self.fns[dispose as usize] = Some(IrFn {
+            name: format!("{}.dispose", o.name),
+            params: 1,
+            locals: 1,
+            body: stop,
+            suspends: false,
+        });
         Ok(())
     }
 
     /// `loop { mail = next message or stop; receive(self, mail, sequence) }`
     fn actor_loop(&mut self, i: usize) -> u32 {
-        let id = self.reserve(FnSig { params: vec![Ty::Raw], ret: Ty::Raw, suspends: true, async_gen: None });
+        let id = self.reserve(FnSig {
+            params: vec![Ty::Raw],
+            ret: Ty::Raw,
+            suspends: true,
+            async_gen: None,
+        });
         let recv = self.rt_id("__chan_recv_opt");
         // locals: 0 env, 1 self, 2 mailbox, 3 option, 4 value, 5 sequence
         let mut body = vec![IrStmt::Set(1, load(Ir::Local(0), 8)), IrStmt::Set(2, load(Ir::Local(1), 0))];
         let mut turn = vec![
             IrStmt::SCall(Some(3), recv, vec![Ir::Local(2)]),
-            IrStmt::If(eq(Ir::Local(3), Ir::Const(0)), vec![
-                IrStmt::Expr(self.rt("__actor_exit", vec![Ir::Local(1)])),
-                IrStmt::Return(Ir::Const(0)),
-            ], Vec::new()),
+            IrStmt::If(
+                eq(Ir::Local(3), Ir::Const(0)),
+                vec![
+                    IrStmt::Expr(self.rt("__actor_exit", vec![Ir::Local(1)])),
+                    IrStmt::Return(Ir::Const(0)),
+                ],
+                Vec::new(),
+            ),
             IrStmt::Set(4, load(Ir::Local(3), 0)),
             IrStmt::Set(5, load(Ir::Local(1), 16)),
             IrStmt::Store(add(Ir::Local(1), 16), add(Ir::Local(5), 1)),
@@ -882,9 +1047,17 @@ impl<'a> Checker<'a> {
         if let Some(receive) = self.objs[i].receive {
             turn.push(IrStmt::SCall(None, receive, vec![Ir::Local(1), Ir::Local(4), Ir::Local(5)]));
         }
-        body.push(IrStmt::Loop { body: turn, update: Vec::new() });
-        self.fns[id as usize] =
-            Some(IrFn { name: format!("{}.mailbox", self.objs[i].name), params: 1, locals: 6, body, suspends: true });
+        body.push(IrStmt::Loop {
+            body: turn,
+            update: Vec::new(),
+        });
+        self.fns[id as usize] = Some(IrFn {
+            name: format!("{}.mailbox", self.objs[i].name),
+            params: 1,
+            locals: 6,
+            body,
+            suspends: true,
+        });
         id
     }
 
@@ -941,14 +1114,23 @@ impl<'a> Checker<'a> {
     /// past it.
     fn stmt(&mut self, s: &Stmt, out: &mut Vec<IrStmt>) -> R<bool> {
         match s {
-            Stmt::Bind { kind, target, ty, init, pos } => {
+            Stmt::Bind {
+                kind,
+                target,
+                ty,
+                init,
+                pos,
+            } => {
                 let want = match ty {
                     Some(t) => Some(self.resolve(t, self.cur().prelude)?),
                     None => None,
                 };
                 let (ir, actual) = self.value(init, want.as_ref())?;
                 let (ir, bound) = match &want {
-                    Some(w) => (self.coerce(ir, &actual, w, init.pos)?, if *w == Ty::Raw { Ty::Raw } else { merge(w, &actual) }),
+                    Some(w) => (
+                        self.coerce(ir, &actual, w, init.pos)?,
+                        if *w == Ty::Raw { Ty::Raw } else { merge(w, &actual) },
+                    ),
                     None => (ir, actual),
                 };
                 let bound = if want.as_ref() == Some(&Ty::Any) { Ty::Any } else { bound };
@@ -964,7 +1146,10 @@ impl<'a> Checker<'a> {
                             return Err(type_err(*pos, format!("only a tuple can be destructured, not {}", self.tn(&bound))));
                         };
                         if items.len() != names.len() {
-                            return Err(type_err(*pos, format!("tuple has {} elements, {} names given", items.len(), names.len())));
+                            return Err(type_err(
+                                *pos,
+                                format!("tuple has {} elements, {} names given", items.len(), names.len()),
+                            ));
                         }
                         let t = self.temp();
                         out.push(IrStmt::Set(t, ir));
@@ -1004,9 +1189,18 @@ impl<'a> Checker<'a> {
                 // Starting a pending selection and immediately discarding its
                 // Future loses the only cancellation/retirement handle. Fail
                 // closed until structured task lifetime is guaranteed.
-                if matches!(&e.kind, Ex::PlanSelect { mode: PlanMode::Nb, .. }) {
-                    return Err(err(e.pos, "E_UNSUPPORTED",
-                        "discarded 'nb select' would leave an unowned pending selection; bind and await its Future"));
+                if matches!(
+                    &e.kind,
+                    Ex::PlanSelect {
+                        mode: PlanMode::Future | PlanMode::Nb,
+                        ..
+                    }
+                ) {
+                    return Err(err(
+                        e.pos,
+                        "E_UNSUPPORTED",
+                        "discarded select would leave an unowned pending selection; bind and await its Future",
+                    ));
                 }
                 let (ir, ty) = self.expr(e, None)?;
                 self.flush(out);
@@ -1103,15 +1297,23 @@ impl<'a> Checker<'a> {
                 inner.push(IrStmt::If(not(c), vec![IrStmt::Break], Vec::new()));
                 let (b, _, _) = self.loop_body(body)?;
                 inner.extend(b);
-                out.push(IrStmt::Loop { body: inner, update: Vec::new() });
+                out.push(IrStmt::Loop {
+                    body: inner,
+                    update: Vec::new(),
+                });
                 Ok(false)
             }
             Stmt::Loop { body, .. } => {
                 let (b, _, broke) = self.loop_body(body)?;
-                out.push(IrStmt::Loop { body: b, update: Vec::new() });
+                out.push(IrStmt::Loop {
+                    body: b,
+                    update: Vec::new(),
+                });
                 Ok(!broke)
             }
-            Stmt::For { init, cond, update, body, .. } => {
+            Stmt::For {
+                init, cond, update, body, ..
+            } => {
                 self.c().scopes.push(Vec::new());
                 if let Some(i) = init {
                     self.stmt(i, out)?;
@@ -1132,7 +1334,13 @@ impl<'a> Checker<'a> {
                 out.push(IrStmt::Loop { body: inner, update: step });
                 Ok(cond.is_none() && !broke)
             }
-            Stmt::ForIn { name, source, body, is_await, pos } => self.for_in(name, source, body, *is_await, *pos, out),
+            Stmt::ForIn {
+                name,
+                source,
+                body,
+                is_await,
+                pos,
+            } => self.for_in(name, source, body, *is_await, *pos, out),
             Stmt::Break(pos) | Stmt::Continue(pos) => {
                 let Some(&(height, _)) = self.cur().loops.last() else {
                     return Err(err(*pos, "E_LOOP", "'break' and 'continue' are only valid inside a loop"));
@@ -1154,7 +1362,11 @@ impl<'a> Checker<'a> {
             }
             Stmt::Yield(value, pos) => {
                 let Some((ch, item)) = self.cur().gen_chan.clone() else {
-                    return Err(err(*pos, "E_YIELD", "'yield' is only valid in a 'suspends' function returning AsyncGenerator<T>"));
+                    return Err(err(
+                        *pos,
+                        "E_YIELD",
+                        "'yield' is only valid in a 'suspends' function returning AsyncGenerator<T>",
+                    ));
                 };
                 let ir = self.typed(value, &item)?;
                 self.rt_scall("__chan_send", vec![Ir::Local(ch), ir]);
@@ -1199,12 +1411,15 @@ impl<'a> Checker<'a> {
                         let enter = self.rt("__span_enter", vec![Ir::Local(slot)]);
                         out.push(IrStmt::Set(guard, enter));
                         self.rt("__span_exit", vec![Ir::Local(guard)])
-                    },
+                    }
                     Ty::Subscription => self.rt("__sub_dispose", vec![Ir::Local(slot)]),
                     Ty::Channel(_) => self.rt("__chan_close", vec![Ir::Local(slot)]),
                     Ty::Object(i) => Ir::Call(self.objs[*i].dispose, vec![Ir::Local(slot)]),
                     other => {
-                        return Err(type_err(resource.pos, format!("'using' needs a closeable resource, found {}", self.tn(other))));
+                        return Err(type_err(
+                            resource.pos,
+                            format!("'using' needs a closeable resource, found {}", self.tn(other)),
+                        ));
                     }
                 };
                 let d = self.scoped_cleanup(vec![IrStmt::Expr(release)], body, out)?;
@@ -1413,7 +1628,10 @@ impl<'a> Checker<'a> {
                 let (pa, a_ir, a_ty) = self.isolated(a, want)?;
                 let (pb, b_ir, b_ty) = self.isolated(b, want.or(Some(&a_ty)))?;
                 if !fits(&b_ty, &a_ty) || a_ty == Ty::Void {
-                    return Err(type_err(pos, format!("ternary arms differ: {} and {}", self.tn(&a_ty), self.tn(&b_ty))));
+                    return Err(type_err(
+                        pos,
+                        format!("ternary arms differ: {} and {}", self.tn(&a_ty), self.tn(&b_ty)),
+                    ));
                 }
                 let ty = merge(&a_ty, &b_ty);
                 if pa.is_empty() && pb.is_empty() {
@@ -1450,7 +1668,10 @@ impl<'a> Checker<'a> {
                         Ok((self.rt("__chan_new", vec![n]), t))
                     }
                     ("unbounded", 0) => Ok((self.rt("__chan_new", vec![Ir::Const(-1)]), t)),
-                    _ => Err(type_err(pos, "a channel is created with Channel<T>.bounded(n) or Channel<T>.unbounded()")),
+                    _ => Err(type_err(
+                        pos,
+                        "a channel is created with Channel<T>.bounded(n) or Channel<T>.unbounded()",
+                    )),
                 }
             }
             Ex::Tuple(items) => {
@@ -1461,7 +1682,9 @@ impl<'a> Checker<'a> {
                 let pairs: Vec<(&Expr, Option<Ty>)> = items.iter().zip(wants).collect();
                 let vals = self.operands(&pairs)?;
                 let t = self.temp();
-                self.c().pre.push(IrStmt::Set(t, Ir::Helper(Helper::Alloc, vec![Ir::Const(8 * items.len() as i64)])));
+                self.c()
+                    .pre
+                    .push(IrStmt::Set(t, Ir::Helper(Helper::Alloc, vec![Ir::Const(8 * items.len() as i64)])));
                 let mut tys = Vec::new();
                 for (k, (ir, ty)) in vals.into_iter().enumerate() {
                     self.c().pre.push(IrStmt::Store(add(Ir::Local(t), 8 * k as i64), ir));
@@ -1478,11 +1701,17 @@ impl<'a> Checker<'a> {
                 let pairs: Vec<(&Expr, Option<Ty>)> = items.iter().map(|x| (x, hint.clone())).collect();
                 let vals = self.operands(&pairs)?;
                 let t = self.temp();
-                self.c().pre.push(IrStmt::Set(t, Ir::Helper(Helper::Alloc, vec![Ir::Const(8 + 8 * items.len() as i64)])));
+                self.c().pre.push(IrStmt::Set(
+                    t,
+                    Ir::Helper(Helper::Alloc, vec![Ir::Const(8 + 8 * items.len() as i64)]),
+                ));
                 self.c().pre.push(IrStmt::Store(Ir::Local(t), Ir::Const(items.len() as i64)));
                 for (k, ((ir, ty), src)) in vals.into_iter().zip(items).enumerate() {
                     if !fits(&ty, &item) {
-                        return Err(type_err(src.pos, format!("list elements differ: {} and {}", self.tn(&item), self.tn(&ty))));
+                        return Err(type_err(
+                            src.pos,
+                            format!("list elements differ: {} and {}", self.tn(&item), self.tn(&ty)),
+                        ));
                     }
                     item = merge(&item, &ty);
                     self.c().pre.push(IrStmt::Store(add(Ir::Local(t), 8 + 8 * k as i64), ir));
@@ -1496,7 +1725,10 @@ impl<'a> Checker<'a> {
                 };
                 if let Some(w) = &want_params {
                     if w.len() != params.len() {
-                        return Err(type_err(pos, format!("this lambda takes {} parameter(s), {} expected", params.len(), w.len())));
+                        return Err(type_err(
+                            pos,
+                            format!("this lambda takes {} parameter(s), {} expected", params.len(), w.len()),
+                        ));
                     }
                 }
                 let mut typed = Vec::new();
@@ -1504,7 +1736,12 @@ impl<'a> Checker<'a> {
                     let t = match (&p.ty, &want_params) {
                         (Some(t), _) => self.resolve(t, self.cur().prelude)?,
                         (None, Some(w)) if !w[k].has_hole() => w[k].clone(),
-                        _ => return Err(type_err(p.pos, format!("cannot infer the type of parameter '{}'; write '|{}: T|'", p.name, p.name))),
+                        _ => {
+                            return Err(type_err(
+                                p.pos,
+                                format!("cannot infer the type of parameter '{}'; write '|{}: T|'", p.name, p.name),
+                            ))
+                        }
                     };
                     typed.push((p.name.clone(), t, p.pos));
                 }
@@ -1525,7 +1762,11 @@ impl<'a> Checker<'a> {
                     return Err(err(pos, "E_UNDEFINED", format!("unknown actor '{name}'")));
                 };
                 if !args.is_empty() {
-                    return Err(err(pos, "E_ACTOR", format!("actor '{name}' does not accept startup arguments; initialize state with fields")));
+                    return Err(err(
+                        pos,
+                        "E_ACTOR",
+                        format!("actor '{name}' does not accept startup arguments; initialize state with fields"),
+                    ));
                 }
                 self.needs_sched = true;
                 Ok((Ir::Call(self.objs[i].ctor, Vec::new()), Ty::Actor(i)))
@@ -1539,11 +1780,7 @@ impl<'a> Checker<'a> {
                 let found = Ty::Option(Box::new(Ty::SelectResult));
                 match mode {
                     PlanMode::Try => Ok((self.rt("__plan_try", vec![p, policy]), found)),
-                    PlanMode::Nb => Ok((self.rt("__plan_nb", vec![p, policy]), Ty::Future(Box::new(found)))),
-                    PlanMode::Wait => {
-                        self.need_suspends(pos, "'select'")?;
-                        Ok((self.rt_scall("__plan_wait", vec![p, policy]), Ty::SelectResult))
-                    }
+                    PlanMode::Future | PlanMode::Nb => Ok((self.rt("__plan_nb", vec![p, policy]), Ty::Future(Box::new(Ty::SelectResult)))),
                 }
             }
             Ex::ReadCh(mode, ch) => {
@@ -1635,7 +1872,11 @@ impl<'a> Checker<'a> {
         match op {
             BinOp::And | BinOp::Or | BinOp::CondAnd | BinOp::CondOr => {
                 let left = self.condition(l)?;
-                let refined = if matches!(op, BinOp::And | BinOp::CondAnd) { self.narrowings(l)? } else { Vec::new() };
+                let refined = if matches!(op, BinOp::And | BinOp::CondAnd) {
+                    self.narrowings(l)?
+                } else {
+                    Vec::new()
+                };
                 let mark = self.cur().narrow.len();
                 let lazy = matches!(op, BinOp::And | BinOp::Or) || !refined.is_empty();
                 self.c().narrow.extend(refined);
@@ -1683,11 +1924,13 @@ impl<'a> Checker<'a> {
                         // Four-stage and nested graph operands require a full
                         // owned graph IR. Do NOT recursively lower a prefix:
                         // that would activate it before validating all edges.
-                        let nested = |e: &Expr| matches!(&e.kind,
-                            Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _));
+                        let nested = |e: &Expr| matches!(&e.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _));
                         if nested(first) || nested(middle) || nested(r) {
-                            return Err(err(pos, "E_UNSUPPORTED",
-                                "long or nested continuous graph needs atomic PipeHandle lowering"));
+                            return Err(err(
+                                pos,
+                                "E_UNSUPPORTED",
+                                "long or nested continuous graph needs atomic PipeHandle lowering",
+                            ));
                         }
                         let vals = self.operands(&[(first, None), (middle, None), (r, None)])?;
                         let (src_ty, channel_ty, sink_ty) = if reverse {
@@ -1695,24 +1938,21 @@ impl<'a> Checker<'a> {
                         } else {
                             (&vals[0].1, &vals[1].1, &vals[2].1)
                         };
-                        if let (Ty::Actor(a), Ty::Channel(item), Ty::Actor(b)) =
-                            (src_ty, channel_ty, sink_ty)
-                        {
+                        if let (Ty::Actor(a), Ty::Channel(item), Ty::Actor(b)) = (src_ty, channel_ty, sink_ty) {
                             let from = &self.objs[*a];
                             let to = &self.objs[*b];
                             if !from.emits_declared {
-                                return Err(type_err(pos,
-                                    "pipeline actor source requires an explicit 'emits T' declaration"));
+                                return Err(type_err(pos, "pipeline actor source requires an explicit 'emits T' declaration"));
                             }
                             if !to.receives_declared {
-                                return Err(type_err(pos,
-                                    "pipeline actor sink requires an explicit 'receives T' declaration"));
+                                return Err(type_err(pos, "pipeline actor sink requires an explicit 'receives T' declaration"));
                             }
-                            let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
-                                format!("actor '{}' has no declared emission type", from.name)))?;
+                            let emitted = from
+                                .emit
+                                .as_ref()
+                                .ok_or_else(|| type_err(pos, format!("actor '{}' has no declared emission type", from.name)))?;
                             if **item != *emitted || to.receive.is_none() || **item != to.mail {
-                                return Err(type_err(pos,
-                                    "actor-channel-actor triple needs matching nominal DATA ports"));
+                                return Err(type_err(pos, "actor-channel-actor triple needs matching nominal DATA ports"));
                             }
                             // `item` borrows the type metadata inside
                             // `vals`. Clone it BEFORE consuming the stage
@@ -1723,11 +1963,7 @@ impl<'a> Checker<'a> {
                             let (first_ir, _) = it.next().unwrap();
                             let (middle_ir, _) = it.next().unwrap();
                             let (last_ir, _) = it.next().unwrap();
-                            let (source_ir, sink_ir) = if reverse {
-                                (last_ir, first_ir)
-                            } else {
-                                (first_ir, last_ir)
-                            };
+                            let (source_ir, sink_ir) = if reverse { (last_ir, first_ir) } else { (first_ir, last_ir) };
                             // A declaration explicitly expecting the nominal
                             // checked graph contract opts into non-trapping
                             // setup. Untyped legacy pipelines still return
@@ -1737,15 +1973,14 @@ impl<'a> Checker<'a> {
                                 Some(Ty::Result(ok, bad))
                                 if **ok == Ty::PipeHandle && **bad == Ty::PipeSetupError);
                             let (helper, result_ty) = if checked {
-                                ("__actor_channel_actor_try",
-                                 Ty::Result(Box::new(Ty::PipeHandle),
-                                            Box::new(Ty::PipeSetupError)))
+                                (
+                                    "__actor_channel_actor_try",
+                                    Ty::Result(Box::new(Ty::PipeHandle), Box::new(Ty::PipeSetupError)),
+                                )
                             } else {
-                                ("__actor_channel_actor_atomic",
-                                 Ty::Channel(channel_payload))
+                                ("__actor_channel_actor_atomic", Ty::Channel(channel_payload))
                             };
-                            return Ok((self.rt(helper,
-                                vec![source_ir, middle_ir, sink_ir]), result_ty));
+                            return Ok((self.rt(helper, vec![source_ir, middle_ir, sink_ir]), result_ty));
                         }
                         return Err(err(pos, "E_UNSUPPORTED",
                             "nested continuous pipe graphs need an owned typed PipeHandle; only the bounded actor-channel-actor triple has atomic guest admission"));
@@ -1754,26 +1989,26 @@ impl<'a> Checker<'a> {
                 // Parenthesized continuous graphs are not ordinary endpoint
                 // expressions. Reject before recursively publishing any edge.
                 if matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _)) {
-                    return Err(err(pos, "E_UNSUPPORTED",
-                        "nested continuous graph needs atomic PipeHandle lowering"));
+                    return Err(err(
+                        pos,
+                        "E_UNSUPPORTED",
+                        "nested continuous graph needs atomic PipeHandle lowering",
+                    ));
                 }
                 let vals = self.operands(&[(l, None), (r, None)])?;
                 let (left_ty, right_ty) = (vals[0].1.clone(), vals[1].1.clone());
-                let (upstream, downstream) = if reverse {
-                    (&right_ty, &left_ty)
-                } else {
-                    (&left_ty, &right_ty)
-                };
+                let (upstream, downstream) = if reverse { (&right_ty, &left_ty) } else { (&left_ty, &right_ty) };
                 // Actor-only nested ASTs are ambiguous (the legacy type is a
                 // head ActorRef, not a graph head+tail). Do not route through
                 // the wrong actor or skip typed checks when a graph is nested.
-                let nested_actor = matches!(&l.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
-                    && matches!(&left_ty, Ty::Actor(_))
-                    || matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
-                        && matches!(&right_ty, Ty::Actor(_));
+                let nested_actor = matches!(&l.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _)) && matches!(&left_ty, Ty::Actor(_))
+                    || matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _)) && matches!(&right_ty, Ty::Actor(_));
                 if nested_actor {
-                    return Err(err(pos, "E_UNSUPPORTED",
-                        "nested actor-only graph needs explicit typed head/tail PipeHandle lowering"));
+                    return Err(err(
+                        pos,
+                        "E_UNSUPPORTED",
+                        "nested actor-only graph needs explicit typed head/tail PipeHandle lowering",
+                    ));
                 }
                 let (helper, result_ty) = match (upstream, downstream) {
                     (Ty::Actor(a), Ty::Actor(b)) => {
@@ -1837,9 +2072,7 @@ impl<'a> Checker<'a> {
                 let mut it = vals.into_iter();
                 let ((a, ta), (b, tb)) = (it.next().unwrap(), it.next().unwrap());
                 let both = |s: &Self, f: fn(&Self, &Ty) -> bool| f(s, &ta) && f(s, &tb);
-                let mismatch = |s: &Self, what: &str| {
-                    type_err(pos, format!("{what}, found {} and {}", s.tn(&ta), s.tn(&tb)))
-                };
+                let mismatch = |s: &Self, what: &str| type_err(pos, format!("{what}, found {} and {}", s.tn(&ta), s.tn(&tb)));
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul => {
                         if !both(self, Self::is_int) {
@@ -1920,7 +2153,10 @@ impl<'a> Checker<'a> {
             Ty::SelectResult => match name {
                 "index" => Ok((load(ir, 0), Ty::Int)),
                 "value" => Ok((load(ir, 8), Ty::Int)),
-                _ => Err(type_err(pos, "SelectResult has ordinal .index and .value; keyed results are not yet supported")),
+                _ => Err(type_err(
+                    pos,
+                    "SelectResult has ordinal .index and .value; keyed results are not yet supported",
+                )),
             },
             Ty::Object(i) => match self.objs[*i].fields.iter().find(|f| f.name == name).cloned() {
                 Some(f) => Ok((load(ir, f.offset as i64), f.ty)),
@@ -1949,7 +2185,10 @@ impl<'a> Checker<'a> {
             other => Err(err(
                 pos,
                 "E_AWAIT",
-                format!("'await' needs a Future, a Task or a call of a suspends function, found {}", self.tn(&other)),
+                format!(
+                    "'await' needs a Future, a Task or a call of a suspends function, found {}",
+                    self.tn(&other)
+                ),
             )),
         }
     }
@@ -1959,7 +2198,11 @@ impl<'a> Checker<'a> {
             return Err(unsupported(a.value.pos, "named arguments here"));
         }
         if args.len() != n {
-            return Err(err(pos, "E_ARITY", format!("'{callee}' takes {n} argument(s), {} given", args.len())));
+            return Err(err(
+                pos,
+                "E_ARITY",
+                format!("'{callee}' takes {n} argument(s), {} given", args.len()),
+            ));
         }
         Ok(args.iter().map(|a| &a.value).collect())
     }
@@ -1968,8 +2211,11 @@ impl<'a> Checker<'a> {
     /// Only compiler-owned, checked Channel<int> read cases are admitted.
     fn select_plan_factory(&mut self, name: &str, args: &[Arg], dynamic: bool, pos: Pos) -> R<(Ir, Ty)> {
         if name == "from_map" {
-            return Err(err(pos, "E_UNSUPPORTED",
-                "ordered string-keyed SelectPlan.from_map is not yet lowered; use from_list"));
+            return Err(err(
+                pos,
+                "E_UNSUPPORTED",
+                "ordered string-keyed SelectPlan.from_map is not yet lowered; use from_list",
+            ));
         }
         if name != "from_list" {
             return Err(type_err(pos, format!("unknown SelectPlan factory '{name}'")));
@@ -1988,15 +2234,17 @@ impl<'a> Checker<'a> {
         if actual != want {
             return Err(type_err(src.pos, "from_list requires List<SelectCase.read(Channel<int>)>"));
         }
-        Ok((self.rt("__plan_from_list", vec![cases, Ir::Const(i64::from(dynamic))]),
-            Ty::SelectPlan { dynamic }))
+        Ok((
+            self.rt("__plan_from_list", vec![cases, Ir::Const(i64::from(dynamic))]),
+            Ty::SelectPlan { dynamic },
+        ))
     }
 
     /// Call `id` with `first` prepended to the checked arguments.
     fn invoke(&mut self, callee: &str, id: u32, first: Option<Ir>, args: &[Arg], pos: Pos, awaited: bool) -> R<(Ir, Ty, bool)> {
         let sig = self.sigs[id as usize].clone();
         let exprs = self.plain_args(callee, args, sig.params.len(), pos)?;
-        let pairs: Vec<(&Expr, Option<Ty>)> = exprs.iter().map(|e| *e).zip(sig.params.iter().cloned().map(Some)).collect();
+        let pairs: Vec<(&Expr, Option<Ty>)> = exprs.iter().copied().zip(sig.params.iter().cloned().map(Some)).collect();
         let vals = self.operands(&pairs)?;
         let mut irs: Vec<Ir> = first.into_iter().collect();
         for (((ir, ty), want), e) in vals.into_iter().zip(&sig.params).zip(&exprs) {
@@ -2004,7 +2252,11 @@ impl<'a> Checker<'a> {
         }
         if sig.suspends && sig.async_gen.is_none() {
             if !awaited {
-                return Err(err(pos, "E_AWAIT", format!("'{callee}' is a suspends function; call it with 'await {callee}(...)'")));
+                return Err(err(
+                    pos,
+                    "E_AWAIT",
+                    format!("'{callee}' is a suspends function; call it with 'await {callee}(...)'"),
+                ));
             }
             self.need_suspends(pos, "calling a suspends function")?;
             return Ok((self.scall(id, irs), sig.ret, true));
@@ -2033,7 +2285,7 @@ impl<'a> Checker<'a> {
                 return Err(type_err(pos, format!("'{name}' is a {}, not a function", self.tn(&v.ty))));
             };
             let exprs = self.plain_args(name, args, params.len(), pos)?;
-            let pairs: Vec<(&Expr, Option<Ty>)> = exprs.iter().map(|e| *e).zip(params.iter().cloned().map(Some)).collect();
+            let pairs: Vec<(&Expr, Option<Ty>)> = exprs.iter().copied().zip(params.iter().cloned().map(Some)).collect();
             let vals = self.operands(&pairs)?;
             let mut irs = Vec::new();
             for (((ir, ty), w), e) in vals.into_iter().zip(&params).zip(&exprs) {
@@ -2166,19 +2418,29 @@ impl<'a> Checker<'a> {
         if args.len() == 1 {
             let (ir, ty) = self.value(&args[0].value, Some(&Ty::List(Box::new(Ty::Bool))))?;
             if ty != Ty::List(Box::new(Ty::Bool)) {
-                return Err(type_err(pos, format!("'{name}' takes two or more bools or one list of bools, found {}", self.tn(&ty))));
+                return Err(type_err(
+                    pos,
+                    format!("'{name}' takes two or more bools or one list of bools, found {}", self.tn(&ty)),
+                ));
             }
             return Ok(self.rt("__gate", vec![ir, Ir::Const(kind)]));
         }
         if args.len() < 2 {
-            return Err(err(pos, "E_ARITY", format!("'{name}' takes two or more bools or one list of bools")));
+            return Err(err(
+                pos,
+                "E_ARITY",
+                format!("'{name}' takes two or more bools or one list of bools"),
+            ));
         }
         let pairs: Vec<(&Expr, Option<Ty>)> = args.iter().map(|a| (&a.value, Some(Ty::Bool))).collect();
         let vals = self.operands(&pairs)?;
         let mut acc: Option<Ir> = None;
         for ((ir, ty), a) in vals.into_iter().zip(args) {
             if !self.is_bool(&ty) {
-                return Err(type_err(a.value.pos, format!("'{name}' needs bool arguments, found {}", self.tn(&ty))));
+                return Err(type_err(
+                    a.value.pos,
+                    format!("'{name}' needs bool arguments, found {}", self.tn(&ty)),
+                ));
             }
             let op = [Op::And, Op::Or, Op::Xor][kind as usize];
             acc = Some(match acc {
@@ -2266,7 +2528,7 @@ impl<'a> Checker<'a> {
             "__call0" | "__call1" => {
                 let clo = next();
                 let clo = self.spill(clo);
-                let rest: Vec<Ir> = v.drain(..).collect();
+                let rest = std::mem::take(&mut v);
                 (Ir::CallClosure(Box::new(clo), rest), Ty::Raw, false)
             }
             "__suspend" => {
@@ -2308,7 +2570,10 @@ impl<'a> Checker<'a> {
                 Ty::Bool => (Print::Bool, ir),
                 Ty::Str => (Print::Str, self.spill(ir)),
                 other => {
-                    return Err(type_err(a.value.pos, format!("stdio can print int, bool and string values, not {}", self.tn(&other))));
+                    return Err(type_err(
+                        a.value.pos,
+                        format!("stdio can print int, bool and string values, not {}", self.tn(&other)),
+                    ));
                 }
             };
             self.uses_print[kind as usize] = true;
@@ -2325,9 +2590,8 @@ impl<'a> Checker<'a> {
         if let Ex::Var(kind) = &base.kind {
             // Do not synthesize a builtin factory when a local with this name
             // shadows it; only the unbound nominal name is a static factory.
-            let unshadowed_builtin = matches!(kind.as_str(),
-                "SelectCase" | "SelectPlan" | "DynamicSelectPlan")
-                && self.find(kind, base.pos)?.is_none();
+            let unshadowed_builtin =
+                matches!(kind.as_str(), "SelectCase" | "SelectPlan" | "DynamicSelectPlan") && self.find(kind, base.pos)?.is_none();
             if unshadowed_builtin && kind == "SelectCase" {
                 if name != "read" {
                     return Err(type_err(pos, "SelectCase supports only read(Channel<int>)"));
@@ -2335,8 +2599,10 @@ impl<'a> Checker<'a> {
                 let src = self.plain_args(name, args, 1, pos)?[0];
                 let (channel, ty) = self.value(src, None)?;
                 if ty != Ty::Channel(Box::new(Ty::Int)) {
-                    return Err(type_err(src.pos, format!(
-                        "SelectCase.read needs Channel<int>, found {}", self.tn(&ty))));
+                    return Err(type_err(
+                        src.pos,
+                        format!("SelectCase.read needs Channel<int>, found {}", self.tn(&ty)),
+                    ));
                 }
                 return Ok((channel, Ty::SelectCase, false));
             }
@@ -2368,13 +2634,20 @@ impl<'a> Checker<'a> {
                         return Ok((self.rt("__span_new", vec![n]), Ty::Span, false));
                     }
                     ("time" | "telemetry", _) if !self.has_time && !self.has_telemetry => {
-                        return Err(err(pos, "E_MODULE", format!("'{ns}' needs a 'use' declaration (std.time, core.telemetry)")));
+                        return Err(err(
+                            pos,
+                            "E_MODULE",
+                            format!("'{ns}' needs a 'use' declaration (std.time, core.telemetry)"),
+                        ));
                     }
                     ("rx", "from_channel") => {
                         let e = self.plain_args("rx.from_channel", args, 1, pos)?[0];
                         let (ir, ty) = self.value(e, None)?;
                         let Ty::Channel(item) = ty else {
-                            return Err(type_err(e.pos, format!("rx.from_channel needs a Channel<T>, found {}", self.tn(&ty))));
+                            return Err(type_err(
+                                e.pos,
+                                format!("rx.from_channel needs a Channel<T>, found {}", self.tn(&ty)),
+                            ));
                         };
                         let node = self.rt("__rx_node", vec![Ir::Const(4), Ir::Const(0), ir, Ir::Const(0)]);
                         return Ok((node, Ty::Observable(item), false));
@@ -2404,11 +2677,17 @@ impl<'a> Checker<'a> {
                     // Distinguish an empty Option unwrap (14) from scheduler
                     // deadlock (6), actor admission (10), span faults (12)
                     // and match failure (13).
-                    self.c().pre.push(IrStmt::If(eq(value.clone(), Ir::Const(0)),
-                        vec![IrStmt::Panic(PANIC_SELECT_EMPTY)], vec![]));
+                    self.c().pre.push(IrStmt::If(
+                        eq(value.clone(), Ir::Const(0)),
+                        vec![IrStmt::Panic(PANIC_SELECT_EMPTY)],
+                        vec![],
+                    ));
                     Ok((load(value, 0), Ty::SelectResult, false))
                 }
-                _ => Err(type_err(pos, "Option<SelectResult> supports unwrap() in this bounded select-plan profile")),
+                _ => Err(type_err(
+                    pos,
+                    "Option<SelectResult> supports unwrap() in this bounded select-plan profile",
+                )),
             },
             Ty::PipeSetupError => {
                 // A nominal error object, represented as a versioned v2
@@ -2420,8 +2699,11 @@ impl<'a> Checker<'a> {
                 }
                 Err(type_err(pos, "PipeSetupError only supports code()"))
             }
-            Ty::PipeHandle => Err(err(pos, "E_UNSUPPORTED",
-                "PipeHandle methods are gated until cancellation, borrow release and TenantVM lifecycle admission are verified")),
+            Ty::PipeHandle => Err(err(
+                pos,
+                "E_UNSUPPORTED",
+                "PipeHandle methods are gated until cancellation, borrow release and TenantVM lifecycle admission are verified",
+            )),
             Ty::SelectPlan { dynamic } => match name {
                 "remove" if *dynamic => {
                     let idx = self.plain_args(name, args, 1, pos)?[0];
@@ -2444,7 +2726,10 @@ impl<'a> Checker<'a> {
                     self.plain_args(name, args, 0, pos)?;
                     Ok((self.rt("__plan_version", vec![recv]), Ty::Int, false))
                 }
-                _ => Err(type_err(pos, "SelectPlan supports size/version; only DynamicSelectPlan<int> permits put/remove")),
+                _ => Err(type_err(
+                    pos,
+                    "SelectPlan supports size/version; only DynamicSelectPlan<int> permits put/remove",
+                )),
             },
             Ty::Channel(item) => match name {
                 "close" => {
@@ -2481,13 +2766,16 @@ impl<'a> Checker<'a> {
                 }
                 if name == "get_done" {
                     self.plain_args(name, args, 0, pos)?;
-                    return Ok((self.rt("__actor_done", vec![recv]),
-                        Ty::Future(Box::new(Ty::Void)), false));
+                    return Ok((self.rt("__actor_done", vec![recv]), Ty::Future(Box::new(Ty::Void)), false));
                 }
                 if name == "send" {
                     let mail = self.objs[*i].mail.clone();
                     if mail == Ty::Void {
-                        return Err(err(pos, "E_ACTOR", format!("actor '{}' has no receive handler", self.objs[*i].name)));
+                        return Err(err(
+                            pos,
+                            "E_ACTOR",
+                            format!("actor '{}' has no receive handler", self.objs[*i].name),
+                        ));
                     }
                     let e = self.plain_args(name, args, 1, pos)?[0];
                     let v = self.typed(e, &mail)?;
@@ -2495,7 +2783,11 @@ impl<'a> Checker<'a> {
                     self.c().pre.push(IrStmt::Expr(call));
                     return Ok((Ir::Const(0), Ty::Void, false));
                 }
-                Err(err(pos, "E_ACTOR", "an actor reference only accepts send(value), stop() and get_done(); actor methods are private"))
+                Err(err(
+                    pos,
+                    "E_ACTOR",
+                    "an actor reference only accepts send(value), stop() and get_done(); actor methods are private",
+                ))
             }
             Ty::Object(i) => match self.objs[*i].methods.iter().find(|(n, _)| n == name) {
                 Some(&(_, id)) => self.invoke(name, id, Some(recv), args, pos, awaited),
@@ -2517,7 +2809,10 @@ impl<'a> Checker<'a> {
                             return Err(type_err(e.pos, format!("'{name}' needs a function, found {}", self.tn(&fty))));
                         };
                         if p.len() != 1 || !fits(&item, &p[0]) || !fits(r, &ret) || (name == "map" && **r == Ty::Void) {
-                            return Err(type_err(e.pos, format!("'{name}' needs {}, found {}", self.tn(&want), self.tn(&fty))));
+                            return Err(type_err(
+                                e.pos,
+                                format!("'{name}' needs {}, found {}", self.tn(&want), self.tn(&fty)),
+                            ));
                         }
                         match name {
                             "filter" => Ok((self.rt("__rx_node", vec![Ir::Const(2), recv, f, Ir::Const(0)]), ty.clone(), false)),
@@ -2538,7 +2833,10 @@ impl<'a> Checker<'a> {
                         let fut = Ty::Future(Box::new(Ty::Option(Box::new(item))));
                         Ok((self.rt("__rx_first_task", vec![recv]), fut, false))
                     }
-                    _ => Err(type_err(pos, format!("an Observable has filter, map, take, subscribe and first_task, not '{name}'"))),
+                    _ => Err(type_err(
+                        pos,
+                        format!("an Observable has filter, map, take, subscribe and first_task, not '{name}'"),
+                    )),
                 }
             }
             Ty::Subscription => match name {
@@ -2552,7 +2850,10 @@ impl<'a> Checker<'a> {
                     self.c().pre.push(IrStmt::Expr(call));
                     Ok((Ir::Const(0), Ty::Void, false))
                 }
-                _ => Err(type_err(pos, format!("a Subscription has completed_task() and dispose(), not '{name}'"))),
+                _ => Err(type_err(
+                    pos,
+                    format!("a Subscription has completed_task() and dispose(), not '{name}'"),
+                )),
             },
             Ty::Span => match name {
                 "set_attribute" => {
@@ -2633,7 +2934,10 @@ impl<'a> Checker<'a> {
                 }
                 Pat::Is(t) => {
                     if s_ty != Ty::Any {
-                        return Err(type_err(arm.pos, format!("'on is T' matches an Any value, found {}", self.tn(&s_ty))));
+                        return Err(type_err(
+                            arm.pos,
+                            format!("'on is T' matches an Any value, found {}", self.tn(&s_ty)),
+                        ));
                     }
                     let target = self.resolve(t, false)?;
                     let tag = self.tag_of(&target, t.pos())?;
@@ -2645,9 +2949,11 @@ impl<'a> Checker<'a> {
                 Pat::Variant(variant, payload) => {
                     covers = Some(variant.clone());
                     let (test, value, ty) = match (&s_ty, variant.as_str()) {
-                        (Ty::Option(t), "Some") => {
-                            (Ir::Bin(Op::Ne, Box::new(subj.clone()), Box::new(Ir::Const(0))), load(subj.clone(), 0), (**t).clone())
-                        }
+                        (Ty::Option(t), "Some") => (
+                            Ir::Bin(Op::Ne, Box::new(subj.clone()), Box::new(Ir::Const(0))),
+                            load(subj.clone(), 0),
+                            (**t).clone(),
+                        ),
                         (Ty::Option(_), "None") => (eq(subj.clone(), Ir::Const(0)), Ir::Const(0), Ty::Void),
                         (Ty::Result(t, _), "Ok") => (eq(load(subj.clone(), 0), Ir::Const(0)), load(subj.clone(), 8), (**t).clone()),
                         (Ty::Result(_, e), "Err") => (eq(load(subj.clone(), 0), Ir::Const(1)), load(subj.clone(), 8), (**e).clone()),
@@ -2686,7 +2992,13 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ArmBody::Expr(e) => {
-                    let hint = want.cloned().or_else(|| if result_ty.has_hole() || result_ty == Ty::Never { None } else { Some(result_ty.clone()) });
+                    let hint = want.cloned().or_else(|| {
+                        if result_ty.has_hole() || result_ty == Ty::Never {
+                            None
+                        } else {
+                            Some(result_ty.clone())
+                        }
+                    });
                     let (pre, ir, ty) = self.isolated(e, hint.as_ref())?;
                     body.extend(pre);
                     if ty != Ty::Void && ty != Ty::Never {
@@ -2712,7 +3024,10 @@ impl<'a> Checker<'a> {
                 if result_ty == Ty::Never {
                     result_ty = arm_ty;
                 } else if !fits(&arm_ty, &result_ty) || (arm_ty == Ty::Void) != (result_ty == Ty::Void) {
-                    return Err(type_err(arm.pos, format!("match arms differ: {} and {}", self.tn(&result_ty), self.tn(&arm_ty))));
+                    return Err(type_err(
+                        arm.pos,
+                        format!("match arms differ: {} and {}", self.tn(&result_ty), self.tn(&arm_ty)),
+                    ));
                 } else {
                     result_ty = merge(&result_ty, &arm_ty);
                 }
@@ -2748,7 +3063,11 @@ impl<'a> Checker<'a> {
                 _ => false,
             };
         if !exhaustive {
-            return Err(err(pos, "E_MATCH", "match is not exhaustive; add an 'on _ -> ...' or 'default -> ...' arm"));
+            return Err(err(
+                pos,
+                "E_MATCH",
+                "match is not exhaustive; add an 'on _ -> ...' or 'default -> ...' arm",
+            ));
         }
         if all_diverge {
             return Ok((Ir::Const(0), Ty::Never));
