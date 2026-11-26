@@ -2189,6 +2189,10 @@ impl Parser {
             {
                 let ty = self.parse_type()?;
                 let (name, _) = self.ident("a variable name")?;
+                if self.state_method && (name == "s" || is_state_intrinsic(&name)) {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "local would shadow a state intrinsic or the legacy lease binder s"));
+                }
                 self.advance();
                 let init = self.parse_expr()?;
                 self.terminator()?;
