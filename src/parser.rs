@@ -2163,6 +2163,9 @@ impl Parser {
                 self.terminator()?;
                 Ok(s)
             }
+            Some("int" | "bool" | "string" | "String")
+                if matches!(self.peek_at(1), Tok::Ident(_)) && *self.peek_at(2) == Tok::Semi =>
+                Err(Diagnostic::new(pos, "E_UNINITIALIZED", "type-first local binding needs an initializer")),
             // Java Parser.looksLikePrimitiveTypeFirstImmutableBinding: exactly
             // `int|bool|string|String name = expr` is an immutable binding.
             Some("int" | "bool" | "string" | "String")
