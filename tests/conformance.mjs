@@ -425,9 +425,9 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Canonical grammar rejects raw % and single infix caret; adjacent ^^ is integer XOR.
+// Require a positioned diagnostic and no generated guest bytes.
+for (const op of ['%', '^', '^ ^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
@@ -436,6 +436,12 @@ for (const op of ['%', '^', '^^']) {
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+
+check('canonical-integer-xor/adjacent', () => {
+  const r = compile('pub fnc main(): int { return 12 ^^ 10; }');
+  assert.equal(r.ok, true, r.message);
+  assert.equal(runGuest(r.wasm).value, 6n);
+});
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
