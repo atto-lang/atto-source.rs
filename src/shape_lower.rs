@@ -373,8 +373,11 @@ fn product_factory_guard(t: &[Token]) -> R<()> {
             // of a matching typed binding. The typed path checks its identity.
             let legacy = matches!(prior,Some(Tok::Assign))
                 && t.get(i+1).is_some_and(|x|x.tok==Tok::LParen)
-                && (i.saturating_sub(8)..i).any(|p|word(t,p,kind)
-                    && p>0 && t[p-1].tok==Tok::Colon);
+                && (i.saturating_sub(10)..i).any(|start|
+                    word(t,start,"val") && token_name(t,start+1).is_some()
+                    && t.get(start+2).is_some_and(|x|x.tok==Tok::Colon)
+                    && word(t,start+3,kind)
+                    && generics(t,start+3).is_ok_and(|(_,_,end)|end+1==i));
             if !factory && !annotation && !legacy {
                 return Err(error(token.pos,"E_UNSUPPORTED",
                     format!("{kind}.of requires an unambiguous source-local builtin; competing reference")));
