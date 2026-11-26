@@ -162,3 +162,24 @@ fn local_const_lambda_rejections_match_four_style_conformance() {
         "E_ARITY",
     );
 }
+
+#[test]
+fn local_callable_call_intrinsic_reuses_the_direct_wasm_target() {
+    for (signature, lambda, args) in [
+        ("(int,int)=>int", "|int a,int b| :int -> a+b", "20,22"),
+        ("(int,bool)=>int", "|int a,bool b| :int -> a+2", "40,true"),
+        ("()=>int", "|| :int -> 42", ""),
+    ] {
+        let prefix = format!("type F={signature}; pub fnc main():int {{ const F f={lambda}; return ");
+        let direct = format!("{prefix}f({args}); }}");
+        let intrinsic = format!("{prefix}f.call({args}); }}");
+        let direct_wasm = atto_compiler::compile(&direct).unwrap_or_else(|e| panic!("{direct}: {e}"));
+        let intrinsic_wasm = atto_compiler::compile(&intrinsic).unwrap_or_else(|e| panic!("{intrinsic}: {e}"));
+        assert_eq!(direct_wasm, intrinsic_wasm, "intrinsic must not introduce guest machinery");
+    }
+    let prefix = "type F=(int,int)=>int; pub fnc main():int { const F f=|int a,int b| :int -> a+b; return ";
+    rejects(&format!("{prefix}f.call(20); }}"), "E_ARITY");
+    rejects(&format!("{prefix}f.call(0,20,22); }}"), "E_ARITY");
+    rejects(&format!("{prefix}f.call(20,true); }}"), "E_TYPE");
+    rejects(&format!("{prefix}f.bind(20); }}"), "E_UNSUPPORTED");
+}
