@@ -72,6 +72,9 @@ impl<'a> Parser<'a> {
         let pos = self.pos();
         let neg = self.eat(Tok::Minus);
         match self.take() {
+            // The lexer emits Int(None) for exactly 2^63; larger magnitudes
+            // are rejected lexically. Only unary minus can admit this token.
+            Tok::Int(None) if neg => Ok(i64::MIN),
             Tok::Int(Some(n)) if (!neg && n <= i64::MAX as u64)
                 || (neg && n <= (i64::MAX as u64) + 1) => {
                 if neg && n == (i64::MAX as u64) + 1 { Ok(i64::MIN) }
@@ -474,5 +477,8 @@ fnc main() -> int {
             assert!(compiler(&source.replace("a[1]",bad)).is_err(), "{bad}");
         }
         assert!(compiler(&source.replace("[10,42,-1]", "[10,true,-1]")).is_err());
+        assert!(compiler(&source.replace("[10,42,-1]", "[-9223372036854775808,42,1]")).is_ok());
+        assert!(compiler(&source.replace("[10,42,-1]", "[9223372036854775808,42,1]")).is_err());
+        assert!(compiler(&source.replace("[10,42,-1]", "[-9223372036854775809,42,1]")).is_err());
     }
 }

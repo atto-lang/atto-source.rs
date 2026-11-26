@@ -30,12 +30,12 @@ try {
     console.log('PRIMITIVE_ARRAY_PASS '+values+' '+index);
   }
   for(const s of [source('Array[int]','[42]','1'),source('Array[int]','[42]','-1'),source('Array[int]','[]','0'),
-    source('Array[int]','[true]','0'),source('Array[int]','[42]','true'),source('Array[T=int]','[42]','0'),
+    source('Array[int]','[true]','0'),source('Array[int]','[9223372036854775808]','0'),source('Array[int]','[-9223372036854775809]','0'),source('Array[int]','[42]','true'),source('Array[T=int]','[42]','0'),
     source('Array<int,layout=soa>','[42]','0'),source('Array[int]','[42]','0').replace('return a','return other'),
     source('Array[int]','[42]','0').replace('return a','a[0] = 1; return a'),
     source('Array[int]','['+Array(1025).fill(1).join(',')+']','0')]){
     const {r,out}=compile(s);assert.equal(r.status,1,r.stderr);assert.match(r.stderr,/E_[A-Z_]+/);assert.equal(existsSync(out),false);
     console.log('PRIMITIVE_ARRAY_REJECT '+r.stderr.slice(0,160));
   }
-  console.log('PRIMITIVE_ARRAY_VERIFIED 16 cases');
+  console.log('PRIMITIVE_ARRAY_VERIFIED 18 cases');
 }finally{rmSync(work,{recursive:true,force:true})}
