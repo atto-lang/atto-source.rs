@@ -238,3 +238,33 @@ end"#
         vec![StateScalar::Int(100), StateScalar::Bool(true)]
     );
 }
+
+#[test]
+fn mixed_ledger_checkpoint_matches_native_broker_golden_vector() {
+    let p = parse(
+        "define durable actor Ledger as state balance: int = 0; state open: bool = true; state last: int = 0; end",
+    ).unwrap();
+    let schema = ActorStateSchema::for_actor(&p.actors[0]).unwrap();
+    let values = [StateScalar::Int(i64::MIN), StateScalar::Bool(true), StateScalar::Int(i64::MAX)];
+    assert_eq!(schema.schema_id, 0x5974544af0efb8f9);
+    let bytes = schema.encode(&values).unwrap();
+    let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("");
+    assert_eq!(hex, "4154544f5354303101f9b8eff04a5474590300010000000000000080020101ffffffffffffff7f4191e1156e4df645");
+    assert_eq!(schema.decode(&bytes).unwrap(), values.to_vec());
+    for i in 0..bytes.len() {
+        assert!(schema.decode(&bytes[..i]).is_err());
+        for bit in 0..8 {
+            let mut corrupt = bytes.clone();
+            corrupt[i] ^= 1 << bit;
+            assert!(schema.decode(&corrupt).is_err(), "bit {bit} at byte {i}");
+        }
+    }
+    // A recomputed checksum must not authorize a noncanonical boolean.
+    let mut corrupt = bytes;
+    corrupt[29] = 2;
+    let end = corrupt.len() - 8;
+    let checksum = corrupt[..end].iter().fold(0xcbf29ce484222325_u64,
+        |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3));
+    corrupt[end..].copy_from_slice(&checksum.to_le_bytes());
+    assert!(schema.decode(&corrupt).is_err());
+}
