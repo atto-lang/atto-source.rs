@@ -119,8 +119,18 @@ pub routine main(): void {
   for (let int i = 0; i < valid_frame.size; i = i + 1) {
     wrong_version.add(valid_frame.get(i));
   }
-  wrong_version.set(4, 2);
-  stdio.println(zorde.decode_frame(wrong_version).is_err());
+  // Every fixed-header byte must be checked, including all four magic bytes.
+  // Restore each byte before the next case and admit the original wire again.
+  let bool all_bad_prefixes_rejected = true;
+  for (let int i = 0; i < 5; i = i + 1) {
+    let int original = wrong_version.get(i);
+    wrong_version.set(i, original + 1);
+    if !zorde.decode_frame(wrong_version).is_err(); do
+      all_bad_prefixes_rejected = false;
+    fi
+    wrong_version.set(i, original);
+  }
+  stdio.println(all_bad_prefixes_rejected && zorde.decode_frame(wrong_version).is_ok());
 
   let mut Array<int> wrong_length = new Array<int>();
   for (let int i = 0; i < valid_frame.size; i = i + 1) {
