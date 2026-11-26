@@ -258,6 +258,7 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    struct_value_bindings: Option<Vec<Pos>>,
 }
 
 struct TypeFirstField {
@@ -288,6 +289,7 @@ pub struct StructWithTarget {
     pub fields: Vec<(String, Type)>,
     pub constructors: Vec<(bool, Constructor)>,
     pub methods: Vec<Method>,
+    pub mutable_methods: Vec<usize>,
 }
 
 /// Members collected from a class or actor body.
@@ -340,6 +342,7 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            struct_value_bindings: None,
         }
     }
 
@@ -637,6 +640,15 @@ impl Parser {
 
     // ------------------------------------------------------------ top level
 
+    // Capture explicit writable referent authority for this bounded profile.
+    // Other parser entrypoints and ordinary AST semantics remain unchanged.
+    pub(crate) fn parse_struct_value_program(&mut self) -> R<(Program, Vec<Pos>)> {
+        self.struct_value_bindings = Some(Vec::new());
+        let result = self.parse_program();
+        let bindings = self.struct_value_bindings.take().unwrap_or_default();
+        Ok((result?, bindings))
+    }
+
     pub fn parse_program(&mut self) -> R<Program> {
         let mut prog = Program::default();
         let mut decls = 0usize;
@@ -764,7 +776,7 @@ impl Parser {
         }
         self.expect_word("with")?;
         let mut out = StructWithTarget {
-            name, pos, fields, constructors: Vec::new(), methods: Vec::new(),
+            name, pos, fields, constructors: Vec::new(), methods: Vec::new(), mutable_methods: Vec::new(),
         };
         loop {
             if self.eat(&Tok::LBrace) {
@@ -902,9 +914,13 @@ impl Parser {
         }
         let public = self.eat_word("pub");
         if !public { self.eat_word("private"); }
+        let mutable_receiver = self.eat_word("mut");
         let scalar_params = |ps: &[Param]| ps.iter().all(|p| matches!(p.ty, Type::Int | Type::Bool));
         let same_params = |a: &[Param], b: &[Param]| a.iter().map(|p| p.ty).eq(b.iter().map(|p| p.ty));
         if self.eat_word("constructor") {
+            if mutable_receiver {
+                return Err(Diagnostic::new(pos, "E_SYNTAX", "constructor cannot have a mutable receiver modifier"));
+            }
             self.expect(Tok::LParen, "'(' after constructor")?;
             let params = self.parse_params()?;
             if !scalar_params(&params) {
@@ -930,6 +946,9 @@ impl Parser {
                 return Err(Diagnostic::new(pos, "E_DUPLICATE", "duplicate attached method signature"));
             }
             let body = self.parse_block()?;
+            if mutable_receiver {
+                out.mutable_methods.push(out.methods.len());
+            }
             out.methods.push(Method { name, pos, public, is_static: false, params, ret, body });
         } else {
             return Err(self.expected("an attached constructor or mtd"));
@@ -2898,7 +2917,8 @@ impl Parser {
         // Java Parser.parseReferentMutability: `const mut` / `let mut` request a
         // mutable referent (no effect on scalar values); `val` already means
         // `const mut`, so `val mut` is a duplicate qualifier.
-        if self.is_word("mut") {
+        let explicit_mut = self.is_word("mut");
+        if explicit_mut {
             if kind == BindKind::Val {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -2942,6 +2962,11 @@ impl Parser {
         }
         self.advance();
         let init = self.parse_expr()?;
+        if (kind == BindKind::Val || explicit_mut) && kind != BindKind::Const {
+            if let Some(bindings) = self.struct_value_bindings.as_mut() {
+                bindings.push(pos);
+            }
+        }
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
