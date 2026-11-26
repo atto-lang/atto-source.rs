@@ -93,7 +93,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if c == '\0' {
             return Err(Diagnostic::new(pos, "E_NUL", "NUL characters are not allowed in source"));
         }
-        if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+        if matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c') {
             bump!();
             continue;
         }
@@ -135,16 +135,21 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(chars[i]);
                 bump!();
             }
-            // move! is the exact transfer alias; keep comparison spellings
-            // and ordinary bare move identifiers intact.
-            if matches!(s.as_str(), "take" | "move") && chars.get(i) == Some(&'!')
+            // The complete contextual keyword suffix must have an ASCII
+            // separator. Keep inequality and longer identifier spellings
+            // independent; no semantic feature is enabled by this guard.
+            if matches!(s.as_str(), "trap" | "throw" | "raise" | "panic" |
+                "copy" | "take" | "move" | "borrow" | "share" | "pin" | "drop" |
+                "pipe" | "rpipe" | "stop" | "expand") && chars.get(i) == Some(&'!')
                 && chars.get(i + 1) != Some(&'=')
                 && !(chars.get(i + 1) == Some(&'e') && chars.get(i + 2) == Some(&'q')
                     && chars.get(i + 3).is_none_or(|c| !(c.is_alphanumeric() || *c == '_')))
-                && !chars.get(i + 1).is_some_and(|c| matches!(*c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c'))
             {
-                return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
-                    "whitespace required after the complete transfer bang"));
+                let after = i + if s == "copy" && chars.get(i + 1) == Some(&'!') { 2 } else { 1 };
+                if !chars.get(after).is_some_and(|c| matches!(*c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c')) {
+                    return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
+                        "whitespace required after the complete keyword bang"));
+                }
             }
             // Generator delegation is a single contiguous lexical spelling.
             // Do not consume a separated star: `yield *value` is not `yield*`.

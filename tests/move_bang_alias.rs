@@ -33,3 +33,22 @@ fn spacing_and_identifier_boundaries() {
     }
     assert!(compile("pub fnc main(): int { val move = 42; return move; }").is_ok());
 }
+
+#[test]
+fn complete_keyword_separator_matrix() {
+    for keyword in ["trap!", "throw!", "raise!", "panic!", "copy!", "copy!!",
+        "take!", "move!", "borrow!", "share!", "pin!", "drop!", "pipe!", "rpipe!", "stop!", "expand!"] {
+        for gap in [" ", "\t", "\n", "\r\n", "\x0b", "\x0c"] {
+            assert!(lex(&format!("{keyword}{gap}value")).is_ok(), "{keyword} {gap:?}");
+        }
+        for tail in ["value", "(42)", "/* gap */ value", "", "\u{a0}value"] {
+            let error = lex(&format!("{keyword}{tail}")).unwrap_err();
+            assert_eq!(error.code, "E_BANG_KEYWORD_WHITESPACE", "{keyword}{tail}: {error}");
+        }
+    }
+    for input in ["copy!=42", "copy!eq value", "move!=42", "move!eq value",
+        "copy !value", "trap !value", "// trap!(42)\n42",
+        "/* copy!!value /* move!value */ */42", "\"trap!(42)\""] {
+        assert!(lex(input).is_ok(), "{input}");
+    }
+}
