@@ -48,3 +48,22 @@ fn named_integer_operations_emit_wasm_and_reject_invalid_arguments() {
         assert!(compile(source).is_err(), "{source}");
     }
 }
+
+#[test]
+fn mixed_integer_float_ordering_cannot_silently_round_i64() {
+    for op in ["<", "<=", ">", ">="] {
+        for (a, b) in [("9007199254740993", "9007199254740992.0"),
+                       ("9007199254740992.0", "9007199254740993")] {
+            let source = format!("pub fnc main(): int {{ if {a} {op} {b} then return 42; fi return 1; }}");
+            let error = compile(&source).expect_err("unproved mixed comparison must not emit Wasm");
+            assert_eq!(error.code, "E_TYPE", "{source}: {error}");
+        }
+    }
+    for source in [
+        "pub fnc main(): int { if 9007199254740993 > 9007199254740992 then return 42; fi return 1; }",
+        "pub fnc main(): int { if 2.5 > 2.0 then return 42; fi return 1; }",
+    ] {
+        let guest = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+        assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
+    }
+}
