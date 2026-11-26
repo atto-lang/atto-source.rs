@@ -378,7 +378,32 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             tok: Tok::Ident(generated.clone()),
             pos: base[at].pos,
         });
-        out.extend_from_slice(&base[args_at..=end]);
+        // A single named runtime slot can be statically bound without a
+        // general multi-argument reorder or changing lexical evaluation.
+        // Admit only exact one-formal scalar signatures; every argument
+        // expression still passes the production parser and type checker.
+        if base.get(args_at + 2).map(|t| &t.tok) == Some(&Tok::Colon)
+            && base.get(args_at + 1).and_then(word).is_some()
+        {
+            let template = &templates[tid];
+            let open = template.name_offset + 4;
+            let close = pair(&template.source, open, Tok::LParen, Tok::RParen)
+                .ok_or_else(|| error(template.pos, "E_SYNTAX", "unclosed generic formal list"))?;
+            let formal = &template.source[open + 1..close];
+            let type_ok = |t: &Token| scalar(t).is_some() || word(t) == Some(template.parameter.as_str());
+            let label = match formal {
+                [ty, name] if type_ok(ty) => word(name),
+                [name, colon, ty] if colon.tok == Tok::Colon && type_ok(ty) => word(name),
+                _ => None,
+            }.ok_or_else(|| error(base[at].pos, "E_UNSUPPORTED", "named generic call requires one scalar formal"))?;
+            if base.get(args_at + 1).and_then(word) != Some(label) || args_at + 3 >= end {
+                return Err(error(base[at].pos, "E_TYPE", "unknown or empty named runtime argument"));
+            }
+            out.push(base[args_at].clone());
+            out.extend_from_slice(&base[args_at + 3..=end]);
+        } else {
+            out.extend_from_slice(&base[args_at..=end]);
+        }
         at = end + 1;
     }
     if templates
@@ -558,6 +583,18 @@ mod tests {
         let tokens = lex(&source).unwrap();
         assert!(tokens.len() < MAX_TOKENS);
         assert_eq!(lower(tokens).unwrap_err().code, "E_SOURCE_LIMIT");
+    }
+
+    #[test]
+    fn named_runtime_slot_of_generic_scalar_is_checked() {
+        let source = "fnc identity<T>(T value): T { return value; } pub fnc main(): int { return identity<T=int>(value:42); }";
+        assert!(crate::compile(source).is_ok());
+        for expression in ["identity<T=int>(wrong:42)", "identity<T=int>(value:)",
+            "identity<T=int>(value:42,value:42)", "identity<T=int>(value:42,42)",
+            "identity<T=int>(value:true)"] {
+            let source = format!("fnc identity<T>(T value): T {{ return value; }} pub fnc main(): int {{ return {expression}; }}");
+            assert!(crate::compile(&source).is_err(), "{expression}");
+        }
     }
 
 }
