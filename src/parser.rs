@@ -232,6 +232,11 @@ pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
 
+// Contextual sealed intrinsic names, not new global keywords.
+fn is_state_intrinsic(name: &str) -> bool {
+    matches!(name, "handle_state" | "handle_state_ro" | "handle_state_w" | "state_ro" | "state_w")
+}
+
 #[derive(Clone)]
 pub struct Parser {
     toks: Vec<Token>,
@@ -791,9 +796,9 @@ impl Parser {
             let method_public = self.eat_word("pub");
             self.eat_word("fnc");
             self.eat_word("method");
-            if self.is_word("handle_state") {
+            if self.word_at(0).is_some_and(is_state_intrinsic) {
                 return Err(Diagnostic::new(self.pos(), "E_STATE",
-                    "handle_state is compiler-owned and cannot be overridden"));
+                    "state access intrinsics are compiler-owned and cannot be overridden"));
             }
             if *self.peek_at(1) != Tok::LParen {
                 return Err(Diagnostic::new(self.pos(), "E_STATE",
@@ -803,9 +808,9 @@ impl Parser {
             let result = self.parse_method(method_public, false);
             self.state_method = false;
             let method = result?;
-            if method.params.iter().any(|p| p.name == "s") {
+            if method.params.iter().any(|p| p.name == "s" || is_state_intrinsic(&p.name)) {
                 return Err(Diagnostic::new(method.pos, "E_STATE_BORROW",
-                    "parameter s would shadow the critical lease binder"));
+                    "parameter would shadow a state intrinsic or the legacy lease binder s"));
             }
             if methods.iter().any(|m: &Method| m.name == method.name) {
                 return Err(Diagnostic::new(method.pos, "E_DUPLICATE", "duplicate state method"));
@@ -2163,14 +2168,14 @@ impl Parser {
                 && self.peek_at(2) == &Tok::Dot && self.word_at(3) == Some("span") =>
                 self.parse_telemetry_scope(pos),
             Some("self") if self.state_method && *self.peek_at(1) == Tok::Dot
-                && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen => {
+                && self.word_at(2).is_some_and(is_state_intrinsic) && *self.peek_at(3) == Tok::LParen => {
                 // Only the exact direct intrinsic spelling is equivalent to
                 // the bare call; do not expose ordinary self member access.
                 self.advance();
                 self.advance();
                 self.parse_state_critical_stmt(false)
             }
-            Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
+            Some(name) if self.state_method && is_state_intrinsic(name) && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(false),
             Some("val" | "const" | "let") => {
                 let s = self.parse_binding()?;
@@ -2222,15 +2227,17 @@ impl Parser {
                 // Recognize only direct write callbacks in method return position.
                 // Read expressions retain their existing expression parser.
                 if self.state_method && self.state_binder.is_none() {
-                    let prefix = if self.word_at(0) == Some("handle_state")
+                    let prefix = if self.word_at(0).is_some_and(is_state_intrinsic)
                         && *self.peek_at(1) == Tok::LParen { Some(0) }
                     else if self.word_at(0) == Some("self") && *self.peek_at(1) == Tok::Dot
-                        && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen { Some(2) }
+                        && self.word_at(2).is_some_and(is_state_intrinsic) && *self.peek_at(3) == Tok::LParen { Some(2) }
                     else { None };
                     if let Some(p) = prefix {
-                        if self.word_at(p + 2) == Some("critical")
-                            && (*self.peek_at(p + 3) != Tok::Minus
-                                || self.word_at(p + 4) == Some("write")) {
+                        if matches!(self.word_at(p), Some("state_w" | "handle_state_w"))
+                            || (self.word_at(p) == Some("handle_state")
+                                && self.word_at(p + 2) == Some("critical")
+                                && (*self.peek_at(p + 3) != Tok::Minus
+                                    || self.word_at(p + 4) == Some("write"))) {
                             if p == 2 { self.advance(); self.advance(); }
                             return self.parse_state_critical_stmt(true);
                         }
@@ -2551,6 +2558,29 @@ impl Parser {
             "expected a contiguous critical-read or critical-write state mode"))
     }
 
+    /// Parse the intrinsic spelling once, then use the existing authority path.
+    /// Aliases carry their mode and never accept a second mode keyword.
+    fn parse_state_intrinsic_mode(&mut self, read_only: bool) -> R<bool> {
+        let pos = self.pos();
+        let name = self.word_at(0).unwrap_or("").to_owned();
+        if !is_state_intrinsic(&name) {
+            return Err(self.expected("a state access intrinsic"));
+        }
+        self.advance();
+        self.expect(Tok::LParen, "'('")?;
+        let write = match name.as_str() {
+            "handle_state" => self.parse_state_critical_mode(read_only)?,
+            "state_ro" | "handle_state_ro" => false,
+            "state_w" | "handle_state_w" => true,
+            _ => unreachable!("validated state intrinsic"),
+        };
+        if read_only && write {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "write callback result is only admitted in direct method return position"));
+        }
+        Ok(write)
+    }
+
     /// A lexical, non-suspending state loan. Syntactic admission is deliberately
     /// narrower than arbitrary closures: mutation only, pure scalar RHS, no
     /// early return, IO, allocations, calls, loops or nested state access.
@@ -2560,9 +2590,7 @@ impl Parser {
             return Err(Diagnostic::new(pos, "E_STATE_BORROW",
                 "nested critical scopes cannot mint a second state loan"));
         }
-        self.expect_word("handle_state")?;
-        self.expect(Tok::LParen, "'('")?;
-        let write = self.parse_state_critical_mode(false)?;
+        let write = self.parse_state_intrinsic_mode(false)?;
         // A read-only block cannot become StateWrite: that AST always
         // requests an exclusive write ticket from the trusted Worker host.
         // Reads are accepted only as nonescaping by-value s.field projections.
@@ -2572,7 +2600,7 @@ impl Parser {
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, binder_pos) = self.ident("state lease binder")?;
-        if matches!(binder.as_str(), "_" | "self" | "handle_state" | "true" | "false" | "null") {
+        if is_state_intrinsic(&binder) || matches!(binder.as_str(), "_" | "self" | "true" | "false" | "null") {
             return Err(Diagnostic::new(binder_pos, "E_STATE_BORROW",
                 "state lease requires a named, non-intrinsic binder"));
         }
@@ -2619,15 +2647,13 @@ impl Parser {
             return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
                 "critical-read cannot nest inside an active critical state write"));
         }
-        self.expect_word("handle_state")?;
-        self.expect(Tok::LParen, "'('")?;
-        if self.parse_state_critical_mode(true)? {
+        if self.parse_state_intrinsic_mode(true)? {
             return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                 "critical-read must be immutable"));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, binder_pos) = self.ident("state lease binder")?;
-        if matches!(binder.as_str(), "_" | "self" | "handle_state" | "true" | "false" | "null") {
+        if is_state_intrinsic(&binder) || matches!(binder.as_str(), "_" | "self" | "true" | "false" | "null") {
             return Err(Diagnostic::new(binder_pos, "E_STATE_BORROW",
                 "state lease requires a named, non-intrinsic binder"));
         }
@@ -2699,9 +2725,9 @@ impl Parser {
             let (name, _) = self.ident("a variable name")?;
             (name, None)
         };
-        if self.state_method && name == "s" {
+        if self.state_method && (name == "s" || is_state_intrinsic(&name)) {
             return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                "a local named s would shadow the critical lease binder"));
+                "local would shadow a state intrinsic or the legacy lease binder s"));
         }
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
@@ -4002,7 +4028,7 @@ impl Parser {
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
                 "self" if self.state_method && *self.peek_at(1) == Tok::Dot
-                    && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen => {
+                    && self.word_at(2).is_some_and(is_state_intrinsic) && *self.peek_at(3) == Tok::LParen => {
                     self.advance();
                     self.advance();
                     self.parse_state_critical_read()?
@@ -4015,7 +4041,7 @@ impl Parser {
                     self.advance();
                     ExprKind::SelfRef
                 }
-                "handle_state" if self.state_method => self.parse_state_critical_read()?,
+                name if self.state_method && is_state_intrinsic(name) => self.parse_state_critical_read()?,
                 "new" => {
                     self.advance();
                     let (class, _) = self.ident("a class name after 'new'")?;
