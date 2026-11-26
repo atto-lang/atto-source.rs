@@ -342,8 +342,16 @@ impl Parser {
         let mut params = Vec::new();
         if self.peek() != Some(Kind::RParen) {
             loop {
-                self.expect(Kind::Int)?;
-                params.push(self.expect(Kind::Identifier)?.text);
+                let name = if self.peek() == Some(Kind::Int) {
+                    self.expect(Kind::Int)?;
+                    self.expect(Kind::Identifier)?.text
+                } else {
+                    let name = self.expect(Kind::Identifier)?.text;
+                    self.expect(Kind::Colon)?;
+                    self.expect(Kind::Int)?;
+                    name
+                };
+                params.push(name);
                 if self.peek() == Some(Kind::Comma) {
                     self.expect(Kind::Comma)?;
                 } else {
