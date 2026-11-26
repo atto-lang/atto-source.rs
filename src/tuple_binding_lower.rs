@@ -434,6 +434,191 @@ fn rewrite_literal_tuples(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R
     Ok(())
 }
 
+
+// This lane lowers a closed, flat scalar tuple pattern to a private typed
+// function. Call arguments are evaluated by the real checker/emitter in
+// source order, including discards. No expression substitution or evaluation
+// by this pass; no allocation, runtime lambda or general aggregate ABI.
+struct PatternLower<'a> {
+    tokens: &'a [Token],
+    close: Vec<Option<usize>>,
+    helpers: Vec<Token>,
+    count: usize,
+}
+impl<'a> PatternLower<'a> {
+    fn tok(&self, i: usize) -> Option<&Tok> { self.tokens.get(i).map(|t| &t.tok) }
+    fn candidate(&self, i: usize) -> bool {
+        self.tok(i) == Some(&Tok::LParen) &&
+            self.close.get(i).copied().flatten().is_some_and(|j|
+                self.tok(j+1) == Some(&Tok::PipeGt) &&
+                self.tok(j+2) == Some(&Tok::Pipe) &&
+                self.tok(j+3) == Some(&Tok::LParen))
+    }
+    fn diag(&self, i: usize, message: &str) -> Diagnostic {
+        error(self.tokens.get(i).map_or(Pos::default(), |t| t.pos),
+            "E_TUPLE_PATTERN", message)
+    }
+    fn scalar(&mut self, i: &mut usize, bp: u8, depth: usize,
+        scope: Option<&std::collections::BTreeSet<String>>) -> R<Vec<Token>> {
+        if depth > 48 { return Err(self.diag(*i, "scalar pattern depth exceeds 48")); }
+        let at = *i;
+        let mut out = if self.candidate(at) {
+            self.pattern(i, depth+1, scope)?
+        } else {
+            match self.tok(at).cloned() {
+                Some(Tok::Int(_)) => { *i += 1; vec![self.tokens[at].clone()] }
+                Some(Tok::Ident(name)) if name != "_" &&
+                    !matches!(name.as_str(), "true" | "false" | "self" | "arguments") &&
+                    scope.is_none_or(|s| s.contains(&name)) => {
+                    *i += 1; vec![self.tokens[at].clone()]
+                }
+                Some(Tok::Minus) => {
+                    *i += 1;
+                    let mut v=vec![self.tokens[at].clone()];
+                    v.extend(self.scalar(i, 3, depth+1, scope)?);
+                    v
+                }
+                Some(Tok::LParen) => {
+                    *i += 1;
+                    let mut v=vec![self.tokens[at].clone()];
+                    v.extend(self.scalar(i, 0, depth+1, scope)?);
+                    if self.tok(*i)!=Some(&Tok::RParen) {
+                        return Err(self.diag(*i,"expected scalar group close"));
+                    }
+                    v.push(self.tokens[*i].clone()); *i+=1; v
+                }
+                _ => return Err(self.diag(at,"expected closed int arithmetic over bound leaves")),
+            }
+        };
+        loop {
+            let power=match self.tok(*i) {
+                Some(Tok::Plus | Tok::Minus) => 1,
+                Some(Tok::Star) => 2,
+                _ => break,
+            };
+            if power < bp { break; }
+            out.push(self.tokens[*i].clone()); *i+=1;
+            out.extend(self.scalar(i,power+1,depth+1,scope)?);
+            if out.len()>crate::lexer::MAX_TOKENS {
+                return Err(self.diag(*i,"pattern token budget exceeded"));
+            }
+        }
+        Ok(out)
+    }
+    fn pattern(&mut self, i: &mut usize, depth: usize,
+        outer: Option<&std::collections::BTreeSet<String>>) -> R<Vec<Token>> {
+        if depth > 48 { return Err(self.diag(*i,"pattern depth exceeds 48")); }
+        let start=*i;
+        let pos=self.tokens[start].pos;
+        let close=self.close[start].ok_or_else(||self.diag(start,"unclosed tuple root"))?;
+        // Preserve one-element tuple vs grouping, and reject record syntax.
+        let items=tuple_items(&self.tokens[start..=close])
+            .ok_or_else(||self.diag(start,"expected flat literal tuple root"))?;
+        let arity=items.len();
+        if arity>8 { return Err(self.diag(start,"maximum tuple pattern arity is 8")); }
+        *i+=1;
+        let mut args=Vec::new();
+        while *i<close {
+            args.push(self.scalar(i,0,depth+1,outer)?);
+            if *i==close { break; }
+            if self.tok(*i)!=Some(&Tok::Comma) {
+                return Err(self.diag(*i,"expected tuple element separator"));
+            }
+            *i+=1;
+        }
+        if *i!=close || args.len()!=arity { return Err(self.diag(*i,"invalid tuple root")); }
+        *i=close+4;
+        let pattern_start=close+3;
+        let end=self.close[pattern_start].ok_or_else(||self.diag(pattern_start,"unclosed pattern"))?;
+        let mut names=Vec::new();
+        let mut scope=std::collections::BTreeSet::new();
+        while *i<end {
+            let Some(Tok::Ident(name))=self.tok(*i).cloned() else {
+                return Err(self.diag(*i,"expected flat binder"));
+            };
+            if matches!(name.as_str(),"self"|"arguments"|"true"|"false") ||
+                (name!="_" && !scope.insert(name.clone())) {
+                return Err(self.diag(*i,"duplicate or reserved binder"));
+            }
+            *i+=1;
+            if self.tok(*i)==Some(&Tok::Colon) {
+                *i+=1;
+                if name=="_" || self.tokens.get(*i).is_none_or(|t| !word(t,"int")) {
+                    return Err(self.diag(*i,"only int leaf annotations; discard cannot be typed"));
+                }
+                *i+=1;
+            }
+            names.push(name);
+            if names.len()>8 { return Err(self.diag(*i,"maximum tuple pattern arity is 8")); }
+            if *i==end {
+                if names.len()==1 {return Err(self.diag(*i,"singleton pattern needs trailing comma"));}
+                break;
+            }
+            if self.tok(*i)!=Some(&Tok::Comma) {return Err(self.diag(*i,"expected binder separator"));}
+            *i+=1;
+        }
+        if *i!=end || names.len()!=arity {return Err(self.diag(*i,"pattern arity mismatch"));}
+        if self.tok(end+1)!=Some(&Tok::Pipe) || self.tok(end+2)!=Some(&Tok::Arrow) {
+            return Err(self.diag(end,"expected '| ->' after unary pattern"));
+        }
+        *i=end+3;
+        let body=self.scalar(i,0,depth+1,Some(&scope))?;
+        // Do not silently truncate unsupported body syntax into outer syntax.
+        if !matches!(self.tok(*i),Some(Tok::RParen|Tok::Comma|Tok::Semi|Tok::RBrace|Tok::PipeGt|Tok::Eof)) {
+            return Err(self.diag(*i,"unsupported pattern body continuation"));
+        }
+        if self.count>=128 {return Err(self.diag(start,"maximum 128 pattern helpers"));}
+        let name=format!("{PREFIX}pattern_{}",self.count);
+        self.count+=1;
+        let mut parameters=Vec::new();
+        for (n,binder) in names.iter().enumerate() {
+            let binder=if binder=="_" {format!("{PREFIX}discard_{n}")} else {binder.clone()};
+            parameters.push(format!("int {binder}"));
+        }
+        self.helpers.extend(synthetic(&format!("fnc {name}({}): int {{ return",parameters.join(",")),pos)?);
+        self.helpers.extend(body);
+        self.helpers.extend(synthetic("; }",pos)?);
+        let mut out=synthetic(&format!("{name}("),pos)?;
+        for (n,arg) in args.into_iter().enumerate() {
+            if n>0 {out.push(Token{tok:Tok::Comma,pos});}
+            out.extend(arg);
+        }
+        out.push(Token{tok:Tok::RParen,pos});
+        Ok(out)
+    }
+}
+fn lower_callable_patterns(tokens: Vec<Token>) -> R<Vec<Token>> {
+    if !tokens.windows(3).any(|w| w[0].tok==Tok::PipeGt && w[1].tok==Tok::Pipe && w[2].tok==Tok::LParen) {
+        return Ok(tokens);
+    }
+    // Linear matching table, bounded by the existing input token cap.
+    let mut close=vec![None;tokens.len()];
+    let mut stack=Vec::new();
+    for (i,t) in tokens.iter().enumerate() {
+        if t.tok==Tok::LParen {stack.push(i);}
+        else if t.tok==Tok::RParen {if let Some(j)=stack.pop(){close[j]=Some(i);}}
+    }
+    let mut pass=PatternLower{tokens:&tokens,close,helpers:Vec::new(),count:0};
+    let mut out=Vec::new();let mut i=0;
+    while i<tokens.len() {
+        if pass.candidate(i) {
+            out.extend(pass.pattern(&mut i,0,None)?);
+        } else {
+            out.push(tokens[i].clone());i+=1;
+        }
+    }
+    if pass.count==0 {return Ok(tokens);}
+    // Existing parser/typechecker must still accept the entire rewritten unit.
+    // Helpers are private; source cannot name their reserved prefix.
+    let eof=out.pop().ok_or_else(||pass.diag(0,"missing EOF"))?;
+    if eof.tok!=Tok::Eof {return Err(pass.diag(0,"missing EOF"));}
+    out.extend(pass.helpers);out.push(eof);
+    if out.len()>crate::lexer::MAX_TOKENS {
+        return Err(error(tokens[0].pos,"E_SOURCE_LIMIT","tuple pattern lowering exceeds token budget"));
+    }
+    Ok(out)
+}
+
 /// Return a fully ordinary compiler token stream for provably Copy-scalar
 /// tuple shapes, or fail closed. Evaluation of a function-produced tuple
 /// happens exactly once in the root local; scalar projections copy values.
@@ -442,6 +627,7 @@ pub fn lower(mut tokens: Vec<Token>) -> R<Vec<Token>> {
         return Err(error(tokens.first().map_or(Pos::default(), |t| t.pos),
             "E_RESERVED", "internal tuple storage names are reserved"));
     }
+    tokens = lower_callable_patterns(tokens)?;
     let mut shapes = Vec::new();
     rewrite_types(&mut tokens, &mut shapes)?;
     let functions = tuple_functions(&tokens, &shapes);
