@@ -5,6 +5,7 @@ pub mod effects;
 pub mod flow;
 pub mod frontend;
 pub mod mir;
+pub mod owner_arena;
 pub mod profile;
 pub mod ref_codegen;
 pub mod ref_layout;
