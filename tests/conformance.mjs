@@ -439,9 +439,14 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Integer remainder shorthand and integer Boolean XOR are unsupported in
+// this profile. Single caret is the implemented integer bitwise XOR.
+check('integer-bitwise-xor/caret', () => {
+  const r = compile('pub fnc main(): int { return 5 ^ 2; }');
+  assert.ok(r.ok, r.message);
+  assert.equal(runGuest(r.wasm).value, 7n);
+});
+for (const op of ['%', '^^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);

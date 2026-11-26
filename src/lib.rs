@@ -185,8 +185,13 @@ fn with_v2_fallback(source_tokens: Vec<lexer::Token>, primary: Result<Vec<u8>, D
         Ok(_) => Err(Diagnostic::new(Pos { line: 1, col: 1 },
             "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB")),
         Err(second) => {
+            // A typed v2 transport denial is more specific than the legacy
+            // frontend's unsupported-type gate (which may point inside the
+            // payload type). Never prefer a generic error over that denial.
+            let transport_denial = first.code == "E_UNSUPPORTED_TYPE"
+                && second.code == "E_BORROW";
             let later = (second.pos.line, second.pos.col) > (first.pos.line, first.pos.col);
-            Err(if later { second } else { first })
+            Err(if transport_denial || later { second } else { first })
         }
     }
 }
