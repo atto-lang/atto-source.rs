@@ -307,3 +307,30 @@ fn entry_keeps_non_string_key_type_and_distinct_nominal_identity() {
     pass("pub fnc main(): int { val e: Entry<int,int> = Entry.of(42,5); return e.key; }");
     reject("pub fnc main(): int { val p: Pair<int> = Entry.of(\"a\",5); return 0; }");
 }
+
+
+#[test]
+fn product_factory_witnesses_and_literal_entry_inference() {
+    pass(r#"pub fnc main(): int {
+        val e = Entry.of(42,5);
+        val p: Pair<int> = Pair.of<string,int>("name", 42);
+        val q = Pair.of<int>("runtime", 20+22);
+        val f = Entry.of<int,int>(e.key, q.second);
+        return f.value + p.second;
+    }"#);
+    pass(r#"fnc make(string key, int value): int {
+        val p = Pair.of<int>(key,value);
+        return p.second;
+    }
+    pub fnc main(): int { return make("runtime",42); }"#);
+    for source in [
+        r#"pub fnc main(): int {val p: Pair<int> = Pair.of<bool>("a",true); return 0;}"#,
+        r#"pub fnc main(): int {val e: Entry<int,int> = Entry.of<string,int>("a",5); return 0;}"#,
+        r#"pub fnc main(): int {val p = Pair.of<int>(42,5); return 0;}"#,
+        r#"pub fnc main(): int {val p = Pair.of<int,int>(42,5); return 0;}"#,
+        r#"pub fnc main(): int {val Entry=1;val e=Entry.of(42,5); return 0;}"#,
+        r#"pub fnc main(): int {val p = Pair.of<int>("a",(5]); return 0;}"#,
+        r#"pub fnc main(): int {val e = Entry.of<int,int>(42,[5)); return 0;}"#,
+        r#"pub fnc main(): int {val p=Pair.of<int>("a",5);return p.key;}"#,
+    ] { reject(source); }
+}
