@@ -262,6 +262,84 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
     })
 }
 
+// Admit a closed immutable primitive-array entry independently of the
+// nominal struct profile. Do not synthesize a nominal class or erase int
+// into a reference: actual i64 cells use the existing verified heap IR.
+fn try_primitive(toks: &[Token]) -> Result<Option<TProgram>, Diagnostic> {
+    let mut p = Parser::new(toks);
+    if matches!(p.peek(), Tok::Ident(x) if x == "pub") { p.take(); }
+    for word in ["fnc", "main"] {
+        if !matches!(p.peek(), Tok::Ident(x) if x == word) { return Ok(None); }
+        p.take();
+    }
+    if !p.eat(Tok::LParen) || !p.eat(Tok::RParen) { return Ok(None); }
+    if !p.eat(Tok::Colon) && !p.eat(Tok::Arrow) { return Ok(None); }
+    if !matches!(p.peek(), Tok::Ident(x) if x == "int") { return Ok(None); }
+    p.take();
+    if !p.eat(Tok::LBrace) { return Ok(None); }
+    if !matches!(p.peek(), Tok::Ident(x) if x == "val") { return Ok(None); }
+    p.take();
+    if !matches!(p.peek(), Tok::Ident(x) if x == "Array") { return Ok(None); }
+    let (ty, next) = crate::collection_layout_type::parse(toks, p.at)?;
+    if ty.element != "int" { return Ok(None); }
+    p.at = next;
+    if ty.layout != Storage::Aos {
+        return Err(unsupported(ty.pos, "non-default primitive Array layout"));
+    }
+    let pos = p.pos();
+    let owner = p.ident()?;
+    if ["_", "int", "bool", "Array", "main", "return", "val", "let",
+        "pub", "fnc", "true", "false", "if", "do", "fi"].contains(&owner.as_str()) {
+        return Err(error(pos, "E_BINDING", "reserved primitive Array binding"));
+    }
+    p.expect(Tok::Assign, "'=' after Array binding")?;
+    p.expect(Tok::LBracket, "'[' for primitive array initializer")?;
+    let mut values = Vec::new();
+    if *p.peek() != Tok::RBracket {
+        loop {
+            if values.len() >= MAX_ROWS {
+                return Err(error(p.pos(), "E_SOURCE_LIMIT", "array literal exceeds 1024 cells"));
+            }
+            values.push(p.number()?);
+            if !p.eat(Tok::Comma) { break; }
+        }
+    }
+    p.expect(Tok::RBracket, "']' after primitive array initializer")?;
+    p.expect(Tok::Semi, "';' after binding")?;
+    p.word("return")?;
+    let pos = p.pos();
+    if p.ident()? != owner {
+        return Err(error(pos, "E_UNBOUND", "return must read the array owner"));
+    }
+    let index = p.index(values.len())?;
+    p.expect(Tok::Semi, "';' after return")?;
+    p.expect(Tok::RBrace, "'}' after main")?;
+    if *p.peek() != Tok::Eof { return Err(unsupported(p.pos(), "additional source")); }
+    let plan = Plan::new(Storage::Aos, vec![ScalarField { size: 8, align: 8 }], values.len() as u64)
+        .map_err(|e| error(pos, "E_LAYOUT_SIZE", format!("invalid primitive array layout: {e:?}")))?;
+    if plan.total_bytes > MAX_GUEST_ARRAY_BYTES {
+        return Err(error(pos, "E_LAYOUT_SIZE", "array exceeds guest heap budget"));
+    }
+    let bytes = u32::try_from(plan.total_bytes.max(8))
+        .map_err(|_| error(pos, "E_LAYOUT_SIZE", "array exceeds wasm32"))?;
+    let offset = |row| -> Result<u32, Diagnostic> {
+        plan.offset(row, 0).and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| error(pos, "E_LAYOUT_BOUNDS", "invalid primitive array offset"))
+    };
+    let mut body = vec![TStmt::Set(0, TE { e: TExpr::CollectionAlloc(bytes), ty: Type::Array(0) })];
+    for (row, value) in values.iter().enumerate() {
+        body.push(write(offset(row as u64)?, i64_const(*value)));
+    }
+    body.push(TStmt::Return(Some(cell(offset(index)?))));
+    Ok(Some(TProgram {
+        funcs: vec![TFunc { name: "main".to_owned(), params: vec![], ret: Type::Int,
+            locals: vec![Type::Array(0)], body }],
+        generators: vec![], main: 0, imports: vec![], data: vec![],
+        heap: true, globals: vec![], actors: vec![],
+        strings: false, guest_eh: false, raise_tag: false, catch_depth: false,
+    }))
+}
+
 /// If the source requests the strictly supported fixed-scalar struct+Array
 /// profile, build and return its checked, typed program. All other sources
 /// remain on the existing production parser and reject unsupported syntax.
@@ -272,7 +350,8 @@ pub fn try_lower(toks: &[Token]) -> Result<Option<TProgram>, Diagnostic> {
     let has_array = toks.windows(2).any(|pair|
         matches!((&pair[0].tok, &pair[1].tok),
             (Tok::Ident(a), Tok::Lt) if a == "Array"));
-    if !has_struct || !has_array { return Ok(None); }
+    if !has_struct { return try_primitive(toks); }
+    if !has_array { return Ok(None); }
     build(&mut Parser::new(toks)).map(Some)
 }
 
