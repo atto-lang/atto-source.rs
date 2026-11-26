@@ -96,3 +96,11 @@ fn unary_plus_executes_full_i64_minimum_in_native_guest() {
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+
+#[test]
+fn unary_plus_prefix_chain_has_bounded_stack_use() {
+    let source = format!("pub fnc main(): int {{ return {}42; }}", "+".repeat(4096));
+    let ast = frontend::parse(&source).expect("identity prefixes within token budget");
+    assert_eq!(ast.functions[0].expression, frontend::Expr::Integer(42));
+}
