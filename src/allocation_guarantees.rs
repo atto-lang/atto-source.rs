@@ -14,20 +14,36 @@ pub(crate) fn present(t: &[Token]) -> bool {
 }
 fn scalar(t: Type) -> bool { matches!(t, Type::Int | Type::Bool) }
 fn expr(e: &TE, proven: &[bool]) -> bool {
-    scalar(e.ty) && match &e.e {
-        TExpr::I64(_) | TExpr::Bool(_) | TExpr::Local(_) => true,
-        // Direct scalar opcodes only. Checked arithmetic helpers and
-        // additional effectful IR remain outside this proof revision.
-        TExpr::Bin(op, a, b) => matches!(op, BinOp::BitAnd | BinOp::BitOr |
-            BinOp::BitXor | BinOp::Shl | BinOp::LShr | BinOp::AShr |
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt |
-            BinOp::Ge | BinOp::And | BinOp::Or) && expr(a, proven) && expr(b, proven),
-        TExpr::Not(a) => expr(a, proven),
-        TExpr::Ternary(c, a, b) => expr(c, proven) && expr(a, proven) && expr(b, proven),
-        TExpr::Call(target, args) => proven.get(*target as usize) == Some(&true)
-            && args.iter().all(|a| expr(a, proven)),
-        _ => false,
+    // Iterative traversal keeps proof stack consumption independent of the
+    // admitted expression tree depth. Compiler workspace is not guest storage.
+    let mut pending = vec![e];
+    while let Some(e) = pending.pop() {
+        if !scalar(e.ty) { return false; }
+        match &e.e {
+            TExpr::I64(_) | TExpr::Bool(_) | TExpr::Local(_) => {}
+            // Add/sub/mul/neg lower through the audited memoryless checked
+            // scalar helpers (local integer ops, panic_code global, trap).
+            // Div and all other helpers remain denied.
+            TExpr::Bin(op, a, b) if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul |
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::LShr |
+                BinOp::AShr | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt |
+                BinOp::Ge | BinOp::And | BinOp::Or) => {
+                pending.push(b);
+                pending.push(a);
+            }
+            TExpr::Not(a) | TExpr::Neg(a) => pending.push(a),
+            TExpr::Ternary(c, a, b) => {
+                pending.push(b);
+                pending.push(a);
+                pending.push(c);
+            }
+            TExpr::Call(target, args) if proven.get(*target as usize) == Some(&true) => {
+                pending.extend(args.iter());
+            }
+            _ => return false,
+        }
     }
+    true
 }
 pub(crate) fn compile(tokens: Vec<Token>) -> Result<Vec<u8>, Diagnostic> {
     let mut plain = Vec::with_capacity(tokens.len());
