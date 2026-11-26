@@ -679,7 +679,7 @@ fnc __plan_nb(int p, int fair): int {
   return task {
     val answer = await __plan_wait_opt(snapshot, fair);
     __plan_retire_snapshot(p, snapshot);
-    return answer;
+    return __load(answer, 0);
   };
 }
 
