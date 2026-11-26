@@ -1,5 +1,6 @@
 //! Native CLI for browser-guest Wasm compilation.
 //! Single source: attoc input.atto [-o out.wasm]
+//! Explicit package linkage: --link=static (single linked guest); dynamic/hybrid unsupported.
 //! Syntax check: attoc --check input.atto
 //! Linked package: attoc --package-root DIR --entry src/main.atto [-o out.wasm]
 //! Discovered package: attoc --package path/to/main.atto [-o out.wasm]
@@ -19,16 +20,38 @@ enum Input {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
+    eprintln!("usage: attoc <input.atto> [-o out.wasm] [--link=static]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
     ExitCode::from(2)
 }
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut args = Vec::new();
+    let mut explicit_linkage = false;
     let (mut report_path, mut compiler_sha, mut case) = (None, None, None);
     let mut it = raw.into_iter();
     while let Some(a) = it.next() {
+        if let Some(mode) = a.strip_prefix("--link=") {
+            if explicit_linkage {
+                eprintln!("E_LINK_MODE: duplicate --link selection");
+                return ExitCode::from(2);
+            }
+            explicit_linkage = true;
+            match mode {
+                // Existing source linker emits one linked guest Wasm artifact.
+                // This is not independently cached object emission or OS static linkage.
+                "static" => {},
+                "dynamic" | "hybrid" => {
+                    eprintln!("E_LINK_MODE_UNSUPPORTED: {mode} package linkage requires a verified separate-module ABI");
+                    return ExitCode::from(2);
+                }
+                _ => {
+                    eprintln!("E_LINK_MODE: expected static|dynamic|hybrid");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
         if let Some(os) = a.strip_prefix("--target-os=") {
             // Selects platform-variant library units such as std/path.
             match os {
@@ -65,7 +88,7 @@ fn main() -> ExitCode {
     }
     let mut report_source: Option<Vec<u8>> = None;
     if matches!(args.as_slice(), [flag] if flag == "--help" || flag == "-h") {
-        println!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
+        println!("usage: attoc <input.atto> [-o out.wasm] [--link=static]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
         return ExitCode::SUCCESS;
     }
     let (input, output) = match args.as_slice() {
