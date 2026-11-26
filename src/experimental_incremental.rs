@@ -4,7 +4,9 @@
 //! protect separate directories/ancestors, provision random master keys and
 //! coordinate external epoch changes. No runtime guest access or signing
 //! service. Do not expose this API directly to untrusted tenants.
-//! No external registry package linking, per-unit typed-IR or codegen reuse.
+//! Single-file locked application roots may explicitly supply a host-approved
+//! set of frozen registry dependencies. No transitive registry acquisition,
+//! per-unit typed-IR or codegen reuse.
 //! Cold mode compiles AND publishes. Default compiler APIs remain unchanged.
 use crate::{compiler_artifact_store::{ArtifactStore,authority::Authority},
     compiler_cache_ledger as ledger,compiler_cache_session as session,
@@ -36,6 +38,23 @@ pub struct BuildIdentity<'a> {
     pub compiler_sha256:&'a str,
     pub toolchain_sha256:&'a str,
     pub target:TargetOs,
+}
+/// Independently authenticated dependency snapshot, approved by the host.
+/// Supplying a snapshot authorizes this name in the bounded application
+/// profile; no ambient registry lookup and no transitive resolution.
+pub struct RegistryDependency<'a> {
+    pub name:&'a str,
+    pub manifest:&'a str,
+    pub lockfile:&'a str,
+    pub trusted_lock_sha256:&'a str,
+    pub sources:&'a [SnapshotSource<'a>],
+}
+#[derive(Debug)]
+pub struct RegistryBuild {
+    pub bytes:Vec<u8>,
+    pub outcome:Outcome,
+    /// Number of provider snapshots freshly authenticated, not reused IR.
+    pub verified_dependencies:usize,
 }
 pub struct HostSession {
     cache:ArtifactStore,
@@ -86,5 +105,26 @@ impl HostSession {
         Ok(Build{bytes:result.bytes,outcome:match result.outcome{session::Outcome::Compiled=>Outcome::Compiled,
             session::Outcome::Reused=>Outcome::Reused},rewritten_sources:result.source_work.rewritten,
             reused_source_transforms:result.source_work.reused})
+    }
+
+    /// Experimental whole-artifact reuse for one locked application file
+    /// and an explicit independently pinned external provider set.
+    pub fn build_registry(&mut self,mode:Mode,current_pin:&[u8;32],master:[u8;32],
+        snapshot:Snapshot<'_>,dependencies:&[RegistryDependency<'_>])->Result<RegistryBuild,Diagnostic>{
+        use crate::{compiler_cache_registry as registry,compiler_artifact_receipt as receipt,diag::Pos};
+        let err=|code|Diagnostic::new(Pos::default(),code,"registry cache admission or storage failed");
+        let lease=self.authority.lease(&self.scope,current_pin,master).map_err(|_|err("E_CACHE_LEDGER"))?;
+        let secret=lease.secret();
+        let prepared=registry::prepare(snapshot,dependencies,self.target,&self.compiler,&self.toolchain)?;
+        if mode==Mode::Incremental {
+            if let Some(bytes)=self.cache.load(&prepared.key,&secret).map_err(|_|err("E_CACHE_READ"))?{
+                return Ok(RegistryBuild{bytes,outcome:Outcome::Reused,verified_dependencies:dependencies.len()});
+            }
+        }
+        let key=prepared.key;
+        let bytes=prepared.compile()?;
+        let sealed=receipt::seal(&key,&bytes,&secret).map_err(|_|err("E_CACHE_RECEIPT"))?;
+        self.cache.publish(&key,&sealed,&secret).map_err(|_|err("E_CACHE_PUBLISH"))?;
+        Ok(RegistryBuild{bytes,outcome:Outcome::Compiled,verified_dependencies:dependencies.len()})
     }
 }

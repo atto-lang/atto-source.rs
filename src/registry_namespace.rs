@@ -387,7 +387,7 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
 /// namespace objects are possible. The ordinary compiler still handles
 /// type checking, private module lowering and Wasm emission.
 pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<u8>> {
-    compile_registry_guest_inner(source, packages, None, None)
+    crate::compile_prelexed(prepare_registry_guest(source, packages)?, None)
 }
 
 /// Compile an application root using an explicitly supplied, verified current
@@ -396,11 +396,16 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
 /// is trusted package-relative metadata for default namespace normalization.
 pub fn compile_contextual_guest(source: &str, current: &FrozenRegistry,
     packages: &[&FrozenRegistry], logical: Option<&Path>) -> R<Vec<u8>> {
-    compile_registry_guest_inner(source, packages, Some(current), logical)
+    crate::compile_prelexed(prepare_registry_guest_inner(source, packages, Some(current), logical)?, None)
 }
 
-fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry],
-    current: Option<&'a FrozenRegistry>, logical: Option<&Path>) -> R<Vec<u8>> {
+/// Resolve the actual current import graph before cache lookup. This is
+/// compiler-private prepared input, not a verified typed program.
+pub(crate) fn prepare_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<crate::lexer::Token>> {
+    prepare_registry_guest_inner(source, packages, None, None)
+}
+fn prepare_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry],
+    current: Option<&'a FrozenRegistry>, logical: Option<&Path>) -> R<Vec<crate::lexer::Token>> {
     use crate::lexer::{self, Tok, Token};
     use crate::import_v2::{self, Source};
     fn word(t: Option<&Token>, value: &str) -> bool {
@@ -606,7 +611,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
         let checked=crate::check::check(&parsed)?;
         if !checked.imports.is_empty(){return Err(err("E_UNSUPPORTED","external enum guest cannot request host imports"));}
-        return crate::compile_prelexed(linked,None);
+        return Ok(linked);
     }
     if admitted.values().any(|p| !p.enum_metadata.is_empty()) && !admitted.values().any(|p| !p.class_metadata.is_empty()){
         return Err(err("E_UNSUPPORTED","external enum execution requires bounded nominal match"));
@@ -968,7 +973,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
         let checked=crate::check::check(&parsed)?;
         if !checked.imports.is_empty(){return Err(err("E_UNSUPPORTED","external class guest cannot request host imports"));}
-        return crate::compile_prelexed(linked,None);
+        return Ok(linked);
     }
 
     // Prepare deterministic private module owners for each verified source
@@ -1085,5 +1090,5 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         linked.push(t.clone()); i+=1;
         if linked.len()>lexer::MAX_TOKENS { return Err(err("E_SOURCE_LIMIT","registry guest token budget exceeded")); }
     }
-    crate::compile_prelexed(linked,None)
+    Ok(linked)
 }

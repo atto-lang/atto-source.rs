@@ -17,6 +17,9 @@ on:
       - 'src/compiler_cache_ledger.rs'
       - 'src/compiler_cache_session.rs'
       - 'src/experimental_incremental.rs'
+      - 'src/compiler_cache_registry.rs'
+      - 'src/registry_namespace.rs'
+      - 'tests/experimental_registry_cache.rs'
       - 'tests/experimental_incremental.rs'
       - 'Cargo.toml'
       - '.github/workflows/compiler-cache-key.yml'
@@ -55,3 +58,5 @@ jobs:
           cargo test --test multihop_linker -- --nocapture
           cargo check --no-default-features
           cargo test --features experimental-incremental-cache --test experimental_incremental -- --nocapture
+          cargo test --test registry_namespace -- --nocapture
+          cargo test --features experimental-incremental-cache --test experimental_registry_cache -- --nocapture

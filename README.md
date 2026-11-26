@@ -626,7 +626,7 @@ See [language spec](https://github.com/atto-lang/atto-spec/pull/32) and
 The Rust library feature `experimental-incremental-cache` exposes an explicit
 `experimental_incremental::HostSession`. Default builds and `attoc` remain
 unchanged. This is a bounded single-package immutable-snapshot candidate,
-not production activation or external registry linking. Use separate
+not production activation. The separate experimental registry build path accepts a single locked application source and up to 16 explicitly host-approved frozen provider snapshots; no transitive dependency acquisition. Use separate
 host-protected owner-only authority and cache roots, independently attested
 compiler/toolchain digests and an independently current ledger pin. Masters
 must be provisioned by the trusted host and must not be passed through CLI

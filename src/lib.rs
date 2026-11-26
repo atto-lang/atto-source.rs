@@ -77,6 +77,8 @@ mod compiler_cache_session;
 /// Explicit experimental trusted-host compilation API; not enabled by default.
 #[cfg(all(feature = "experimental-incremental-cache", target_os = "linux", target_arch = "x86_64"))]
 pub mod experimental_incremental;
+#[cfg(all(feature = "experimental-incremental-cache", target_os = "linux", target_arch = "x86_64"))]
+mod compiler_cache_registry;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod compiler_artifact_store;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
