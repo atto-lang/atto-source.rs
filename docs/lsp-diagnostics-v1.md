@@ -45,3 +45,15 @@ with partial and pipelined input, and malformed frames.
 5. **Quick fixes:** machine-applicable edits for stable codes
    (e.g. `'%' is reserved` gives `Integer.rem(a, b)`), then rename and
    extract-function refactors built on the typed AST.
+
+## Canonical method spelling integration gate
+
+The editor must inherit the compiler's declaration grammar rather than maintain
+an independent keyword parser. Integrate [Rust compiler PR #503](https://github.com/atto-lang/atto-source.rs/pull/503) before certifying this behavior. The sole explicit instance method introducer is `mtd`; bare declarations and legacy instance `fnc` remain valid. `method name(...)` must produce a compiler-owned syntax diagnostic, while a callable named `method()` or `mtd()` remains valid. A TextMate lexical scope is not a syntax diagnostic.
+
+Add real-compiler LSP regression tests for the obsolete marker, ordinary names,
+valid explicitly marked methods, duplicate slots, UTF-16 diagnostic spans and
+clearing a diagnostic after changing the obsolete introducer to `mtd`. Do not
+silently migrate source or advertise a quick fix until the compiler provides a
+stable diagnostic and reliable edit range. These integration cases remain
+NOT_EXECUTED on this branch.
