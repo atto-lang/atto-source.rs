@@ -940,6 +940,27 @@ impl Emit<'_> {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
             }
+            TExpr::StateSnapshot { ctor, fields } => {
+                // Fixed receiver and scalar loads only. No allocation, user
+                // call, suspension or per-field ticket inside the read lease.
+                debug_assert_eq!(self.state_write_depth, 0);
+                let slot = self.state_ticket_slot.expect("protected snapshot ticket local");
+                self.get(0);
+                self.i32c(0);
+                self.call(self.l.import(Import::StateEnter));
+                self.set(slot);
+                for (ty, offset) in fields {
+                    self.get(0);
+                    field_op(&mut self.code, *ty, *offset, false);
+                }
+                // All owned values remain on the operand stack while the
+                // opaque ticket is consumed. Tuple allocation happens after.
+                self.get(slot);
+                self.call(self.l.import(Import::StateLeave));
+                let at = self.code.len();
+                self.call(self.l.func(*ctor));
+                self.calls.push((at, self.code.len(), *ctor));
+            }
             TExpr::StateFieldRead { obj, offset } => {
                 if self.state_write_depth == 0 {
                     // Read an immutable scalar by value. The host owns the
