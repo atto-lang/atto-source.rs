@@ -19,8 +19,8 @@ fn ticket(m: &Mailbox, r: Id, value: i64) -> proxy_mailbox_ticket_v1::HostTicket
 }
 #[test]
 fn exact_mail_not_other_actor_completion_and_backpressure() {
-    let a = Mailbox::new(13, 14, 1).unwrap();
-    let b = Mailbox::new(13, 14, 1).unwrap();
+    let a = Mailbox::new(11, 13, 14, 1).unwrap();
+    let b = Mailbox::new(11, 13, 14, 1).unwrap();
     let t1 = ticket(&a, route(101, 14), 11);
     let first = a.dispatch().unwrap();
     let queued = ticket(&a, route(102, 14), 12);
@@ -46,7 +46,7 @@ fn exact_mail_not_other_actor_completion_and_backpressure() {
 }
 #[test]
 fn four_concurrent_producers_cannot_corrupt_128_unique_results() {
-    let mail = Arc::new(Mailbox::new(13, 14, 256).unwrap());
+    let mail = Arc::new(Mailbox::new(11, 13, 14, 256).unwrap());
     let mut producers = vec![];
     for p in 0..4 {
         let m = mail.clone();
@@ -75,7 +75,7 @@ fn four_concurrent_producers_cannot_corrupt_128_unique_results() {
 }
 #[test]
 fn panic_abandons_pending_and_restart_fences_incarnation() {
-    let m = Mailbox::new(13, 14, 2).unwrap();
+    let m = Mailbox::new(11, 13, 14, 2).unwrap();
     let failed = ticket(&m, route(201, 14), -1);
     let turn = m.dispatch().unwrap();
     let abandoned = ticket(&m, route(202, 14), 20);
@@ -86,7 +86,7 @@ fn panic_abandons_pending_and_restart_fences_incarnation() {
     assert!(matches!(m.admit(route(203, 14), 1), Admission::Closed));
     assert!(m.dispatch().is_none());
     assert!(m.conservation());
-    let next = Mailbox::new(13, 15, 1).unwrap();
+    let next = Mailbox::new(11, 13, 15, 1).unwrap();
     assert!(matches!(next.admit(route(204, 14), 1), Admission::Stale));
     assert!(next.snapshot(&failed).is_none());
     let fresh = ticket(&next, route(205, 15), 8);
@@ -97,7 +97,7 @@ fn panic_abandons_pending_and_restart_fences_incarnation() {
 }
 #[test]
 fn close_denies_new_receipts_but_drain_can_commit() {
-    let m = Mailbox::new(13, 14, 1).unwrap();
+    let m = Mailbox::new(11, 13, 14, 1).unwrap();
     let old = ticket(&m, route(300, 14), 3);
     m.close();
     assert!(matches!(m.admit(route(301, 14), 3), Admission::Closed));
@@ -105,4 +105,67 @@ fn close_denies_new_receipts_but_drain_can_commit() {
     assert!(m.commit(&turn, 4));
     assert_eq!(m.snapshot(&old).unwrap().result, Some(4));
     assert!(m.conservation());
+}
+
+#[test]
+fn empty_mailbox_rejects_wrong_tenant_without_spending_credit() {
+    let m = Mailbox::new(11, 13, 14, 1).unwrap();
+    assert!(matches!(m.admit(Id { tenant: 88, ..route(501, 14) }, 7), Admission::Stale));
+    assert!(m.dispatch().is_none());
+    let t = ticket(&m, route(501, 14), 7);
+    let turn = m.dispatch().unwrap();
+    assert!(m.commit(&turn, 14));
+    assert!(m.snapshot(&t).is_some());
+    assert!(m.conservation());
+}
+
+#[test]
+fn concurrent_terminal_races_fence_foreign_tenant() {
+    for i in 0..64u64 {
+        let m = Mailbox::new(11, 13, 14, 2).unwrap();
+        let first = ticket(&m, route(5000 + i, 14), 42);
+        let turn = m.dispatch().unwrap();
+        let start = std::sync::Barrier::new(4);
+        let (committed, panicked, foreign) = std::thread::scope(|scope| {
+            let c = scope.spawn(|| { start.wait(); m.commit(&turn, 42) });
+            let p = scope.spawn(|| { start.wait(); m.panic(&turn) });
+            let a = scope.spawn(|| {
+                start.wait();
+                m.admit(Id { tenant: 88, ..route(6000 + i, 14) }, 99)
+            });
+            start.wait();
+            (c.join().unwrap(), p.join().unwrap(), a.join().unwrap())
+        });
+        assert_ne!(committed, panicked);
+        assert!(matches!(foreign, Admission::Stale));
+        let snapshot = m.snapshot(&first).unwrap();
+        assert_eq!(snapshot.state, if committed { TicketState::Processed } else { TicketState::Failed });
+        assert_eq!(snapshot.result, if committed { Some(42) } else { None });
+        assert!(!m.commit(&turn, 99));
+        assert!(!m.panic(&turn));
+        assert!(m.dispatch().is_none() && m.conservation());
+    }
+}
+
+#[test]
+fn same_actor_incarnation_different_tenants_are_independent() {
+    assert!(Mailbox::new(0, 13, 14, 1).is_none());
+    let a = Mailbox::new(11, 13, 14, 1).unwrap();
+    let b = Mailbox::new(88, 13, 14, 1).unwrap();
+    let ra = route(7000, 14);
+    let rb = Id { tenant: 88, ..ra };
+    let ta = ticket(&a, ra, 41);
+    let tb = ticket(&b, rb, 42);
+    assert!(matches!(a.admit(rb, 99), Admission::Stale));
+    assert!(matches!(b.admit(ra, 99), Admission::Stale));
+    let va = a.dispatch().unwrap();
+    let vb = b.dispatch().unwrap();
+    assert!(!a.commit(&vb, 99) && !b.commit(&va, 99));
+    assert!(a.snapshot(&tb).is_none() && b.snapshot(&ta).is_none());
+    assert!(a.commit(&va, 41) && b.commit(&vb, 42));
+    assert_eq!(a.snapshot(&ta).unwrap().result, Some(41));
+    assert_eq!(b.snapshot(&tb).unwrap().result, Some(42));
+    a.close();
+    assert!(matches!(a.admit(rb, 99), Admission::Stale));
+    assert!(a.conservation() && b.conservation());
 }
