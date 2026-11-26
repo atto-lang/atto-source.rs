@@ -227,3 +227,32 @@ fn cached_compile_does_not_suppress_borrow_export() {
     assert_eq!(warm_records.len(), direct_records.len());
     assert_eq!(c.stats().hits, 0);
 }
+
+#[test]
+fn byte_budget_bypasses_oversize_artifact_without_changing_compilation() {
+    let u = graph3(MATH);
+    let clean = compile_linked("src/main.atto", &u).unwrap();
+    let mut c = IncrementalCompiler::with_limits(64, 1).unwrap();
+    assert_eq!(c.compile("src/main.atto", &u).unwrap(), clean);
+    assert_eq!(c.compile("src/main.atto", &u).unwrap(), clean);
+    assert_eq!((c.len(), c.retained_bytes(), c.stats().hits, c.stats().misses), (0, 0, 0, 2));
+    assert!(IncrementalCompiler::with_limits(64, 0).is_err());
+}
+
+#[test]
+fn byte_budget_evicts_even_below_entry_capacity() {
+    let u = graph3(MATH);
+    let v = graph3(MATH_TRIPLE);
+    let first = compile_linked("src/main.atto", &u).unwrap();
+    let second = compile_linked("src/main.atto", &v).unwrap();
+    let path_bytes: usize = u.iter().map(|x| x.path.len()).sum();
+    let budget = first.len().max(second.len()) + path_bytes + 32;
+    let mut c = IncrementalCompiler::with_limits(64, budget).unwrap();
+    assert_eq!(c.compile("src/main.atto", &u).unwrap(), first);
+    assert_eq!(c.compile("src/main.atto", &v).unwrap(), second);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c.stats().evictions, 1);
+    assert!(c.retained_bytes() <= budget);
+    assert_eq!(c.compile("src/main.atto", &v).unwrap(), second);
+    assert_eq!(c.stats().hits, 1);
+}
