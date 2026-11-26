@@ -13,6 +13,30 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
   {
+    name: 'chained cleanup pipeline stages evaluate left to right once and defer only the callback',
+    src: `fnc seed(): int { stdio.println("seed"); return 5; }
+      fnc extra(): int { stdio.println("extra"); return 2; }
+      fnc plus(int a, int b): int { stdio.println("plus"); return a + b; }
+      fnc twice(int x): int { stdio.println("twice"); return x * 2; }
+      pub fnc main(): int {
+        defer seed() |> plus(extra()) |> twice |> (|int x| -> || -> { stdio.println(x); });
+        stdio.println("body");
+        return 42;
+      }`,
+    stdout: 'seed\nextra\nplus\ntwice\nbody\n14\n', value: 42n,
+  },
+  {
+    name: 'failed intermediate stage leaves prior cleanup and recovery intact',
+    src: `fnc fail(int n): int { raise Error("intermediate"); }
+      pub fnc main(): int {
+        recover 42 |> (|int n| -> |err, cursor| -> { stdio.println(err.message); return n; });
+        defer { stdio.println("prior"); };
+        defer 5 |> fail |> (|int x| -> || -> { stdio.println("UNEXPECTED"); });
+        return 99;
+      }`,
+    stdout: 'prior\nintermediate\n', value: 42n,
+  },
+  {
     name: 'direct defer pipeline captures once at registration and executes LIFO',
     src: `fnc seed(): int { stdio.println("seed"); return 5; }
       pub fnc main(): int {
