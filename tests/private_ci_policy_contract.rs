@@ -40,7 +40,7 @@ fn workflow_has_one_unbroken_active_destination_rejection() {
         .arg("tests/private-ci-export-policy-guard-test.sh")
         .output().expect("bash required for policy guard regression");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert!(String::from_utf8_lossy(&out.stdout).contains("PASS: 25 deny-by-default private CI policy regression cases"));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("PASS: 26 deny-by-default private CI policy regression cases"));
     }
 }
 
