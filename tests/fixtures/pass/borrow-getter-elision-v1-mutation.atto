@@ -1,0 +1,20 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+define class Parcel as pub mut int value = 10; end
+fnc inspect(Parcel p): int { return p.value; }
+fnc update(mut Parcel p): void { p.value = 32; }
+pub fnc main(): int {
+    let first = new Parcel();
+    let second = new Parcel();
+    val before = inspect(first);
+    update(mut first);
+    val after = inspect(borrow! first);
+    val other = inspect(second);
+    if before < 10 then return 1; fi
+    if before > 10 then return 1; fi
+    if after < 32 then return 2; fi
+    if after > 32 then return 2; fi
+    if other < 10 then return 3; fi
+    if other > 10 then return 3; fi
+    return 42;
+}
