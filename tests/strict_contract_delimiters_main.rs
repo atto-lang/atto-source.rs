@@ -21,6 +21,8 @@ fn nested_braces_do_not_close_end_delimited_callable(){
     let main=" pub fnc main() -> int { return f(2); }";
     let baseline=compile_verified_strict(&format!("{PRE}{body} {{{tail}}}{main}")).unwrap();
     assert_eq!(compile_verified_strict(&format!("{PRE}{body} ::{tail}end{main}")).unwrap(),baseline);
+    let missing=source(" ::","","requires b != 0 requires b != -1","84, 2");
+    assert_eq!(compile_verified_strict(&missing).unwrap_err().code,"E_SYNTAX");
     for (open,close) in [(" begin","end"),(" ::","}"),(" ::",""),(" :: begin","end")]{
         assert!(compile_verified_strict(&source(open,close,"requires b != 0 requires b != -1","84, 2")).is_err());
     }
