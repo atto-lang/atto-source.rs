@@ -23,7 +23,7 @@ function build(expression) {
   return {r, output};
 }
 try {
-  for (const expression of ['identity<T=int>(42)', 'identity<int>(42)',
+  for (const expression of ['identity<T=int>(42)', 'identity<int>(42)', 'identity<T=int>(x:42)',
     'identity<T=int>(20) + identity<int>(22)']) {
     const {r, output} = build(expression);
     assert.equal(r.status, 0, r.stderr);
@@ -38,7 +38,7 @@ try {
   }
   for (const expression of ['identity<U=int>(42)', 'identity<t=int>(42)',
     'identity<T=3>(42)', 'identity<T=int,T=int>(42)', 'identity<T=int,bool>(42)',
-    'identity[T=int](42)', 'identity<T=int](42)', 'identity<T=int>']) {
+    'identity[T=int](42)', 'identity<T=int](42)', 'identity<T=int>', 'identity<T=int>(wrong:42)', 'identity<T=int>(x:)', 'identity<T=int>(x:42,x:42)', 'identity<T=int>(x:42,42)', 'identity<T=int>(x:true)']) {
     const {r, output} = build(expression);
     assert.equal(r.status, 1, r.stderr);
     assert.match(r.stderr, /E_[A-Z_]+/);
