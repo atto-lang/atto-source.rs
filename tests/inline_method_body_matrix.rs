@@ -93,7 +93,7 @@ fn inline_mtd_compiles_as_instance_call_without_mutability_or_arity_changes() {
         define class Calculator as
             final int seed: 3;
             pub mtd answer() : int { return self.seed + 39; }
-            pub method legacy() : int { return self.seed + 1; }
+            pub mtd legacy() : int { return self.seed + 1; }
             static fnc static_answer(): int { return 42; }
         end
         pub fnc main(): int {
@@ -210,7 +210,7 @@ fn state_container_mtd_name_is_not_greedily_consumed_as_marker() {
 
 #[test]
 fn consecutive_method_prefix_markers_are_not_accepted() {
-    for invalid in ["mtd method foo()", "method mtd foo()", "fnc mtd foo()"] {
+    for invalid in ["mtd method foo()", "method mtd foo()", "fnc mtd foo()", "method foo()", "method method()"] {
         let source = format!(
             "define class C as {invalid}: int {{ return 42; }} end pub fnc main(): int {{ return 0; }}"
         );
