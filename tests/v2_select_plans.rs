@@ -59,13 +59,13 @@ fn select_plans_compile_runtime_panics_as_real_guests() {
 }
 
 #[test]
-fn standalone_plan_select_statements_compile_but_discarding_nb_is_denied() {
+fn explicit_await_select_statements_compile_but_discarded_futures_are_denied() {
     let prefix = r#"pub suspends fnc main(): int {
         val ch = Channel<int>.bounded(1);
         val plan = SelectPlan.from_list([SelectCase.read(ch)]);
         writech ch, 42;
     "#;
-    for statement in ["select fair from plan;", "try select first from plan;"] {
+    for statement in ["await select fair from plan;", "try select first from plan;"] {
         let source = format!("{prefix} {statement} return 42; }}");
         let guest = atto_compiler::compile(&source)
             .unwrap_or_else(|e| panic!("{statement}: {e}"));
@@ -73,6 +73,9 @@ fn standalone_plan_select_statements_compile_but_discarding_nb_is_denied() {
     }
     for (statement, code) in [
         ("nb select fair from plan;", "E_UNSUPPORTED"),
+        ("select fair from plan;", "E_UNSUPPORTED"),
+        ("val SelectResult result = select fair from plan;", "E_TYPE"),
+        ("val Future<Option<SelectResult>> pending = nb select fair from plan;", "E_TYPE"),
         ("select { on readch(ch) as value { return value; } }", "E_UNSUPPORTED"),
     ] {
         let source = format!("{prefix} {statement} return 42; }}");
@@ -93,7 +96,7 @@ suspends fnc opt_in(): int { return 1; }
 pub fnc main(): int {
   val ch = Channel<int>.bounded(1);
   val plan = SelectPlan.from_list([SelectCase.read(ch)]);
-  val Future<Option<SelectResult>> pending = nb select first from plan;
+  val Future<SelectResult> pending = select first from plan;
   // A synchronous callable cannot use suspending writech. This test
   // inspects the compiled entry wrapper, not the lifetime of an awaited plan.
   return 42;
