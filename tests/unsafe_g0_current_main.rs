@@ -48,3 +48,19 @@ fn reserved_import_identity_cannot_be_laundered_by_traversal() {
         assert!(lexer::lex(&source).is_ok(), "{path}");
     }
 }
+
+#[test]
+fn intermediate_unsafe_import_identity_cannot_be_erased() {
+    for path in ["std/other/../unsafe/../safe", "./std/other/../unsafe/../safe",
+        "pkg/../std/other/../unsafe/../safe", "atto//std/../safe", "atto/./std/../safe",
+        "./atto::std/../safe", "pkg/../ores.std/../safe", "atto/std/other/../unsafe/../safe",
+        "atto/:/std/../safe", "std/other/../unsafe::ffi/../safe"] {
+        let source = format!(r#"import module innocent from "{path}"; pub fnc main(): int {{ return 42; }}"#);
+        assert_eq!(lexer::lex(&source).unwrap_err().code, "E_UNSAFE_DOMAIN", "{path}");
+    }
+    for path in ["std/other/../safe", "./atto::std/other/../safe", "pkg/../std/unsafe_tools/../safe",
+        "pkg/atto.std/unsafe/../safe", "atto/std/other/deeper/../../safe"] {
+        let source = format!(r#"import module innocent from "{path}"; pub fnc main(): int {{ return 42; }}"#);
+        assert!(lexer::lex(&source).is_ok(), "{path}");
+    }
+}

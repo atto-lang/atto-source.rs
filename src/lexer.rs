@@ -87,26 +87,33 @@ pub(crate) fn reject_unsafe_guest_tokens(tokens: &[Token]) -> Result<(), Diagnos
             root == Some("std") && segments.next() == Some("unsafe")
         }
         if reserved(&unix) { return true; }
-        let mut slash = unix.split('/');
-        let head: Vec<_> = slash.next().unwrap_or("").split(['.', ':'])
-            .filter(|p| !p.is_empty()).collect();
-        let root_depth = match head.as_slice() {
-            ["std"] | ["atto" | "ores", "std"] => 1,
-            ["atto" | "ores"] if slash.next() == Some("std") => 2,
-            _ => 0,
-        };
-        let mut parts = Vec::new();
-        for part in unix.split('/') {
-            match part {
-                "" | "." => {},
+        // Preserve intermediate canonical identity. A later traversal
+        // cannot erase the fact that an unsafe namespace was selected.
+        let mut prefix = Vec::with_capacity(3);
+        let mut stack = Vec::new();
+        let mut root_depth = 0;
+        for component in unix.split('/') {
+            match component {
+                "" | "." => continue,
                 ".." => {
-                    if root_depth != 0 && parts.len() <= root_depth { return true; }
-                    parts.pop();
+                    if root_depth != 0 && stack.len() <= root_depth { return true; }
+                    if let Some(previous) = stack.pop() { prefix.truncate(previous); }
+                    continue;
                 }
-                _ => parts.push(part),
+                _ => {}
+            }
+            stack.push(prefix.len());
+            for segment in component.split(['.', ':']).filter(|p| !p.is_empty()) {
+                if prefix.len() == 3 { break; }
+                prefix.push(segment);
+            }
+            let offset = usize::from(matches!(prefix.first().copied(), Some("atto" | "ores")));
+            if prefix.get(offset) == Some(&"std") {
+                if root_depth == 0 { root_depth = stack.len(); }
+                if prefix.get(offset + 1) == Some(&"unsafe") { return true; }
             }
         }
-        reserved(&parts.join("/"))
+        false
     }
 
     let mut import = false;
