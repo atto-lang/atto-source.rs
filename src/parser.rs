@@ -2194,7 +2194,11 @@ impl Parser {
             self.terminator()?;
             return Ok(Stmt::YieldFrom(source, pos));
         }
-        let word = self.word_at(0).map(str::to_owned);
+        let word = if *self.peek() == Tok::Caret {
+            Some("return".to_owned())
+        } else {
+            self.word_at(0).map(str::to_owned)
+        };
         match word.as_deref() {
             Some("using") if self.word_at(1) == Some("telemetry")
                 && self.peek_at(2) == &Tok::Dot && self.word_at(3) == Some("span") =>
@@ -2404,8 +2408,10 @@ impl Parser {
                         && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
                         Some((BinOp::BitOr, 2))
                     } else if *self.peek_at(1) == Tok::Caret
-                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
-                        Some((BinOp::BitXor, 2))
+                        && *self.peek_at(2) == Tok::Caret
+                        && *self.peek_at(3) == Tok::Assign
+                        && self.joined_at(1) && self.joined_at(2) {
+                        Some((BinOp::BitXor, 3))
                     } else if self.triple_at(1, &Tok::Lt) && *self.peek_at(4) == Tok::Assign
                         && self.joined_at(3) {
                         Some((BinOp::Shl, 4))
@@ -3441,6 +3447,11 @@ impl Parser {
         let mut links = 0;
         while *self.peek() == Tok::Caret {
             let pos = self.pos();
+            if *self.peek_at(1) != Tok::Caret || !self.joined_at(0) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "infix single caret is not an operator; use ^^ for integer XOR"));
+            }
+            self.advance();
             self.advance();
             self.grow(1)?;
             links += 1;

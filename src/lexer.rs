@@ -359,7 +359,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('>', _) => (Tok::Gt, 1),
             ('*', _) => (Tok::Star, 1),
             ('/', _) => (Tok::Slash, 1),
-            ('%', _) | ('^', Some('^')) => {
+            ('%', _) => {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED",

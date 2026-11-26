@@ -425,15 +425,35 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Historical percent remains unsupported in this profile. Single infix
+// caret is rejected; double caret is now the canonical integer XOR.
+for (const op of ['%', '^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
     assert.equal(r.code, 'E_UNSUPPORTED');
     assert.equal('wasm' in r, false);
     assert.ok(r.line >= 1 && r.col >= 1);
+  });
+}
+
+for (const [label, body, expected] of [
+  ['integer-xor', 'return 11 ^^ 4;', 15n],
+  ['caret-return', '^ 42;', 42n],
+  ['caret-return-xor', '^ (12 ^^ 10);', 6n],
+  ['xor-assignment', 'let x: int = 12; x ^^= 10; return x;', 6n],
+]) {
+  check('canonical-caret/'+label, () => {
+    const r = compile('pub fnc main(): int { '+body+' }');
+    assert.ok(r.ok, r.message);
+    assert.equal(runGuest(r.wasm).value, expected);
+  });
+}
+for (const body of ['return true ^^ false;', 'return 12 ^ ^ 10;', 'let x: int = 12; x ^= 10; return x;']) {
+  check('canonical-caret/reject-'+body, () => {
+    const r = compile('pub fnc main(): int { '+body+' }');
+    assert.equal(r.ok, false);
+    assert.equal('wasm' in r, false);
   });
 }
 

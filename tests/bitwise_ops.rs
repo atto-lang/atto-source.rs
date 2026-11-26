@@ -8,11 +8,11 @@ fn source(expr: &str) -> String {
 #[test]
 fn bitwise_operations_compile_and_emit_wasm() {
     for expr in [
-        "12 & 10", "12 | 10", "12 ^ 10", "~12",
+        "12 & 10", "12 | 10", "12 ^^ 10", "~12",
         "8 <<< 2", "32 >>> 2", "-8 ashr 1",
         "1 + 2 <<< 3", "64 >>> 1 + 1",
         "1 <<< 64", "-1 >>> 1",
-        "12 & 10 | 2 ^ 6", "(1 | 2) <<< 1",
+        "12 & 10 | 2 ^^ 6", "(1 | 2) <<< 1",
     ] {
         let bytes = compile(&source(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
         assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0", "{expr}");
@@ -22,7 +22,7 @@ fn bitwise_operations_compile_and_emit_wasm() {
 #[test]
 fn compound_assignment_uses_local_mutability_and_original_value() {
     for assignment in [
-        "x &= 10", "x |= 2", "x ^= 7",
+        "x &= 10", "x |= 2", "x ^^= 7",
         "x <<<= 2", "x >>>= 1", "x ashr= 1",
     ] {
         let src = format!("pub fnc main(): int {{ let x: int = 12; {assignment}; return x; }}");
@@ -34,7 +34,7 @@ fn compound_assignment_uses_local_mutability_and_original_value() {
 
 #[test]
 fn bitwise_is_strictly_integer_only() {
-    for expr in ["1.0 & 2", "1 | true", "true ^ false", "1.5 <<< 2",
+    for expr in ["1.0 & 2", "1 | true", "true ^^ false", "1.5 <<< 2",
                  "1 >>> 1.0", "1 ashr false", "~true"] {
         assert_eq!(compile(&source(expr)).unwrap_err().code, "E_TYPE", "{expr}");
     }
@@ -76,4 +76,19 @@ fn existing_io_and_boolean_operators_are_unchanged() {
     compile("pub fnc main(): int { if true && false || true then return 1; fi return 0; }").unwrap();
     assert!(compile(&source("1 << 2")).is_err()); // Not a bit shift
     assert!(compile(&source("8 >> 2")).is_err()); // Not a bit shift
+}
+
+#[test]
+fn canonical_caret_contexts_are_disjoint() {
+    for src in ["pub fnc main(): int { ^ 42; }",
+                "pub fnc main(): int { ^ (12 ^^ 10); }",
+                "pub fnc main(): int { let x: int = 12; x ^^= 10; return x; }"] {
+        compile(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+    for src in ["pub fnc main(): int { return 12 ^ 10; }",
+                "pub fnc main(): int { return 12 ^ ^ 10; }",
+                "pub fnc main(): int { let x: int = 12; x ^= 10; return x; }",
+                "pub fnc main(): int { return true ^^ false; }"] {
+        assert!(compile(src).is_err(), "{src}");
+    }
 }
