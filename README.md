@@ -2,6 +2,14 @@
 
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
+## Source-local static marker/brand scalar calls (candidate, NOT EXECUTED)
+
+This draft extends the existing scalar snapshot lowering with a closed, source-local admission pass. `define pub brand #user_id;` and `define class UserId with brand #user_id as ... end` are recognized only in an initial declaration region. The adapter reuses the exact compiler-side registry from [#221](https://github.com/atto-lang/atto-source.rs/pull/221); it proves tags before calling the existing production parser/checker/emitter path. It permits only flat ordinary public-int-field classes, exactly one read-only named structural formal, a direct member return, and a single immutable class-local call from main. The tag registry is compilation-local and does not supply globally persistent identities or physical layout/borrow proof.
+
+Four source files match [conformance #676](https://github.com/atto-lang/atto-platform-conformance/pull/676) byte-for-byte. The expected positive guest value is 42 for both nominal and unrelated same-brand classes; wrong brand and unbranded lookalikes must reject specifically with E_MISSING_BRAND and leave no Wasm artifact. Named marker conjunction, both structural spellings and identical emitted bytes after static tag erasure have Rust tests. Run `cargo test --locked --test structural_tag_guest` and `cargo build --locked --release --bin attoc && ATTOC=target/release/attoc node tests/structural_tag_guest_execution.mjs`. These are authored tests, not a passing receipt.
+
+Explicitly unsupported: general structural loans, anonymous branded constraints, multiple structural functions, imported/qualified identities, generic constraints, inherited/authorized foreign brands, runtime tag patterns, struct layouts and object ID APIs. Other source constructs containing tag references fail closed. This narrow candidate depends on the older #223 scalar-call branch and requires a current-main semantic forward-port alongside #221 before any integration; it does not establish broad frontend or cross-backend parity.
+
 ## Namespace and out-of-line receiver syntax (parse-only)
 
 This frontend now has a bounded, parse-only grammar for the proposed use namespace
