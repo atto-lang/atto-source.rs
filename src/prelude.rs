@@ -107,7 +107,9 @@ pub fn resolve(name: &str, profile: Profile) -> Option<&'static Binding> {
 /// reserved: existing programs legitimately declare classes with those names,
 /// and reserving them would be a breaking change without lowering behind it.
 pub fn protected_identity(name: &str) -> bool {
-    TYPE_INFO.iter().any(|info| info.name == name && info.kind == Kind::Constructor)
+    TYPE_INFO.iter().any(|info| info.name == name &&
+        (info.kind == Kind::Constructor || info.canonical.starts_with("core/primitive/")))
+        || matches!(name, "From" | "Into" | "TryFrom" | "TryInto")
         || matches!(name,
             "Option" | "Result" | "Array" | "FixedArray" | "List" | "FixedList"
             | "Vector" | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan")
