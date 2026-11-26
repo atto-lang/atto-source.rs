@@ -299,7 +299,13 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             rewrite_expr(e, d),
         Stmt::Try { body, catch, finally, .. } => {
             rewrite_statements(body, d)?;
-            if let Some((_, handler)) = catch { rewrite_statements(handler, d)?; }
+            if let Some((name, handler)) = catch {
+                if *name == d.source {
+                    return Err(error(d.lambda.pos, "E_UNSUPPORTED",
+                        "catch binding cannot shadow direct lambda"));
+                }
+                rewrite_statements(handler, d)?;
+            }
             if let Some(cleanup) = finally { rewrite_statements(cleanup, d)?; }
             Ok(())
         }
@@ -368,6 +374,17 @@ fn rewrite_expr(e: &mut Expr, d: &mut Direct) -> R<()> {
     result
 }
 fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
+    // Resolve only the lexically tracked immutable callable. Ordinary
+    // nominal methods named call remain ordinary MethodCall expressions.
+    // Normalize before the existing checked direct-call rewrite, preserving
+    // argument order, arity, signature, captures and the private target.
+    if let ExprKind::MethodCall(receiver, member, args) = &mut e.kind {
+        if matches!(&receiver.kind, ExprKind::Var(name) if *name == d.source)
+            && member == "call"
+        {
+            e.kind = ExprKind::Call(d.source.clone(), std::mem::take(args));
+        }
+    }
     match &mut e.kind {
         ExprKind::Var(n) if *n == d.source =>
             Err(error(e.pos, "E_UNSUPPORTED",
