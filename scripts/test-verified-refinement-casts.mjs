@@ -122,6 +122,11 @@ strictCases.push(
  ["while-scope-leak","pub fnc main() -> int { let int n = 0; while n < 42 { val d = 1; n = n + d; } return d; }","E_UNIT_NAME"],
  ["while-break-unsupported","pub fnc main() -> int { let int n = 0; while n < 42 { break; } return n; }","E_RESERVED"]
 );
+strictCases.push(
+ ["while-nested-writes-outer","type Counter = int where self >= 0 and self <= 42; pub fnc main() -> int { let Counter n = 0; while n < 42 { let Counter m = 0; while m < 1 { m = m + 1; n = 42; } n = n + 1; } return n; }","E_REFINEMENT_BINDING"],
+ ["while-unchanged-mutable","pub fnc main() -> int { let int d = 1; let int n = 0; while n < 42 { n = n + 42 / d; } return n; }",42n],
+ ["while-conditional-write","pub fnc main() -> int { let int d = 1; let int n = 0; while n < 42 { if n > 0 { d = 0; } n = n + 42 / d; } return n; }","E_VERIFY_UNPROVEN"]
+);
 for (const [id,body,want] of strictCases) cases.push(["strict-"+id,body,want,true]);
 const dir=mkdtempSync(join(tmpdir(),"atto-refinement-casts-"));
 try{
