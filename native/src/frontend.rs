@@ -180,6 +180,9 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+/// Bound recursive primary parsing and left-associated AST depth.
+pub const MAX_PRIMARY_DEPTH: usize = 128;
+pub const MAX_INFIX_OPERATORS: usize = 256;
 
 /// Execution-domain words reserved by every Oreslang backend (Java and LLVM
 /// reject them as identifiers too).
@@ -279,6 +282,8 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         tokens,
         cursor: 0,
         source_len: source.len(),
+        primary_depth: 0,
+        infix_operators: 0,
     };
     let mut functions = Vec::new();
     while parser.peek().is_some() {
@@ -297,6 +302,8 @@ struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
+    primary_depth: usize,
+    infix_operators: usize,
 }
 impl Parser {
     fn peek(&self) -> Option<Kind> {
@@ -441,15 +448,28 @@ impl Parser {
             expression,
         })
     }
+    fn charge_infix(&mut self) -> Result<(), ParseError> {
+        if self.infix_operators >= MAX_INFIX_OPERATORS {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "resource_limit",
+                message: "infix operator count exceeds prototype limit".into(),
+            });
+        }
+        self.infix_operators += 1;
+        Ok(())
+    }
     fn expression(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.product()?;
         loop {
             lhs = match self.peek() {
                 Some(Kind::Plus) => {
+                    self.charge_infix()?;
                     self.expect(Kind::Plus)?;
                     Expr::Add(Box::new(lhs), Box::new(self.product()?))
                 }
                 Some(Kind::Minus) => {
+                    self.charge_infix()?;
                     self.expect(Kind::Minus)?;
                     Expr::Subtract(Box::new(lhs), Box::new(self.product()?))
                 }
@@ -461,13 +481,31 @@ impl Parser {
     fn product(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.primary()?;
         while self.peek() == Some(Kind::Star) {
+            self.charge_infix()?;
             self.expect(Kind::Star)?;
             lhs = Expr::Multiply(Box::new(lhs), Box::new(self.primary()?));
         }
         Ok(lhs)
     }
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        if self.primary_depth >= MAX_PRIMARY_DEPTH {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "resource_limit",
+                message: "primary expression depth exceeds prototype limit".into(),
+            });
+        }
+        self.primary_depth += 1;
+        let result = self.primary_inner();
+        self.primary_depth -= 1;
+        result
+    }
+    fn primary_inner(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
+            Some(Kind::Plus) => {
+                self.expect(Kind::Plus)?;
+                self.primary()
+            }
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
                 let integer =
