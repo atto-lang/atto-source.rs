@@ -1,4 +1,6 @@
-// PREVIEW ONLY: illustrative proposal, not pinned-compiler support — masks, shifts, and flags.
+// expect-exit: 188
+// java: rejects
+// Executable integer masks, shifts, and flags in this compiler profile.
 pub fnc main(): int {
   val flags: int = 0b101100;
   val masked = flags & 0b001100;
