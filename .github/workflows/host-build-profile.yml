@@ -1,0 +1,30 @@
+name: Host compiler development profile
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/bench-host-build.sh'
+      - '.github/workflows/host-build-profile.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify revision and compare development builds
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD 'HEAD^{tree}'
+          bash scripts/bench-host-build.sh
