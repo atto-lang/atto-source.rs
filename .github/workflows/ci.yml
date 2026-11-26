@@ -177,4 +177,4 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git rev-parse HEAD^{tree}
           rustup toolchain install stable --profile minimal
-          cargo +stable test --locked --manifest-path native/Cargo.toml --test platform_core_v1 --test atto_scalar_java_llvm_v1 --test strict_aot_negative_cli --test declarative_exports
+          cargo +stable test --locked --manifest-path native/Cargo.toml --test platform_core_v1 --test atto_scalar_java_llvm_v1 --test strict_aot_negative_cli --test declarative_exports --test checked_i64_ref_layout --test checked_i64_interprocedural

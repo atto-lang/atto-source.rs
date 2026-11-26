@@ -16,8 +16,16 @@ pub mod tiering;
 /// No safety/effect certificate is emitted: those IR schemas cannot yet
 /// express the new conditional integer-overflow failure edges.
 pub fn compile_checked_i64(source: &str) -> Result<Vec<u8>, String> {
+    compile_checked_i64_with_ref_layout(source, ref_layout::ManagedRefLayout::default())
+}
+
+/// Explicit layout selection preserves the same checked arithmetic and admission.
+pub fn compile_checked_i64_with_ref_layout(
+    source: &str,
+    managed_refs: ref_layout::ManagedRefLayout,
+) -> Result<Vec<u8>, String> {
     let ast = frontend::parse(source).map_err(|e| e.to_string())?;
-    let module = mir::lower(ast).map_err(|e| e.to_string())?;
+    let module = mir::lower_with_ref_layout(ast, managed_refs).map_err(|e| e.to_string())?;
     // Reuse the bounded traversal guard only; its v1 facts do not model
     // checked overflow edges and must not be published as a certificate.
     let _ = effects::export_effect_ir_checked(&module)?;

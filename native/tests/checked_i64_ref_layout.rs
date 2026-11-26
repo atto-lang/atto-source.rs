@@ -64,8 +64,8 @@ fn run_guest(source: &str, layout: ManagedRefLayout) -> ExitStatus {
 
 #[test]
 fn checked_i64_native_and_compressed_layouts_keep_real_traps() {
-    let ordinary = include_str!("fixtures/checked_i64_v1/signed.atto");
-    let overflow = include_str!("fixtures/checked_i64_v1/dynamic-add.atto");
+    let ordinary = include_str!("../../tests/fixtures/checked_i64_v1/signed.atto");
+    let overflow = include_str!("../../tests/fixtures/checked_i64_v1/dynamic-add.atto");
     for layout in [
         ManagedRefLayout::native(),
         ManagedRefLayout::default(),
