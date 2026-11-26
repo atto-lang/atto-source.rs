@@ -22,7 +22,7 @@ fn execute(source: &str, expected: &str) {
         if(guest.exports.main()!==BigInt(process.argv[1]))throw Error('wrong result');
         if(guest.exports.panic_code.value!==0)throw Error('guest panic');
     "#;
-    let mut child=Command::new("node").args(["-e",script,expected])
+    let mut child=Command::new("node").args(["-e",script,"--",expected])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn().expect("Node is required for guest execution");
     child.stdin.take().unwrap().write_all(&bytes).unwrap();
