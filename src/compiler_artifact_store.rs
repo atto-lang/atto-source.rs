@@ -65,14 +65,14 @@ impl ArtifactStore {
             Ok(file)=>file,Err(e) if e.kind()==io::ErrorKind::NotFound=>return Ok(None),Err(e)=>return Err(e)
         };
         let meta=pinned.metadata()?;
-        if !meta.is_file()||meta.nlink()!=1||meta.len()>(receipt::HEADER+receipt::MAX_ARTIFACT) as u64{
+        if !meta.is_file()||meta.nlink()!=1||meta.uid()!=unsafe{geteuid()}||meta.mode()&0o077!=0||meta.len()>(receipt::HEADER+receipt::MAX_ARTIFACT) as u64{
             return Err(invalid("not a bounded regular cache file"));
         }
         // Host must provide a trusted Linux /proc mount. Reopen the pinned
         // inode, not its replaceable name, and verify identity on the new FD.
         let file=File::open(format!("/proc/self/fd/{}",pinned.as_raw_fd()))?;
         let opened=file.metadata()?;
-        if !opened.is_file()||opened.dev()!=meta.dev()||opened.ino()!=meta.ino(){
+        if !opened.is_file()||opened.dev()!=meta.dev()||opened.ino()!=meta.ino()||opened.uid()!=unsafe{geteuid()}||opened.mode()&0o077!=0{
             return Err(invalid("cache descriptor identity changed"));
         }
         let mut bytes=Vec::new();
@@ -180,6 +180,21 @@ mod tests {
         File::create(&path).unwrap().set_len((receipt::HEADER+receipt::MAX_ARTIFACT+1) as u64).unwrap();
         assert!(store.load(&KEY,&SECRET).is_err());
         println!("CACHE_STORE_RUST|symlink|hardlink|directory|fifo|oversized-rejected");
+    }
+    #[test]
+    fn authenticated_slot_requires_owner_only_permissions(){
+        use std::os::unix::fs::PermissionsExt;
+        let t=Temp::new();let store=ArtifactStore::open(&t.0).unwrap();
+        let data=receipt::seal(&KEY,PAYLOAD,&SECRET).unwrap();
+        store.publish(&KEY,&data,&SECRET).unwrap();
+        let path=t.0.join(slot(&KEY));
+        for mode in [0o644,0o660,0o604] {
+            fs::set_permissions(&path,fs::Permissions::from_mode(mode)).unwrap();
+            assert!(store.load(&KEY,&SECRET).is_err(),"admitted mode {mode:o}");
+        }
+        fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(store.load(&KEY,&SECRET).unwrap().unwrap(),PAYLOAD);
+        println!("CACHE_STORE_RUST|authenticated-but-public-mode-rejected");
     }
     #[test]
     fn root_swap_and_writer_lock(){
