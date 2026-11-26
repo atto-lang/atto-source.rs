@@ -10,13 +10,13 @@ pub(crate) fn unsupported() -> Diagnostic {
 }
 type R<T> = Result<T, Diagnostic>;
 fn scalar(t: Type) -> bool { matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) }
-fn expr(e: &TE) -> R<String> {
+fn expr(e: &TE, recursive: &[bool]) -> R<String> {
     if !scalar(e.ty) { return Err(unsupported()); }
     Ok(match &e.e {
         TExpr::I64(n) => format!("({n}n)"),
         TExpr::F64(n) => if n.is_nan() { "NaN".into() } else if *n == f64::INFINITY { "Infinity".into() } else if *n == f64::NEG_INFINITY { "(-Infinity)".into() } else { format!("({n:?})") },
-        TExpr::IntToFloat(a) => format!("Number({})", expr(a)?),
-        TExpr::FNeg(a) => format!("(-({}))", expr(a)?),
+        TExpr::IntToFloat(a) => format!("Number({})", expr(a, recursive)?),
+        TExpr::FNeg(a) => format!("(-({}))", expr(a, recursive)?),
         TExpr::Bool(b) => if *b { "1".into() } else { "0".into() },
         TExpr::StrConst(offset, len) => format!("pack({offset},{len})"),
         TExpr::Str(op, a, arg) => {
@@ -25,19 +25,19 @@ fn expr(e: &TE) -> R<String> {
                 StrOp::EndsWith => "str_ends", StrOp::Contains => "str_contains",
                 StrOp::Trim => "str_trim", StrOp::Concat => "str_concat", StrOp::Cmp => "str_cmp",
             };
-            let lhs = expr(a)?;
-            match arg { Some(b) => format!("{name}({lhs},{})", expr(b)?), None => format!("{name}({lhs})") }
+            let lhs = expr(a, recursive)?;
+            match arg { Some(b) => format!("{name}({lhs},{})", expr(b, recursive)?), None => format!("{name}({lhs})") }
         }
         TExpr::PrintStrVal { value, newline, .. } => {
-            let call = format!("print_value({})", expr(value)?);
+            let call = format!("print_value({})", expr(value, recursive)?);
             if *newline { format!("({call},host_print_newline())") } else { call }
         }
         TExpr::Local(i) => format!("l{i}"),
-        TExpr::Neg(a) => format!("checked(-({}))", expr(a)?),
-        TExpr::Not(a) => format!("Number(!({}))", expr(a)?),
+        TExpr::Neg(a) => format!("checked(-({}))", expr(a, recursive)?),
+        TExpr::Not(a) => format!("Number(!({}))", expr(a, recursive)?),
         TExpr::Bin(op, a, b) => {
-            let l = expr(a)?;
-            let r = expr(b)?;
+            let l = expr(a, recursive)?;
+            let r = expr(b, recursive)?;
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => {
                     let op = match op { BinOp::Add => "+", BinOp::Sub => "-", _ => "*" };
@@ -64,16 +64,18 @@ fn expr(e: &TE) -> R<String> {
                 BinOp::Div => return Err(unsupported()),
             }
         }
-        TExpr::Ternary(c, a, b) => format!("(({})?({}):({}))", expr(c)?, expr(a)?, expr(b)?),
-        TExpr::Call(i, args) => format!("f{i}({})",
-            args.iter().map(expr).collect::<R<Vec<_>>>()?.join(",")),
+        TExpr::Ternary(c, a, b) => format!("(({})?({}):({}))", expr(c, recursive)?, expr(a, recursive)?, expr(b, recursive)?),
+        TExpr::Call(i, args) => {
+            let prefix = if *recursive.get(*i as usize).ok_or_else(unsupported)? { "r" } else { "f" };
+            format!("{prefix}{i}({})", args.iter().map(|arg| expr(arg, recursive)).collect::<R<Vec<_>>>()?.join(","))
+        }
         TExpr::Builtin(op, a, b) => {
             let op = match op { Builtin::And => "&", Builtin::Or => "|", Builtin::Xor => "^" };
-            format!("(({}){op}({}))", expr(a)?, expr(b)?)
+            format!("(({}){op}({}))", expr(a, recursive)?, expr(b, recursive)?)
         }
         TExpr::Print { value, newline } => {
             let name = match value.ty { Type::Int => "print_i64", Type::Bool => "print_bool", Type::Float => "print_f64", _ => return Err(unsupported()) };
-            let call = format!("host_{name}({})", expr(value)?);
+            let call = format!("host_{name}({})", expr(value, recursive)?);
             if *newline { format!("({call},host_print_newline())") } else { call }
         }
         TExpr::PrintStr { offset, len, newline } => {
@@ -84,41 +86,41 @@ fn expr(e: &TE) -> R<String> {
     })
 }
 
-fn stmts(body: &[TStmt], out: &mut String, void_main: bool, loops: &mut Vec<usize>, next: &mut usize) -> R<()> {
+fn stmts(body: &[TStmt], out: &mut String, void_main: bool, loops: &mut Vec<usize>, next: &mut usize, recursive: &[bool]) -> R<()> {
     use std::fmt::Write;
     for s in body {
         match s {
-            TStmt::Set(i, v) => writeln!(out, "l{i}={};", expr(v)?).unwrap(),
-            TStmt::Expr(e) => writeln!(out, "{};", expr(e)?).unwrap(),
+            TStmt::Set(i, v) => writeln!(out, "l{i}={};", expr(v, recursive)?).unwrap(),
+            TStmt::Expr(e) => writeln!(out, "{};", expr(e, recursive)?).unwrap(),
             TStmt::Return(v) => {
-                let value = match v { Some(e) => expr(e)?, None if void_main => "0n".into(),
+                let value = match v { Some(e) => expr(e, recursive)?, None if void_main => "0n".into(),
                     None => "undefined".into() };
                 writeln!(out, "return {value};").unwrap();
             }
             TStmt::If(arms, other) => {
                 for (i, (cond, body)) in arms.iter().enumerate() {
                     writeln!(out, "{}if({}){{", if i == 0 { "" } else { "else " }, expr(cond)?).unwrap();
-                    stmts(body, out, void_main, loops, next)?;
+                    stmts(body, out, void_main, loops, next, recursive)?;
                     out.push_str("}\n");
                 }
                 if let Some(body) = other {
                     out.push_str("else{\n");
-                    stmts(body, out, void_main, loops, next)?;
+                    stmts(body, out, void_main, loops, next, recursive)?;
                     out.push_str("}\n");
                 }
             }
             TStmt::Loop { cond, body, update } => {
                 let id = *next;
                 *next += 1;
-                let cond = match cond { Some(c) => expr(c)?, None => "1".into() };
+                let cond = match cond { Some(c) => expr(c, recursive)?, None => "1".into() };
                 writeln!(out, "loop{id}:while({cond}){{body{id}:{{").unwrap();
                 loops.push(id);
-                stmts(body, out, void_main, loops, next)?;
+                stmts(body, out, void_main, loops, next, recursive)?;
                 loops.pop();
                 out.push_str("}\n");
                 // A source continue leaves the body block and executes the update.
                 // Update expressions cannot acquire a new break/continue target.
-                stmts(update, out, void_main, &mut Vec::new(), next)?;
+                stmts(update, out, void_main, &mut Vec::new(), next, recursive)?;
                 out.push_str("}\n");
             }
             TStmt::Break | TStmt::Continue => {
@@ -130,7 +132,7 @@ fn stmts(body: &[TStmt], out: &mut String, void_main: bool, loops: &mut Vec<usiz
             TStmt::Unreachable => out.push_str("throw new WebAssembly.RuntimeError('unreachable');\n"),
             TStmt::Block(body) => {
                 out.push_str("{\n");
-                stmts(body, out, void_main, loops, next)?;
+                stmts(body, out, void_main, loops, next, recursive)?;
                 out.push_str("}\n");
             }
             _ => return Err(unsupported()),
@@ -182,6 +184,40 @@ function print_value(a){host_print_str(ptr(a),len(a))}
 "#);
         }
     }
+    // Match Wasm's recursive-edge accounting, not total native call depth.
+    let n = p.funcs.len();
+    let adj: Vec<Vec<usize>> = p.funcs.iter().map(|f| {
+        let edges = std::cell::RefCell::new(Vec::new());
+        crate::check::any_in_stmts(&f.body, &|e| {
+            if let TExpr::Call(target, _) = &e.e { edges.borrow_mut().push(*target as usize); }
+            false
+        });
+        let mut edges = edges.into_inner();
+        edges.sort_unstable();
+        edges.dedup();
+        edges
+    }).collect();
+    if adj.iter().flatten().any(|&v| v >= n) { return Err(unsupported()); }
+    let reach: Vec<Vec<bool>> = (0..n).map(|u| {
+        let mut seen = vec![false; n];
+        let mut work = adj[u].clone();
+        while let Some(v) = work.pop() {
+            if !seen[v] { seen[v] = true; work.extend(adj[v].iter().copied()); }
+        }
+        seen
+    }).collect();
+    let recursive: Vec<Vec<bool>> = (0..n).map(|u| (0..n).map(|v| reach[v][u] && adj[u].contains(&v)).collect()).collect();
+    if recursive.iter().flatten().any(|&r| r) {
+        out.push_str("let depth=0;\n");
+        for (i, f) in p.funcs.iter().enumerate() {
+            if recursive.iter().any(|row| row[i]) {
+                let args = (0..f.params.len()).map(|j| format!("a{j}")).collect::<Vec<_>>().join(",");
+                // Parameters are evaluated before the edge is charged, as in Wasm.
+                // On terminal trap the quota is retained, not silently reset.
+                writeln!(out, "function r{i}({args}){{if(depth>={}){{panic_code.value=6;throw new Error('E_PANIC:6')}}depth++;const result=f{i}({args});depth--;return result}}", crate::wasm::MAX_CALL_DEPTH).unwrap();
+            }
+        }
+    }
     for (i, f) in p.funcs.iter().enumerate() {
         if !scalar(f.ret) || f.params.iter().chain(&f.locals).any(|t| !matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str)) {
             return Err(unsupported());
@@ -192,7 +228,7 @@ function print_value(a){host_print_str(ptr(a),len(a))}
         for (j, t) in f.locals.iter().enumerate() {
             writeln!(out, "let l{}={};", j+f.params.len(), if matches!(t, Type::Int | Type::Str) { "0n" } else { "0" }).unwrap();
         }
-        stmts(&f.body, &mut out, void_main, &mut Vec::new(), &mut 0)?;
+        stmts(&f.body, &mut out, void_main, &mut Vec::new(), &mut 0, &recursive[i])?;
         if void_main { out.push_str("return 0n;\n"); }
         out.push_str("}\n");
     }
