@@ -1,0 +1,1 @@
+suspends fnc main(): int { val Channel<int> incoming = Channel.new<int>(4); writech incoming, 3; writech incoming, 5; writech incoming, 13; writech incoming, 99; val Array[int] values = await select<int>(3) over when readch incoming: int value -> { return value * 2; } end; if values[0] == 6 && values[1] == 10 && values[2] == 26 then return readch incoming - 57; fi return 0; }

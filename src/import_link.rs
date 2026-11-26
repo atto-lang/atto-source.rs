@@ -333,7 +333,13 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         }
     }
     let mut rewritten_root = Vec::new();
+    // The root header is identity metadata, never an imported binding use.
+    let header_len = if word(root.first(), "use") && word(root.get(1), "namespace") {
+        root.iter().position(|t| t.tok == Tok::Semi)
+            .ok_or_else(|| diagnostic(root[0].pos, "E_SYNTAX", "unterminated namespace header"))? + 1
+    } else { 0 };
     for (i, t) in root.iter().enumerate() {
+        if i < header_len { rewritten_root.push(t.clone()); continue; }
         if let Tok::Ident(name) = &t.tok {
             if let Some(binding) = bound.get(name) {
                 if let Some(export) = &binding.export {
