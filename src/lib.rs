@@ -160,6 +160,33 @@ where F: FnMut(&std::path::Path) -> std::io::Result<String> {
     compile_prelexed(tokens, Some(logical_path))
 }
 
+// Only select the typed lane for a file-leading sequence of dimension/unit
+// declarations followed by a scalar refinement alias. In particular, do not
+// revive the retired closed-expression evaluator, scan inside function bodies,
+// or hijack arbitrary type declarations. This is a routing predicate, not
+// semantic admission: verified_quantities validates every declaration and body.
+fn typed_quantity_header(tokens: &[lexer::Token]) -> bool {
+    use lexer::Tok;
+    let word = |i: usize, s: &str| tokens.get(i)
+        .is_some_and(|t| matches!(&t.tok, Tok::Ident(n) if n == s));
+    let mut i = 0;
+    while word(i, "define") && (word(i + 1, "dimension") || word(i + 1, "unit")) {
+        i += 2;
+        while let Some(t) = tokens.get(i) {
+            if t.tok == Tok::Semi { break; }
+            if matches!(t.tok, Tok::Eof | Tok::LBrace | Tok::RBrace) { return false; }
+            i += 1;
+        }
+        if !tokens.get(i).is_some_and(|t| t.tok == Tok::Semi) { return false; }
+        i += 1;
+    }
+    word(i, "type") &&
+        tokens.get(i + 1).is_some_and(|t| matches!(&t.tok, Tok::Ident(_))) &&
+        tokens.get(i + 2).is_some_and(|t| t.tok == Tok::Assign) &&
+        (word(i + 3, "int") || word(i + 3, "i64") || word(i + 3, "i32")) &&
+        word(i + 4, "where")
+}
+
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
@@ -170,9 +197,10 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
         ));
     }
     let tokens = lexer::lex(source)?;
-    // Admit only the bounded, explicitly contracted private scalar header.
-    // The existing lowerer checks the entire file; errors never fall back.
-    if verified_quantities::scalar_contract_header(&tokens) {
+    // Admit bounded typed quantity/refinement sources and explicitly
+    // contracted private scalar headers. The typed lowerer checks the entire
+    // file; errors never fall back to the ordinary parser or host evaluation.
+    if verified_quantities::scalar_contract_header(&tokens) || typed_quantity_header(&tokens) {
         let pos = tokens[0].pos;
         match verified_quantities::lower(source, &tokens)? {
             Some(verified_quantities::Lowered::Typed(program)) => {
