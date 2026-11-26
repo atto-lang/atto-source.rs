@@ -553,10 +553,22 @@ fnc __plan_snapshot(int p): int {
   return copy;
 }
 
-suspends fnc __plan_wait_opt(int p, int fair): int {
+// Same-generation pending snapshots must scan from the last committed live
+// cursor, not from their creation-time cursor. An older generation retains
+// its captured descriptor order and must never overwrite a new generation.
+suspends fnc __plan_wait_opt(int p, int snapshot, int generation, int fair): int {
   loop do
-    val got = __plan_try(p, fair);
-    if got != 0 then return got; fi
+    if fair != 0 then
+      if __load(p, 24) == generation then
+        __store(snapshot, 16, __load(p, 16));
+      fi
+    fi
+    val got = __plan_try(snapshot, fair);
+    if got != 0 then
+      // Publish FAIR credit in the same non-suspending turn as the read.
+      __plan_commit_snapshot(p, generation, fair, got);
+      return got;
+    fi
     __suspend();
   done
 }
@@ -580,8 +592,7 @@ fnc __plan_commit_snapshot(int p, int generation, int fair, int option): void {
 suspends fnc __plan_wait(int p, int fair): int {
   val generation = __load(p, 24);
   val snapshot = __plan_snapshot(p);
-  val result = await __plan_wait_opt(snapshot, fair);
-  __plan_commit_snapshot(p, generation, fair, result);
+  val result = await __plan_wait_opt(p, snapshot, generation, fair);
   return __load(result, 0);
 }
 
@@ -589,8 +600,7 @@ fnc __plan_nb(int p, int fair): int {
   val generation = __load(p, 24);
   val snapshot = __plan_snapshot(p);
   return task {
-    val answer = await __plan_wait_opt(snapshot, fair);
-    __plan_commit_snapshot(p, generation, fair, answer);
+    val answer = await __plan_wait_opt(p, snapshot, generation, fair);
     return answer;
   };
 }
