@@ -1,6 +1,6 @@
 //! Validated scalar MIR. This is intentionally an Oreslang IR, not Cranelift IR.
 use crate::{
-    frontend::{Expr, Program},
+    frontend::{Export, ExportScope, Expr, Program},
     ref_layout::ManagedRefLayout,
 };
 use std::collections::{HashMap, HashSet};
@@ -10,6 +10,7 @@ use std::fmt;
 pub struct Module {
     pub functions: Vec<Function>,
     pub managed_refs: ManagedRefLayout,
+    pub exports: Vec<Export>,
 }
 #[derive(Clone, Debug)]
 pub struct Function {
@@ -135,6 +136,19 @@ pub fn lower_with_ref_layout(
             ));
         }
     }
+    let mut export_names = HashSet::new();
+    for export in &program.exports {
+        if !export_names.insert(export.name.as_str()) {
+            return Err(failure("duplicate_export", "duplicate MIR export"));
+        }
+        let function = program.functions.iter().find(|f| f.name == export.name)
+            .ok_or_else(|| failure("export_unresolved", "MIR export must name a local function"))?;
+        if (export.scope == ExportScope::Public && !function.exported)
+            || (export.scope == ExportScope::Package && (function.exported || function.name == "main"))
+        {
+            return Err(failure("export_visibility_conflict", "inconsistent MIR export linkage"));
+        }
+    }
     let mut functions = Vec::with_capacity(program.functions.len());
     for function in program.functions {
         let mut vars = HashSet::new();
@@ -169,6 +183,7 @@ pub fn lower_with_ref_layout(
     Ok(Module {
         functions,
         managed_refs,
+        exports: program.exports,
     })
 }
 #[cfg(test)]

@@ -6,52 +6,52 @@ fn positives() -> [(&'static str, &'static str, i64); 10] {
     [
         (
             "canonical-add",
-            include_str!("../contracts/atto-scalar-v1/positive/canonical-add.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/canonical-add.atto"),
             42,
         ),
         (
             "precedence",
-            include_str!("../contracts/atto-scalar-v1/positive/precedence.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/precedence.atto"),
             14,
         ),
         (
             "parentheses",
-            include_str!("../contracts/atto-scalar-v1/positive/parentheses.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/parentheses.atto"),
             20,
         ),
         (
             "signed-minimum",
-            include_str!("../contracts/atto-scalar-v1/positive/signed-minimum.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/signed-minimum.atto"),
             i64::MIN,
         ),
         (
             "signed-max-minus-one",
-            include_str!("../contracts/atto-scalar-v1/positive/signed-max-minus-one.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/signed-max-minus-one.atto"),
             i64::MAX - 1,
         ),
         (
             "type-first-readonly",
-            include_str!("../contracts/atto-scalar-v1/positive/type-first-readonly.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/type-first-readonly.atto"),
             42,
         ),
         (
             "typed-const-readonly",
-            include_str!("../contracts/atto-scalar-v1/positive/typed-const-readonly.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/typed-const-readonly.atto"),
             42,
         ),
         (
             "inferred-const-readonly",
-            include_str!("../contracts/atto-scalar-v1/positive/inferred-const-readonly.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/inferred-const-readonly.atto"),
             42,
         ),
         (
             "pure-call",
-            include_str!("../contracts/atto-scalar-v1/positive/pure-call.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/pure-call.atto"),
             42,
         ),
         (
             "type-first-parameter",
-            include_str!("../contracts/atto-scalar-v1/positive/type-first-parameter.atto"),
+            include_str!("../../contracts/atto-scalar-v1/positive/type-first-parameter.atto"),
             42,
         ),
     ]
@@ -61,27 +61,27 @@ fn negatives() -> [(&'static str, &'static str, &'static str); 5] {
     [
         (
             "type-first-reassignment",
-            include_str!("../contracts/atto-scalar-v1/negative/type-first-reassignment.atto"),
+            include_str!("../../contracts/atto-scalar-v1/negative/type-first-reassignment.atto"),
             "immutable_binding",
         ),
         (
             "typed-const-reassignment",
-            include_str!("../contracts/atto-scalar-v1/negative/typed-const-reassignment.atto"),
+            include_str!("../../contracts/atto-scalar-v1/negative/typed-const-reassignment.atto"),
             "immutable_binding",
         ),
         (
             "removed-modulo",
-            include_str!("../contracts/atto-scalar-v1/negative/removed-modulo.atto"),
+            include_str!("../../contracts/atto-scalar-v1/negative/removed-modulo.atto"),
             "removed_operator",
         ),
         (
             "removed-caret",
-            include_str!("../contracts/atto-scalar-v1/negative/removed-caret.atto"),
+            include_str!("../../contracts/atto-scalar-v1/negative/removed-caret.atto"),
             "removed_operator",
         ),
         (
             "removed-double-caret",
-            include_str!("../contracts/atto-scalar-v1/negative/removed-double-caret.atto"),
+            include_str!("../../contracts/atto-scalar-v1/negative/removed-double-caret.atto"),
             "removed_operator",
         ),
     ]
@@ -109,7 +109,7 @@ fn canonical_sources_keep_exact_java_llvm_git_blob_ids() {
         ("negative/removed-double-caret.atto", "7ee99948018e927cce74c9ad0edc1975e4251689"),
     ] {
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("contracts/atto-scalar-v1")
+            .join("../contracts/atto-scalar-v1")
             .join(path);
         let hash = std::process::Command::new("git")
             .arg("hash-object")

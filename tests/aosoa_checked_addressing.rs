@@ -1,4 +1,4 @@
-use oreslang_source_rs::ref_layout::{
+use atto_compiler::ref_layout::{
     aosoa_field_offset, checked_aosoa_field_span, RefError,
 };
 

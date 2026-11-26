@@ -76,3 +76,35 @@ fn filesystem_package_resolver_injects_builtin_without_disk_shadow() {
     assert_eq!(pkg, compile(ENTRY).expect("same canonical source graph"));
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn checked_alignment_executes_actual_wasm_and_rejects_boundaries() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let source = r#"
+import module aligned from "atto.alloc/aligned";
+pub fnc main(): int {
+    if aligned.align_up(13, 8) != 16 then return 1; fi
+    if aligned.align_up(16, 8) != 16 then return 2; fi
+    if aligned.align_up(2147483647, 8) != -1 then return 3; fi
+    if aligned.align_up(-1, 8) != -1 then return 4; fi
+    if aligned.align_up(13, 0) != -1 then return 5; fi
+    if aligned.align_up(13, 3) != -1 then return 6; fi
+    if aligned.padding_for(2147483647, 65536) != 1 then return 7; fi
+    if aligned.pages_for(2147483647, 1) != 2147483647 then return 8; fi
+    if aligned.pages_for(2147483647, 65536) != 32768 then return 9; fi
+    if aligned.pages_for(0, 8) != 0 then return 10; fi
+    if aligned.pages_for(13, 8) != 2 then return 11; fi
+    if aligned.pages_for(13, 3) != -1 then return 12; fi
+    return 42;
+}
+"#;
+    let bytes = compile(source).expect("checked alignment guest must compile");
+    let script = "const fs=require('node:fs'); WebAssembly.instantiate(fs.readFileSync(0),{}).then(({instance})=>{if(instance.exports.main()!==42n || (instance.exports.panic_code && instance.exports.panic_code.value!==0))throw Error('alignment guest mismatch');}).catch(e=>{console.error(e);process.exitCode=1;});";
+    let mut child = Command::new("node").arg("-e").arg(script)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("Node required for actual guest");
+    child.stdin.take().unwrap().write_all(&bytes).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
