@@ -783,6 +783,87 @@ impl Parser {
         Ok(out)
     }
 
+    /// A deliberately bounded straight-line scalar constructor proof. Do not
+    /// certify arbitrary calls, control flow or effects until the value ABI
+    /// and full ownership checker can establish those contracts.
+    fn prove_struct_constructor(
+        fields: &[(String, Type)], params: &[Param], body: &[Stmt], pos: Pos,
+    ) -> R<()> {
+        use std::collections::{BTreeMap, BTreeSet};
+        fn scalar(
+            e: &Expr, fields: &BTreeMap<&str, Type>, params: &BTreeMap<&str, Type>,
+            initialized: &BTreeSet<&str>,
+        ) -> R<Type> {
+            let invalid = || Diagnostic::new(e.pos, "E_STRUCT_INIT",
+                "constructor expression is not a proven initialized scalar");
+            match &e.kind {
+                ExprKind::Int(_) => Ok(Type::Int),
+                ExprKind::Bool(_) => Ok(Type::Bool),
+                ExprKind::Var(n) => params.get(n.as_str()).copied().ok_or_else(invalid),
+                ExprKind::Member(base, n) if matches!(&base.kind, ExprKind::SelfRef) => {
+                    if !initialized.contains(n.as_str()) {
+                        return Err(Diagnostic::new(e.pos, "E_STRUCT_INIT",
+                            "read of an uninitialized struct field"));
+                    }
+                    fields.get(n.as_str()).copied().ok_or_else(invalid)
+                }
+                ExprKind::Unary(op, inner) => {
+                    let t = scalar(inner, fields, params, initialized)?;
+                    match (op, t) {
+                        (UnOp::Neg | UnOp::Plus | UnOp::BitNot, Type::Int) => Ok(Type::Int),
+                        (UnOp::Not, Type::Bool) => Ok(Type::Bool),
+                        _ => Err(invalid()),
+                    }
+                }
+                ExprKind::Binary(op, l, r) => {
+                    let l = scalar(l, fields, params, initialized)?;
+                    let r = scalar(r, fields, params, initialized)?;
+                    match (op, l, r) {
+                        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
+                         BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                         BinOp::Shl | BinOp::LShr | BinOp::AShr, Type::Int, Type::Int) => Ok(Type::Int),
+                        (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, Type::Int, Type::Int) => Ok(Type::Bool),
+                        (BinOp::Eq | BinOp::Ne, Type::Int, Type::Int) |
+                        (BinOp::Eq | BinOp::Ne | BinOp::And | BinOp::Or, Type::Bool, Type::Bool) => Ok(Type::Bool),
+                        _ => Err(invalid()),
+                    }
+                }
+                ExprKind::Ternary(cond, yes, no) => {
+                    let c = scalar(cond, fields, params, initialized)?;
+                    let y = scalar(yes, fields, params, initialized)?;
+                    let n = scalar(no, fields, params, initialized)?;
+                    if c == Type::Bool && y == n { Ok(y) } else { Err(invalid()) }
+                }
+                _ => Err(invalid()),
+            }
+        }
+        let field_types: BTreeMap<&str, Type> = fields.iter().map(|(n,t)| (n.as_str(), *t)).collect();
+        let param_types: BTreeMap<&str, Type> = params.iter().map(|p| (p.name.as_str(), p.ty)).collect();
+        let mut initialized = BTreeSet::new();
+        for stmt in body {
+            match stmt {
+                Stmt::FieldAssign { target, field, value, pos: at }
+                    if matches!(&target.kind, ExprKind::SelfRef) => {
+                    let expected = field_types.get(field.as_str()).copied().ok_or_else(||
+                        Diagnostic::new(*at, "E_STRUCT_INIT", "unknown struct field"))?;
+                    if initialized.contains(field.as_str()) {
+                        return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "struct field initialized twice"));
+                    }
+                    let actual = scalar(value, &field_types, &param_types, &initialized)?;
+                    if actual != expected {
+                        return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "struct field initializer type mismatch"));
+                    }
+                    initialized.insert(field.as_str());
+                }
+                _ => return Err(unsupported(pos, "non-straight-line attached struct constructor proof")),
+            }
+        }
+        if initialized.len() != fields.len() {
+            return Err(Diagnostic::new(pos, "E_STRUCT_INIT", "constructor leaves required fields uninitialized"));
+        }
+        Ok(())
+    }
+
     fn parse_struct_attachment_member(&mut self, out: &mut StructWithTarget) -> R<()> {
         let pos = self.pos();
         if out.methods.len() + out.constructors.len() >= MAX_MEMBERS {
@@ -802,6 +883,7 @@ impl Parser {
                 return Err(Diagnostic::new(pos, "E_DUPLICATE", "duplicate struct constructor signature"));
             }
             let body = self.parse_block()?;
+            Self::prove_struct_constructor(&out.fields, &params, &body, pos)?;
             out.constructors.push((public, Constructor { pos, params, body }));
         } else if self.eat_word("mtd") {
             let CallableHeader { name, pos, params, ret, infer, return_first, colon_type, .. } =
