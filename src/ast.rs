@@ -533,7 +533,7 @@ pub enum ExprKind {
     /// Compiler-recognized immutable by-value projection from an explicit
     /// `handle_state(critical-read |s| -> s.field)` scope. Never ordinary
     /// class member access: the checker must prove a protected state lease.
-    StateRead(String),
+    StateRead(StateProjection),
     /// `new Class(args)`
     New(String, Vec<Expr>),
     /// `spawn Actor()`
@@ -557,4 +557,12 @@ pub enum ExprKind {
 pub struct Expr {
     pub kind: ExprKind,
     pub pos: Pos,
+}
+
+/// State reads can materialize one owned scalar or a compiler-generated
+/// scalar tuple. Every field is captured under one immutable lease.
+#[derive(Clone, Debug)]
+pub enum StateProjection {
+    Scalar(String),
+    Tuple { class: String, fields: Vec<String> },
 }
