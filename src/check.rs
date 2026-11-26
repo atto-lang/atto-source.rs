@@ -1882,10 +1882,10 @@ fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) ->
                     ctor_init_stmts(stmts, &mut nested, fields, true).map(|_| ()),
             }
         }
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
-        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
         ExprKind::StateWriteValue(..) => Err(Diagnostic::new(e.pos, "E_STATE_BORROW",
             "write callback cannot initialize a constructor field")),
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
         ExprKind::StateRead(_) | ExprKind::Spawn(_) => Ok(()),
     }
 }
