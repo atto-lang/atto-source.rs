@@ -7,7 +7,8 @@
 // address the bump heap.
 //
 // Runtime root slots (`__rt`): 1 current task, 2 first task, 3 last task,
-// 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes.
+// 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes,
+// 9 admitted live plan invocations (guest-wide, including unawaited Futures).
 //
 // Task record (80 bytes): 0 done, 8 value, 16 status (0 new, 1 suspended,
 // 2 finished), 24 entry closure, 32 frame-stack base, 40 saved frame-stack
@@ -213,6 +214,12 @@ fnc __sched(int main): int {
     fi
   done
   if __load(main, 0) == 0 then
+    __panic(6);
+  fi
+  // A bound-but-abandoned pending selection is not successful termination.
+  // v2 cannot yet cancel and settle it recoverably. Fail closed at quiescence.
+  if __rt(9) != 0 then
+    __span_cancel_all();
     __panic(6);
   fi
   return __load(main, 8);
@@ -611,12 +618,15 @@ fnc __plan_snapshot(int p): int {
   // Independent pending-operation quota; no effect on an immediate probe.
   val active = __load(p, 2112);
   if active >= 256 then __panic(10); fi
+  val guest_active = __rt(9);
+  if guest_active >= 256 then __panic(10); fi
   if __load(p, 8) == 0 then __panic(10); fi
   __plan_preflight(p);
   val cached = __load(p, 2120);
   if cached != 0 then
     __store(cached, 32, __load(cached, 32) + 1);
     __store(p, 2112, active + 1);
+    __set_rt(9, guest_active + 1);
     return cached;
   fi
   let copy = __load(p, 2096);
@@ -628,6 +638,7 @@ fnc __plan_snapshot(int p): int {
   val cell = __load(p, 40);
   __store(cell, 8, __load(cell, 8) + 1);
   __store(p, 2112, active + 1);
+  __set_rt(9, guest_active + 1);
   let i = 0;
   while i < 48 do
     __store(copy, i, __load(p, i));
@@ -650,8 +661,11 @@ fnc __plan_snapshot(int p): int {
 fnc __plan_retire_snapshot(int p, int snapshot): void {
   val active = __load(p, 2112);
   if active <= 0 then __panic(10); fi
+  val guest_active = __rt(9);
+  if guest_active <= 0 then __panic(10); fi
   __plan_release_descriptors(p, snapshot);
   __store(p, 2112, active - 1);
+  __set_rt(9, guest_active - 1);
 }
 
 // Each invocation pins descriptors plus the shared generation FAIR cell.
