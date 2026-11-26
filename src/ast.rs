@@ -36,6 +36,8 @@ pub enum Type {
     /// Other generic instantiations reject without emitting an artifact.
     OptionInt,
     ResultIntStr,
+    /// Result<int,int>: integer error codes (core/result v1).
+    ResultIntInt,
     /// First nested ADT profile: Some(Result<int,string>) or None.
     /// Generic ADT instantiations remain deliberately restricted.
     OptionResultIntStr,
@@ -55,6 +57,7 @@ impl Type {
             Type::Str => "string",
             Type::OptionInt => "Option<int>",
             Type::ResultIntStr => "Result<int,string>",
+            Type::ResultIntInt => "Result<int,int>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
             Type::Callable(_) => "fnc(...)->...",
@@ -328,6 +331,13 @@ pub enum Stmt {
     /// Escalated failure (`raise Error(..)`): bypasses ordinary `catch`
     /// and `trap`; only a registered `recover` or the root boundary sees it.
     Raise(Expr, Pos),
+    /// Compiler-owned synchronous telemetry scope with an opaque lexical alias.
+    UsingTelemetry {
+        operation: String,
+        alias: String,
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
     /// `try { } [catch (Error e) { }] [finally { }]` (defer-recover-unwind-v1).
     Try {
         body: Vec<Stmt>,

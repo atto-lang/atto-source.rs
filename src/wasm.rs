@@ -93,7 +93,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -692,6 +692,15 @@ impl Emit<'_> {
                 self.code.extend_from_slice(&x.to_le_bytes());
             }
             TExpr::StrConst(offset, len) => self.i64c(((*offset as i64) << 32) | *len as i64),
+            TExpr::TraceSpanBegin { offset, len } => {
+                self.i32c(*offset as i32);
+                self.i32c(*len as i32);
+                self.call(self.l.import(Import::TraceSpanBegin));
+            }
+            TExpr::TraceSpanEnd { token } => {
+                self.get(*token);
+                self.call(self.l.import(Import::TraceSpanEnd));
+            }
             TExpr::IntToFloat(a) => {
                 self.expr(a);
                 self.op(0xB9); // f64.convert_i64_s
@@ -907,9 +916,17 @@ impl Emit<'_> {
                 self.i32c(*success_tag as i32);
                 self.op(0x47); // i32.ne: failure
                 self.open(0x04, 0x40, Frame::Other); // if (void)
-                self.op(0x20);
-                uleb(&mut self.code, *tmp as u64);
-                self.op(0x0F); // return original Err/None tagged pointer
+                self.get(*tmp); // return the original Err/None tagged pointer
+                if let Some((ret, ..)) = self.uw {
+                    self.set(ret.expect("ADT propagation has a return slot"));
+                    for handle in self.active_iterators.clone().into_iter().rev() {
+                        self.get(handle);
+                        self.call(self.l.func(self.l.gen_first_func + 3));
+                    }
+                    self.return_path(); // scoped finally/defer must run before '?'
+                } else {
+                    self.op(0x0F);
+                }
                 self.close();
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
@@ -1466,6 +1483,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::StateRegister => Sig(vec![I32], vec![]),
             Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
             Import::StateLeave => Sig(vec![I64], vec![]),
+            Import::TraceSpanBegin => Sig(vec![I32, I32], vec![I64]),
+            Import::TraceSpanEnd => Sig(vec![I64], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());

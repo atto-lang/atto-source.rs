@@ -1,0 +1,18 @@
+// Candidate namespace actor guest; run only with namespace-aware linker.
+// TARGET_NOT_EXECUTED; do not count as a generic unlinked pass fixture.
+// expect-exit: 0
+// expect-stdout: 42
+use namespace std.actors.example;
+
+define actor Echo as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value + 2);
+    return;
+  }
+end
+
+pub fnc main(): int {
+  val actor = spawn Echo();
+  actor.send(40);
+  return 0;
+}

@@ -17,7 +17,7 @@ pub(super) fn stmt_mentions(stmt: &Stmt, target: &str, fuel: &mut usize) -> bool
     match stmt {
         Stmt::Bind { init, .. } => expr_mentions(init, target, fuel),
         Stmt::Assign { name, value, .. } => name == target || expr_mentions(value, target, fuel),
-        Stmt::StateWrite { body, .. } | Stmt::Block(body) | Stmt::Loop { body, .. } => {
+        Stmt::StateWrite { body, .. } | Stmt::UsingTelemetry { body, .. } | Stmt::Block(body) | Stmt::Loop { body, .. } => {
             body.iter().any(|s| stmt_mentions(s, target, fuel))
         }
         Stmt::FieldAssign {
@@ -120,7 +120,8 @@ fn expr_mentions(expr: &Expr, target: &str, fuel: &mut usize) -> bool {
                 || expr_mentions(b, target, fuel)
                 || expr_mentions(c, target, fuel)
         }
-        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
+        ExprKind::Call(name, args) => name == target || args.iter().any(|e| expr_mentions(e, target, fuel)),
+        ExprKind::New(_, args) | ExprKind::Array(args) => {
             args.iter().any(|e| expr_mentions(e, target, fuel))
         }
         ExprKind::MethodCall(receiver, _, args) => {
@@ -184,5 +185,19 @@ mod tests {
         };
         let mut fuel = 8;
         assert!(!stmt_mentions(&Stmt::Expr(literal), "reader", &mut fuel));
+    }
+}
+
+#[cfg(test)]
+mod additional_liveness_tests {
+    use super::*;
+    use crate::diag::Pos;
+    #[test]
+    fn callable_name_and_telemetry_body_are_possible_uses() {
+        let pos = Pos::default();
+        let call = Expr { kind: ExprKind::Call("reader".into(), vec![]), pos };
+        assert!(stmt_mentions(&Stmt::Expr(call.clone()), "reader", &mut 32));
+        let scope = Stmt::UsingTelemetry { operation: "span".into(), alias: "span".into(), body: vec![Stmt::Expr(call)], pos };
+        assert!(stmt_mentions(&scope, "reader", &mut 32));
     }
 }

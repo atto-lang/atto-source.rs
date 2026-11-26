@@ -1,0 +1,7 @@
+// Expected: runtime failure on the read after logical_clear closed the owner.
+import module secure from "atto.alloc/secure";
+pub fnc main(): int {
+  let mut b = secure.scrub_buffer(4);
+  if !b.append(19) || !b.logical_clear(); do return 1; fi
+  return b.read_at(0);
+}

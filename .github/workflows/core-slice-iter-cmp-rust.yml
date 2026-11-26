@@ -1,0 +1,37 @@
+name: Rust Atto scalar slice/iter/cmp compiler admission
+on:
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'tests/core_slice_iter_cmp_package.rs'
+      - '.github/workflows/core-slice-iter-cmp-rust.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linked-compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact HEAD and clean checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet
+          git diff --cached --quiet
+          test -z "$(git ls-files --others --exclude-standard)"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile real linked scalar core modules and negative paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --test core_slice_iter_cmp_package -- --nocapture
+          cargo test --locked --test core_namespace_import -- --nocapture
+          echo "ATTO_CORE_SIC_COMPILER_OUTPUT=WASM_EMITTED;GUEST_EXECUTION=NOT_EXECUTED"

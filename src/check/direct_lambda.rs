@@ -260,6 +260,13 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
         }
         Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
             "direct lambda rewriting cannot cross a protected state loan")),
+        Stmt::UsingTelemetry { alias, body, pos, .. } => {
+            if *alias == d.source {
+                return Err(error(*pos, "E_TELEMETRY_ALIAS",
+                    "span alias cannot shadow a direct lambda"));
+            }
+            rewrite_statements(body, d)
+        }
         Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
             rewrite_expr(e, d),
         Stmt::Try { body, catch, finally, .. } => {
@@ -463,6 +470,7 @@ fn stmt_pos(s: &Stmt) -> Pos {
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
         Stmt::Raise(_, pos) | Stmt::Try { pos, .. } | Stmt::Defer { pos, .. } | Stmt::Recover { pos, .. } |
+        Stmt::UsingTelemetry { pos, .. } |
         Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) |
         Stmt::Return(_, pos) | Stmt::Break(pos) |
         Stmt::Continue(pos) => *pos,
