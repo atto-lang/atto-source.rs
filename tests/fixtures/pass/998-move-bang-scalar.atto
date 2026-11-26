@@ -1,0 +1,2 @@
+// expect-exit: 42
+pub fnc main(): int { val x = 42; val y = move! x; return y; }
