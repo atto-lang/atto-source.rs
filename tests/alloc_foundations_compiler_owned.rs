@@ -91,6 +91,11 @@ pub fnc main(): int {
     if aligned.align_up(13, 0) != -1 then return 5; fi
     if aligned.align_up(13, 3) != -1 then return 6; fi
     if aligned.padding_for(2147483647, 65536) != 1 then return 7; fi
+    if aligned.pages_for(2147483647, 1) != 2147483647 then return 8; fi
+    if aligned.pages_for(2147483647, 65536) != 32768 then return 9; fi
+    if aligned.pages_for(0, 8) != 0 then return 10; fi
+    if aligned.pages_for(13, 8) != 2 then return 11; fi
+    if aligned.pages_for(13, 3) != -1 then return 12; fi
     return 42;
 }
 "#;
