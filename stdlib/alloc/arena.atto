@@ -20,7 +20,14 @@ define module arena as
     end
   }
   pub fnc remaining(int used, int capacity): int {
-    if used >= capacity then return 0; fi
+    if used < 0 || capacity < 0 do
+      return 0;
+    fi
+
+    if used >= capacity do
+      return 0;
+    fi
+
     return capacity - used;
   }
   pub fnc reset(): int { return 0; }

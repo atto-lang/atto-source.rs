@@ -2404,8 +2404,10 @@ impl Parser {
                         && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
                         Some((BinOp::BitOr, 2))
                     } else if *self.peek_at(1) == Tok::Caret
-                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
-                        Some((BinOp::BitXor, 2))
+                        && *self.peek_at(2) == Tok::Caret
+                        && *self.peek_at(3) == Tok::Assign
+                        && self.joined_at(1) && self.joined_at(2) {
+                        Some((BinOp::BitXor, 3))
                     } else if self.triple_at(1, &Tok::Lt) && *self.peek_at(4) == Tok::Assign
                         && self.joined_at(3) {
                         Some((BinOp::Shl, 4))
@@ -3441,6 +3443,11 @@ impl Parser {
         let mut links = 0;
         while *self.peek() == Tok::Caret {
             let pos = self.pos();
+            if *self.peek_at(1) != Tok::Caret || !self.joined_at(0) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "single infix caret is invalid; use adjacent ^^ for integer XOR"));
+            }
+            self.advance();
             self.advance();
             self.grow(1)?;
             links += 1;
