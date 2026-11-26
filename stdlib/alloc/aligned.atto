@@ -17,7 +17,8 @@ define pub module aligned as
        !valid_alignment(alignment); do
       return -1;
     fi
-    val int residue = address % alignment;
+    // Valid alignment is a positive power of two, so the mask is exact.
+    val int residue = address & (alignment - 1);
     if residue == 0; do
       return 0;
     fi
