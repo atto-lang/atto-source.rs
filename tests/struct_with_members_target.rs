@@ -43,7 +43,7 @@ fn invalid_headers_and_duplicates_reject() {
         GROUPED.replace("int <- product()", "int <- sum()"),
         GROUPED.replace("int y;", "int x;"),
         GROUPED.replace("constructor(int x, int y)", "print(42); constructor(int x, int y)"),
-        GROUPED.replace("} with {", "} with { } with {").replace("with { } with", "with { } with"),
+        GROUPED.replace("} with {", "} with { } with {"),
     ] {
         assert!(Parser::new(lex(&source).unwrap()).parse_struct_with_target().is_err());
     }
