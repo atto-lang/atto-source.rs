@@ -152,3 +152,21 @@ fnc dead_private(): int { return 9; }\n",
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn package_visibility_cannot_hide_an_implicit_native_entry_point() {
+    let source = "export pub[pkg] fnc main; fnc main(): int { return 42; }";
+    assert_eq!(parse(source).unwrap_err().class, "export_visibility_conflict");
+    assert!(oreslang_source_rs::compile(source).is_err());
+}
+
+#[test]
+fn export_requires_a_semicolon_and_cannot_export_an_imported_kind() {
+    for source in [
+        "export pub fnc helper fnc helper(): int { return 42; }",
+        "export pub actor helper; fnc helper(): int { return 42; }",
+        "export pub module helper; fnc helper(): int { return 42; }",
+    ] {
+        assert!(oreslang_source_rs::compile(source).is_err(), "{source}");
+    }
+}
