@@ -9,19 +9,54 @@ use crate::lexer::Tok;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Range { lo: i64, hi: i64 }
+struct Range { lo: i64, hi: i64, holes: u8 }
 impl Range {
-    const FULL: Self = Self { lo: i64::MIN, hi: i64::MAX };
-    fn exact(v: i64) -> Self { Self { lo: v, hi: v } }
-    fn contains(self, other: Self) -> bool { self.lo <= other.lo && other.hi <= self.hi }
+    const ZERO: u8 = 1;
+    const NEG_ONE: u8 = 2;
+    const FULL: Self = Self::new(i64::MIN, i64::MAX);
+    const fn new(lo: i64, hi: i64) -> Self { Self {lo,hi,holes:0} }
+    fn exact(v: i64) -> Self { Self::new(v,v) }
+    fn bit(v: i64) -> u8 { match v { 0 => Self::ZERO, -1 => Self::NEG_ONE, _ => 0 } }
+    fn has(self, v: i64) -> bool { self.lo <= v && v <= self.hi && self.holes & Self::bit(v) == 0 }
+    fn contains(self, other: Self) -> bool {
+        self.lo <= other.lo && other.hi <= self.hi &&
+        (self.holes & Self::ZERO == 0 || !other.has(0)) &&
+        (self.holes & Self::NEG_ONE == 0 || !other.has(-1))
+    }
+    fn normalized(mut self) -> Option<Self> {
+        if self.lo > self.hi { return None; }
+        while self.holes & Self::bit(self.lo) != 0 {
+            self.lo = self.lo.checked_add(1)?;
+        }
+        while self.holes & Self::bit(self.hi) != 0 {
+            self.hi = self.hi.checked_sub(1)?;
+        }
+        if self.lo > self.hi { return None; }
+        // Canonicalize redundant exclusions outside the interval.
+        if self.lo > 0 || self.hi < 0 { self.holes &= !Self::ZERO; }
+        if self.lo > -1 || self.hi < -1 { self.holes &= !Self::NEG_ONE; }
+        Some(self)
+    }
     fn intersect(self, other: Self) -> Option<Self> {
-        let r = Self { lo: self.lo.max(other.lo), hi: self.hi.min(other.hi) };
-        (r.lo <= r.hi).then_some(r)
+        Self {lo:self.lo.max(other.lo),hi:self.hi.min(other.hi),holes:self.holes|other.holes}.normalized()
+    }
+    fn exclude(self, n: i64) -> Option<Self> {
+        if !self.has(n) { return Some(self); }
+        if n == self.lo { return self.lo.checked_add(1).and_then(|lo| Self {lo,..self}.normalized()); }
+        if n == self.hi { return self.hi.checked_sub(1).and_then(|hi| Self {hi,..self}.normalized()); }
+        Self {holes:self.holes|Self::bit(n),..self}.normalized()
+    }
+    fn join(self, other: Self) -> Self {
+        let mut r=Self::new(self.lo.min(other.lo),self.hi.max(other.hi));
+        for n in [0,-1] {
+            if !self.has(n) && !other.has(n) { r.holes |= Self::bit(n); }
+        }
+        r.normalized().expect("union of nonempty ranges")
     }
     fn normal_bounds(lo: i128, hi: i128) -> Self {
         let lo = lo.max(i64::MIN as i128);
         let hi = hi.min(i64::MAX as i128);
-        if lo > hi { Self::FULL } else { Self { lo: lo as i64, hi: hi as i64 } }
+        if lo > hi { Self::FULL } else { Self::new(lo as i64, hi as i64) }
     }
     // Unlike normal-result bounds, this proves every operand pair succeeds.
     // i128 exactly represents products of two signed i64 values.
@@ -35,8 +70,7 @@ impl Range {
                 let v = [a*c,a*d,b*c,b*d];
                 fits(*v.iter().min().unwrap(),*v.iter().max().unwrap())
             }
-            BinOp::Div => (c > 0 || d < 0) &&
-                !(self.lo == i64::MIN && c <= -1 && d >= -1),
+            BinOp::Div => !other.has(0) && !(self.has(i64::MIN) && other.has(-1)),
             _ => false,
         }
     }
@@ -131,12 +165,12 @@ fn read_predicate(p: &mut Parser<'_>) -> R<Range> {
     p.at += 1;
     let n = signed_bound(p)?;
     let r = match op {
-        Tok::Lt => n.checked_sub(1).map(|hi| Range { lo: i64::MIN, hi }),
-        Tok::Gt => n.checked_add(1).map(|lo| Range { lo, hi: i64::MAX }),
-        Tok::Le => Some(Range { lo: i64::MIN, hi: n }),
-        Tok::Ge => Some(Range { lo: n, hi: i64::MAX }),
-        Tok::Ident(nm) if nm == "lte" => Some(Range { lo: i64::MIN, hi: n }),
-        Tok::Ident(nm) if nm == "gte" => Some(Range { lo: n, hi: i64::MAX }),
+        Tok::Lt => n.checked_sub(1).map(|hi| Range::new(i64::MIN,hi)),
+        Tok::Gt => n.checked_add(1).map(|lo| Range::new(lo,i64::MAX)),
+        Tok::Le => Some(Range::new(i64::MIN,n)),
+        Tok::Ge => Some(Range::new(n,i64::MAX)),
+        Tok::Ident(nm) if nm == "lte" => Some(Range::new(i64::MIN,n)),
+        Tok::Ident(nm) if nm == "gte" => Some(Range::new(n,i64::MAX)),
         _ => Some(Range::exact(n)),
     };
     r.ok_or_else(|| p.err("E_REFINEMENT_EMPTY", "empty refinement"))
@@ -313,7 +347,7 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                 let a = yes.get(name).expect("incoming local").1.range;
                 let b = no.get(name).expect("incoming local").1.range;
                 fact.range = if ar { b } else if br { a }
-                    else { Range { lo: a.lo.min(b.lo), hi: a.hi.max(b.hi) } };
+                    else { a.join(b) };
             }
             body.push(TStmt::If(vec![(cond, a)], Some(b)));
             returned = ar && br;
@@ -365,18 +399,15 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     Ok((body, returned))
 }
 
-// A single local compared with a signed integer literal. Interior != holes
-// are not represented by one interval, so retain the conservative hull.
-// Empty intersections are deliberately not used to certify unreachable code.
+// No unreachable-path proof: contradictory restrictions retain incoming facts.
 fn restrict(r: Range, op: BinOp, n: i64) -> Range {
+    if op == BinOp::Ne { return r.exclude(n).unwrap_or(r); }
     let candidate = match op {
-        BinOp::Lt => n.checked_sub(1).map(|hi| Range { lo:i64::MIN, hi }),
-        BinOp::Le => Some(Range {lo:i64::MIN,hi:n}),
-        BinOp::Gt => n.checked_add(1).map(|lo| Range {lo,hi:i64::MAX}),
-        BinOp::Ge => Some(Range {lo:n,hi:i64::MAX}),
+        BinOp::Lt => n.checked_sub(1).map(|hi| Range::new(i64::MIN,hi)),
+        BinOp::Le => Some(Range::new(i64::MIN,n)),
+        BinOp::Gt => n.checked_add(1).map(|lo| Range::new(lo,i64::MAX)),
+        BinOp::Ge => Some(Range::new(n,i64::MAX)),
         BinOp::Eq => Some(Range::exact(n)),
-        BinOp::Ne if n == r.lo => n.checked_add(1).map(|lo| Range {lo,hi:r.hi}),
-        BinOp::Ne if n == r.hi => n.checked_sub(1).map(|hi| Range {lo:r.lo,hi}),
         _ => Some(r),
     };
     candidate.and_then(|x|r.intersect(x)).unwrap_or(r)
@@ -555,7 +586,7 @@ mod strict_tests {
         samples.extend([i64::MAX-2,i64::MAX-1,i64::MAX]);
         for (i,lo) in samples.iter().enumerate() {
             for hi in &samples[i..] {
-                let r=Range{lo:*lo,hi:*hi};
+                let r=Range::new(*lo,*hi);
                 for n in &samples {
                     for (op,inv) in [(BinOp::Lt,BinOp::Ge),(BinOp::Le,BinOp::Gt),
                         (BinOp::Gt,BinOp::Le),(BinOp::Ge,BinOp::Lt),
@@ -580,7 +611,7 @@ mod strict_tests {
     fn interval_admission_matches_exhaustive_small_domain() {
         for a in -8i64..=7 { for b in a..=7 {
             for c in -8i64..=7 { for d in c..=7 {
-                let l=Range { lo:a, hi:b }; let r=Range {lo:c,hi:d};
+                let l=Range::new(a,b); let r=Range::new(c,d);
                 for op in [BinOp::Add,BinOp::Sub,BinOp::Mul,BinOp::Div] {
                     let all=(a..=b).all(|x| (c..=d).all(|y| match op {
                         BinOp::Add => x.checked_add(y).is_some(),
@@ -599,7 +630,7 @@ mod strict_tests {
         let mut ranges = Vec::new();
         for start in [i64::MIN,-3,0,i64::MAX-3] {
             for lo in 0..=3 { for hi in lo..=3 {
-                ranges.push(Range { lo: start+lo, hi: start+hi });
+                ranges.push(Range::new(start+lo,start+hi));
             }}
         }
         for l in &ranges { for r in &ranges {
@@ -628,6 +659,6 @@ mod strict_tests {
         assert!(!Range::FULL.proves_binary(neg,BinOp::Div));
         assert!(Range::FULL.proves_binary(one,BinOp::Div));
         assert!(Range::FULL.proves_binary(zero,BinOp::Mul));
-        assert!(!Range{lo:i64::MAX-1,hi:i64::MAX}.proves_binary(one,BinOp::Add));
+        assert!(!Range::new(i64::MAX-1,i64::MAX).proves_binary(one,BinOp::Add));
     }
 }
