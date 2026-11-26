@@ -1,7 +1,7 @@
 // Exact-compiler executable Wasm guest tests for the bounded relative-file
 // literal constant import subset. Requires a built attoc; no mocked compiler.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -9,21 +9,22 @@ import { spawnSync } from 'node:child_process';
 const compiler = resolve(process.env.ATTOC || 'target/release/attoc');
 const dir = mkdtempSync(join(tmpdir(), 'atto-const-import-'));
 
-function compile(main, provider) {
-  writeFileSync(join(dir, 'main.atto'), main);
-  writeFileSync(join(dir, 'config.atto'), provider);
+function compile(main, provider, folder = '') {
+  mkdirSync(join(dir, folder), { recursive: true });
+  writeFileSync(join(dir, folder, 'main.atto'), main);
+  writeFileSync(join(dir, folder, 'config.atto'), provider);
   const output = join(dir, 'compiled.wasm');
   // Ensure a failed build cannot be mistaken for a prior successful artifact.
   rmSync(output, { force: true });
-  const result = spawnSync(compiler, ['main.atto', '-o', output], {
+  const result = spawnSync(compiler, [join(folder, 'main.atto'), '-o', output], {
     cwd: dir, encoding: 'utf8', timeout: 30000,
     env: { ...process.env, status_valid: 'unexpected-build-env' },
   });
   return { result, output };
 }
 
-function guest(main, provider, expected) {
-  const { result, output } = compile(main, provider);
+function guest(main, provider, expected, folder = '') {
+  const { result, output } = compile(main, provider, folder);
   assert.equal(result.status, 0, result.stderr);
   assert.ok(existsSync(output), 'compiler must create actual guest artifact');
   const wasm = readFileSync(output);
@@ -48,7 +49,9 @@ try {
   const provider = 'define pub const int status_valid = 200;';
   // The compiler, not the literal linker, owns the namespace identity.
   guest('use namespace project.main; ' + main, provider, 200);
-  guest('use default namespace; ' + main, provider, 200);
+  guest('use default namespace; ' + main, provider, 200, 'project');
+  // A derived namespace requires a real logical source directory.
+  rejected('use default namespace; ' + main, provider, 'E_NAMESPACE_DEPTH');
   const first = guest(main, provider, 200);
   const second = guest(main, provider, 200);
   assert.deepEqual(first, second, 'identical source must emit byte-identical Wasm');
