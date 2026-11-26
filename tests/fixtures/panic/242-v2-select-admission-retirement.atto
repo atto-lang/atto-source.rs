@@ -1,0 +1,11 @@
+// expect-panic: 10
+// expect-plan-pending: 0
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  val DynamicSelectPlan<int> plan = DynamicSelectPlan<int>.from_list([SelectCase.read(ch)]);
+  val Future<SelectResult> pending = select fair from plan;
+  val bool removed = plan.remove(0);
+  val Future<SelectResult> invalid = select fair from plan;
+  val SelectResult result = await invalid;
+  return result.value;
+}
