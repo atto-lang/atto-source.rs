@@ -137,6 +137,16 @@ fn callable_body(
 /// Build a structural, *nonexecutable* unsafe syntax tree and validate the
 /// narrow lexical obligation for direct locally declared unsafe calls.
 pub fn analyze(tokens: &[Token]) -> Result<UnsafeSyntaxTree, Diagnostic> {
+    analyze_impl(tokens, true)
+}
+
+/// Structural syntax/budget preflight only. The production analysis parser
+/// checks lexical context on the actual AST, not token-distance heuristics.
+pub(crate) fn analyze_structure(tokens: &[Token]) -> Result<UnsafeSyntaxTree, Diagnostic> {
+    analyze_impl(tokens, false)
+}
+
+fn analyze_impl(tokens: &[Token], check_direct_calls: bool) -> Result<UnsafeSyntaxTree, Diagnostic> {
     let unsafe_at: Vec<usize> = tokens.iter().enumerate()
         .filter_map(|(i, t)| word(t, "unsafe").then_some(i))
         .collect();
@@ -202,6 +212,8 @@ pub fn analyze(tokens: &[Token]) -> Result<UnsafeSyntaxTree, Diagnostic> {
                 "unsafe must precede a braced block or a named fnc/routine declaration")),
         }
     }
+
+    if !check_direct_calls { return Ok(out); }
 
     // A direct unsafe call must be inside a lexically enclosing unsafe block.
     // Signatures, method calls and dynamically dispatched/inlined calls need
