@@ -59,6 +59,16 @@ pub suspends fnc main(): int {
   writech new_a, 7;
   writech new_b, 9;
   val Option<SelectResult> fresh = try select fair from retired;
+  // Reuse the current cached descriptor after one invocation retires.
+  // The second current-channel message must remain ready and win next.
+  val SelectResult follow = select fair from retired;
+  if follow.index != 1 then return 4; fi
+  if follow.value != 9 then return 5; fi
+  // A structural mutation must invalidate the cache even without waiters.
+  retired.put(0, SelectCase.read(old_a));
+  val SelectResult recycled = select first from retired;
+  if recycled.index != 0 then return 6; fi
+  if recycled.value != 99 then return 7; fi
   return prior + x.unwrap().value + y.unwrap().value - 42
     + x.unwrap().index + y.unwrap().index - 1 + fresh.unwrap().value - 7;
 }
