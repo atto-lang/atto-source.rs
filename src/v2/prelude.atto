@@ -8,7 +8,8 @@
 //
 // Runtime root slots (`__rt`): 1 current task, 2 first task, 3 last task,
 // 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes,
-// 9 admitted live plan invocations (guest-wide, including unawaited Futures).
+// 9 admitted live plan invocations (guest-wide, including unawaited Futures),
+// 10 free frame-stack blocks (each 4096 bytes).
 //
 // Task record (80 bytes): 0 done, 8 value, 16 status (0 new, 1 suspended,
 // 2 finished), 24 entry closure, 32 frame-stack base, 40 saved frame-stack
@@ -111,10 +112,38 @@ suspends fnc __await(int f): int {
 
 // ------------------------------------------------------------------- tasks
 
+// Only physical frame storage is recycled. The task's Future identity and
+// settled result remain at their original addresses for repeated await.
+fnc __task_acquire_stack(): int {
+  val free = __rt(10);
+  if free == 0 then return __alloc(4096); fi
+  __set_rt(10, __load(free, 0));
+  __store(free, 0, 0);
+  return free;
+}
+
+fnc __task_release_stack(int t): void {
+  val base = __load(t, 32);
+  if base == 0 then __panic(10); fi
+  // Reclaim only after the native guest call has fully returned. No saved
+  // frames or local references may remain in a recycled stack block.
+  let offset = 0;
+  while offset < 4096 do
+    __store(base, offset, 0);
+    offset = offset + 8;
+  done
+  __store(t, 32, 0);
+  __store(t, 40, 0);
+  __set_fsp(0);
+  __set_fend(0);
+  __store(base, 0, __rt(10));
+  __set_rt(10, base);
+}
+
 fnc __task_spawn(int clo): int {
   val t = __alloc(80);
   __store(t, 24, clo);
-  __store(t, 32, __alloc(4096));
+  __store(t, 32, __task_acquire_stack());
   if __rt(2) == 0 then
     __set_rt(2, t);
   else
@@ -143,11 +172,22 @@ fnc __resume(int t): void {
     __store(t, 40, __fsp());
     __store(t, 16, 1);
   else
+    // A finished call must have retired all lexical span guards. Do not
+    // unlink an unfinished cleanup or recycle its frame storage.
+    if __load(t, 72) != 0 then
+      __span_cancel_all();
+      __panic(12);
+    fi
+    __task_release_stack(t);
+    __store(t, 24, 0);
+    __store(t, 56, 0);
+    __store(t, 64, 0);
     __store(t, 16, 2);
     __store(t, 8, r);
     __store(t, 0, 1);
     __set_rt(4, 1);
   fi
+  __set_rt(1, 0);
 }
 
 // Cooperative round-robin scheduler. Each round resumes every unfinished,
@@ -159,13 +199,28 @@ fnc __sched(int main): int {
   loop do
     __set_rt(4, 0);
     let t = __rt(2);
+    let previous = 0;
     while t != 0 do
       if __load(t, 16) != 2 then
         if __load(t, 56) <= __rt(5) then
           __resume(t);
         fi
       fi
-      t = __load(t, 48);
+      // Read next AFTER resume: a running tail task may have appended
+      // another task. Unlink the settled record without dropping its Future.
+      val next_task = __load(t, 48);
+      if __load(t, 16) == 2 then
+        if previous == 0 then
+          __set_rt(2, next_task);
+        else
+          __store(previous, 48, next_task);
+        fi
+        if __rt(3) == t then __set_rt(3, previous); fi
+        __store(t, 48, 0);
+      else
+        previous = t;
+      fi
+      t = next_task;
     done
     if __rt(4) == 0 then
       let wake = 0;
