@@ -313,7 +313,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // Permit the exact stdio.out << value statement form to lower through
     // that existing checked path. All other channels, streams, read
     // directions and select registrations fail closed until implemented.
-    for io in io_shorthand::inspect(&toks)? {
+    for io in io_shorthand::inspect_for_compiler(&toks)? {
         if io.source_or_sink == "stdio.out"
             && io.direction == io_shorthand::Direction::Write
             && io.context == io_shorthand::Context::Standalone
