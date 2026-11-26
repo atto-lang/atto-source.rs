@@ -107,3 +107,40 @@ fn genuine_top_level_function_export_resolves_without_host_function_leak() {
     assert!(wasm.windows(b"atto.visibility.profile.v1".len())
         .any(|w| w == b"atto.visibility.profile.v1"));
 }
+
+#[test]
+fn identical_exports_are_idempotent_in_both_orders() {
+    use atto_compiler::{lexer::lex, visibility_lower::lower};
+    for directives in [
+        "export pub get_value; export pub fnc get_value;",
+        "export pub fnc get_value; export pub get_value;",
+        "export pub fnc get_value; export pub fnc get_value;",
+        "export pub[pkg] fnc get_value; export pub[pkg] get_value;",
+    ] {
+        let src = format!("{directives} fnc get_value(): int {{ return 42; }} pub fnc main(): int {{ return get_value(); }}");
+        let lowered = lower(lex(&src).unwrap()).unwrap();
+        assert_eq!(lowered.exports.len(), 1);
+        assert_eq!(lowered.exports[0].kind, "fnc");
+        ok(&src);
+    }
+    err("export pub fnc get_value; export pub class get_value; fnc get_value(): int { return 42; } pub fnc main(): int { return 0; }", "E_TYPE");
+}
+
+#[test]
+fn erased_internal_marker_cannot_grant_export_authority() {
+    ok("internal fnc helper(): int { return 42; } pub fnc main(): int { return helper(); }");
+    for directive in ["export pub fnc helper;", "export pub[pkg] helper;"] {
+        for forward in [true, false] {
+            let decl = "internal fnc helper(): int { return 42; }";
+            let src = if forward { format!("{directive} {decl}") }
+                else { format!("{decl} {directive}") };
+            err(&format!("{src} pub fnc main(): int {{ return helper(); }}"), "E_VISIBILITY");
+        }
+    }
+    for header in ["pub internal fnc", "internal pub fnc", "pub[pkg] internal fnc"] {
+        err(&format!("{header} helper(): int {{ return 42; }} pub fnc main(): int {{ return 0; }}"), "E_VISIBILITY");
+    }
+    for header in ["pub external fnc", "pub[pkg] external fnc"] {
+        err(&format!("{header} host_clock_ns(): int; pub fnc main(): int {{ return 0; }}"), "E_VISIBILITY");
+    }
+}
