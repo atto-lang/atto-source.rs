@@ -7,6 +7,7 @@ on:
       - 'src/verified_quantity_bindings.rs'
       - 'src/bin/attoc.rs'
       - 'scripts/test-verified-refinement-casts.mjs'
+      - 'scripts/test-strict-browser-abi.mjs'
       - 'src/units.rs'
       - 'src/quantity_scale.rs'
       - 'src/wasm.rs'
@@ -33,7 +34,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED"
           git rev-parse HEAD HEAD^{tree}
       - name: Install pinned Rust
-        run: rustup toolchain install 1.85.1 --profile minimal
+        run: rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
       - name: Focused real compiler tests
         run: |
           cargo +1.85.1 test --locked --lib quantity_scale::tests
@@ -66,3 +67,8 @@ jobs:
           done
       - name: Execute refinement casts and strict verification guests
         run: node scripts/test-verified-refinement-casts.mjs target/debug/attoc
+
+      - name: Verify same-source strict compiler ABI and stale-state rejection
+        run: |
+          cargo +1.85.1 build --locked --release --lib --target wasm32-unknown-unknown
+          node scripts/test-strict-browser-abi.mjs target/wasm32-unknown-unknown/release/atto_compiler.wasm target/debug/attoc
