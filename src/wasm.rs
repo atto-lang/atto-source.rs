@@ -957,6 +957,65 @@ impl Emit<'_> {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, 8, false);
             },
+            TExpr::AdtUnwrap { source, tmp, error_tmp, message_offset, message_len, success_tag } => {
+                self.expr(source);
+                self.set(*tmp);
+                // Invalid discriminants are engine faults, not ordinary errors.
+                self.get(*tmp);
+                field_op(&mut self.code, Type::Bool, 0, false);
+                self.i32c(1);
+                self.op(0x4b); // i32.gt_u
+                self.open(0x04, 0x40, Frame::Other);
+                self.op(0x00); // unreachable
+                self.close();
+                self.get(*tmp);
+                field_op(&mut self.code, Type::Bool, 0, false);
+                self.i32c(*success_tag as i32);
+                self.op(0x47); // i32.ne
+                self.open(0x04, 0x40, Frame::Other);
+                // Preserve the existing Error message ABI (+8). The internal
+                // reserved header distinguishes Option, Result<*,Error> and
+                // Result<*,String>; +16 retains the original closed payload.
+                // This is not yet a public subtype or payload accessor.
+                self.i32c(24);
+                self.call(self.l.helper(H_ALLOC));
+                self.op(0xad);
+                self.set(*error_tmp);
+                self.get(*error_tmp);
+                self.op(0xa7);
+                self.i32c(match source.ty {
+                    Type::OptionInt => 1,
+                    Type::ResultIntError => 2,
+                    Type::ResultIntStr => 3,
+                    _ => unreachable!("unverified checked unwrap type"),
+                });
+                field_op(&mut self.code, Type::Bool, 0, true);
+                self.get(*error_tmp);
+                self.op(0xa7);
+                self.i64c(((*message_offset as i64) << 32) | *message_len as i64);
+                field_op(&mut self.code, Type::Str, 8, true);
+                self.get(*error_tmp);
+                self.op(0xa7);
+                match source.ty {
+                    Type::OptionInt => {
+                        self.i64c(0);
+                        field_op(&mut self.code, Type::Int, 16, true);
+                    }
+                    Type::ResultIntError | Type::ResultIntStr => {
+                        let payload_ty = if source.ty == Type::ResultIntError { Type::Error } else { Type::Str };
+                        self.get(*tmp);
+                        field_op(&mut self.code, payload_ty, 8, false);
+                        field_op(&mut self.code, payload_ty, 16, true);
+                    }
+                    _ => unreachable!("unverified checked unwrap payload"),
+                }
+                self.get(*error_tmp);
+                self.op(0x08); // ordinary guest throw, private tag 0
+                uleb(&mut self.code, 0);
+                self.close();
+                self.get(*tmp);
+                field_op(&mut self.code, Type::Int, 8, false);
+            }
             TExpr::AdtPropagate { source, tmp, success_tag } => {
                 // Source (and all of its effects) is evaluated exactly once.
                 self.expr(source);
