@@ -6,9 +6,13 @@ end
 pub define class Shape as
 end
 
+define pub class CanonicalShape as
+    pub static fnc answer(): int { return 42; }
+end
+
 define actor Worker as
 end
 
 pub fnc main(): int {
-    return 42;
+    return CanonicalShape.answer();
 }

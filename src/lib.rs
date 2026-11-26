@@ -165,8 +165,27 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     compile_prelexed(lexer::lex(source)?, logical_path)
 }
 
-fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
+fn compile_prelexed(mut tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    // Existing nominal and export preflights recognize the legacy prefix.
+    // Normalize only the exact class-header spelling before those passes;
+    // retain lexical positions and leave other declaration kinds untouched.
+    let is_word = |token: &lexer::Token, word: &str| {
+        matches!(&token.tok, lexer::Tok::Ident(value) if value == word)
+    };
+    for i in 0..tokens.len().saturating_sub(2) {
+        if is_word(&tokens[i], "define")
+            && is_word(&tokens[i + 1], "pub")
+            && is_word(&tokens[i + 2], "class")
+        {
+            if i > 0 && is_word(&tokens[i - 1], "pub") {
+                return Err(Diagnostic::new(tokens[i].pos, "E_SYNTAX",
+                    "duplicate public class visibility"));
+            }
+            tokens[i].tok = lexer::Tok::Ident("pub".into());
+            tokens[i + 1].tok = lexer::Tok::Ident("define".into());
+        }
+    }
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.

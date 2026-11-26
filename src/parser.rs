@@ -642,6 +642,20 @@ impl Parser {
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
+            // Canonical class visibility aliases the existing public-class AST.
+            // No new actor, enum or state-container visibility is introduced.
+            if self.word_at(at) == Some("define")
+                && self.word_at(at + 1) == Some("pub")
+                && self.word_at(at + 2) == Some("class")
+            {
+                if public {
+                    return Err(Diagnostic::new(start, "E_SYNTAX",
+                        "duplicate public class visibility"));
+                }
+                self.i += 3;
+                prog.classes.push(self.parse_class(true)?);
+                continue;
+            }
             // Canonical 'define [pub] (persistent | durable) actor'.
             // Also retain legacy 'pub define ...' visibility placement.
             // Never downgrade a qualified actor to ordinary volatile state.
