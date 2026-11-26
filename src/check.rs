@@ -405,6 +405,7 @@ struct ClassInfo {
     name: String,
     /// Distinct protected-state nominal declaration (single Worker-local profile).
     state_container: bool,
+    deep_copy_opt_in: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
@@ -1101,7 +1102,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         // identity-free slots. Class/actor/ADT handles require a graph memo,
         // and protected actor-state objects cannot bypass their sealed leases.
         // Custom copy_deep overrides need separate proof/hook chaining.
-        let can_generate_deep_copy = !c.state_container
+        let can_generate_deep_copy = c.deep_copy_opt_in && !c.state_container
             && !c.methods.iter().any(|m| m.name == "copy_deep")
             && fields.iter().all(|f| matches!(f.ty,
                 Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
@@ -1113,6 +1114,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         classes.push(ClassInfo {
             name: c.name.clone(),
             state_container: c.state_container,
+            deep_copy_opt_in: c.deep_copy_opt_in,
             fields,
             methods,
             new_idx,
@@ -3803,6 +3805,10 @@ impl<'a> FnCx<'a> {
                         if class.methods.iter().any(|m| m.name == "copy_deep") {
                             return Err(Diagnostic::new(pos, "E_COPY_OVERRIDE",
                                 "custom copy_deep overrides need verified complete-plan/hook support"));
+                        }
+                        if !class.deep_copy_opt_in {
+                            return Err(Diagnostic::new(pos, "E_COPY_OPT_IN_REQUIRED",
+                                "copy!! requires explicit DeepCopyable<Self> on the concrete class"));
                         }
                         let Some(copy_idx) = class.deep_copy_idx else {
                             return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
