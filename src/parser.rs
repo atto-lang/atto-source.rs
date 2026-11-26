@@ -221,6 +221,9 @@ pub fn is_unlowered_ownership_intrinsic(name: &str) -> bool {
 }
 
 fn reject_intrinsic_type_name(name: &str, pos: Pos) -> R<()> {
+    if name == "DeepCopyable" {
+        return Err(Diagnostic::new(pos, "E_RESERVED_TYPE", "DeepCopyable is a reserved core copy marker"));
+    }
     if is_unlowered_ownership_intrinsic(name) {
         return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
             format!("ownership or synchronization intrinsic '{name}' is not lowered by this compiler")));
@@ -728,6 +731,19 @@ impl Parser {
                 "Pointer is a compiler-known builtin and may not be defined as a user class",
             ));
         }
+        // Only the reserved core, exact-self marker is admitted in this
+        // flat-class profile. Other nominal composition remains separate.
+        let deep_copy_opt_in = if self.eat_word("implements") {
+            self.expect_word("DeepCopyable")?;
+            self.expect(Tok::Lt, "'<' after DeepCopyable")?;
+            let (target, target_pos) = self.ident("the exact class name")?;
+            if target != name {
+                return Err(Diagnostic::new(target_pos, "E_COPY_OPT_IN_REQUIRED",
+                    "DeepCopyable must name exact concrete self"));
+            }
+            self.expect(Tok::Gt, "'>' after DeepCopyable self")?;
+            true
+        } else { false };
         self.decl_head("class")?;
         self.expect_word("as")?;
         let m = self.parse_members(&name, false, "end")?;
@@ -736,6 +752,7 @@ impl Parser {
             pos,
             public,
             state_container: false,
+            deep_copy_opt_in,
             fields: m.fields,
             ctor: m.ctor,
             methods: m.methods,
@@ -816,7 +833,7 @@ impl Parser {
         if fields.is_empty() {
             return Err(Diagnostic::new(pos, "E_STATE", "protected state requires at least one scalar field"));
         }
-        Ok(ClassDecl { name, pos, public, state_container: true,
+        Ok(ClassDecl { name, pos, public, state_container: true, deep_copy_opt_in: false,
             fields, ctor: None, methods })
     }
 
