@@ -30,7 +30,7 @@ fn close(t: &[Token],open:usize,left:Tok,right:Tok)->R<usize> {
     Err(err(t[open].pos,"E_EOF","unterminated Future signature"))
 }
 #[derive(Debug)]
-struct Receipt {name:String,owned:bool,pos:Pos}
+struct Receipt {name:String,owned:bool}
 fn receipt(t:&[Token],start:usize,end:usize)->R<Option<Receipt>> {
     let mut found=None;
     for i in start..end {
@@ -45,7 +45,7 @@ fn receipt(t:&[Token],start:usize,end:usize)->R<Option<Receipt>> {
             _=>return Err(err(t[i].pos,"E_SYNTAX","Future receipt requires a named parameter"))
         };
         let owned=(start..i).any(|j|word(t,j,"take")&&t.get(j+1).is_some_and(|x|x.tok==Tok::Bang));
-        found=Some(Receipt{name,owned,pos:t[i].pos});
+        found=Some(Receipt{name,owned});
     }
     Ok(found)
 }
