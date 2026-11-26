@@ -400,10 +400,10 @@ check('wasm/name-section-matches-emitted-function-count', () => {
     assert.equal(pos, end, 'name subsection decoded exactly');
     assert.equal(end, bytes.length, 'no unexpected second subsection');
     assert.deepEqual(names.map(([index]) => index), Array.from({length: count}, (_, i) => i));
-    assert.equal(count, WebAssembly.Module.imports(mod).length + 4 + 1,
-      'imports + four checked helpers + main');
-    assert.deepEqual(names.slice(-5).map(([, name]) => name),
-      ['atto.checked_add','atto.checked_sub','atto.checked_mul','atto.checked_neg','main']);
+    assert.equal(count, WebAssembly.Module.imports(mod).length + 5 + 1,
+      'imports + five checked helpers + main');
+    assert.deepEqual(names.slice(-6).map(([, name]) => name),
+      ['atto.checked_add','atto.checked_sub','atto.checked_mul','atto.checked_neg','atto.checked_shift_count','main']);
     assert.ok(!names.some(([, name]) => name === 'atto.checked_rem'),
       'removed remainder helper must not appear in guest debug names');
   }
@@ -425,9 +425,9 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Historical percent remains unsupported in this profile. Single infix
+// caret is rejected; double caret is now the canonical integer XOR.
+for (const op of ['%', '^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
@@ -436,6 +436,48 @@ for (const op of ['%', '^', '^^']) {
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+
+for (const [label, body, expected] of [
+  ['integer-xor', 'return 11 ^^ 4;', 15n],
+  ['caret-return', '^ 42;', 42n],
+  ['caret-return-xor', '^ (12 ^^ 10);', 6n],
+  ['xor-assignment', 'let x: int = 12; x ^^= 10; return x;', 6n],
+]) {
+  check('canonical-caret/'+label, () => {
+    const r = compile('pub fnc main(): int { '+body+' }');
+    assert.ok(r.ok, r.message);
+    assert.equal(runGuest(r.wasm).value, expected);
+  });
+}
+for (const body of ['return true ^^ false;', 'return 12 ^ ^ 10;', 'let x: int = 12; x ^= 10; return x;']) {
+  check('canonical-caret/reject-'+body, () => {
+    const r = compile('pub fnc main(): int { '+body+' }');
+    assert.equal(r.ok, false);
+    assert.equal('wasm' in r, false);
+  });
+}
+
+// Source-level side effects distinguish eager integer XOR from lazy Boolean gates.
+check('canonical-caret/eager-order-vs-lazy-boolean', () => {
+  const r = compile(`
+    fnc left(): int { stdio.println("left"); return 12; }
+    fnc right(): int { stdio.println("right"); return 10; }
+    fnc unexpected(): bool { stdio.println("unexpected"); return true; }
+    pub fnc main(): int {
+      val bits: int = left() ^^ right();
+      val a: bool = false && unexpected();
+      val b: bool = true || unexpected();
+      stdio.println(a);
+      stdio.println(b);
+      ^ bits;
+    }
+  `);
+  assert.ok(r.ok, r.message);
+  const guest = runGuest(r.wasm);
+  assert.equal(guest.ok, true);
+  assert.equal(guest.value, 6n);
+  assert.equal(guest.stdout, ['left', 'right', 'false', 'true', ''].join('\n'));
+});
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {

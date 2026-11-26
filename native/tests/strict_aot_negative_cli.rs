@@ -10,26 +10,26 @@ use std::{collections::BTreeSet, ffi::OsStr, fs, path::{Path, PathBuf},
 enum Stage { Parse, Mir }
 struct Case { name: &'static str, source: &'static str, stage: Stage, class: &'static str }
 const CASES: &[Case] = &[
-    Case { name: "unknown-value.atto", source: include_str!("fixtures/strict_aot_negative/unknown-value.atto"), stage: Stage::Mir, class: "unknown_name" },
-    Case { name: "unknown-callee.atto", source: include_str!("fixtures/strict_aot_negative/unknown-callee.atto"), stage: Stage::Mir, class: "unknown_name" },
-    Case { name: "call-arity.atto", source: include_str!("fixtures/strict_aot_negative/call-arity.atto"), stage: Stage::Mir, class: "call_arity" },
-    Case { name: "duplicate-function.atto", source: include_str!("fixtures/strict_aot_negative/duplicate-function.atto"), stage: Stage::Mir, class: "duplicate_declaration" },
-    Case { name: "duplicate-parameter.atto", source: include_str!("fixtures/strict_aot_negative/duplicate-parameter.atto"), stage: Stage::Mir, class: "duplicate_declaration" },
-    Case { name: "duplicate-local.atto", source: include_str!("fixtures/strict_aot_negative/duplicate-local.atto"), stage: Stage::Mir, class: "duplicate_declaration" },
-    Case { name: "forward-local.atto", source: include_str!("fixtures/strict_aot_negative/forward-local.atto"), stage: Stage::Mir, class: "unknown_name" },
-    Case { name: "dead-unknown-callee.atto", source: include_str!("fixtures/strict_aot_negative/dead-unknown-callee.atto"), stage: Stage::Mir, class: "unknown_name" },
-    Case { name: "overflow-positive.atto", source: include_str!("fixtures/strict_aot_negative/overflow-positive.atto"), stage: Stage::Parse, class: "integer_overflow" },
-    Case { name: "overflow-negative.atto", source: include_str!("fixtures/strict_aot_negative/overflow-negative.atto"), stage: Stage::Parse, class: "integer_overflow" },
-    Case { name: "nested-comment-unclosed.atto", source: include_str!("fixtures/strict_aot_negative/nested-comment-unclosed.atto"), stage: Stage::Parse, class: "unterminated_comment" },
-    Case { name: "invalid-separator.atto", source: include_str!("fixtures/strict_aot_negative/invalid-separator.atto"), stage: Stage::Parse, class: "syntax_error" },
-    Case { name: "percent-operator.atto", source: include_str!("fixtures/strict_aot_negative/percent-operator.atto"), stage: Stage::Parse, class: "syntax_error" },
-    Case { name: "caret-operator.atto", source: include_str!("fixtures/strict_aot_negative/caret-operator.atto"), stage: Stage::Parse, class: "syntax_error" },
-    Case { name: "double-caret-operator.atto", source: include_str!("fixtures/strict_aot_negative/double-caret-operator.atto"), stage: Stage::Parse, class: "syntax_error" },
-    Case { name: "eval-absent.atto", source: include_str!("fixtures/strict_aot_negative/eval-absent.atto"), stage: Stage::Mir, class: "unknown_name" },
-    Case { name: "cpu-block-unlowered.atto", source: include_str!("fixtures/strict_aot_negative/cpu-block-unlowered.atto"), stage: Stage::Parse, class: "execution_domain_unsupported" },
-    Case { name: "gpu-block-unlowered.atto", source: include_str!("fixtures/strict_aot_negative/gpu-block-unlowered.atto"), stage: Stage::Parse, class: "execution_domain_unsupported" },
+    Case { name: "unknown-value.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/unknown-value.atto"), stage: Stage::Mir, class: "unknown_name" },
+    Case { name: "unknown-callee.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/unknown-callee.atto"), stage: Stage::Mir, class: "unknown_name" },
+    Case { name: "call-arity.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/call-arity.atto"), stage: Stage::Mir, class: "call_arity" },
+    Case { name: "duplicate-function.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/duplicate-function.atto"), stage: Stage::Mir, class: "duplicate_declaration" },
+    Case { name: "duplicate-parameter.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/duplicate-parameter.atto"), stage: Stage::Mir, class: "duplicate_declaration" },
+    Case { name: "duplicate-local.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/duplicate-local.atto"), stage: Stage::Mir, class: "duplicate_declaration" },
+    Case { name: "forward-local.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/forward-local.atto"), stage: Stage::Mir, class: "unknown_name" },
+    Case { name: "dead-unknown-callee.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/dead-unknown-callee.atto"), stage: Stage::Mir, class: "unknown_name" },
+    Case { name: "overflow-positive.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/overflow-positive.atto"), stage: Stage::Parse, class: "integer_overflow" },
+    Case { name: "overflow-negative.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/overflow-negative.atto"), stage: Stage::Parse, class: "integer_overflow" },
+    Case { name: "nested-comment-unclosed.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/nested-comment-unclosed.atto"), stage: Stage::Parse, class: "unterminated_comment" },
+    Case { name: "invalid-separator.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/invalid-separator.atto"), stage: Stage::Parse, class: "syntax_error" },
+    Case { name: "percent-operator.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/percent-operator.atto"), stage: Stage::Parse, class: "removed_operator" },
+    Case { name: "caret-operator.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/caret-operator.atto"), stage: Stage::Parse, class: "removed_operator" },
+    Case { name: "double-caret-operator.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/double-caret-operator.atto"), stage: Stage::Parse, class: "removed_operator" },
+    Case { name: "eval-absent.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/eval-absent.atto"), stage: Stage::Mir, class: "unknown_name" },
+    Case { name: "cpu-block-unlowered.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/cpu-block-unlowered.atto"), stage: Stage::Parse, class: "execution_domain_unsupported" },
+    Case { name: "gpu-block-unlowered.atto", source: include_str!("../../tests/fixtures/strict_aot_negative/gpu-block-unlowered.atto"), stage: Stage::Parse, class: "execution_domain_unsupported" },
 ];
-const POSITIVE: &str = include_str!("fixtures/strict_aot_negative/positive-scalar.atto");
+const POSITIVE: &str = include_str!("../../tests/fixtures/strict_aot_negative/positive-scalar.atto");
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 struct Scratch(PathBuf);
 impl Scratch {
@@ -46,7 +46,7 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
 }
-fn repo_root() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf() }
+fn repo_root() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("repository root").to_path_buf() }
 fn fixture_path(name: &str, expected: &str) -> PathBuf {
     assert!(name.ends_with(".atto") && !name.contains('/') && !name.contains('\\'));
     let dir = repo_root().join("tests/fixtures/strict_aot_negative");

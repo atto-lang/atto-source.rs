@@ -1,0 +1,6 @@
+// expect-panic: 8
+// expect-stdout: left
+// expect-stdout: right
+fnc left(): int { stdio.println("left"); return 1; }
+fnc right(): int { stdio.println("right"); return 64; }
+pub fnc main(): int { return left() <<< right(); }

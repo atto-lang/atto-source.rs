@@ -169,6 +169,18 @@ try{
     '}';
   assert.match(await run(trappedPanic, 'E_PANIC'), /E_PANIC: integer overflow/);
   console.log('PASS browser: trap never catches checked arithmetic panic');
+  // Browser-visible checked shift errors are distinct from refinement and
+  // ordinary guest Error; neither trap nor a compound update may mask them.
+  assert.match(await run('pub fnc main(): int { return 1 <<< 64; }', 'E_SHIFT_DISTANCE'), /^E_SHIFT_DISTANCE:/);
+  const badShift = 'fnc distance(): int { stdio.println("distance"); return 64; } pub fnc main(): int { let x: int = 1; x <<<= distance(); return x; }';
+  assert.equal(await run(badShift, 'E_PANIC: invalid shift distance'),
+    ['distance', 'E_PANIC: invalid shift distance'].join('\n'));
+  const trappedShift = 'fnc distance(): int { return -1; } pub fnc main(): int { match trap (1 >>> distance()) over on Some(v) -> { return v; } on None -> { return 99; } end }';
+  assert.equal(await run(trappedShift, 'E_PANIC: invalid shift distance'), 'E_PANIC: invalid shift distance');
+  assert.equal(await run('pub fnc main(): int { return 12 ^^ 10; }', 'main() -> 6'), 'main() -> 6');
+  assert.equal(await run('pub fnc main(): int { return 1 <<< 63; }', 'main() -> -9223372036854775808'), 'main() -> -9223372036854775808');
+  console.log('PASS browser: checked shift diagnostics, compound faults, trap isolation and XOR');
+
 
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: error recovery restores valid execution');

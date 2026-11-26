@@ -87,6 +87,11 @@ jobs:
           ATTOC: target/release/attoc
         run: node --test tests/shared-scalar-v1.test.mjs
 
+      - name: Canonical scalar-v5 native and wasm32 compiled guest parity
+        env:
+          ATTOC: target/release/attoc
+        run: node --test tests/portable-scalar-v4-four-backend.test.mjs
+
       - name: Execute five callable forms and class mtd guest with negative no-artifact proofs
         env:
           ATTOC: target/release/attoc

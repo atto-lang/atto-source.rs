@@ -42,6 +42,8 @@ pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 pub const PANIC_STACK: i32 = 6;
 /// Checked refinement predicate violation in the verified quantity profile.
 pub const PANIC_REFINEMENT: i32 = 7;
+/// Provisional terminal checked-shift fault; distinct from refinement code 7.
+pub const PANIC_SHIFT_DISTANCE: i32 = 8;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -120,10 +122,11 @@ const H_ADD: u32 = 0;
 const H_SUB: u32 = 1;
 const H_MUL: u32 = 2;
 const H_NEG: u32 = 3;
+const H_SHIFT_COUNT: u32 = 4;
 /// present only when the program has classes
-const H_ALLOC: u32 = 4;
+const H_ALLOC: u32 = 5;
 // string helpers, present only when the program has string values; they
-// follow H_ALLOC (or H_NEG) at `Layout::str_base + offset`
+// follow H_ALLOC (or H_SHIFT_COUNT) at `Layout::str_base + offset`
 const S_BYTES_EQ: u32 = 0;
 const S_EQ: u32 = 1;
 const S_STARTS: u32 = 2;
@@ -756,6 +759,9 @@ impl Emit<'_> {
                 // execute in source order even when the left decides truth.
                 self.expr(a);
                 self.expr(b);
+                if matches!(op, BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                    self.call(self.l.helper(H_SHIFT_COUNT));
+                }
                 let int = a.ty == Type::Int;
                 if a.ty == Type::Float {
                     self.op(match op {
@@ -783,7 +789,7 @@ impl Emit<'_> {
                     BinOp::BitAnd => self.op(0x83), // i64.and
                     BinOp::BitOr => self.op(0x84),  // i64.or
                     BinOp::BitXor => self.op(0x85), // i64.xor
-                    BinOp::Shl => self.op(0x86),    // i64.shl (count mod 64)
+                    BinOp::Shl => self.op(0x86),    // i64.shl (prechecked count)
                     BinOp::AShr => self.op(0x87),   // i64.shr_s
                     BinOp::LShr => self.op(0x88),   // i64.shr_u
                     BinOp::And => self.op(0x71), // i32.and
@@ -1201,6 +1207,13 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     panic(&mut c, PANIC_OVERFLOW);
     c.extend_from_slice(&[0x0B, 0x42, 0, 0x20, 0, 0x7D, 0x0B]);
     v.push((Sig(vec![I64], vec![I64]), no_locals.clone(), c));
+
+    // Validate signed counts before Wasm can silently mask them modulo 64.
+    // Unsigned comparison also rejects every negative i64 count.
+    let mut c = vec![0x20, 0, 0x42, 63, 0x56, 0x04, 0x40]; // count >u 63
+    panic(&mut c, PANIC_SHIFT_DISTANCE);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x0B]);
+    v.push((Sig(vec![I64], vec![I64]), no_locals, c));
 
     v
 }
@@ -1798,7 +1811,7 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
 
     // custom "name" section: function names for readable traps and stack traces
     let mut names = Vec::new();
-    let mut helper_names = vec!["atto.checked_add", "atto.checked_sub", "atto.checked_mul", "atto.checked_neg"];
+    let mut helper_names = vec!["atto.checked_add", "atto.checked_sub", "atto.checked_mul", "atto.checked_neg", "atto.checked_shift_count"];
     if p.heap {
         helper_names.push("atto.alloc");
     }

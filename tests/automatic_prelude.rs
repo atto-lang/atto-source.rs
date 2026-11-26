@@ -94,7 +94,12 @@ fn core_ownership_categories_do_not_grant_unimplemented_borrow_lowering() {
     assert!(!prelude::core_sum_carrier("Result", 1));
     assert!(!prelude::core_sum_carrier("Object", 1));
     assert!(prelude::protected_identity("int"));
-    assert!(prelude::protected_identity("From"));
+    // From is catalog-only in this backend, not a reserved lowered identity.
+    assert!(!prelude::protected_identity("From"));
+    assert_eq!(prelude::type_info("From").unwrap().lowering, prelude::LoweringStatus::ContractOnly);
+    for primitive in ["int", "i64", "bool", "float", "string"] {
+        assert!(prelude::protected_identity(primitive), "{primitive}");
+    }
     assert!(prelude::protected_identity("Option"));
     assert!(!prelude::protected_identity("HashMap"));
 }

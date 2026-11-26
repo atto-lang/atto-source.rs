@@ -3771,6 +3771,13 @@ impl<'a> FnCx<'a> {
                 // argument position (see args()). A standalone borrow! must
                 // never become an owned return or a stored carrier handle.
                 let value = self.value(inner)?;
+                // The concrete ADT value-copy lane is restricted to named
+                // owners; a temporary has no admitted lexical loan lifetime.
+                if matches!(value.ty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr)
+                    && !matches!(&inner.kind, ExprKind::Var(_))
+                {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on a concrete ADT requires a named owner"));
+                }
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
                         tr.borrow_escaping(*slot, false, pos);
@@ -4098,6 +4105,22 @@ impl<'a> FnCx<'a> {
                     return Err(type_err(pos, format!(
                         "bitwise operator '{}' requires two int operands, found {} and {}",
                         op.symbol(), self.tn(a.ty), self.tn(b.ty))));
+                }
+                if matches!(op, BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                    // Reject known bad literal counts before publishing a guest.
+                    // Nonliteral distances are checked after both operands execute.
+                    let distance = match &b.e {
+                        TExpr::I64(n) => Some(*n),
+                        TExpr::Neg(inner) => match &inner.e {
+                            TExpr::I64(n) => n.checked_neg(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if distance.is_some_and(|n| !(0..=63).contains(&n)) {
+                        return Err(Diagnostic::new(pos, "E_SHIFT_DISTANCE",
+                            "shift distance must be within 0..63"));
+                    }
                 }
                 return Ok(TE {
                     e: TExpr::Bin(*op, Box::new(a), Box::new(b)),

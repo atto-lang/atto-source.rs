@@ -471,7 +471,7 @@ impl BinOp {
             BinOp::Div => "/",
             BinOp::BitAnd => "&",
             BinOp::BitOr => "|",
-            BinOp::BitXor => "^",
+            BinOp::BitXor => "^^",
             BinOp::Shl => "<<<",
             BinOp::LShr => ">>>",
             BinOp::AShr => "ashr",
