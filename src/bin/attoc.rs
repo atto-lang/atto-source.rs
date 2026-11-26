@@ -25,6 +25,15 @@ fn usage() -> ExitCode {
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(raw.as_slice(), [flag, _] if flag == "--counted-ready-v1") {
+        let mut source = String::new();
+        let result = std::fs::File::open(&raw[1]).and_then(|f| f.take((atto_compiler::SOURCE_CAP+1) as u64).read_to_string(&mut source));
+        if result.is_err() { eprintln!("E_IO: cannot read bounded UTF-8 source"); return ExitCode::from(2); }
+        return match atto_compiler::compile_counted_ready_v1(&source) {
+            Ok(bytes) => { use std::io::Write; if std::io::stdout().write_all(&bytes).is_ok() { ExitCode::SUCCESS } else { ExitCode::from(2) } },
+            Err(d) => { eprintln!("{d}"); ExitCode::from(1) }
+        };
+    }
     let mut args = Vec::new();
     let mut strict = false;
     let (mut report_path, mut compiler_sha, mut case) = (None, None, None);

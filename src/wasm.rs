@@ -1890,3 +1890,21 @@ mod allocator_safety_tests {
         assert!(!admitted(256, u32::MAX - 255)); // wrapped p + size
     }
 }
+
+// Dedicated bounded guest profile. Reuse the production checked i64 helper
+// bodies; no imports, fixed private memory, no scheduler or worker ABI.
+pub(crate) fn emit_counted_ready(locals: u32, mut guest: Vec<u8>) -> Vec<u8> {
+    let mut out = vec![0,97,115,109,1,0,0,0];
+    section(&mut out,1,vec![3,0x60,2,I64,I64,1,I64,0x60,1,I64,1,I64,0x60,0,1,I64]);
+    section(&mut out,3,vec![5,0,0,0,1,2]);
+    section(&mut out,5,vec![1,1,1,1]); // fixed private 64KiB
+    section(&mut out,6,vec![1,I32,1,0x41,0,0x0b]);
+    let mut exports=vec![2];name(&mut exports,"main");exports.extend([0,4]);name(&mut exports,"panic_code");exports.extend([3,0]);
+    section(&mut out,7,exports);
+    let mut bodies=vec![5];
+    for (_,mut locals,code) in helper_bodies(){locals.extend(code);uleb(&mut bodies,locals.len() as u64);bodies.extend(locals);}
+    let mut body=vec![1];uleb(&mut body,locals as u64);body.push(I64);
+    body.extend([0x41,0,0x24,0]); // reset diagnostic per call
+    body.append(&mut guest);body.extend([0,0x0b]);
+    uleb(&mut bodies,body.len() as u64);bodies.extend(body);section(&mut out,10,bodies);out
+}

@@ -102,6 +102,9 @@ pub mod target_typed;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;
+mod counted_ready;
+/// Explicit closed-world ready-only counted selection, no actor/worker scheduler.
+pub fn compile_counted_ready_v1(source: &str) -> Result<Vec<u8>, Diagnostic> { counted_ready::compile(source) }
 
 pub use diag::{Diagnostic, Pos};
 
@@ -488,15 +491,18 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
-        compile_mode(length, false)
+        compile_mode(length, 0)
     }
 
     #[no_mangle]
     pub extern "C" fn compile_strict_i64(length: i32) -> i32 {
-        compile_mode(length, true)
+        compile_mode(length, 1)
     }
 
-    fn compile_mode(length: i32, strict: bool) -> i32 {
+    #[no_mangle]
+    pub extern "C" fn compile_counted_ready_v1(length: i32) -> i32 { compile_mode(length, 2) }
+
+    fn compile_mode(length: i32, mode: u8) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -537,7 +543,7 @@ mod abi {
                     )
                 }
             };
-            let result = if strict { super::compile_verified_strict(source) } else { super::compile(source) };
+            let result = match mode { 1 => super::compile_verified_strict(source), 2 => super::compile_counted_ready_v1(source), _ => super::compile(source) };
             match result {
                 Ok(bytes) => {
                     st.bytes = bytes;
