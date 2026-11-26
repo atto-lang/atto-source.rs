@@ -3,13 +3,30 @@
 //! This does not claim transitive package dependency authority or typed IR reuse.
 use crate::{compiler_cache_key as key,diag::{Diagnostic,Pos},experimental_incremental::{Snapshot,RegistryDependency},
     lexer::{Token,Tok},library::{self,TargetOs},package_resolver,registry_namespace::{self,FrozenRegistry},sha256::hex_digest};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap,sync::Arc};
 const AGGREGATE_CAP:usize=4*1024*1024;
 fn err(code:&'static str,detail:&str)->Diagnostic{Diagnostic::new(Pos::default(),code,detail)}
-pub(crate) struct Prepared {pub(crate) key:[u8;32],tokens:Vec<Token>,target:TargetOs}
+/// Only immutable source-authenticated registry views. Current raw source
+/// inventory is always reauthenticated, even on a memo hit.
+#[derive(Default)]
+pub(crate) struct RegistryMemo {
+    target:Option<TargetOs>,
+    providers:BTreeMap<String,MemoProvider>,
+}
+struct MemoProvider { pin:String, view:Arc<FrozenRegistry> }
+#[derive(Clone,Copy,Default)]
+pub(crate) struct Work {pub(crate) rebuilt:usize,pub(crate) reused:usize}
+pub(crate) struct Prepared {
+    pub(crate) key:[u8;32],
+    tokens:Vec<Token>,
+    target:TargetOs,
+    pub(crate) memo:RegistryMemo,
+    pub(crate) work:Work,
+}
 impl Prepared {
-    pub(crate) fn compile(self)->Result<Vec<u8>,Diagnostic>{
-        library::with_target_os(self.target,||crate::compile_prelexed(self.tokens,None))
+    pub(crate) fn compile(self)->Result<(Vec<u8>,RegistryMemo,Work),Diagnostic>{
+        let bytes=library::with_target_os(self.target,||crate::compile_prelexed(self.tokens,None))?;
+        Ok((bytes,self.memo,self.work))
     }
 }
 // Compiler-private framing, bound to the independently attested compiler
@@ -73,7 +90,7 @@ fn token_digest(tokens:&[Token])->Result<String,Diagnostic>{
     Ok(hex_digest(&out))
 }
 pub(crate) fn prepare(root:Snapshot<'_>,deps:&[RegistryDependency<'_>],target:TargetOs,
-    compiler:&str,toolchain:&str)->Result<Prepared,Diagnostic>{
+    compiler:&str,toolchain:&str,previous:&RegistryMemo)->Result<Prepared,Diagnostic>{
     if root.sources.len()!=1||deps.is_empty()||deps.len()>16{
         return Err(err("E_UNSUPPORTED","registry cache requires one application source and 1-16 approved dependencies"));
     }
@@ -96,11 +113,25 @@ pub(crate) fn prepare(root:Snapshot<'_>,deps:&[RegistryDependency<'_>],target:Ta
                 return Err(err("E_AMBIGUOUS","duplicate or self registry dependency"));
             }
         }
-        let mut verified=Vec::with_capacity(deps.len());
+        let mut memo=RegistryMemo{target:Some(target),providers:BTreeMap::new()};
+        let mut work=Work::default();
         for d in ordered.values(){
-            verified.push(FrozenRegistry::verify(d.name,d.manifest,d.lockfile,d.trusted_lock_sha256,d.sources)?);
+            let cached=if previous.target==Some(target){
+                previous.providers.get(d.name).filter(|p|p.pin==d.trusted_lock_sha256)
+            }else{None};
+            let view=if let Some(cached)=cached{
+                // A matching expected pin is not enough: verify supplied
+                // current manifest, lock, inventory and raw source bytes.
+                package_resolver::verify_registry_snapshot(d.manifest,d.lockfile,d.trusted_lock_sha256,d.sources)?;
+                work.reused+=1;
+                Arc::clone(&cached.view)
+            }else{
+                work.rebuilt+=1;
+                Arc::new(FrozenRegistry::verify(d.name,d.manifest,d.lockfile,d.trusted_lock_sha256,d.sources)?)
+            };
+            memo.providers.insert(d.name.to_owned(),MemoProvider{pin:d.trusted_lock_sha256.to_owned(),view});
         }
-        let refs:Vec<_>=verified.iter().collect();
+        let refs:Vec<_>=memo.providers.values().map(|p|p.view.as_ref()).collect();
         let tokens=registry_namespace::prepare_registry_guest(source,&refs)?;
         let bindings=token_digest(&tokens)?;
         // All approved dependency locks are included, even if unused.
@@ -113,6 +144,6 @@ pub(crate) fn prepare(root:Snapshot<'_>,deps:&[RegistryDependency<'_>],target:Ta
             compiler,toolchain,target:&target_hash,configuration:&config,sources:root.trusted_lock_sha256,bindings:&bindings,
             generated:None,dependencies:&dependencies}).map_err(|e|err("E_CACHE_KEY",e))?;
         let mut bytes=[0u8;32];for(i,b)in bytes.iter_mut().enumerate(){*b=u8::from_str_radix(&encoded[i*2..i*2+2],16).map_err(|_|err("E_CACHE_KEY","invalid encoded key"))?;}
-        Ok(Prepared{key:bytes,tokens,target})
+        Ok(Prepared{key:bytes,tokens,target,memo,work})
     })
 }

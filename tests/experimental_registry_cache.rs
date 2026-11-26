@@ -40,14 +40,18 @@ fn locked_registry_application_cold_warm_edit_and_authority_denials(){
     let p=||RegistryDependency{name:"@org/project/provider",manifest:PROVIDER,lockfile:&p_lock,trusted_lock_sha256:&p_pin,sources:&inputs};
     let q=||RegistryDependency{name:"@org/project/other",manifest:OTHER,lockfile:&q_lock,trusted_lock_sha256:&q_pin,sources:&inputs};
     let cold=session.build_registry(Mode::Cold,&pin,MASTER,root(),&[p(),q()]).unwrap();
-    assert_eq!(cold.outcome,Outcome::Compiled);assert_eq!(cold.verified_dependencies,2);execute(&cold.bytes,"42");
+    assert_eq!(cold.outcome,Outcome::Compiled);assert_eq!(cold.verified_dependencies,2);
+    assert_eq!((cold.rebuilt_provider_views,cold.reused_provider_views),(2,0));execute(&cold.bytes,"42");
     let vp=FrozenRegistry::verify("@org/project/provider",PROVIDER,&p_lock,&p_pin,&inputs).unwrap();
     let vq=FrozenRegistry::verify("@org/project/other",OTHER,&q_lock,&q_pin,&inputs).unwrap();
     assert_eq!(cold.bytes,compile_registry_guest(APP,&[&vp,&vq]).unwrap());
     let warm=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[q(),p()]).unwrap();
     assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(warm.bytes,cold.bytes);
+    assert_eq!((warm.rebuilt_provider_views,warm.reused_provider_views),(0,2));
     drop(session);let mut session=open();
-    assert_eq!(session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[p(),q()]).unwrap().outcome,Outcome::Reused);
+    let reopened=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[p(),q()]).unwrap();
+    assert_eq!(reopened.outcome,Outcome::Reused);
+    assert_eq!((reopened.rebuilt_provider_views,reopened.reused_provider_views),(2,0));
     let before=files(&cache);
     let changed=MATH.replace("x+1","x+2");let modified=[SnapshotSource{path:"src/math/main.atto",source:&changed}];
     let stale=RegistryDependency{sources:&modified,..p()};
@@ -60,13 +64,27 @@ fn locked_registry_application_cold_warm_edit_and_authority_denials(){
     assert_eq!(session.build_registry(Mode::Incremental,&pin,MASTER,Snapshot{sources:&bad_roots,..root()},&[p(),q()]).unwrap_err().code,"E_LOCK_HASH");
     let bad_lock=lock(ROOT,&bad_roots);let bad_pin=hex_digest(bad_lock.as_bytes());
     assert_eq!(session.build_registry(Mode::Incremental,&pin,MASTER,Snapshot{sources:&bad_roots,lockfile:&bad_lock,trusted_lock_sha256:&bad_pin,..root()},&[p(),q()]).unwrap_err().code,"E_PRIVATE");
+    // A fully authenticated ill-typed provider must fail exactly like the
+    // ordinary registry compiler. Neither disk nor memo is committed.
+    let invalid=MATH.replace("return x+1;","return true;");
+    let invalid_inputs=[SnapshotSource{path:"src/math/main.atto",source:&invalid}];
+    let invalid_lock=lock(PROVIDER,&invalid_inputs);let invalid_pin=hex_digest(invalid_lock.as_bytes());
+    let bad=RegistryDependency{sources:&invalid_inputs,lockfile:&invalid_lock,trusted_lock_sha256:&invalid_pin,..p()};
+    let bad_view=FrozenRegistry::verify("@org/project/provider",PROVIDER,&invalid_lock,&invalid_pin,&invalid_inputs);
+    let expected=match bad_view{Ok(view)=>compile_registry_guest(APP,&[&view,&vq]).unwrap_err(),Err(e)=>e};
+    assert_eq!(session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[bad,q()]).unwrap_err(),expected);
     assert_eq!(files(&cache),before);
+    let recovered=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[p(),q()]).unwrap();
+    assert_eq!(recovered.outcome,Outcome::Reused);
+    assert_eq!((recovered.rebuilt_provider_views,recovered.reused_provider_views),(0,2));
     let updated_lock=lock(PROVIDER,&modified);let updated_pin=hex_digest(updated_lock.as_bytes());
     let updated=||RegistryDependency{sources:&modified,lockfile:&updated_lock,trusted_lock_sha256:&updated_pin,..p()};
     let next=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[updated(),q()]).unwrap();
-    assert_eq!(next.outcome,Outcome::Compiled);execute(&next.bytes,"43");
+    assert_eq!(next.outcome,Outcome::Compiled);
+    assert_eq!((next.rebuilt_provider_views,next.reused_provider_views),(1,1));execute(&next.bytes,"43");
     let verified=FrozenRegistry::verify("@org/project/provider",PROVIDER,&updated_lock,&updated_pin,&modified).unwrap();
     assert_eq!(next.bytes,compile_registry_guest(APP,&[&verified,&vq]).unwrap());
-    assert_eq!(session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[q(),updated()]).unwrap().outcome,Outcome::Reused);
-    println!("CACHE_REGISTRY_APP|two-providers|cold-warm=42|repinned-edit=43|order-independent|stale-root-provider-private-duplicate-missing-denied");
+    let hot=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[q(),updated()]).unwrap();
+    assert_eq!(hot.outcome,Outcome::Reused);assert_eq!((hot.rebuilt_provider_views,hot.reused_provider_views),(0,2));
+    println!("CACHE_REGISTRY_APP|two-providers|cold-warm=42|repinned-edit=43|views=2/0,0/2,1/1|failed-edit-rollback|order-independent|stale-root-provider-private-duplicate-missing-denied");
 }

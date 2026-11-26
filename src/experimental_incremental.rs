@@ -55,6 +55,10 @@ pub struct RegistryBuild {
     pub outcome:Outcome,
     /// Number of provider snapshots freshly authenticated, not reused IR.
     pub verified_dependencies:usize,
+    /// Actual immutable registry-view reconstruction/reuse counters.
+    /// These are not counts of independently compiled typed IR or Wasm units.
+    pub rebuilt_provider_views:usize,
+    pub reused_provider_views:usize,
 }
 pub struct HostSession {
     cache:ArtifactStore,
@@ -64,6 +68,7 @@ pub struct HostSession {
     toolchain:String,
     target:TargetOs,
     memo:SnapshotMemo,
+    registry_memo:crate::compiler_cache_registry::RegistryMemo,
 }
 fn valid_digest(s:&str)->bool{
     s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))
@@ -80,7 +85,8 @@ impl HostSession {
         let authority=Authority::open(authority)?;
         authority.distinct_from(&cache)?;
         Ok(Self{cache,authority,scope:scope.to_owned(),compiler:identity.compiler_sha256.to_owned(),
-            toolchain:identity.toolchain_sha256.to_owned(),target:identity.target,memo:SnapshotMemo::default()})
+            toolchain:identity.toolchain_sha256.to_owned(),target:identity.target,memo:SnapshotMemo::default(),
+            registry_memo:crate::compiler_cache_registry::RegistryMemo::default()})
     }
     /// Deterministic non-secret record for external host approval.
     /// Never derive the trusted current pin from a record read out of cache.
@@ -94,6 +100,7 @@ impl HostSession {
         approved_next_pin:&[u8;32])->io::Result<()>{
         // Clear source memo even on an indeterminate durability result.
         self.memo=SnapshotMemo::default();
+        self.registry_memo=crate::compiler_cache_registry::RegistryMemo::default();
         self.authority.rotate(&self.scope,old_pin,old_master,next_epoch,next_master,approved_next_pin)
     }
     pub fn build(&mut self,mode:Mode,current_pin:&[u8;32],master:[u8;32],snapshot:Snapshot<'_>)->Result<Build,Diagnostic>{
@@ -115,16 +122,23 @@ impl HostSession {
         let err=|code|Diagnostic::new(Pos::default(),code,"registry cache admission or storage failed");
         let lease=self.authority.lease(&self.scope,current_pin,master).map_err(|_|err("E_CACHE_LEDGER"))?;
         let secret=lease.secret();
-        let prepared=registry::prepare(snapshot,dependencies,self.target,&self.compiler,&self.toolchain)?;
+        let empty=registry::RegistryMemo::default();
+        let previous=if mode==Mode::Cold{&empty}else{&self.registry_memo};
+        let prepared=registry::prepare(snapshot,dependencies,self.target,&self.compiler,&self.toolchain,previous)?;
         if mode==Mode::Incremental {
             if let Some(bytes)=self.cache.load(&prepared.key,&secret).map_err(|_|err("E_CACHE_READ"))?{
-                return Ok(RegistryBuild{bytes,outcome:Outcome::Reused,verified_dependencies:dependencies.len()});
+                let work=prepared.work;
+                self.registry_memo=prepared.memo;
+                return Ok(RegistryBuild{bytes,outcome:Outcome::Reused,verified_dependencies:dependencies.len(),
+                    rebuilt_provider_views:work.rebuilt,reused_provider_views:work.reused});
             }
         }
         let key=prepared.key;
-        let bytes=prepared.compile()?;
+        let (bytes,memo,work)=prepared.compile()?;
         let sealed=receipt::seal(&key,&bytes,&secret).map_err(|_|err("E_CACHE_RECEIPT"))?;
         self.cache.publish(&key,&sealed,&secret).map_err(|_|err("E_CACHE_PUBLISH"))?;
-        Ok(RegistryBuild{bytes,outcome:Outcome::Compiled,verified_dependencies:dependencies.len()})
+        self.registry_memo=memo;
+        Ok(RegistryBuild{bytes,outcome:Outcome::Compiled,verified_dependencies:dependencies.len(),
+            rebuilt_provider_views:work.rebuilt,reused_provider_views:work.reused})
     }
 }

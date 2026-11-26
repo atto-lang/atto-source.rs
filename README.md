@@ -636,3 +636,10 @@ Cold mode explicitly compiles and publishes; incremental mode fails closed
 on integrity errors. Source transformation reuse counters do not imply
 skipped type checking or independently emitted code units. Run
 `cargo test --features experimental-incremental-cache --test experimental_incremental -- --nocapture`.
+
+The registry lane memoizes immutable verified provider views in-process by
+approved package name, lock digest and target. Even memo hits reauthenticate
+all supplied current source bytes and resolve the whole root graph. Failed
+compilation or publication cannot commit staged views. Provider-view counts
+are distinct from typecheck or code generation work; a changed provider still
+causes complete guest code generation on a final-artifact miss.
