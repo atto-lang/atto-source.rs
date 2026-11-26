@@ -117,3 +117,9 @@ Evaluate each receiver exactly once, prove its loan remains live, and reject
 temporary/escaping/mutable/actor/dynamic calls until independently supported.
 Then add **real executable Atto guest** positive/negative tests and align
 all other backends independently.
+
+## Marker/brand constraint preparation (candidate)
+
+`src/structural_tags.rs` composes the existing member witness with a compiler-owned registry of scoped package/module/declaration IDs. Flat registered nominal types have checked marker/brand attachments; named targets require all target tags, and anonymous targets retain only explicitly requested tags. Public brands can be referenced but not attached by unrelated modules; public ordinary markers are attachable. Duplicate, stale, unknown and unauthorized metadata fail closed. Matching tags never waive member, tenant, layout or loan checks. The registry is compiler metadata, not guest payload storage, runtime UUID identity or proof of a value invariant.
+
+The source and target metadata must come from the same checked resolver epoch and actual declarations; caller-supplied IDs are not guest input. Production parser, name resolution, checked construction/mutation, inheritance, target binding, cache invalidation and guest lowering are not yet integrated. Do not call the old member-only planner directly for tagged/named source contracts. `cargo test --lib structural_tags::tests -- --nocapture` runs nine focused host unit tests; exact-head execution remains unverified. See [spec #273](https://github.com/atto-lang/atto-spec/pull/273) and [guest fixtures #676](https://github.com/atto-lang/atto-platform-conformance/pull/676). No guest or backend parity claim.
