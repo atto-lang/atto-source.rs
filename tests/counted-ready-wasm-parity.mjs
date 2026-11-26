@@ -64,5 +64,18 @@ try{
     assert.equal(guest.panic_code.value,code,name);
     console.log('RUNTIME_REJECT_PASS '+name);
   }
-  console.log('COUNTED_READY_WASM_PARITY_PASS 10 positive, 7 negative, 5 runtime traps; 17 ordinary profile rejections');
+  const prefix='suspends fnc main(): int { const Channel<int> a = Channel.new<int>(1); writech a, 20; ';
+  const source=prefix+'const Future f = select { default: -> { return 20; } }; const Future batch = select(1) { when readch a: int n -> { return n; } }; const Array[int] values = await batch; const int extra = await select<int> { default: -> { return 2; } }; return (await f) + values[0] + extra; }';
+  const rawGuest=compile(Buffer.from(source),'raw-future',true);
+  for(let i=0;i<2;i++){assert.equal(rawGuest.main(),42n);assert.equal(rawGuest.panic_code.value,0);}
+  console.log('GUEST_PASS raw-future');
+  for(const [name,body] of [
+    ['raw-initializer','const Future f = 42; return 42; }'],
+    ['wrong-shape','const Future<int> f = select(1) { when readch a: int n -> { return n; } }; return 42; }'],
+    ['capture','const Future f = select { default: -> { return a; } }; return 42; }'],
+    ['escaped','const Future b = select(1) { when readch a: int n -> { return n; } }; return 42; }'],
+    ['wrong-await','const Future b = select(1) { when readch a: int n -> { return n; } }; const int wrong = await b; return wrong; }'],
+    ['double-await','const Future b = select(1) { when readch a: int n -> { return n; } }; const Array[int] first = await b; const Array[int] second = await b; return first[0]; }'],
+  ]){compile(Buffer.from(prefix+body),name,false);console.log('REJECT_PASS '+name);}
+  console.log('COUNTED_READY_WASM_PARITY_PASS 11 positive, 13 negative, 5 runtime traps; 17 ordinary profile rejections');
 }finally{rmSync(temp,{recursive:true,force:true});}
