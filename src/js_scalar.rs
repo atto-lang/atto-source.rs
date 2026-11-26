@@ -1,4 +1,4 @@
-//! Bounded checked scalar ESM target. Only string allocations are admitted; no actors, arbitrary foreign imports,
+//! Bounded checked ESM target. Only checked string and class allocations are admitted; no actors or arbitrary foreign imports,
 //! exception handling, or continuation operations may escape this profile.
 use crate::ast::{BinOp, Type};
 use crate::check::{Builtin, Import, StrOp, TExpr, TProgram, TStmt, TE};
@@ -6,10 +6,21 @@ use crate::{Diagnostic, Pos};
 
 pub(crate) fn unsupported() -> Diagnostic {
     Diagnostic::new(Pos { line: 1, col: 1 }, "E_JS_UNSUPPORTED",
-        "ESM target currently admits only checked scalar and bounded string IR and standard output")
+        "ESM target currently admits only checked scalar, bounded string and class IR and standard output")
 }
 type R<T> = Result<T, Diagnostic>;
-fn scalar(t: Type) -> bool { matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) }
+fn scalar(t: Type) -> bool { matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Class(_) | Type::Void) }
+// The typed checker resolves the field layout and ownership before emission.
+// Only scalar/immutable string fields and nominal class references are admitted.
+fn field_kind(t: Type) -> R<&'static str> {
+    match t {
+        Type::Int | Type::Str => Ok("BigInt64"),
+        Type::Float => Ok("Float64"),
+        Type::Bool | Type::Class(_) => Ok("Int32"),
+        _ => Err(unsupported()),
+    }
+}
+
 fn expr(e: &TE, recursive: &[bool]) -> R<String> {
     if !scalar(e.ty) { return Err(unsupported()); }
     Ok(match &e.e {
@@ -31,6 +42,11 @@ fn expr(e: &TE, recursive: &[bool]) -> R<String> {
         TExpr::PrintStrVal { value, newline, .. } => {
             let call = format!("print_value({})", expr(value, recursive)?);
             if *newline { format!("({call},host_print_newline())") } else { call }
+        }
+        TExpr::Alloc(n) => format!("alloc({n})"),
+        TExpr::FieldGet { obj, offset } => {
+            let kind = field_kind(e.ty)?;
+            format!("view.get{kind}(({})+{offset},true)", expr(obj, recursive)?)
         }
         TExpr::Local(i) => format!("l{i}"),
         TExpr::Neg(a) => format!("checked(-({}))", expr(a, recursive)?),
@@ -91,6 +107,10 @@ fn stmts(body: &[TStmt], out: &mut String, void_main: bool, loops: &mut Vec<usiz
     for s in body {
         match s {
             TStmt::Set(i, v) => writeln!(out, "l{i}={};", expr(v, recursive)?).unwrap(),
+            TStmt::FieldSet { obj, offset, ty, value } => {
+                let kind = field_kind(*ty)?;
+                writeln!(out, "view.set{kind}(({})+{offset},{},true);", expr(obj, recursive)?, expr(value, recursive)?).unwrap();
+            }
             TStmt::Expr(e) => writeln!(out, "{};", expr(e, recursive)?).unwrap(),
             TStmt::Return(v) => {
                 let value = match v { Some(e) => expr(e, recursive)?, None if void_main => "0n".into(),
@@ -162,8 +182,12 @@ pub(crate) fn emit(p: &TProgram) -> R<String> {
     let has_memory = p.heap || p.strings || !p.data.is_empty() || p.imports.contains(&Import::PrintStr);
     if has_memory {
         let pages = if p.heap { crate::wasm::HEAP_PAGES } else { 1 };
-        writeln!(out, "const memory=new WebAssembly.Memory({{initial:{pages},maximum:{pages}}});const mem=new Uint8Array(memory.buffer);").unwrap();
+        writeln!(out, "const memory=new WebAssembly.Memory({{initial:{pages},maximum:{pages}}});const mem=new Uint8Array(memory.buffer);const view=new DataView(memory.buffer);").unwrap();
         writeln!(out, "new Uint8Array(memory.buffer).set([{}]);", p.data.iter().map(u8::to_string).collect::<Vec<_>>().join(",")).unwrap();
+    }
+    if p.heap {
+        writeln!(out, "let heap={};", (p.data.len()+7)&!7).unwrap();
+        out.push_str("function alloc(size){if(heap>mem.length||size>mem.length-heap){panic_code.value=3;throw new Error('E_PANIC:3')}let p=heap;heap+=size;return p}\n");
     }
     if p.strings {
         out.push_str(r#"function pack(p,n){return (BigInt(p)<<32n)|BigInt(n)}
@@ -179,8 +203,7 @@ function str_cmp(a,b){let p=ptr(a),q=ptr(b),n=Math.min(len(a),len(b)),i=0;while(
 function print_value(a){host_print_str(ptr(a),len(a))}
 "#);
         if p.heap {
-            writeln!(out, "let heap={};", (p.data.len()+7)&!7).unwrap();
-            out.push_str(r#"function str_concat(a,b){let n=len(a),m=len(b),size=(n+m+7)&~7;if(size>mem.length-heap){panic_code.value=3;throw new Error('E_PANIC:3')}let p=heap;heap+=size;for(let i=0;i<n;i++)mem[p+i]=mem[ptr(a)+i];for(let i=0;i<m;i++)mem[p+n+i]=mem[ptr(b)+i];return pack(p,n+m)}
+            out.push_str(r#"function str_concat(a,b){let n=len(a),m=len(b),size=(n+m+7)&~7;let p=alloc(size);for(let i=0;i<n;i++)mem[p+i]=mem[ptr(a)+i];for(let i=0;i<m;i++)mem[p+n+i]=mem[ptr(b)+i];return pack(p,n+m)}
 "#);
         }
     }
@@ -219,7 +242,7 @@ function print_value(a){host_print_str(ptr(a),len(a))}
         }
     }
     for (i, f) in p.funcs.iter().enumerate() {
-        if !scalar(f.ret) || f.params.iter().chain(&f.locals).any(|t| !matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str)) {
+        if !scalar(f.ret) || f.params.iter().chain(&f.locals).any(|t| !matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Class(_))) {
             return Err(unsupported());
         }
         let void_main = i == p.main as usize && f.ret == Type::Void;
