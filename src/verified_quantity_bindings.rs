@@ -501,6 +501,37 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                 if locals.contains_key(&name) { return Err(p.err("E_UNIT_DUPLICATE", "duplicate strict binding")); }
                 if is_let && wanted.is_none() { return Err(p.err("E_VERIFY_UNSUPPORTED", "mutable binding needs explicit type")); }
                 p.expect(Tok::Assign)?;
+                if matches!(&p.token().tok,Tok::Ident(n) if n=="Array") {
+                    if !is_val || wanted.is_some() || depth!=0 {
+                        return Err(p.err("E_VERIFY_UNSUPPORTED","fixed array requires a function-local inferred val outside control flow"));
+                    }
+                    p.at+=1;p.expect(Tok::Dot)?;p.expect_word("of")?;p.expect(Tok::LParen)?;
+                    let mut values=Vec::new();
+                    loop {
+                        if values.len()>=16{return Err(p.err("E_UNIT_LIMIT","fixed array cell budget"));}
+                        let v=expr(p,aliases,locals,funcs,0,0)?;
+                        compatible(&Unit::scalar(),&v.unit,pos)?;
+                        values.push(v);
+                        if p.take(Tok::RParen){break;}
+                        p.expect(Tok::Comma)?;
+                    }
+                    p.expect(Tok::Semi)?;
+                    let slot=(param_count+slots.len()) as u32;
+                    let count=values.len() as u32;
+                    if slots.len()+values.len()>64{return Err(p.err("E_UNIT_LIMIT","fixed array cells exceed strict local budget"));}
+                    let range=values.iter().map(|v|v.range).reduce(Range::join).expect("nonempty");
+                    // Eager scalar replacement avoids heap exhaustion from repeated
+                    // helper invocation. Each cell is a distinct immutable local.
+                    for (index,v) in values.into_iter().enumerate(){
+                        slots.push(Type::Int);
+                        body.push(TStmt::Set(slot+index as u32,v.ir));
+                    }
+                    // Metadata cannot be treated as a scalar fact. Neither the
+                    // receiver nor its cells may be rebound, aliased or returned.
+                    locals.insert(format!("$array:{name}"),(slot,Refined{unit:Unit::scalar(),range:Range::exact(i64::from(count)),width:64}));
+                    locals.insert(name,(u32::MAX,Refined{unit:Unit::scalar(),range,width:64}));
+                    continue;
+                }
                 let v = expr(p, aliases, locals, funcs, 0, 0)?;
                 if let Some(want) = &wanted { boundary(want, &v, pos, "E_REFINEMENT_BINDING")?; }
                 p.expect(Tok::Semi)?;
@@ -631,7 +662,7 @@ fn strict_predicate(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals,
     // Arithmetic or other RHSs cannot manufacture a refinement.
     if let TExpr::Local(slot) = &left.ir.e {
         if right.range.lo == right.range.hi {
-            if let Some((name,(_,fact))) = locals.iter().find(|(_, (s,_))| s == slot) {
+            if let Some((name,(_,fact))) = locals.iter().find(|(name, (s,_))| !name.starts_with("$array:") && s == slot) {
                 yes.get_mut(name).expect("resolved local").1.range = restrict(fact.range,op,right.range.lo);
                 no.get_mut(name).expect("resolved local").1.range = restrict(fact.range,inverse,right.range.lo);
             }
@@ -727,6 +758,26 @@ fn atom_base(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Fun
         return Ok(Checked { width:sig.result.width,unit: sig.result.unit.clone(), range: sig.result.range, ir: int(TExpr::Call(sig.index,args)) });
     }
     let (slot,unit) = locals.get(&name).ok_or_else(|| error(pos,"E_UNIT_NAME","unknown immutable quantity binding"))?;
+    if let Some((base,length))=locals.get(&format!("$array:{name}")){
+        if !p.take(Tok::LBracket){return Err(error(pos,"E_VERIFY_UNSUPPORTED","array cannot escape or be used as scalar"));}
+        let index=expr(p,aliases,locals,funcs,0,depth+1)?;
+        p.expect(Tok::RBracket)?;
+        compatible(&Unit::scalar(),&index.unit,pos)?;
+        let count=length.range.lo;
+        if index.range.lo<0 || index.range.hi>=count{
+            return Err(error(pos,"E_VERIFY_UNPROVEN","index not proved within receiver bounds"));
+        }
+        if !matches!(&index.ir.e,TExpr::Local(_)|TExpr::I64(_)){
+            return Err(error(pos,"E_VERIFY_UNSUPPORTED","fixed array index requires scalar local or literal"));
+        }
+        let load=|i:i64|int(TExpr::Local(*base+i as u32));
+        let mut ir=load(index.range.hi);
+        for i in (index.range.lo..index.range.hi).rev(){
+            let test=bool_ir(TExpr::Bin(BinOp::Eq,Box::new(index.ir.clone()),Box::new(int(TExpr::I64(i)))));
+            ir=int(TExpr::Ternary(Box::new(test),Box::new(load(i)),Box::new(ir)));
+        }
+        return Ok(Checked{unit:Unit::scalar(),range:unit.range,ir,width:64});
+    }
     Ok(Checked { width:unit.width,unit:unit.unit.clone(), range: unit.range, ir:int(TExpr::Local(*slot)) })
 }
 fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Functions, precedence: u8, depth: usize) -> R<Checked> {
