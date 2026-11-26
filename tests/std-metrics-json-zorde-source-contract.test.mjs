@@ -212,3 +212,15 @@ test("Rust compiler-owned real guest workflow must not silently become a source-
   assert.ok(workflow.includes("ATTO_CORE_BORROW_INDEPENDENTLY_CERTIFIED=NO"),
             "candidate receipts must never self-certify");
 });
+
+test("histogram snapshot has one explicit detachment boundary (source only)", () => {
+  const m = modules.metrics;
+  const start = m.indexOf("pub snapshot(): HistogramSnapshot");
+  assert.ok(start >= 0);
+  const snapshot = m.slice(start, m.indexOf("  pub fnc counter(", start));
+  assert.ok(snapshot.includes("new HistogramSnapshot(self.thresholds, self.counts,"));
+  assert.ok(!snapshot.includes("new Array<int>()"));
+  assert.ok(m.includes("self.finite_bounds = detached_bounds;"));
+  assert.ok(m.includes("self.per_bucket = detached_counts;"));
+  // Compiler ownership and actual allocation counts are separate guest gates.
+});
