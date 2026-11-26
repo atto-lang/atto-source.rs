@@ -167,6 +167,23 @@ for (const c of sharedNumeric) {
     assert.equal(guest.exports.panic_code.value,c.expected.code==='integer_overflow'?1:2);
   }
 }
+// Both compiler targets must refuse unproved lossy mixed ordering and
+// still execute exact same-carrier comparisons at the i64 precision boundary.
+for (const op of ['<', '<=', '>', '>=']) {
+  for (const [a, b] of [['9007199254740993', '9007199254740992.0'],
+                       ['9007199254740992.0', '9007199254740993']]) {
+    const mixed = compile(`pub fnc main(): int { if ${a} ${op} ${b} then return 42; fi return 1; }`);
+    assert.equal(mixed.ok, false, 'mixed ordering must not emit a rounded guest');
+    assert.match(mixed.diagnostic, /E_TYPE/);
+  }
+}
+for (const body of ['9007199254740993 > 9007199254740992', '2.5 > 2.0']) {
+  const ordered = compile(`pub fnc main(): int { if ${body} then return 42; fi return 1; }`);
+  assert.equal(ordered.ok, true, ordered.diagnostic);
+  const guest = new WebAssembly.Instance(new WebAssembly.Module(ordered.guest), {});
+  assert.equal(guest.exports.main(), 42n);
+  assert.equal(guest.exports.panic_code.value, 0);
+}
 const rejectedTruncation = compile('pub fnc main(): int { return 5.0 / 2.0; }');
 assert.equal(rejectedTruncation.ok, false, 'explicit float result must not narrow to int');
 assert.match(rejectedTruncation.diagnostic, /E_TYPE|E_RETURN_TYPE/);
