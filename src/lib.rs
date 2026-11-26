@@ -63,6 +63,7 @@ pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
 mod verified_quantities;
+mod allocation_guarantees;
 pub mod verified_bounds;
 mod quantity_scale;
 /// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
@@ -123,6 +124,9 @@ pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
     }
     let tokens = lexer::lex(source)?;
+    if allocation_guarantees::present(&tokens) {
+        return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "allocation guarantees use the ordinary checked AOT profile"));
+    }
     match verified_quantities::lower_mode(source, &tokens, true)? {
         Some(verified_quantities::Lowered::Typed(program)) => {
             let bytes = wasm::emit_quantity_program(&program);
@@ -149,14 +153,26 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    if allocation_guarantees::present(&lexer::lex(source)?) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
+            "annotated linked-source compilation requires a verified cross-file effect contract"));
+    }
+    let mut checked_load = |path: &std::path::Path| -> std::io::Result<String> {
+        let loaded = load(path)?;
+        if lexer::lex(&loaded).ok().is_some_and(|t| allocation_guarantees::present(&t)) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "annotated dependency requires a verified cross-file effect contract"));
+        }
+        Ok(loaded)
+    };
     let source = library::expand_for_file_linker(source)?;
     // Bounded relative-file scalar `import const` can substitute only
     // verified literal values, before the existing checker and guest emitter.
     // Full package and environment-backed initialization still fail closed.
-    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut load)? {
+    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut checked_load)? {
         return compile_prelexed(tokens, Some(logical_path));
     }
-    let tokens = import_link::lower(&source, logical_path, load)?;
+    let tokens = import_link::lower(&source, logical_path, checked_load)?;
     compile_prelexed(tokens, Some(logical_path))
 }
 
@@ -197,6 +213,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
         ));
     }
     let tokens = lexer::lex(source)?;
+    if allocation_guarantees::present(&tokens) {
+        return allocation_guarantees::compile(tokens);
+    }
     // Admit bounded typed quantity/refinement sources and explicitly
     // contracted private scalar headers. The typed lowerer checks the entire
     // file; errors never fall back to the ordinary parser or host evaluation.
@@ -218,6 +237,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    if allocation_guarantees::present(&tokens) {
+        return allocation_guarantees::compile(tokens);
+    }
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
