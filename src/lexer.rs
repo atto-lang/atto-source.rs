@@ -135,20 +135,29 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(chars[i]);
                 bump!();
             }
-            // Canonical exceptional control words have a contiguous bang.
-            // Keep comparison (!=, !eq) and separated `trap !value` unchanged.
-            if matches!(s.as_str(), "trap" | "throw" | "raise" | "panic")
+            // Java-reference lexical contract: check the entire known bang
+            // keyword suffix before any frontend-specific token lowering.
+            // Comparison (!=, !eq) and separated `trap !value` are unchanged.
+            let bang_keyword = matches!(s.as_str(),
+                "trap" | "throw" | "raise" | "panic" | "copy" | "take" |
+                "borrow" | "share" | "pin" | "drop" | "pipe" | "rpipe" |
+                "stop" | "expand")
                 && chars.get(i) == Some(&'!')
                 && chars.get(i + 1) != Some(&'=')
                 && !(chars.get(i + 1) == Some(&'e')
                     && chars.get(i + 2) == Some(&'q')
-                    && chars.get(i + 3).map_or(true, |c| !c.is_alphanumeric() && *c != '_'))
-            {
-                s.push('!');
-                bump!();
-                if !matches!(chars.get(i), Some(' ' | '\t' | '\r' | '\n' | '\u{000b}' | '\u{000c}')) {
+                    && chars.get(i + 3).map_or(true, |c| !c.is_alphanumeric() && *c != '_'));
+            if bang_keyword {
+                let suffix_len = if s == "copy" && chars.get(i + 1) == Some(&'!') { 2 } else { 1 };
+                if !matches!(chars.get(i + suffix_len), Some(' ' | '\t' | '\r' | '\n' | '\u{000b}' | '\u{000c}')) {
                     return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
                         "whitespace required after bang keyword"));
+                }
+                // Only exceptional control uses an Ident with a bang; the
+                // ownership/pipeline/macro token ABI is deliberately unchanged.
+                if matches!(s.as_str(), "trap" | "throw" | "raise" | "panic") {
+                    s.push('!');
+                    bump!();
                 }
             }
             // Generator delegation is a single contiguous lexical spelling.
@@ -422,9 +431,10 @@ mod canonical_exception_bang_tests {
     use super::*;
 
     #[test]
-    fn exception_bang_requires_java_compatible_whitespace() {
-        for keyword in ["trap!", "throw!", "raise!", "panic!"] {
-            for tail in ["", "(", "value", "!", ";", "/* comment */ value", "// comment\nvalue"] {
+    fn all_bang_keywords_require_java_compatible_whitespace() {
+        for keyword in ["trap!", "throw!", "raise!", "panic!", "copy!", "copy!!",
+            "take!", "borrow!", "share!", "pin!", "drop!", "pipe!", "rpipe!", "stop!", "expand!"] {
+            for tail in ["", "(", "value", ";", "/* comment */ value", "// comment\nvalue"] {
                 let source = format!("{keyword}{tail}");
                 let err = lex(&source).expect_err("missing separator must reject");
                 assert_eq!(err.code, "E_BANG_KEYWORD_WHITESPACE", "{source:?}");
@@ -432,8 +442,7 @@ mod canonical_exception_bang_tests {
             for gap in [" ", "\t", "\n", "\r\n", "\u{000b}", "\u{000c}"] {
                 let source = format!("{keyword}{gap}value");
                 let tokens = lex(&source).expect("ASCII whitespace separator");
-                assert!(matches!(&tokens[0].tok, Tok::Ident(s) if s == keyword));
-                assert!(matches!(&tokens[1].tok, Tok::Ident(s) if s == "value"));
+                assert!(tokens.iter().any(|t| matches!(&t.tok, Tok::Ident(s) if s == "value")));
             }
         }
     }
