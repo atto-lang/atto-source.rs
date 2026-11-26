@@ -668,6 +668,12 @@ impl Parser {
                 }
             }
             match (self.word_at(at), self.word_at(at + 1)) {
+                (Some("define"), Some("fnc")) => {
+                    prog.funcs.push(self.parse_func()?);
+                }
+                (Some("define"), Some("pub")) if !public && self.word_at(at + 2) == Some("fnc") => {
+                    prog.funcs.push(self.parse_func()?);
+                }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
@@ -1585,7 +1591,13 @@ impl Parser {
             return Err(unsupported(self.pos(), "annotations"));
         }
         let start = self.pos();
-        self.eat_word("pub");
+        let public_prefix = self.eat_word("pub");
+        if self.eat_word("define") {
+            if !public_prefix { self.eat_word("pub"); }
+            if !self.is_word("fnc") {
+                return Err(self.expected("'fnc' after 'define'"));
+            }
+        }
         let is_pure = self.eat_word("pure");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
@@ -1843,8 +1855,18 @@ impl Parser {
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
 
+    // General callable aggregate formals still require a typed aggregate ABI.
+    fn reject_unlowered_callable_pattern(&self) -> R<()> {
+        if matches!(self.peek(), Tok::LParen | Tok::LBrace) ||
+            (matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::LBrace) {
+            return Err(unsupported(self.pos(), "callable aggregate parameter patterns (typed root projections)"));
+        }
+        Ok(())
+    }
+
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
+        self.reject_unlowered_callable_pattern()?;
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
@@ -3662,15 +3684,13 @@ impl Parser {
                     "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
-                let is_move = s == "move";
+                let is_transfer = action == OwnershipOp::Take;
                 self.advance(); // name
                 let first_bang = self.advance(); // !
-                if is_move && (first_bang.pos.line != pos.line ||
-                    first_bang.pos.col != pos.col + 4 ||
-                    (self.pos().line == first_bang.pos.line &&
-                     self.pos().col <= first_bang.pos.col + 1)) {
+                if is_transfer && (first_bang.pos.line != pos.line ||
+                    first_bang.pos.col != pos.col + 4) {
                     return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
-                        "move! requires adjacent bang and a separated operand"));
+                        "take! and move! require an adjacent bang"));
                 }
                 // 'copy!!' is a single canonical operator only when the word
                 // and both bangs are adjacent. 'copy! !x' stays a shallow copy
@@ -3916,6 +3936,7 @@ impl Parser {
                 if params.len() >= MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
                 }
+                self.reject_unlowered_callable_pattern()?;
                 let (name, pos) = self.ident("a lambda parameter")?;
                 if params.contains(&name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));

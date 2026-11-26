@@ -63,6 +63,7 @@ pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
 mod verified_quantities;
+mod allocation_guarantees;
 pub mod verified_bounds;
 mod quantity_scale;
 /// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
@@ -123,6 +124,9 @@ pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
     }
     let tokens = lexer::lex(source)?;
+    if allocation_guarantees::present(&tokens) {
+        return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "allocation guarantees use the ordinary checked AOT profile"));
+    }
     match verified_quantities::lower_mode(source, &tokens, true)? {
         Some(verified_quantities::Lowered::Typed(program)) => {
             let bytes = wasm::emit_quantity_program(&program);
@@ -149,15 +153,54 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    if allocation_guarantees::present(&lexer::lex(source)?) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
+            "annotated linked-source compilation requires a verified cross-file effect contract"));
+    }
+    let mut checked_load = |path: &std::path::Path| -> std::io::Result<String> {
+        let loaded = load(path)?;
+        if lexer::lex(&loaded).ok().is_some_and(|t| allocation_guarantees::present(&t)) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "annotated dependency requires a verified cross-file effect contract"));
+        }
+        Ok(loaded)
+    };
     let source = library::expand_for_file_linker(source)?;
     // Bounded relative-file scalar `import const` can substitute only
     // verified literal values, before the existing checker and guest emitter.
     // Full package and environment-backed initialization still fail closed.
-    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut load)? {
+    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut checked_load)? {
         return compile_prelexed(tokens, Some(logical_path));
     }
-    let tokens = import_link::lower(&source, logical_path, load)?;
+    let tokens = import_link::lower(&source, logical_path, checked_load)?;
     compile_prelexed(tokens, Some(logical_path))
+}
+
+// Only select the typed lane for a file-leading sequence of dimension/unit
+// declarations followed by a scalar refinement alias. In particular, do not
+// revive the retired closed-expression evaluator, scan inside function bodies,
+// or hijack arbitrary type declarations. This is a routing predicate, not
+// semantic admission: verified_quantities validates every declaration and body.
+fn typed_quantity_header(tokens: &[lexer::Token]) -> bool {
+    use lexer::Tok;
+    let word = |i: usize, s: &str| tokens.get(i)
+        .is_some_and(|t| matches!(&t.tok, Tok::Ident(n) if n == s));
+    let mut i = 0;
+    while word(i, "define") && (word(i + 1, "dimension") || word(i + 1, "unit")) {
+        i += 2;
+        while let Some(t) = tokens.get(i) {
+            if t.tok == Tok::Semi { break; }
+            if matches!(t.tok, Tok::Eof | Tok::LBrace | Tok::RBrace) { return false; }
+            i += 1;
+        }
+        if !tokens.get(i).is_some_and(|t| t.tok == Tok::Semi) { return false; }
+        i += 1;
+    }
+    word(i, "type") &&
+        tokens.get(i + 1).is_some_and(|t| matches!(&t.tok, Tok::Ident(_))) &&
+        tokens.get(i + 2).is_some_and(|t| t.tok == Tok::Assign) &&
+        (word(i + 3, "int") || word(i + 3, "i64") || word(i + 3, "i32")) &&
+        word(i + 4, "where")
 }
 
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
@@ -170,9 +213,13 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
         ));
     }
     let tokens = lexer::lex(source)?;
-    // Admit only the bounded, explicitly contracted private scalar header.
-    // The existing lowerer checks the entire file; errors never fall back.
-    if verified_quantities::scalar_contract_header(&tokens) {
+    if allocation_guarantees::present(&tokens) {
+        return allocation_guarantees::compile(tokens);
+    }
+    // Admit bounded typed quantity/refinement sources and explicitly
+    // contracted private scalar headers. The typed lowerer checks the entire
+    // file; errors never fall back to the ordinary parser or host evaluation.
+    if verified_quantities::scalar_contract_header(&tokens) || typed_quantity_header(&tokens) {
         let pos = tokens[0].pos;
         match verified_quantities::lower(source, &tokens)? {
             Some(verified_quantities::Lowered::Typed(program)) => {
@@ -190,6 +237,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    if allocation_guarantees::present(&tokens) {
+        return allocation_guarantees::compile(tokens);
+    }
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.

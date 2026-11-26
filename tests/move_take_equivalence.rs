@@ -34,3 +34,27 @@ fn compact_move_is_not_admitted() {
         .expect_err("missing separator");
     assert_eq!(denied.code, "E_BANG_KEYWORD_WHITESPACE");
 }
+
+#[test]
+fn transfer_aliases_require_immediate_ascii_whitespace() {
+    use atto_compiler::lexer::lex;
+    for op in ["take", "move"] {
+        for tail in ["parcel", "(parcel)", "/* gap */ parcel", "// gap\nparcel",
+            "", "\u{a0}parcel", "! parcel"] {
+            let source = format!("{op}!{tail}");
+            assert_eq!(lex(&source).unwrap_err().code, "E_BANG_KEYWORD_WHITESPACE", "{source:?}");
+        }
+        for gap in [" ", "\t", "\n", "\r\n", "\x0b", "\x0c", " /* gap */ "] {
+            let source = OWNER.replace("move! parcel", &format!("{op}!{gap}parcel"));
+            assert!(compile(&source).is_ok(), "{source:?}");
+        }
+        for gap in [" ", "/* gap */", "\n"] {
+            let source = OWNER.replace("move! parcel", &format!("{op}{gap}! parcel"));
+            assert_eq!(compile(&source).unwrap_err().code, "E_BANG_KEYWORD_WHITESPACE");
+        }
+        for input in [format!("{op}!=42"), format!("{op}!eq value"),
+            format!("// {op}!parcel\n42"), format!("\"{op}!parcel\"")] {
+            assert!(lex(&input).is_ok(), "{input:?}");
+        }
+    }
+}

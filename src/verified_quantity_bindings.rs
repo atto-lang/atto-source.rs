@@ -206,11 +206,7 @@ fn cast(p: &Parser<'_>, aliases: &Aliases, mut value: Checked, target: &str, pos
 
 #[derive(Clone)]
 struct Contract {op:BinOp,param:Option<usize>,bound:Option<i64>}
-fn read_contracts(p:&mut Parser<'_>,params:&mut [Refined],locals:&mut Locals,result:&Refined,public:bool)->R<Vec<Contract>>{
-    let mut checks=Vec::new();let mut count=0;
-    loop{
-        let require=p.word("requires");if !require&&!p.word("ensures"){break;}
-        count+=1;if public||count>16{return Err(p.err("E_REFINEMENT_CONTRACT","contract budget or entrypoint"));}
+fn read_contract_clause(p:&mut Parser<'_>,params:&mut [Refined],locals:&mut Locals,result:&Refined,require:bool,checks:&mut Vec<Contract>)->R<()> {
         let name=p.name()?;let op=match &p.token().tok{
             Tok::Lt=>BinOp::Lt,Tok::Le=>BinOp::Le,Tok::Gt=>BinOp::Gt,Tok::Ge=>BinOp::Ge,Tok::EqEq=>BinOp::Eq,Tok::NotEq if require=>BinOp::Ne,
             Tok::Ident(n) if n=="eq"=>BinOp::Eq,_=>return Err(p.err("E_REFINEMENT_CONTRACT","comparison required"))};
@@ -229,7 +225,43 @@ fn read_contracts(p:&mut Parser<'_>,params:&mut [Refined],locals:&mut Locals,res
                 checks.push(Contract{op,param:Some(slot as usize),bound:None});
             }else{checks.push(Contract{op,param:None,bound:Some(contract_bound(p,result)?)});}
         }
-    }Ok(checks)
+    Ok(())
+}
+// Capture source token ranges only. Resolve every clause against the actual
+// typed signature, using the same checker as keyword contracts.
+fn contract_annotations(p:&mut Parser<'_>)->R<Vec<(usize,usize,bool)>> {
+    let mut ranges=Vec::new();
+    while p.take(Tok::At) {
+        if ranges.len()>=16 {return Err(p.err("E_REFINEMENT_CONTRACT","contract budget"));}
+        let require=p.word("requires");
+        if !require&&!p.word("ensures"){return Err(p.err("E_REFINEMENT_CONTRACT","unsupported contract annotation"));}
+        p.expect(Tok::LParen)?;
+        let start=p.at;
+        while p.token().tok!=Tok::RParen {
+            if p.at-start>=32||matches!(p.token().tok,Tok::Eof|Tok::LParen|Tok::LBrace|Tok::RBrace|Tok::Semi|Tok::At){return Err(p.err("E_REFINEMENT_CONTRACT","invalid bounded annotation predicate"));}
+            p.at+=1;
+        }
+        let end=p.at;p.expect(Tok::RParen)?;
+        ranges.push((start,end,require));
+    }
+    Ok(ranges)
+}
+fn read_contracts(p:&mut Parser<'_>,params:&mut [Refined],locals:&mut Locals,result:&Refined,public:bool,annotations:&[(usize,usize,bool)])->R<Vec<Contract>> {
+    let mut checks=Vec::new();let mut count=annotations.len();
+    if public&&count!=0{return Err(p.err("E_REFINEMENT_CONTRACT","contract budget or entrypoint"));}
+    let header_end=p.at;
+    for &(start,end,require) in annotations {
+        p.at=start;
+        read_contract_clause(p,params,locals,result,require,&mut checks)?;
+        if p.at!=end{return Err(p.err("E_REFINEMENT_CONTRACT","trailing annotation predicate tokens"));}
+    }
+    p.at=header_end;
+    loop {
+        let require=p.word("requires");if !require&&!p.word("ensures"){break;}
+        count+=1;if public||count>16{return Err(p.err("E_REFINEMENT_CONTRACT","contract budget or entrypoint"));}
+        read_contract_clause(p,params,locals,result,require,&mut checks)?;
+    }
+    Ok(checks)
 }
 fn contract_bound(p:&mut Parser<'_>,want:&Refined)->R<i64>{
     let n=signed_bound(p)?;let mut unit=Unit::scalar();
@@ -291,6 +323,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
     let mut signatures = Functions::new();
     loop {
         if funcs.len() >= 32 { return Err(p.err("E_UNIT_LIMIT", "too many quantity functions")); }
+        let annotations=contract_annotations(p)?;
         let public = p.word("pub");
         p.expect_word("fnc")?;
         let name = identifier(p)?;
@@ -321,8 +354,8 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
             return Err(p.err("E_UNIT_ERASURE", "main must be zero-argument plain int"));
         }
         let before_contracts=p.at;
-        let checks=read_contracts(p,&mut params,&mut locals,&result,public)?;
-        let contracted=p.at!=before_contracts;
+        let checks=read_contracts(p,&mut params,&mut locals,&result,public,&annotations)?;
+        let contracted=!annotations.is_empty()||p.at!=before_contracts;
         let end_delimited=if p.take(Tok::LBrace){false}
             else if p.take(Tok::ColonColon){true}
             else if p.word("begin"){
