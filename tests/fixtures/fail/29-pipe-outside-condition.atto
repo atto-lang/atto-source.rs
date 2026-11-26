@@ -1,6 +1,5 @@
-// Java treats `|` outside a condition as a bitwise operator on ints; the
-// grammar has no bitwise operators, so the browser compiler rejects it.
-// expect-error: E_UNSUPPORTED
+// Value-context bitwise OR requires integer operands, not booleans.
+// expect-error: E_TYPE
 // java: rejects
 pub fnc main(): int {
   val b = false | true;
