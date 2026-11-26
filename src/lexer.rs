@@ -72,6 +72,72 @@ pub struct Token {
 pub const MAX_TOKENS: usize = 32_768;
 pub const MAX_STRING_BYTES: usize = 4_096;
 
+/// Current browser guest G0 floor. Native unsafe authority is not a
+/// capability of this frontend; lexical recognition grants no execution.
+pub(crate) fn reject_unsafe_guest_tokens(tokens: &[Token]) -> Result<(), Diagnostic> {
+    fn ident(t: &Token, name: &str) -> bool {
+        matches!(&t.tok, Tok::Ident(s) if s == name)
+    }
+    fn native_path(path: &str) -> bool {
+        let unix = path.replace('\\', "/");
+        fn reserved(value: &str) -> bool {
+            let mut segments = value.split(['/', '.', ':']).filter(|p| !p.is_empty());
+            let first = segments.next();
+            let root = if matches!(first, Some("atto" | "ores")) { segments.next() } else { first };
+            root == Some("std") && segments.next() == Some("unsafe")
+        }
+        if reserved(&unix) { return true; }
+        // Preserve intermediate canonical identity. A later traversal
+        // cannot erase the fact that an unsafe namespace was selected.
+        let mut prefix = Vec::with_capacity(3);
+        let mut stack = Vec::new();
+        let mut root_depth = 0;
+        for component in unix.split('/') {
+            match component {
+                "" | "." => continue,
+                ".." => {
+                    if root_depth != 0 && stack.len() <= root_depth { return true; }
+                    if let Some(previous) = stack.pop() { prefix.truncate(previous); }
+                    continue;
+                }
+                _ => {}
+            }
+            stack.push(prefix.len());
+            for segment in component.split(['.', ':']).filter(|p| !p.is_empty()) {
+                if prefix.len() == 3 { break; }
+                prefix.push(segment);
+            }
+            let offset = usize::from(matches!(prefix.first().copied(), Some("atto" | "ores")));
+            if prefix.get(offset) == Some(&"std") {
+                if root_depth == 0 { root_depth = stack.len(); }
+                if prefix.get(offset + 1) == Some(&"unsafe") { return true; }
+            }
+        }
+        false
+    }
+
+    let mut import = false;
+    for (i, token) in tokens.iter().enumerate() {
+        if ident(token, "unsafe") {
+            return Err(Diagnostic::new(token.pos, "E_UNSAFE_DOMAIN",
+                "unsafe source is unavailable in browser/Wasm guests"));
+        }
+        if ident(token, "import") { import = true; }
+        if matches!(token.tok, Tok::Semi | Tok::Eof) { import = false; }
+        if import && ident(token, "from") {
+            let mut at = i + 1;
+            if tokens.get(at).is_some_and(|t| ident(t, "pkg")) { at += 1; }
+            if let Some(Token { tok: Tok::Str(path), pos }) = tokens.get(at) {
+                if native_path(path) {
+                    return Err(Diagnostic::new(*pos, "E_UNSAFE_DOMAIN",
+                        "native unsafe standard-library imports are unavailable in browser/Wasm guests"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let chars: Vec<char> = source.chars().collect();
     let mut out = Vec::new();
@@ -98,7 +164,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             continue;
         }
         if c == '/' && chars.get(i + 1) == Some(&'/') {
-            while i < chars.len() && chars[i] != '\n' {
+            while i < chars.len() && !matches!(chars[i], '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}') {
                 bump!();
             }
             continue;
@@ -399,5 +465,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         tok: Tok::Eof,
         pos: Pos { line, col },
     });
+    reject_unsafe_guest_tokens(&out)?;
     Ok(out)
 }
