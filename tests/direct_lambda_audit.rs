@@ -140,3 +140,42 @@ fn direct_lambda_cannot_hide_unverified_ownership_moves_or_borrows() {
         assert_eq!(error.code, "E_UNSUPPORTED", "{op}: {error}");
     }
 }
+
+
+#[test]
+fn deferred_cleanup_must_not_rebind_local_lambda_to_global_homonym() {
+    // Registration executes in the caller; the deferred body is isolated.
+    // Do not resolve its same-named call to the global function after
+    // erasing the local lambda binding.
+    let source = r#"
+        fnc transform(int n): int { return n * 100; }
+        pub fnc main(): int {
+            val transform = |n| : int -> n + 1;
+            defer { transform(1); };
+            return transform(41);
+        }
+    "#;
+    let diagnostic = atto_compiler::compile(source)
+        .expect_err("isolated cleanup cannot invoke a direct lambda");
+    assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
+}
+
+#[test]
+fn isolated_handler_rejects_intrinsic_receiver_and_ascribed_callable_reference() {
+    for body in ["f.call(1);", "f.apply((1,));", "val alias = f;"] {
+        let src = format!("fnc f(int n):int {{ return n*100; }} pub fnc main():int {{ val f: fnc(int)->int = |n| : int -> n+1; defer {{ {body} }}; return f(41); }}");
+        assert_eq!(atto_compiler::compile(&src).unwrap_err().code, "E_UNSUPPORTED", "{src}");
+    }
+}
+
+#[test]
+fn module_helper_limit_accounts_for_pending_siblings() {
+    let mut src = String::new();
+    for i in 0..9 {
+        let bindings = (0..8).map(|j| format!("val f_{j} = || -> 1;")).collect::<String>();
+        let calls = (0..8).map(|j| format!("f_{j}()")).collect::<Vec<_>>().join("+");
+        src.push_str(&format!("fnc group_{i}():int {{ {bindings} return {calls}; }}"));
+    }
+    src.push_str("pub fnc main():int { return group_0(); }");
+    assert_eq!(atto_compiler::compile(&src).unwrap_err().code, "E_SOURCE_LIMIT");
+}
