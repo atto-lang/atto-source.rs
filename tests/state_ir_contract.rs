@@ -61,3 +61,34 @@ pub fnc main(): int { return 0; }
     let diagnostic = atto_compiler::compile(source).unwrap_err();
     assert_eq!(diagnostic.code, "E_STATE_BORROW", "{diagnostic}");
 }
+
+
+#[test]
+fn returned_write_snapshots_scalar_under_one_lease_and_returns_outside_it() {
+    let source = fs::read_to_string("tests/fixtures/pass/state-write-return-scalar.atto").unwrap();
+    let parsed = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
+    let program = check::check(&parsed).unwrap();
+    for (name, expected) in [("Counter.increment", Type::Int), ("Counter.mark", Type::Bool)] {
+        let method = program.funcs.iter().find(|f| f.name == name).unwrap();
+        let block = method.body.iter().find_map(|stmt| match stmt {
+            TStmt::Block(body) => Some(body),
+            _ => None,
+        }).expect("returned critical region must remain a block");
+        assert_eq!(block.len(), 2);
+        let TStmt::StateCriticalWrite(body) = &block[0] else {
+            panic!("missing exclusive lease");
+        };
+        assert_eq!(body.len(), 2);
+        assert!(matches!(&body[0], TStmt::StateFieldWrite { .. }));
+        let TStmt::Set(slot, value) = &body[1] else {
+            panic!("callback result must be stored before release");
+        };
+        assert_eq!(value.ty, expected);
+        assert!(matches!(&value.e, TExpr::StateFieldRead { .. }));
+        let TStmt::Return(Some(result)) = &block[1] else {
+            panic!("method return must follow the critical scope");
+        };
+        assert_eq!(result.ty, expected);
+        assert!(matches!(&result.e, TExpr::Local(s) if s == slot));
+    }
+}
