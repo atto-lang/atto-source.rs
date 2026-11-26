@@ -93,7 +93,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if c == '\0' {
             return Err(Diagnostic::new(pos, "E_NUL", "NUL characters are not allowed in source"));
         }
-        if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+        if matches!(c, ' ' | '\t' | '\r' | '\n' | '\u{000b}' | '\u{000c}') {
             bump!();
             continue;
         }
@@ -146,6 +146,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             {
                 s.push('!');
                 bump!();
+                if !matches!(chars.get(i), Some(' ' | '\t' | '\r' | '\n' | '\u{000b}' | '\u{000c}')) {
+                    return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
+                        "whitespace required after bang keyword"));
+                }
             }
             // Generator delegation is a single contiguous lexical spelling.
             // Do not consume a separated star: `yield *value` is not `yield*`.
@@ -418,14 +422,29 @@ mod canonical_exception_bang_tests {
     use super::*;
 
     #[test]
+    fn exception_bang_requires_java_compatible_whitespace() {
+        for keyword in ["trap!", "throw!", "raise!", "panic!"] {
+            for tail in ["", "(", "value", "!", ";", "/* comment */ value", "// comment\nvalue"] {
+                let source = format!("{keyword}{tail}");
+                let err = lex(&source).expect_err("missing separator must reject");
+                assert_eq!(err.code, "E_BANG_KEYWORD_WHITESPACE", "{source:?}");
+            }
+            for gap in [" ", "\t", "\n", "\r\n", "\u{000b}", "\u{000c}"] {
+                let source = format!("{keyword}{gap}value");
+                let tokens = lex(&source).expect("ASCII whitespace separator");
+                assert!(matches!(&tokens[0].tok, Tok::Ident(s) if s == keyword));
+                assert!(matches!(&tokens[1].tok, Tok::Ident(s) if s == "value"));
+            }
+        }
+    }
+
+    #[test]
     fn canonical_bangs_are_single_contextual_tokens() {
         let cases = [
             ("trap! parse_id(\"42\")", "trap!"),
-            ("trap!parse_id(\"42\")", "trap!"),
             ("throw! Error(\"bad\")", "throw!"),
             ("raise! Error(\"bad\")", "raise!"),
             ("panic! Error(\"bad\")", "panic!"),
-            ("throw!Error(\"bad\")", "throw!"),
             ("trap parse_id(\"42\")", ""),
             ("throw Error(\"bad\")", ""),
             ("raise Error(\"bad\")", ""),
@@ -439,7 +458,7 @@ mod canonical_exception_bang_tests {
             ("// trap! throw! raise! panic!\n42", ""),
             ("/* trap! throw! raise! panic! */ 42", ""),
         ];
-        assert_eq!(cases.len(), 18);
+        assert_eq!(cases.len(), 16);
         for (source, expected) in cases {
             let tokens = lex(source).expect("lex");
             let spellings: Vec<&str> = tokens.iter().filter_map(|t| match &t.tok {
