@@ -3557,13 +3557,13 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "freeze" | "weak" | "pin" | "drop")
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "move" | "share" | "freeze" | "weak" | "pin" | "drop")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
                     "borrow" => OwnershipOp::Borrow,
                     "copy" => OwnershipOp::Copy,
-                    "take" => OwnershipOp::Take,
+                    "take" | "move" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
                     "freeze" => OwnershipOp::Freeze,
                     "weak" => OwnershipOp::Weak,
@@ -3573,6 +3573,10 @@ impl Parser {
                 };
                 self.advance(); // name
                 let first_bang = self.advance(); // !
+                if action == OwnershipOp::Take &&
+                    (first_bang.pos.line != pos.line || first_bang.pos.col != pos.col + 4) {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX", "transfer bang must be contiguous"));
+                }
                 // 'copy!!' is a single canonical operator only when the word
                 // and both bangs are adjacent. 'copy! !x' stays a shallow copy
                 // of the logical negation, never a deep copy.
