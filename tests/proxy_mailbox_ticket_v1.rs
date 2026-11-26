@@ -118,3 +118,54 @@ fn empty_mailbox_rejects_wrong_tenant_without_spending_credit() {
     assert!(m.snapshot(&t).is_some());
     assert!(m.conservation());
 }
+
+#[test]
+fn concurrent_terminal_races_fence_foreign_tenant() {
+    for i in 0..64u64 {
+        let m = Mailbox::new(11, 13, 14, 2).unwrap();
+        let first = ticket(&m, route(5000 + i, 14), 42);
+        let turn = m.dispatch().unwrap();
+        let start = std::sync::Barrier::new(4);
+        let (committed, panicked, foreign) = std::thread::scope(|scope| {
+            let c = scope.spawn(|| { start.wait(); m.commit(&turn, 42) });
+            let p = scope.spawn(|| { start.wait(); m.panic(&turn) });
+            let a = scope.spawn(|| {
+                start.wait();
+                m.admit(Id { tenant: 88, ..route(6000 + i, 14) }, 99)
+            });
+            start.wait();
+            (c.join().unwrap(), p.join().unwrap(), a.join().unwrap())
+        });
+        assert_ne!(committed, panicked);
+        assert!(matches!(foreign, Admission::Stale));
+        let snapshot = m.snapshot(&first).unwrap();
+        assert_eq!(snapshot.state, if committed { TicketState::Processed } else { TicketState::Failed });
+        assert_eq!(snapshot.result, if committed { Some(42) } else { None });
+        assert!(!m.commit(&turn, 99));
+        assert!(!m.panic(&turn));
+        assert!(m.dispatch().is_none() && m.conservation());
+    }
+}
+
+#[test]
+fn same_actor_incarnation_different_tenants_are_independent() {
+    assert!(Mailbox::new(0, 13, 14, 1).is_none());
+    let a = Mailbox::new(11, 13, 14, 1).unwrap();
+    let b = Mailbox::new(88, 13, 14, 1).unwrap();
+    let ra = route(7000, 14);
+    let rb = Id { tenant: 88, ..ra };
+    let ta = ticket(&a, ra, 41);
+    let tb = ticket(&b, rb, 42);
+    assert!(matches!(a.admit(rb, 99), Admission::Stale));
+    assert!(matches!(b.admit(ra, 99), Admission::Stale));
+    let va = a.dispatch().unwrap();
+    let vb = b.dispatch().unwrap();
+    assert!(!a.commit(&vb, 99) && !b.commit(&va, 99));
+    assert!(a.snapshot(&tb).is_none() && b.snapshot(&ta).is_none());
+    assert!(a.commit(&va, 41) && b.commit(&vb, 42));
+    assert_eq!(a.snapshot(&ta).unwrap().result, Some(41));
+    assert_eq!(b.snapshot(&tb).unwrap().result, Some(42));
+    a.close();
+    assert!(matches!(a.admit(rb, 99), Admission::Stale));
+    assert!(a.conservation() && b.conservation());
+}
