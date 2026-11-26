@@ -135,6 +135,16 @@ const negatives = [
     ['wrong-receiver', decl + '\n' + main.replace('p.sum()', '10.sum()')],
     ['duplicate-method', decl.replace('int <- product()', 'int <- sum()') + '\n' + main],
 ];
+// A compact source must not amplify repeated mutating method bodies without bound.
+const largeMutator = decl.replace('    mtd int • sum()', '    mut mtd bump():void { ' +
+    'self.x = self.x + 1; '.repeat(128) + '}\n    mtd int • sum()');
+const expansionSource = largeMutator + '\npub fnc main():int { let mut p = Point(0, 0); ' +
+    'p.bump(); '.repeat(128) + 'return 0; }';
+negatives.push(['mut-expansion-budget', expansionSource, /E_SOURCE_LIMIT: attached struct expansion node budget exceeded/]);
+positives.push(['mut-expansion-below-budget', largeMutator +
+    '\npub fnc main():int { let mut p = Point(0, 0); p.bump(); p.bump(); stdio.println(p.sum()); return 0; }', '256\n']);
+const fixtureIds = [...positives, ...negatives].map(([id]) => id);
+assert.equal(new Set(fixtureIds).size, fixtureIds.length, 'duplicate guest fixture ID');
 const attoc = process.env.ATTOC || './target/debug/attoc';
 const work = await mkdtemp(join(tmpdir(), 'atto-struct-value-'));
 async function build(name, source) {
@@ -145,6 +155,8 @@ async function build(name, source) {
 try {
     for (const [name, source, expected] of positives) {
         const { result, output } = await build(name, source);
+        assert.ifError(result.error);
+        assert.equal(result.signal, null, name + ': compiler terminated');
         assert.equal(result.status, 0, name + ': ' + result.stderr);
         const bytes = await readFile(output);
         const module = new WebAssembly.Module(bytes);
@@ -167,10 +179,12 @@ try {
         assert.deepEqual(await readFile(again.output), bytes, name + ': nondeterministic guest');
         console.log('PASS actual struct guest', name, JSON.stringify(stdout));
     }
-    for (const [name, source] of negatives) {
+    for (const [name, source, diagnostic = /E_[A-Z_]+/] of negatives) {
         const { result, output } = await build(name, source);
+        assert.ifError(result.error);
+        assert.equal(result.signal, null, name + ': compiler terminated');
         assert.equal(result.status, 1, name + ': ' + result.stderr);
-        assert.match(result.stderr, /E_[A-Z_]+/, name);
+        assert.match(result.stderr, diagnostic, name);
         await assert.rejects(stat(output), {code:'ENOENT'}, name + ': rejected program emitted artifact');
         console.log('PASS rejected struct source', name);
     }
