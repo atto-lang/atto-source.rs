@@ -144,3 +144,14 @@ fn erased_internal_marker_cannot_grant_export_authority() {
         err(&format!("{header} host_clock_ns(): int; pub fnc main(): int {{ return 0; }}"), "E_VISIBILITY");
     }
 }
+
+#[test]
+fn nested_brace_export_does_not_promote_a_file_root_symbol() {
+    for source in [
+        "fnc helper(): int { return 42; } pub fnc main(): int { export pub fnc helper; return helper(); }",
+        "fnc helper(): int { return 42; } define class C as pub value(): int { export pub fnc helper; return 42; } end pub fnc main(): int { return helper(); }",
+    ] {
+        err(source, "E_SCOPE");
+    }
+    ok("fnc helper(): int { return 42; } pub fnc main(): int { return helper(); } export pub fnc helper;");
+}
