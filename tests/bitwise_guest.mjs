@@ -68,23 +68,50 @@ try {
     await assert.rejects(readFile(bin), { code: 'ENOENT' },
       'rejected syntax may not leave any guest artifact');
   }
-  // Dynamic counts are evaluated exactly once, checked before reaching
-  // Wasm's naturally modulo-64 shift instructions, and raise panic code 7.
-  for (const [index, operation] of ['1 <<< distance', '1 >>> distance',
-      '-8 ashr distance'].entries()) {
-    const src = join(tmp, `dynamic-${index}.atto`);
-    const bin = join(tmp, `dynamic-${index}.wasm`);
-    await writeFile(src,
-      `pub fnc main(): int { let distance: int = 64; return ${operation}; }\n`);
-    const result = spawnSync(attoc, [src, '-o', bin],
-      { encoding: 'utf8', timeout: 30000 });
-    assert.equal(result.status, 0, result.stderr);
-    const bytes = await readFile(bin);
-    const { instance } = await WebAssembly.instantiate(bytes, { atto: {} });
-    assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
-    assert.equal(instance.exports.panic_code.value, 7, operation);
+  // Compile shifts with a callable parameter, not a literal in the shift
+  // expression. Cover both expression and compound lowering, and prove
+  // the runtime guard rejects the full signed distance before Wasm masks it.
+  const runtimeForms = [
+    ['return 1 <<< distance;', 1n, -9223372036854775808n],
+    ['return -1 >>> distance;', -1n, 1n],
+    ['return -8 ashr distance;', -8n, -1n],
+    ['let x: int = 1; x <<<= distance; return x;', 1n, -9223372036854775808n],
+    ['let x: int = -1; x >>>= distance; return x;', -1n, 1n],
+    ['let x: int = -8; x ashr= distance; return x;', -8n, -1n],
+  ];
+  let validRuntime = 0;
+  let invalidRuntime = 0;
+  for (const [body, atZero, at63] of runtimeForms) {
+    for (const [distance, expected] of [
+      ['0', atZero], ['63', at63], ['-1', null], ['64', null],
+      ['-9223372036854775808', null], ['9223372036854775807', null],
+    ]) {
+      const index = validRuntime + invalidRuntime;
+      const src = join(tmp, `dynamic-${index}.atto`);
+      const bin = join(tmp, `dynamic-${index}.wasm`);
+      const label = `${body} distance=${distance}`;
+      await writeFile(src,
+        `fnc shifted(int distance): int { ${body} }\npub fnc main(): int { return shifted(${distance}); }\n`);
+      const result = spawnSync(attoc, [src, '-o', bin], { encoding: 'utf8', timeout: 30000 });
+      assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+      const bytes = await readFile(bin);
+      assert.ok(WebAssembly.validate(bytes), `${label}: invalid wasm`);
+      const { instance } = await WebAssembly.instantiate(bytes, { atto: {} });
+      if (expected === null) {
+        assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError, label);
+        assert.equal(instance.exports.panic_code.value, 7, label);
+        invalidRuntime++;
+      } else {
+        assert.equal(instance.exports.main(), expected, label);
+        assert.equal(instance.exports.panic_code.value, 0, label);
+        validRuntime++;
+      }
+    }
   }
-  console.log('PASS', i, 'bitwise Wasm guests; 11 no-artifact and 3 runtime shift panic checks');
+  assert.equal(validRuntime, 12);
+  assert.equal(invalidRuntime, 24);
+  console.log('PASS', i, 'bitwise Wasm guests; 11 no-artifact checks;',
+    validRuntime, 'dynamic boundary guests;', invalidRuntime, 'runtime shift panic checks');
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }
