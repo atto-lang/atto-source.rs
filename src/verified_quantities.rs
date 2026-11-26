@@ -55,7 +55,30 @@ fn convert(value: Value, unit: Unit, pos: Pos) -> R<Value> {
     Ok(Value { unit, number })
 }
 
+// Only an explicit private, name-first scalar contract at the first header
+// selects this bounded profile. Never scan arbitrary expressions for keywords.
+fn scalar_contract_header(tokens: &[Token]) -> bool {
+    let word=|i:usize,n:&str|tokens.get(i).is_some_and(|t|matches!(&t.tok,Tok::Ident(s) if s==n));
+    if !word(0,"fnc") || !tokens.get(1).is_some_and(|t|matches!(&t.tok,Tok::Ident(_))) ||
+        !tokens.get(2).is_some_and(|t|t.tok==Tok::LParen){return false;}
+    let mut i=3;
+    // This subset admits only simple scalar parameters (no nested types).
+    if !tokens.get(i).is_some_and(|t|t.tok==Tok::RParen){
+        loop {
+            if !(word(i,"int")||word(i,"i64")||word(i,"i32")) ||
+                !tokens.get(i+1).is_some_and(|t|matches!(&t.tok,Tok::Ident(_))){return false;}
+            i+=2;
+            if tokens.get(i).is_some_and(|t|t.tok==Tok::RParen){break;}
+            if !tokens.get(i).is_some_and(|t|t.tok==Tok::Comma){return false;}
+            i+=1;
+        }
+    }
+    tokens.get(i+1).is_some_and(|t|t.tok==Tok::Arrow) &&
+        (word(i+2,"int")||word(i+2,"i64")||word(i+2,"i32")) &&
+        (word(i+3,"requires")||word(i+3,"ensures"))
+}
 pub(crate) fn has_declarations(tokens: &[Token]) -> bool {
+    scalar_contract_header(tokens) ||
     tokens.first().is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if n=="type")) && tokens.get(2).is_some_and(|t|t.tok==Tok::Assign) && tokens.get(3).is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if matches!(n.as_str(),"int"|"i64"|"i32"))) && tokens.get(4).is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if n=="where")) || tokens.windows(2).any(|w| matches!((&w[0].tok,&w[1].tok),
         (Tok::Ident(a),Tok::Ident(b)) if a == "define" && (b == "dimension" || b == "unit")))
 }
@@ -64,15 +87,16 @@ pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Lowered>> {
 }
 pub(crate) fn lower_mode(source: &str, tokens: &[Token], strict: bool) -> R<Option<Lowered>> {
     if !has_declarations(tokens) { return Ok(None); }
+    let scalar_contract_profile=scalar_contract_header(tokens);
     let mut p = Parser { tokens, at: 0, lines: source.lines().map(|l| l.chars().collect()).collect(),
-        dimensions: BTreeSet::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256, strict };
+        dimensions: BTreeSet::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256, strict, scalar_contract_profile };
     let mut declarations = 0;
     while p.word("define") {
         declarations += 1;
         if declarations > 128 { return Err(p.err("E_UNIT_LIMIT", "too many quantity declarations")); }
         p.declaration()?;
     }
-    if matches!(&p.token().tok, Tok::Ident(name) if name == "type") {
+    if scalar_contract_profile || matches!(&p.token().tok, Tok::Ident(name) if name == "type") {
         return bindings::lower(&mut p).map(|program| Some(Lowered::Typed(program)));
     }
     if strict {
@@ -91,7 +115,7 @@ pub(crate) fn lower_mode(source: &str, tokens: &[Token], strict: bool) -> R<Opti
 
 struct Parser<'a> {
     tokens: &'a [Token], at: usize, lines: Vec<Vec<char>>,
-    dimensions: BTreeSet<String>, bases: BTreeSet<String>, units: BTreeMap<String,Unit>, budget: usize, strict: bool,
+    dimensions: BTreeSet<String>, bases: BTreeSet<String>, units: BTreeMap<String,Unit>, budget: usize, strict: bool, scalar_contract_profile: bool,
 }
 impl Parser<'_> {
     fn token(&self) -> &Token { &self.tokens[self.at.min(self.tokens.len()-1)] }
