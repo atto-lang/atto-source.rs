@@ -21,7 +21,7 @@ const positive = [
   'do select first over default: { return 42; } end return 99;',
   'let n: int = 40; do select fair { default: { n = n + 2; } } return n;',
   'do select random over default: { do select { default: { return 42; } } } end return 99;',
-  'let n: int = 0; loop { do select { default: { n = n + 1; if n < 42 { continue; } break; } } } return n;',
+  'let n: int = 0; loop { do select { default: { n = n + 1; if n < 42 then continue; fi break; } } } return n;',
 ];
 const negative = [
   'do select {} return 0;',
