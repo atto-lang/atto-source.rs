@@ -53,6 +53,7 @@ pub mod static_import_graph;
 pub mod ref_layout;
 // Host-only substrates; no guest ownership or physical layout certification.
 pub mod owner_arena;
+pub mod actor_arena;
 pub mod layout_trace;
 pub mod layout_plan;
 /// Verified source-graph imports and canonical module identities.
