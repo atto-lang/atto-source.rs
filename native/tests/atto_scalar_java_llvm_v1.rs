@@ -82,7 +82,7 @@ fn negatives() -> [(&'static str, &'static str, &'static str); 5] {
         (
             "removed-double-caret",
             include_str!("../../contracts/atto-scalar-v1/negative/removed-double-caret.atto"),
-            "removed_operator",
+            "unsupported_operator",
         ),
     ]
 }
@@ -207,16 +207,16 @@ fn mixed_parameter_spellings_keep_duplicate_and_arity_checks() {
 }
 
 #[test]
-fn removed_operators_have_canonical_diagnostics_and_exact_offsets() {
-    for (symbol, offset) in [("%", 31), ("^", 31), ("^^", 31)] {
+fn removed_and_unlowered_operators_have_exact_diagnostics_and_offsets() {
+    for (symbol, offset, class) in [("%", 31, "removed_operator"), ("^", 31, "removed_operator"), ("^^", 31, "unsupported_operator")] {
         let prefix = "pub fnc main(): int { return 1 ";
         assert_eq!(prefix.len(), offset);
         let source = format!("{prefix}{symbol} 2; }}");
         let err = frontend::parse(&source).expect_err("removed operator admitted");
-        assert_eq!(err.class, "removed_operator");
+        assert_eq!(err.class, class);
         assert_eq!(err.offset, offset);
         assert!(
-            compile(&source).unwrap_err().starts_with("removed_operator"),
+            compile(&source).unwrap_err().starts_with(class),
             "{source}"
         );
     }
@@ -438,4 +438,11 @@ mod linux_native {
             );
         }
     }
+}
+
+#[test]
+fn caret_return_is_not_the_removed_infix_operator() {
+    let explicit = frontend::parse("pub fnc main(): int { return 42; }").unwrap();
+    assert_eq!(frontend::parse("pub fnc main(): int { ^ 42; }").unwrap(), explicit);
+    assert!(!compile("pub fnc main(): int { ^ 42; }").unwrap().is_empty());
 }

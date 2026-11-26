@@ -112,6 +112,12 @@ enum Kind {
     Minus,
     #[token("*")]
     Star,
+    #[token("%")]
+    RemovedModulo,
+    #[token("^")]
+    Caret,
+    #[token("^^")]
+    Xor,
     #[regex(r"[0-9][0-9_]*")]
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
@@ -274,6 +280,14 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             });
         }
         match kind {
+            Kind::RemovedModulo => {
+                return Err(ParseError { offset: range.start, class: "removed_operator",
+                    message: "infix % is removed; use named arithmetic functions".into() });
+            }
+            Kind::Xor => {
+                return Err(ParseError { offset: range.start, class: "unsupported_operator",
+                    message: "canonical ^^ requires bitwise lowering not admitted by this scalar profile".into() });
+            }
             Kind::LParen => {
                 paren_depth += 1;
                 if paren_depth > MAX_PAREN_NESTING {
@@ -505,7 +519,11 @@ impl Parser {
                 });
             }
         }
-        self.expect(Kind::Return)?;
+        if self.peek() == Some(Kind::Caret) {
+            self.expect(Kind::Caret)?;
+        } else {
+            self.expect(Kind::Return)?;
+        }
         let expression = self.expression()?;
         self.expect(Kind::Semicolon)?;
         if uses_end {
@@ -546,6 +564,10 @@ impl Parser {
                 }
                 _ => break,
             };
+        }
+        if self.peek() == Some(Kind::Caret) {
+            return Err(ParseError { offset: self.pos(), class: "removed_operator",
+                message: "infix ^ is removed; ^ is a return statement marker".into() });
         }
         Ok(lhs)
     }
