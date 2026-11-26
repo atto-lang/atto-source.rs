@@ -6,6 +6,7 @@ on:
       - 'src/lib.rs'
       - 'src/compiler_artifact_receipt.rs'
       - 'src/compiler_artifact_store.rs'
+      - 'src/compiler_artifact_store/authority.rs'
       - 'src/secure_fs.rs'
       - 'src/compiler_cache_witness.rs'
       - 'src/compiler_cache_key_policy.rs'

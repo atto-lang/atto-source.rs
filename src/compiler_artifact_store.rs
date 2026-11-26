@@ -46,6 +46,8 @@ fn remove_pending(root:&File)->io::Result<()> {
     if unsafe{unlinkat(root.as_raw_fd(),name.as_ptr(),0)}==0{return Ok(());}
     let e=io::Error::last_os_error();if e.kind()==io::ErrorKind::NotFound{Ok(())}else{Err(e)}
 }
+#[cfg(test)]
+pub(crate) mod authority;
 pub struct ArtifactStore { root:LockedRoot }
 impl ArtifactStore {
     pub fn open(path:&Path)->io::Result<Self>{
@@ -219,9 +221,10 @@ mod tests {
         }
         result
     }
-    fn execute_wasm(path:&Path){
-        let script="const fs=require('node:fs'),assert=require('node:assert/strict');const b=fs.readFileSync(process.argv[1]);assert.ok(WebAssembly.validate(b));const m=new WebAssembly.Module(b);assert.deepEqual(WebAssembly.Module.imports(m),[]);const i=new WebAssembly.Instance(m,{});assert.equal(i.exports.main(),42n);assert.equal(i.exports.panic_code.value,0);console.log('CACHE_WASM_EXECUTED|result=42')";
-        let status=Command::new("node").args(["-e",script]).arg(path).status().unwrap();
+    fn execute_wasm(path:&Path){execute_wasm_result(path,"42")}
+    fn execute_wasm_result(path:&Path,expected:&str){
+        let script="const fs=require('node:fs'),assert=require('node:assert/strict');const b=fs.readFileSync(process.argv[1]);assert.ok(WebAssembly.validate(b));const m=new WebAssembly.Module(b);assert.deepEqual(WebAssembly.Module.imports(m),[]);const i=new WebAssembly.Instance(m,{});assert.equal(i.exports.main(),BigInt(process.argv[2]));assert.equal(i.exports.panic_code.value,0);console.log('CACHE_WASM_EXECUTED|result='+process.argv[2])";
+        let status=Command::new("node").args(["-e",script]).arg(path).arg(expected).status().unwrap();
         assert!(status.success());
     }
     #[test]
@@ -408,39 +411,74 @@ end"#;
         let cache=t.0.join("cache");fs::DirBuilder::new().mode(0o700).create(&cache).unwrap();
         let host=t.0.join("host");fs::DirBuilder::new().mode(0o700).create(&host).unwrap();
         let store=ArtifactStore::open(&cache).unwrap();
+        let authority=authority::Authority::open(&host).unwrap();
         let record=ledger::record("tenant/a",1,SECRET).unwrap();
         let pin=sha256(&record);
-        // Fixture record lives outside cache; its expected digest comes from
-        // independent test authority, never re-derived from the read file.
-        fs::write(host.join("active"),&record).unwrap();
+        authority.provision("tenant/a",1,SECRET,&pin).unwrap();
+        assert!(authority.provision("tenant/a",1,SECRET,&pin).is_err());
+        assert!(authority::Authority::open(&cache).unwrap().distinct_from(&store).is_err());
         let compiler=session_compiler_identity();
         let toolchain=hex_digest(b"fixture toolchain attestation");
         let session=Session{store:&store,scope:"tenant/a",compiler_digest:&compiler,toolchain_digest:&toolchain,target:TargetOs::Posix};
         let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let source_pin=hex_digest(lock.as_bytes());
-        let build=|mode,record:&[u8],pin:&[u8;32],master,inputs:&[crate::package_resolver::SnapshotSource<'_>]|
-            session.build(mode,record,pin,master,"src/main.atto",MANIFEST,&lock,&source_pin,inputs);
-        let cold=build(Mode::Cold,&record,&pin,SECRET,&inputs).unwrap();
+        let build=|mode,pin:&[u8;32],master,inputs:&[crate::package_resolver::SnapshotSource<'_>]|
+            session.build(mode,&authority,pin,master,"src/main.atto",MANIFEST,&lock,&source_pin,inputs);
+        let cold=build(Mode::Cold,&pin,SECRET,&inputs).unwrap();
         assert_eq!(cold.outcome,Outcome::Compiled);
-        let warm=build(Mode::Incremental,&fs::read(host.join("active")).unwrap(),&pin,SECRET,&inputs).unwrap();
+        let warm=build(Mode::Incremental,&pin,SECRET,&inputs).unwrap();
         assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(cold.bytes,warm.bytes);
         fs::write(host.join("guest.wasm"),&warm.bytes).unwrap();execute_wasm(&host.join("guest.wasm"));
         let status=Command::new(std::env::current_exe().unwrap()).args(["--exact","compiler_artifact_store::tests::explicit_session_child","--nocapture"])
             .env("ATTO_SESSION_ROOT",&t.0).status().unwrap();assert!(status.success());
         let changed=MATH.replace("x * 2","x * 3");
-        assert_eq!(build(Mode::Incremental,&record,&pin,SECRET,&package_inputs(&changed)).unwrap_err().code,"E_LOCK_HASH");
+        assert_eq!(build(Mode::Incremental,&pin,SECRET,&package_inputs(&changed)).unwrap_err().code,"E_LOCK_HASH");
         let rotated=ledger::record("tenant/a",2,[7;32]).unwrap();let new_pin=sha256(&rotated);
-        assert_eq!(build(Mode::Incremental,&record,&new_pin,SECRET,&inputs).unwrap_err().code,"E_CACHE_LEDGER");
-        // Existing slot was signed by the old key: diagnostic, no implicit fallback.
-        assert_eq!(build(Mode::Incremental,&rotated,&new_pin,[7;32],&inputs).unwrap_err().code,"E_CACHE_READ");
-        let fresh=build(Mode::Cold,&rotated,&new_pin,[7;32],&inputs).unwrap();
+        let held=authority.lease("tenant/a",&pin,SECRET).unwrap();
+        let try_rotate=|expect:&str|Command::new(std::env::current_exe().unwrap()).args(["--exact","compiler_artifact_store::tests::authority_rotation_child","--nocapture"])
+            .env("ATTO_ROTATION_ROOT",&host).env("ATTO_ROTATION_EXPECT",expect).status().unwrap();
+        assert!(try_rotate("busy").success());
+        assert_eq!(fs::read(host.join("active")).unwrap(),record);
+        drop(held);
+        // Pending file left by interrupted publisher is replaced under lock.
+        fs::write(host.join(".ledger.pending"),b"interrupted").unwrap();
+        assert!(try_rotate("success").success());
+        assert_eq!(fs::read(host.join("active")).unwrap(),rotated);
+        assert!(!host.join(".ledger.pending").exists());
+        assert_eq!(build(Mode::Incremental,&pin,SECRET,&inputs).unwrap_err().code,"E_CACHE_LEDGER");
+        assert_eq!(build(Mode::Incremental,&new_pin,[7;32],&inputs).unwrap_err().code,"E_CACHE_READ");
+        let fresh=build(Mode::Cold,&new_pin,[7;32],&inputs).unwrap();
         assert_eq!(fresh.outcome,Outcome::Compiled);assert_eq!(fresh.bytes,cold.bytes);
-        assert_eq!(build(Mode::Incremental,&rotated,&new_pin,[7;32],&inputs).unwrap().outcome,Outcome::Reused);
+        assert_eq!(build(Mode::Incremental,&new_pin,[7;32],&inputs).unwrap().outcome,Outcome::Reused);
         let prepared=crate::compiler_cache_witness::prepare("src/main.atto",MANIFEST,&lock,&source_pin,&inputs,TargetOs::Posix,&compiler,&toolchain).unwrap();
         let path=cache.join(slot(&prepared.key));let mut corrupted=fs::read(&path).unwrap();corrupted[112]^=1;
         fs::write(&path,&corrupted).unwrap();
-        assert_eq!(build(Mode::Incremental,&rotated,&new_pin,[7;32],&inputs).unwrap_err().code,"E_CACHE_READ");
+        assert_eq!(build(Mode::Incremental,&new_pin,[7;32],&inputs).unwrap_err().code,"E_CACHE_READ");
         assert_eq!(fs::read(&path).unwrap(),corrupted);
-        println!("CACHE_SESSION|explicit-cold-warm|second-process|rotation|corruption-fail-closed");
+        // Restore old record on disk but retain independently supplied pin.
+        fs::write(host.join("active"),&record).unwrap();
+        assert_eq!(build(Mode::Incremental,&new_pin,[7;32],&inputs).unwrap_err().code,"E_CACHE_LEDGER");
+        fs::write(host.join("active"),&rotated).unwrap();
+        // Explicit recovery of the deliberately corrupted artifact.
+        assert_eq!(build(Mode::Cold,&new_pin,[7;32],&inputs).unwrap().outcome,Outcome::Compiled);
+        let changed_inputs=package_inputs(&changed);let changed_lock=package_lock(&changed_inputs);
+        let changed_pin=hex_digest(changed_lock.as_bytes());
+        let changed_build=session.build(Mode::Incremental,&authority,&new_pin,[7;32],"src/main.atto",MANIFEST,&changed_lock,&changed_pin,&changed_inputs).unwrap();
+        assert_eq!(changed_build.outcome,Outcome::Compiled);assert_ne!(changed_build.bytes,cold.bytes);
+        let expected=crate::package_resolver::compile_locked_snapshot("src/main.atto",MANIFEST,&changed_lock,&changed_pin,&changed_inputs).unwrap();
+        assert_eq!(expected,changed_build.bytes);
+        fs::write(host.join("changed.wasm"),&expected).unwrap();execute_wasm_result(&host.join("changed.wasm"),"63");
+        assert_eq!(session.build(Mode::Incremental,&authority,&new_pin,[7;32],"src/main.atto",MANIFEST,&changed_lock,&changed_pin,&changed_inputs).unwrap().outcome,Outcome::Reused);
+        // Independently pinned, syntactically valid but ill-typed source must
+        // never publish or reuse an executable. The clean diagnostic agrees.
+        let bad=MATH.replace("return x * 2;","return true;");
+        let bad_inputs=package_inputs(&bad);let bad_lock=package_lock(&bad_inputs);let bad_pin=hex_digest(bad_lock.as_bytes());
+        let clean=crate::package_resolver::compile_locked_snapshot("src/main.atto",MANIFEST,&bad_lock,&bad_pin,&bad_inputs).unwrap_err();
+        let before:std::collections::BTreeMap<_,_>=fs::read_dir(&cache).unwrap().map(|e|{let e=e.unwrap();(e.file_name(),fs::read(e.path()).unwrap())}).collect();
+        let actual=session.build(Mode::Cold,&authority,&new_pin,[7;32],"src/main.atto",MANIFEST,&bad_lock,&bad_pin,&bad_inputs).unwrap_err();
+        assert_eq!(actual.code,clean.code);
+        let after:std::collections::BTreeMap<_,_>=fs::read_dir(&cache).unwrap().map(|e|{let e=e.unwrap();(e.file_name(),fs::read(e.path()).unwrap())}).collect();
+        assert_eq!(before,after);
+        println!("CACHE_SESSION|cross-process-rotation-fenced|restart|rollback-pin-denied|changed-guest=63|failed-build-no-publication");
     }
     #[test]
     fn explicit_session_child(){
@@ -448,14 +486,54 @@ end"#;
             use crate::{compiler_cache_session::{Session,Mode,Outcome},compiler_cache_ledger as ledger,
                 library::TargetOs,sha256::{hex_digest,sha256}};
             let root=Path::new(&root);let store=ArtifactStore::open(&root.join("cache")).unwrap();
+            let authority=authority::Authority::open(&root.join("host")).unwrap();
             let expected=ledger::record("tenant/a",1,SECRET).unwrap();let pin=sha256(&expected);
             let compiler=session_compiler_identity();let toolchain=hex_digest(b"fixture toolchain attestation");
             let session=Session{store:&store,scope:"tenant/a",compiler_digest:&compiler,toolchain_digest:&toolchain,target:TargetOs::Posix};
             let inputs=package_inputs(MATH);let lock=package_lock(&inputs);let source_pin=hex_digest(lock.as_bytes());
-            let warm=session.build(Mode::Incremental,&fs::read(root.join("host/active")).unwrap(),&pin,SECRET,"src/main.atto",MANIFEST,&lock,&source_pin,&inputs).unwrap();
+            let warm=session.build(Mode::Incremental,&authority,&pin,SECRET,"src/main.atto",MANIFEST,&lock,&source_pin,&inputs).unwrap();
             assert_eq!(warm.outcome,Outcome::Reused);
             assert_eq!(warm.bytes,fs::read(root.join("host/guest.wasm")).unwrap());
             println!("CACHE_SESSION_CHILD|ledger-admitted|reused");
         }
+    }
+    #[test]
+    fn authority_rotation_child(){
+        if let Some(root)=std::env::var_os("ATTO_ROTATION_ROOT"){
+            use crate::{compiler_cache_ledger as ledger,sha256::sha256};
+            let authority=authority::Authority::open(Path::new(&root)).unwrap();
+            let old=sha256(&ledger::record("tenant/a",1,SECRET).unwrap());
+            let new=sha256(&ledger::record("tenant/a",2,[7;32]).unwrap());
+            let result=authority.rotate("tenant/a",&old,SECRET,2,[7;32],&new);
+            if std::env::var("ATTO_ROTATION_EXPECT").unwrap()=="busy"{
+                assert_eq!(result.unwrap_err().kind(),io::ErrorKind::WouldBlock);
+                println!("CACHE_AUTHORITY_CHILD|rotation-blocked-by-live-lease");
+            }else{
+                result.unwrap();
+                assert!(authority.lease("tenant/a",&old,SECRET).is_err());
+                assert!(authority.lease("tenant/a",&new,[7;32]).is_ok());
+                println!("CACHE_AUTHORITY_CHILD|rotation-committed");
+            }
+        }
+    }
+    #[test]
+    fn authority_rejects_bad_inode_and_rotation_cas(){
+        use crate::{compiler_cache_ledger as ledger,sha256::sha256};
+        let t=Temp::new();let a=authority::Authority::open(&t.0).unwrap();
+        let old=ledger::record("tenant/a",1,SECRET).unwrap();let pin=sha256(&old);
+        let new=sha256(&ledger::record("tenant/a",2,[7;32]).unwrap());
+        assert!(a.provision("tenant/a",1,SECRET,&[0;32]).is_err());
+        a.provision("tenant/a",1,SECRET,&pin).unwrap();
+        assert!(a.rotate("tenant/a",&[0;32],SECRET,2,[7;32],&new).is_err());
+        assert!(a.rotate("tenant/a",&pin,SECRET,2,[7;32],&[0;32]).is_err());
+        assert!(a.rotate("tenant/a",&pin,SECRET,1,[7;32],&new).is_err());
+        assert!(a.rotate("tenant/a",&pin,SECRET,2,SECRET,&new).is_err());
+        assert_eq!(fs::read(t.0.join("active")).unwrap(),old);
+        let path=t.0.join("active");fs::rename(&path,t.0.join("saved")).unwrap();
+        symlink(t.0.join("saved"),&path).unwrap();assert!(a.lease("tenant/a",&pin,SECRET).is_err());fs::remove_file(&path).unwrap();
+        fs::hard_link(t.0.join("saved"),&path).unwrap();assert!(a.lease("tenant/a",&pin,SECRET).is_err());fs::remove_file(&path).unwrap();
+        assert!(Command::new("mkfifo").arg(&path).status().unwrap().success());assert!(a.lease("tenant/a",&pin,SECRET).is_err());fs::remove_file(&path).unwrap();
+        fs::rename(t.0.join("saved"),&path).unwrap();assert!(a.lease("tenant/a",&pin,SECRET).is_ok());
+        println!("CACHE_AUTHORITY|symlink-hardlink-fifo-denied|bad-cas-no-mutation");
     }
 }

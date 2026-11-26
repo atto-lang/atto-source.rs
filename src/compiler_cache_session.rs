@@ -1,11 +1,11 @@
 //! Explicit test-only incremental interface, no production CLI or API.
 //! Each build re-admits the externally pinned active epoch and authenticated
 //! source closure. No fallback on corruption, no caller-supplied signing bytes.
-//! The host must guarantee that the current record/pin is supplied at every
-//! admission and serialize rotation with builds; this candidate has no live
-//! authority service or durable anti-rollback provider.
-use crate::{compiler_artifact_store::ArtifactStore,compiler_artifact_receipt as receipt,
-    compiler_cache_ledger as ledger,compiler_cache_witness as witness,
+//! The local authority adapter holds a shared lease through publication.
+//! The host must supply the independently current pin at every admission;
+//! there is no durable external anti-rollback provider.
+use crate::{compiler_artifact_store::{ArtifactStore,authority::Authority},compiler_artifact_receipt as receipt,
+    compiler_cache_witness as witness,
     diag::{Diagnostic,Pos},library::TargetOs,package_resolver::SnapshotSource};
 
 pub(crate) enum Mode { Cold, Incremental }
@@ -22,10 +22,11 @@ pub(crate) struct Session<'a>{
     pub(crate) target:TargetOs,
 }
 impl Session<'_>{
-    pub(crate) fn build(&self,mode:Mode,record:&[u8],current_pin:&[u8;32],master:[u8;32],
+    pub(crate) fn build(&self,mode:Mode,authority:&Authority,current_pin:&[u8;32],master:[u8;32],
         entry:&str,manifest:&str,lock:&str,source_pin:&str,inputs:&[SnapshotSource<'_>])->Result<Build,Diagnostic>{
-        let active=ledger::admit(self.scope,record,current_pin,master).map_err(|_|cache_error("E_CACHE_LEDGER"))?;
-        let secret=active.derived();
+        authority.distinct_from(self.store).map_err(|_|cache_error("E_CACHE_LEDGER"))?;
+        let lease=authority.lease(self.scope,current_pin,master).map_err(|_|cache_error("E_CACHE_LEDGER"))?;
+        let secret=lease.secret();
         let prepared=witness::prepare(entry,manifest,lock,source_pin,inputs,self.target,self.compiler_digest,self.toolchain_digest)?;
         if matches!(mode,Mode::Incremental){
             if let Some(bytes)=self.store.load(&prepared.key,&secret).map_err(|_|cache_error("E_CACHE_READ"))?{
