@@ -433,6 +433,9 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     let mut returned = false;
     while !(if end_delimited {p.word("end")}else{p.take(Tok::RBrace)}) {
         if matches!(p.token().tok,Tok::Eof|Tok::RBrace) || matches!(&p.token().tok,Tok::Ident(n) if n=="end") {return Err(p.err("E_SYNTAX","missing or mismatched body closer"));}
+        if end_delimited && matches!(&p.token().tok, Tok::Ident(n) if matches!(n.as_str(), "pub" | "fnc")) {
+            return Err(p.err("E_SYNTAX", "missing end before next callable declaration"));
+        }
         if returned { return Err(p.err("E_VERIFY_UNSUPPORTED", "statement after unconditional return")); }
         if p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "strict statement budget")); }
         p.budget -= 1;
