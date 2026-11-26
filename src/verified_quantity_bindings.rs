@@ -328,7 +328,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
             if !checks.is_empty(){return Err(p.err("E_VERIFY_UNSUPPORTED","strict ensures with control flow require separate proof"));}
             let mut mutable = Aliases::new();
             let (stmts, returns) = strict_block(p, &aliases, &signatures, &result,
-                &mut locals, &mut mutable, &mut slots, params.len(), 0)?;
+                &mut locals, &mut mutable, &mut slots, params.len(), 0, None)?;
             if !returns { return Err(p.err("E_VERIFY_RETURN", "not every path returns")); }
             body = stmts;
         } else {
@@ -385,7 +385,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
 }
 
  // Closed strict CFG: while uses declared scalar invariants; no aliases,
-// suspension, shadowing, break/continue or external calls.
+// suspension, shadowing, or external calls. Lexical loop exits are checked.
  // Each local has a stable physical slot; mutable assignments replace its fact.
 fn loop_writes(p: &Parser<'_>) -> R<std::collections::BTreeSet<String>> {
     let mut writes = std::collections::BTreeSet::new();
@@ -407,9 +407,10 @@ fn loop_writes(p: &Parser<'_>) -> R<std::collections::BTreeSet<String>> {
     }
     Err(p.err("E_SYNTAX","unterminated strict loop"))
 }
+struct StrictLoopExit { invariants: Aliases, has_break: bool }
 fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
-    slots: &mut Vec<Type>, param_count: usize, depth: usize) -> R<(Vec<TStmt>, bool)> {
+    slots: &mut Vec<Type>, param_count: usize, depth: usize, mut active_loop: Option<&mut StrictLoopExit>) -> R<(Vec<TStmt>, bool)> {
     if depth > 16 { return Err(p.err("E_UNIT_LIMIT", "strict block depth")); }
     let mut body = Vec::new();
     let mut returned = false;
@@ -418,7 +419,23 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
         if p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "strict statement budget")); }
         p.budget -= 1;
         let pos = p.token().pos;
-        if p.word("return") {
+        if matches!(&p.token().tok, Tok::Ident(word) if word=="break" || word=="continue") {
+            let breaking=p.word("break");
+            if !breaking { p.expect_word("continue")?; }
+            p.expect(Tok::Semi)?;
+            let context=active_loop.as_deref_mut().ok_or_else(||error(pos,"E_VERIFY_UNSUPPORTED","loop exit outside strict while"))?;
+            if breaking { context.has_break=true; body.push(TStmt::Break); }
+            else {
+                for (name,declared) in &context.invariants {
+                    let (_,fact)=locals.get(name).ok_or_else(||error(pos,"E_VERIFY_UNSUPPORTED","continue outside local scope"))?;
+                    if !declared.range.contains(fact.range) || declared.unit!=fact.unit {
+                        return Err(error(pos,"E_REFINEMENT_BINDING","continue invariant not preserved"));
+                    }
+                }
+                body.push(TStmt::Continue);
+            }
+            returned=true;
+        } else if p.word("return") {
             let v = expr(p, aliases, locals, funcs, 0, 0)?;
             boundary(result, &v, pos, "E_REFINEMENT_RETURN")?;
             p.expect(Tok::Semi)?;
@@ -446,8 +463,9 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             }
             let (cond, mut yes, no) = strict_condition(p, aliases, &header, funcs)?;
             p.expect(Tok::LBrace)?;
+            let mut context=StrictLoopExit{invariants:mutable.iter().filter(|(name,_)|writes.contains(*name)).map(|(name,want)|(name.clone(),want.clone())).collect(),has_break:false};
             let (loop_body, always_returns) = strict_block(p, aliases, funcs, result,
-                &mut yes, &mut mutable.clone(), slots, param_count, depth+1)?;
+                &mut yes, &mut mutable.clone(), slots, param_count, depth+1, Some(&mut context))?;
             if !always_returns {
                 for (name, declared) in mutable.iter() {
                     let (_, fact) = yes.get(name).ok_or_else(||
@@ -457,9 +475,8 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                     }
                 }
             }
-            // Only the false guard edge can continue: break/continue remain
-            // unsupported. Zero iterations are included by header widening.
-            *locals = no;
+            // A possible break invalidates the false-header assumption.
+            *locals = if context.has_break { header } else { no };
             body.push(TStmt::Loop {cond:Some(cond),body:loop_body,update:Vec::new()});
         } else if p.word("if") {
             let (cond, yes, no) = strict_condition(p, aliases, locals, funcs)?;
@@ -467,11 +484,11 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             let mut yes = yes;
             let mut no = no;
             let (a, ar) = strict_block(p, aliases, funcs, result, &mut yes,
-                &mut mutable.clone(), slots, param_count, depth+1)?;
+                &mut mutable.clone(), slots, param_count, depth+1, active_loop.as_deref_mut())?;
             let (b, br) = if p.word("else") {
                 p.expect(Tok::LBrace)?;
                 strict_block(p, aliases, funcs, result, &mut no,
-                    &mut mutable.clone(), slots, param_count, depth+1)?
+                    &mut mutable.clone(), slots, param_count, depth+1, active_loop.as_deref_mut())?
             } else { (Vec::new(), false) };
             // Only incoming bindings survive lexical exit. Returning arms
             // contribute no continuation; otherwise take the interval hull.
@@ -501,6 +518,7 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                 };
                 if locals.contains_key(&name) { return Err(p.err("E_UNIT_DUPLICATE", "duplicate strict binding")); }
                 if is_let && wanted.is_none() { return Err(p.err("E_VERIFY_UNSUPPORTED", "mutable binding needs explicit type")); }
+                if p.token().tok==Tok::Semi {return Err(p.err("E_MISSING_INITIALIZER","explicit initializer required"));}
                 p.expect(Tok::Assign)?;
                 if matches!(&p.token().tok,Tok::Ident(n) if n=="Array") {
                     if !is_val || wanted.is_some() || depth!=0 {
