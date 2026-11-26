@@ -12,7 +12,7 @@ fn transitive_and_fail_closed() {
     assert!(compile(src).is_ok());
     for (src, code) in [
         ("@noalloc\nfnc f(x:int):int { return f(x); } pub fnc main():int { return f(42); }","E_NOALLOC"),
-        ("@nocopy\nfnc f(x:int):int { return x+1; } pub fnc main():int { return f(42); }","E_NOCOPY"),
+        ("@nocopy\nfnc f(x:int):int { let int y = x; return y; } pub fnc main():int { return f(42); }","E_NOCOPY"),
         ("@noalloc\n@noalloc\npub fnc main():int { return 42; }","E_ANNOTATION"),
         ("@noalloc(1)\npub fnc main():int { return 42; }","E_ANNOTATION"),
         ("pub fnc main():int { @nocopy return 42; }","E_ANNOTATION"),

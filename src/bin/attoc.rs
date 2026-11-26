@@ -1,5 +1,6 @@
 //! Native CLI for browser-guest Wasm compilation.
-//! Single source: attoc input.atto [-o out.wasm]
+//! Standalone (no filesystem linking): attoc --single-source input.atto [-o out.wasm]
+//! Relative-file linking: attoc input.atto [-o out.wasm]
 //! Syntax check: attoc --check input.atto
 //! Linked package: attoc --package-root DIR --entry src/main.atto [-o out.wasm]
 //! Discovered package: attoc --package path/to/main.atto [-o out.wasm]
@@ -19,7 +20,7 @@ enum Input {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: attoc [--verify=strict] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
+    eprintln!("usage: attoc [--verify=strict | --single-source] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
     ExitCode::from(2)
 }
 
@@ -27,9 +28,15 @@ fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut args = Vec::new();
     let mut strict = false;
+    let mut single_source = false;
     let (mut report_path, mut compiler_sha, mut case) = (None, None, None);
     let mut it = raw.into_iter();
     while let Some(a) = it.next() {
+        if a == "--single-source" {
+            if single_source { return usage(); }
+            single_source = true;
+            continue;
+        }
         if a == "--verify=strict" {
             if strict { return usage(); }
             strict = true;
@@ -59,6 +66,7 @@ fn main() -> ExitCode {
             None => return usage(),
         }
     }
+    if single_source && strict { return usage(); }
     if strict && (report_path.is_some() || compiler_sha.is_some() || case.is_some()) {
         eprintln!("strict verification cannot be combined with borrow reports");
         return ExitCode::from(2);
@@ -75,7 +83,7 @@ fn main() -> ExitCode {
     }
     let mut report_source: Option<Vec<u8>> = None;
     if matches!(args.as_slice(), [flag] if flag == "--help" || flag == "-h") {
-        println!("usage: attoc [--verify=strict] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
+        println!("usage: attoc [--verify=strict | --single-source] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
         return ExitCode::SUCCESS;
     }
     let (input, output) = match args.as_slice() {
@@ -102,6 +110,10 @@ fn main() -> ExitCode {
         eprintln!("strict verification currently supports only single-source inputs");
         return ExitCode::from(2);
     }
+    if single_source && !matches!(&input, Input::Single(_) | Input::Check(_)) {
+        eprintln!("--single-source cannot be combined with package linking");
+        return ExitCode::from(2);
+    }
     let check_only = matches!(&input, Input::Check(_));
     let (label, compiled) = match input {
         Input::Single(path) | Input::Check(path) => {
@@ -115,6 +127,10 @@ fn main() -> ExitCode {
             if report_path.is_some() { report_source = Some(source.as_bytes().to_vec()); }
             if strict {
                 (path, atto_compiler::compile_verified_strict(&source))
+            } else if single_source {
+                // Same closed-source entry as the browser compiler. No filesystem
+                // import resolver, no downgrade after linked-source denial.
+                (path, atto_compiler::compile(&source))
             } else {
             // A caller-relative logical path enables use default namespace(N)
             // without leaking the host's absolute directory into symbol IDs.
