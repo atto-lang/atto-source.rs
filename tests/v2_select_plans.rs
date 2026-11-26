@@ -53,6 +53,8 @@ fn select_plans_compile_runtime_panics_as_real_guests() {
         ("claimed-on-put", include_str!("fixtures/panic/238-v2-dynamic-select-put-pipe-owned.atto")),
         ("abandoned-future", include_str!("fixtures/panic/239-v2-select-abandoned-future.atto")),
         ("timeout-retirement", include_str!("fixtures/panic/240-v2-select-timeout-retirement.atto")),
+        ("closed-poll-retirement", include_str!("fixtures/panic/241-v2-select-closed-poll-retirement.atto")),
+        ("admission-retirement", include_str!("fixtures/panic/242-v2-select-admission-retirement.atto")),
     ] {
         let guest = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
