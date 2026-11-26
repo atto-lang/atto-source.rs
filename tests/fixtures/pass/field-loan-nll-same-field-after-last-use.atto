@@ -1,0 +1,15 @@
+// expect-exit: 42
+// expect-stdout: Alice
+// java: rejects
+// The readonly field loan may expire before its lexical scope ends.
+define class Person as
+  pub let string name = "Alice";
+  pub let int age = 42;
+end
+pub fnc main(): int {
+  let person = new Person();
+  val name_view = borrow! person.name;
+  stdio.println(name_view);
+  person.name = "Bob";
+  return person.age;
+}

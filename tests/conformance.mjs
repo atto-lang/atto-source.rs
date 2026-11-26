@@ -425,9 +425,16 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Integer caret is bitwise XOR in this compiler profile. Keep the
+// unsupported integer % and ^^ checks separate from boolean XOR support.
+check('integer-bitwise-caret', () => {
+  const r = compile('pub fnc main(): int { return 5 ^ 2; }');
+  assert.ok(r.ok, r.message);
+  const g = runGuest(r.wasm);
+  assert.equal(g.ok, true, g.error);
+  assert.equal(g.value, 7n);
+});
+for (const op of ['%', '^^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
