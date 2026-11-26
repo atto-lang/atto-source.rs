@@ -67,6 +67,7 @@ try {
   if (meta.reject) {
     const bad = meta.errors.find(e => !compiled.stderr.includes(e));
     if (compiled.status === 0) failures.push(`${name}: expected rejection, compiled`);
+    else if (compiled.status < 1 || compiled.status >= 128) failures.push(name + ': abnormal compiler exit '+compiled.status);
     else if (existsSync(out)) failures.push(name + ': rejection emitted a guest artifact');
     else if (!compiled.stderr.trim()) failures.push(name + ': rejection lacked a diagnostic');
     else if (bad) failures.push(`${name}: diagnostic lacks ${JSON.stringify(bad)}: ${compiled.stderr.trim()}`);
