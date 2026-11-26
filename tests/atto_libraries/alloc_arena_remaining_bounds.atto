@@ -1,0 +1,21 @@
+// expect-exit: 42
+import module arena from "atto.alloc/arena";
+import module num from "atto.core/num";
+pub fnc main(): int {
+  val int low = num.min_value();
+  val int high = num.max_value();
+
+  if arena.remaining(low, high) != 0 do return 1; fi
+  if arena.remaining(0 - 1, high) != 0 do return 2; fi
+  if arena.remaining(low, 0) != 0 do return 3; fi
+  if arena.remaining(low, 0 - 1) != 0 do return 4; fi
+  if arena.remaining(0, low) != 0 do return 5; fi
+  if arena.remaining(1, 0 - 1) != 0 do return 6; fi
+  if arena.remaining(0, 0) != 0 do return 7; fi
+  if arena.remaining(high, high) != 0 do return 8; fi
+  if arena.remaining(high, 1) != 0 do return 9; fi
+  if arena.remaining(0, high) != high do return 10; fi
+  if arena.remaining(high - 1, high) != 1 do return 11; fi
+  if arena.remaining(16, 64) != 48 do return 12; fi
+  return 42;
+}
