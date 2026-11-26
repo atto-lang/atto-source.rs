@@ -1,4 +1,4 @@
-//! Typed source slice for immutable i64 quantity bindings and earlier private helpers.
+//! Typed source slice for i64 quantity bindings and earlier private helpers.
 //! Units are checked structurally before erasure into the scalar Wasm IR.
 //! Inclusive signed-i64 refinement ranges; no contracts, i32 arithmetic, dynamic conversion, FFI or exported quantity ABI.
 use super::{Parser, Unit, Value, error, convert, attach, R};
@@ -220,6 +220,13 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         p.expect(Tok::LBrace)?;
         let mut body = Vec::new();
         let mut slots = Vec::new();
+        if p.strict {
+            let mut mutable = Aliases::new();
+            let (stmts, returns) = strict_block(p, &aliases, &signatures, &result,
+                &mut locals, &mut mutable, &mut slots, params.len(), 0)?;
+            if !returns { return Err(p.err("E_VERIFY_RETURN", "not every path returns")); }
+            body = stmts;
+        } else {
         while p.word("val") {
             if slots.len() >= 64 { return Err(p.err("E_UNIT_LIMIT", "too many immutable bindings")); }
             // Preserve inferred initializer type and both explicit annotation orders.
@@ -256,6 +263,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         p.expect(Tok::Semi)?;
         p.expect(Tok::RBrace)?;
         body.push(TStmt::Return(Some(value.ir)));
+        }
         let index = funcs.len() as u32;
         funcs.push(TFunc { name: name.clone(), params: vec![Type::Int;params.len()], ret: Type::Int, locals: slots, body });
         if public {
@@ -267,6 +275,153 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         signatures.insert(name, Signature { index, params, result });
     }
 }
+
+ // Closed strict CFG: no loops, aliases, suspension, shadowing or external calls.
+ // Each local has a stable physical slot; mutable assignments replace its fact.
+fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
+    result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
+    slots: &mut Vec<Type>, param_count: usize, depth: usize) -> R<(Vec<TStmt>, bool)> {
+    if depth > 16 { return Err(p.err("E_UNIT_LIMIT", "strict block depth")); }
+    let mut body = Vec::new();
+    let mut returned = false;
+    while !p.take(Tok::RBrace) {
+        if returned { return Err(p.err("E_VERIFY_UNSUPPORTED", "statement after unconditional return")); }
+        if p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "strict statement budget")); }
+        p.budget -= 1;
+        let pos = p.token().pos;
+        if p.word("return") {
+            let v = expr(p, aliases, locals, funcs, 0, 0)?;
+            boundary(result, &v, pos, "E_REFINEMENT_RETURN")?;
+            p.expect(Tok::Semi)?;
+            body.push(TStmt::Return(Some(v.ir)));
+            returned = true;
+        } else if p.word("if") {
+            let (cond, yes, no) = strict_condition(p, aliases, locals, funcs)?;
+            p.expect(Tok::LBrace)?;
+            let mut yes = yes;
+            let mut no = no;
+            let (a, ar) = strict_block(p, aliases, funcs, result, &mut yes,
+                &mut mutable.clone(), slots, param_count, depth+1)?;
+            let (b, br) = if p.word("else") {
+                p.expect(Tok::LBrace)?;
+                strict_block(p, aliases, funcs, result, &mut no,
+                    &mut mutable.clone(), slots, param_count, depth+1)?
+            } else { (Vec::new(), false) };
+            // Only incoming bindings survive lexical exit. Returning arms
+            // contribute no continuation; otherwise take the interval hull.
+            for (name, (_, fact)) in locals.iter_mut() {
+                let a = yes.get(name).expect("incoming local").1.range;
+                let b = no.get(name).expect("incoming local").1.range;
+                fact.range = if ar { b } else if br { a }
+                    else { Range { lo: a.lo.min(b.lo), hi: a.hi.max(b.hi) } };
+            }
+            body.push(TStmt::If(vec![(cond, a)], Some(b)));
+            returned = ar && br;
+            if returned { body.push(TStmt::Unreachable); }
+        } else {
+            let is_val = p.word("val");
+            let is_let = !is_val && p.word("let");
+            if is_val || is_let {
+                if slots.len() >= 64 { return Err(p.err("E_UNIT_LIMIT", "too many strict bindings")); }
+                let (name, wanted) = if p.tokens.get(p.at+1).is_some_and(|t| t.tok == Tok::Colon) {
+                    let name = identifier(p)?;
+                    p.expect(Tok::Colon)?;
+                    (name, Some(annotation(p, aliases)?))
+                } else if p.tokens.get(p.at+1).is_some_and(|t| t.tok == Tok::Assign) {
+                    (identifier(p)?, None)
+                } else {
+                    let want = annotation(p, aliases)?;
+                    (identifier(p)?, Some(want))
+                };
+                if locals.contains_key(&name) { return Err(p.err("E_UNIT_DUPLICATE", "duplicate strict binding")); }
+                if is_let && wanted.is_none() { return Err(p.err("E_VERIFY_UNSUPPORTED", "mutable binding needs explicit type")); }
+                p.expect(Tok::Assign)?;
+                let v = expr(p, aliases, locals, funcs, 0, 0)?;
+                if let Some(want) = &wanted { boundary(want, &v, pos, "E_REFINEMENT_BINDING")?; }
+                p.expect(Tok::Semi)?;
+                let slot = (param_count + slots.len()) as u32;
+                slots.push(Type::Int);
+                if is_let {
+                    if let Some(want) = wanted { mutable.insert(name.clone(), want); }
+                }
+                locals.insert(name, (slot, Refined { unit: v.unit, range: v.range }));
+                body.push(TStmt::Set(slot, v.ir));
+            } else {
+                let name = identifier(p)?;
+                let want = mutable.get(&name).ok_or_else(|| error(pos,"E_VERIFY_UNSUPPORTED",
+                    "strict statement requires an existing mutable scalar binding"))?;
+                let slot = locals.get(&name).ok_or_else(|| error(pos,"E_VERIFY_UNSUPPORTED",
+                    "assignment outside local scope"))?.0;
+                p.expect(Tok::Assign)?;
+                let v = expr(p, aliases, locals, funcs, 0, 0)?;
+                boundary(want, &v, pos, "E_REFINEMENT_BINDING")?;
+                p.expect(Tok::Semi)?;
+                // Replace, never intersect with the old fact.
+                locals.insert(name, (slot, Refined { unit: v.unit, range: v.range }));
+                body.push(TStmt::Set(slot, v.ir));
+            }
+        }
+    }
+    Ok((body, returned))
+}
+
+// A single local compared with a signed integer literal. Interior != holes
+// are not represented by one interval, so retain the conservative hull.
+// Empty intersections are deliberately not used to certify unreachable code.
+fn restrict(r: Range, op: BinOp, n: i64) -> Range {
+    let candidate = match op {
+        BinOp::Lt => n.checked_sub(1).map(|hi| Range { lo:i64::MIN, hi }),
+        BinOp::Le => Some(Range {lo:i64::MIN,hi:n}),
+        BinOp::Gt => n.checked_add(1).map(|lo| Range {lo,hi:i64::MAX}),
+        BinOp::Ge => Some(Range {lo:n,hi:i64::MAX}),
+        BinOp::Eq => Some(Range::exact(n)),
+        BinOp::Ne if n == r.lo => n.checked_add(1).map(|lo| Range {lo,hi:r.hi}),
+        BinOp::Ne if n == r.hi => n.checked_sub(1).map(|hi| Range {lo:r.lo,hi}),
+        _ => Some(r),
+    };
+    candidate.and_then(|x|r.intersect(x)).unwrap_or(r)
+}
+fn strict_condition(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals,
+    funcs: &Functions) -> R<(TE,Locals,Locals)> {
+    let parens = p.take(Tok::LParen);
+    let pos = p.token().pos;
+    let name = identifier(p)?;
+    let (slot, fact) = locals.get(&name).ok_or_else(||error(pos,"E_VERIFY_UNSUPPORTED",
+        "strict condition requires a local scalar"))?;
+    let op = match &p.token().tok {
+        Tok::Lt => BinOp::Lt, Tok::Le => BinOp::Le,
+        Tok::Gt => BinOp::Gt, Tok::Ge => BinOp::Ge,
+        Tok::EqEq => BinOp::Eq, Tok::NotEq => BinOp::Ne,
+        Tok::Ident(s) if s == "eq" => BinOp::Eq,
+        Tok::Ident(s) if s == "neq" => BinOp::Ne,
+        _ => return Err(p.err("E_VERIFY_UNSUPPORTED", "strict condition requires a comparison")),
+    };
+    p.at += 1;
+    let right = atom(p, aliases, locals, funcs, 0)?;
+    compatible(&fact.unit, &right.unit, pos)?;
+    // Admit exact literals only, including a syntactic negative literal.
+    let n = match &right.ir.e {
+        TExpr::I64(n) => *n,
+        TExpr::Neg(v) => match &v.e {
+            TExpr::I64(n) => n.checked_neg().ok_or_else(||error(pos,"E_VERIFY_UNPROVEN","condition overflow"))?,
+            _ => return Err(p.err("E_VERIFY_UNSUPPORTED","condition requires a literal")),
+        },
+        _ => return Err(p.err("E_VERIFY_UNSUPPORTED","condition requires a literal")),
+    };
+    if parens { p.expect(Tok::RParen)?; }
+    let inverse = match op {
+        BinOp::Lt => BinOp::Ge, BinOp::Le => BinOp::Gt,
+        BinOp::Gt => BinOp::Le, BinOp::Ge => BinOp::Lt,
+        BinOp::Eq => BinOp::Ne, BinOp::Ne => BinOp::Eq,
+        _ => return Err(p.err("E_VERIFY_UNSUPPORTED","condition comparison")),
+    };
+    let mut yes = locals.clone(); let mut no = locals.clone();
+    yes.get_mut(&name).expect("resolved local").1.range = restrict(fact.range,op,n);
+    no.get_mut(&name).expect("resolved local").1.range = restrict(fact.range,inverse,n);
+    let cond = TE { ty:Type::Bool, e:TExpr::Bin(op,Box::new(int(TExpr::Local(*slot))),Box::new(right.ir)) };
+    Ok((cond,yes,no))
+}
+
 fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
     let pos = p.token().pos;
     let mut value: Value = p.literal(min)?;
@@ -369,7 +524,7 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
             BinOp::Add | BinOp::Sub => { compatible(&left.unit,&right.unit,pos)?; left.unit.clone() }
             BinOp::Mul => left.unit.combine(&right.unit,false,pos)?,
             BinOp::Div => {
-                if left.unit == Unit::scalar() && right.unit == Unit::scalar() {
+                if !p.strict && left.unit == Unit::scalar() && right.unit == Unit::scalar() {
                     return Err(error(pos,"E_UNIT_SCALAR_DIVISION","ordinary int division remains outside quantity profile"));
                 }
                 left.unit.combine(&right.unit,true,pos)?
