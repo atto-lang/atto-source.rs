@@ -54,14 +54,25 @@ assert.equal(caretXorRuntime.exports.main(), 6n, 'return marker and XOR are unam
 assert.equal(caretXorRuntime.exports.panic_code.value, 0);
 
 // The same integer XOR compound spelling is admitted only for mutable locals.
-const compoundXorSource = 'pub fnc main(): int { let x: int = 12; x ^^= 10; ^ x; }';
-const compoundXor = compile(compoundXorSource);
-assert.equal(compoundXor.ok, true, compoundXor.diagnostic);
-const compoundXorGuest = new WebAssembly.Instance(new WebAssembly.Module(compoundXor.guest), {});
-assert.equal(compoundXorGuest.exports.main(), 6n);
-assert.equal(compoundXorGuest.exports.panic_code.value, 0);
+const compoundVectors = [
+  ['ordinary', 'let x: int = 12; x ^^= 10; ^ x;', 6n],
+  ['min-to-max', 'let x: int = -9223372036854775808; x ^^= -1; return x;', 9223372036854775807n],
+  ['max-to-min', 'let x: int = 9223372036854775807; x ^^= -1; return x;', -9223372036854775808n],
+  ['self-xor', 'let x: int = -9223372036854775808; x ^^= x; return x;', 0n],
+];
+const compoundArtifacts = compoundVectors.map(([id, body, expected]) => {
+  const source = `pub fnc main(): int { ${body} }`;
+  const compiled = compile(source);
+  assert.equal(compiled.ok, true, `${id}: ${compiled.diagnostic || ''}`);
+  const guest = new WebAssembly.Instance(new WebAssembly.Module(compiled.guest), {});
+  assert.equal(guest.exports.main(), expected, id);
+  assert.equal(guest.exports.panic_code.value, 0, id);
+  return { id, source, bytes: compiled.guest };
+});
 for (const body of ['val x: int = 12; x ^^= 10; return x;',
                     'let x: int = 12; x ^^= true; return x;',
+                    'let x: int = 12; x ^^= 1.5; return x;',
+                    'let x: float = 12.0; x ^^= 10; return 0;',
                     'let x: int = 12; x ^= 10; return x;',
                     'let x: int = 12; x ^^ = 10; return x;',
                     'let x: int = 12; x ^ ^= 10; return x;',
@@ -243,14 +254,18 @@ try {
   const nativeBytes = await readFile(out);
   assert.deepEqual(Buffer.from(compiled.guest), nativeBytes,
     'native and wasm32 compilers must emit byte-identical guest for exact preview');
-  const compoundSource = join(tmp, 'compound-xor.atto');
-  const compoundArtifact = join(tmp, 'compound-xor.wasm');
-  await writeFile(compoundSource, compoundXorSource);
-  const nativeCompound = spawnSync(attoc, [compoundSource, '-o', compoundArtifact],
-    { encoding: 'utf8', timeout: 30000 });
-  assert.equal(nativeCompound.status, 0, nativeCompound.stderr);
-  assert.deepEqual(await readFile(compoundArtifact), Buffer.from(compoundXor.guest),
-    'native and wasm32 compilers must emit identical compound XOR guests');
+  for (const { id, source, bytes } of compoundArtifacts) {
+    const input = join(tmp, `compound-xor-${id}.atto`);
+    const output = join(tmp, `compound-xor-${id}.wasm`);
+    await writeFile(input, source);
+    const native = spawnSync(attoc, [input, '-o', output],
+      { encoding: 'utf8', timeout: 30000 });
+    assert.equal(native.error, undefined, id);
+    assert.equal(native.signal, null, id);
+    assert.equal(native.status, 0, `${id}: ${native.stderr}`);
+    assert.deepEqual(await readFile(output), Buffer.from(bytes),
+      `${id}: native and wasm32 compound XOR guest bytes diverged`);
+  }
   const floatSource = join(tmp, 'float-division.atto');
   const floatArtifact = join(tmp, 'float-division.wasm');
   await writeFile(floatSource, divisionSource + '\n');
