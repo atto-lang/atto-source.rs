@@ -705,6 +705,14 @@ impl Parser {
                     self.i += 2;
                     prog.enums.push(self.parse_enum()?);
                 }
+                (Some("define"), _) if Self::return_first_header_tokens(
+                    &self.toks[self.i + at + 1..]) => {
+                    prog.funcs.push(self.parse_func()?);
+                }
+                (Some("define"), Some("pub")) if !public && Self::return_first_header_tokens(
+                    &self.toks[self.i + at + 2..]) => {
+                    prog.funcs.push(self.parse_func()?);
+                }
                 (Some("define"), Some(w)) => {
                     let what = match w {
                         "abstract" => "abstract classes".to_string(),
@@ -1289,19 +1297,24 @@ impl Parser {
     /// the declaration boundary; the real type parser must still validate
     /// each type and resolve its ownership/ABI contract.
     fn is_return_first_header(&self) -> bool {
-        if !matches!(self.peek(), Tok::Ident(_)) { return false; }
-        if *self.peek_at(1) == Tok::LeftArrow { return true; }
-        if *self.peek_at(1) != Tok::Lt { return false; }
+        Self::return_first_header_tokens(&self.toks[self.i..])
+    }
+
+    pub(crate) fn return_first_header_tokens(tokens: &[Token]) -> bool {
+        let at = |n: usize| tokens.get(n).map(|t| &t.tok);
+        if !matches!(at(0), Some(Tok::Ident(_))) { return false; }
+        if at(1) == Some(&Tok::LeftArrow) { return true; }
+        if at(1) != Some(&Tok::Lt) { return false; }
         let mut depth = 0usize;
         for n in 1..=MAX_DEPTH as usize {
-            match self.peek_at(n) {
-                Tok::Lt => depth += 1,
-                Tok::Gt => {
+            match at(n) {
+                Some(Tok::Lt) => depth += 1,
+                Some(Tok::Gt) => {
                     if depth == 0 { return false; }
                     depth -= 1;
-                    if depth == 0 { return *self.peek_at(n + 1) == Tok::LeftArrow; }
+                    if depth == 0 { return at(n+1) == Some(&Tok::LeftArrow); }
                 }
-                Tok::Ident(_) | Tok::Comma | Tok::Dot => {}
+                Some(Tok::Ident(_) | Tok::Comma | Tok::Dot) => {}
                 _ => return false,
             }
         }
@@ -1594,8 +1607,8 @@ impl Parser {
         let public_prefix = self.eat_word("pub");
         if self.eat_word("define") {
             if !public_prefix { self.eat_word("pub"); }
-            if !self.is_word("fnc") {
-                return Err(self.expected("'fnc' after 'define'"));
+            if !self.is_word("fnc") && !self.is_return_first_header() {
+                return Err(self.expected("'fnc' or return-first callable after 'define'"));
             }
         }
         let is_pure = self.eat_word("pure");

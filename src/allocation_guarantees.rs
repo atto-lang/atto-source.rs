@@ -51,12 +51,12 @@ pub(crate) fn compile(tokens: Vec<Token>) -> Result<Vec<u8>, Diagnostic> {
                 i += 2;
             }
             let mut j = i;
-            let word = |n| matches!(tokens.get(n), Some(Token {tok: Tok::Ident(_), ..}));
             let is = |n, s: &str| matches!(tokens.get(n), Some(Token {tok: Tok::Ident(w), ..}) if w == s);
             if is(j, "pub") { j += 1; }
             if is(j, "define") { j += 1; if is(j, "pub") { j += 1; } }
-            if !word(j) || !is(j, "fnc") {
-                return Err(Diagnostic::new(pos, "E_ANNOTATION", "guarantees require a named fnc"));
+            if !is(j, "fnc") && !crate::parser::Parser::return_first_header_tokens(
+                tokens.get(j..).unwrap_or_default()) {
+                return Err(Diagnostic::new(pos, "E_ANNOTATION", "guarantees require a named callable"));
             }
             continue;
         }
