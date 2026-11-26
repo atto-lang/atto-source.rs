@@ -192,6 +192,7 @@ try{
     ['236-v2-select-pipe-owned-at-construction.atto',10],
     ['237-v2-select-pipe-claimed-after-plan.atto',10],
     ['238-v2-dynamic-select-put-pipe-owned.atto',10],
+    ['239-v2-select-abandoned-future.atto',6],
   ]) {
     const src = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
     assert.match(await run(src, 'E_PANIC'), /^E_PANIC:/,
