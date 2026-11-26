@@ -21,6 +21,32 @@ pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
 
+// Revalidate the restricted callback shape independently of parser admission.
+// A public AST or a future lowering pass must not forge an early method
+// return, call, allocation, suspension, or another lease inside this region.
+fn state_scalar_shape(value: &Expr, depth: usize) -> bool {
+    if depth > 128 { return false; }
+    match &value.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Var(_) => true,
+        ExprKind::Member(base, _) => matches!(base.kind, ExprKind::SelfRef),
+        ExprKind::Unary(_, v) => state_scalar_shape(v, depth+1),
+        ExprKind::Binary(_, a, b) =>
+            state_scalar_shape(a, depth+1) && state_scalar_shape(b, depth+1),
+        _ => false,
+    }
+}
+fn validate_state_write_shape(body: &[Stmt], terminal: Option<&Expr>, pos: Pos) -> R<()> {
+    if body.iter().all(|stmt| matches!(stmt,
+        Stmt::FieldAssign { target, value, .. }
+        if matches!(target.kind, ExprKind::SelfRef) && state_scalar_shape(value, 0)))
+        && terminal.is_none_or(|v| state_scalar_shape(v, 0)) {
+        Ok(())
+    } else {
+        Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "protected write IR requires only scalar self-field assignments and an optional detached scalar result"))
+    }
+}
+
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
@@ -2832,7 +2858,7 @@ impl<'a> FnCx<'a> {
                 let allowed = matches!(self.owner,
                     Owner::Class { c, ctor: false, is_static: false }
                     if self.g.classes[c as usize].state_container);
-                if !allowed || self.state_write_scope {
+                if !allowed || self.state_read_scope || self.state_write_scope {
                     return Err(Diagnostic::new(*pos, "E_STATE_BORROW",
                         "critical-write requires a non-nested protected state container method"));
                 }
@@ -2841,6 +2867,7 @@ impl<'a> FnCx<'a> {
                 // Snapshot into an anonymous typed local, emit the ordinary
                 // balanced write region, and return only after state_leave.
                 if let Some(Stmt::Return(Some(result), result_pos)) = body.last() {
+                    validate_state_write_shape(&body[..body.len()-1], Some(result), *pos)?;
                     if self.cleanup_depth > 0 && self.recover_cursor.is_none() {
                         return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
                             "cleanup cannot replace the pending outcome"));
@@ -2869,6 +2896,7 @@ impl<'a> FnCx<'a> {
                         TStmt::Return(Some(TE { e: TExpr::Local(slot), ty: expected })),
                     ])
                 } else {
+                    validate_state_write_shape(body, None, *pos)?;
                     self.state_write_scope = true;
                     let checked = self.scoped(body);
                     self.state_write_scope = false;
@@ -4422,6 +4450,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_STATE_BORROW",
                         "write callback requires a non-nested protected instance method"));
                 }
+                validate_state_write_shape(body, Some(result), pos)?;
                 self.state_write_scope = true;
                 let checked = (|| -> R<(Vec<TStmt>, TE)> {
                     let statements = self.scoped(body)?;
