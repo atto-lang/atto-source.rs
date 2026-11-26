@@ -5,6 +5,7 @@ on:
     paths:
       - "src/shape_witness.rs"
       - "src/structural_member_witness.rs"
+      - "src/structural_tags.rs"
       - "src/lib.rs"
       - "tests/shape_witness_contract.rs"
       - "tests/structural_member_witness_contract.rs"
@@ -14,6 +15,7 @@ on:
     paths:
       - "src/shape_witness.rs"
       - "src/structural_member_witness.rs"
+      - "src/structural_tags.rs"
       - "src/lib.rs"
       - "tests/shape_witness_contract.rs"
       - "tests/structural_member_witness_contract.rs"
@@ -45,5 +47,7 @@ jobs:
         run: cargo test --test shape_witness_contract -- --nocapture
       - name: Compile and execute typed structural-member witness integration tests
         run: cargo test --test structural_member_witness_contract -- --nocapture
+      - name: Compile and execute marker and brand proof tests
+        run: cargo test --lib structural_tags::tests -- --nocapture
       - name: Run complete library regression
         run: cargo test --lib
