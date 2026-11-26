@@ -313,6 +313,26 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
  // Closed strict CFG: while uses declared scalar invariants; no aliases,
 // suspension, shadowing, break/continue or external calls.
  // Each local has a stable physical slot; mutable assignments replace its fact.
+fn loop_writes(p: &Parser<'_>) -> R<std::collections::BTreeSet<String>> {
+    let mut writes = std::collections::BTreeSet::new();
+    let mut braces = 0usize;
+    let mut entered = false;
+    for (i, token) in p.tokens.iter().enumerate().skip(p.at) {
+        match &token.tok {
+            Tok::LBrace => { entered = true; braces += 1; }
+            Tok::RBrace if entered => {
+                braces -= 1;
+                if braces == 0 { return Ok(writes); }
+            }
+            Tok::Ident(name) if entered &&
+                p.tokens.get(i+1).is_some_and(|t|t.tok==Tok::Assign) => {
+                writes.insert(name.clone());
+            }
+            _ => {}
+        }
+    }
+    Err(p.err("E_SYNTAX","unterminated strict loop"))
+}
 fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
     slots: &mut Vec<Type>, param_count: usize, depth: usize) -> R<(Vec<TStmt>, bool)> {
@@ -335,8 +355,14 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             // declared mutable scalar refinements are inductive invariants:
             // each assignment is checked against them. Never use an entry
             // singleton or a previous iteration's transient narrowing here.
+            // Scan the entire nested loop body, conservatively collecting
+            // direct writes. The admitted subset has no references, mutable
+            // arguments, or nonlocal mutation. Unsupported syntax still
+            // fails in strict_block; this scan grants no syntax admission.
+            let writes = loop_writes(p)?;
             let mut header = locals.clone();
             for (name, declared) in mutable.iter() {
+                if !writes.contains(name) { continue; }
                 let (_, fact) = header.get_mut(name).ok_or_else(||
                     error(pos,"E_VERIFY_UNSUPPORTED","loop invariant outside local scope"))?;
                 if !declared.range.contains(fact.range) || declared.unit != fact.unit {
