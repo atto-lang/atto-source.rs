@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED
+// The typed arithmetic error channel is not implemented in this profile.
+// trap! must not disguise an unsupported quotient as an ordinary panic.
+pub fnc main(): int {
+  val Result<int,Error> result = trap! (7 / 0);
+  return 42;
+}

@@ -1,0 +1,8 @@
+// expect-exit: 42
+pub fnc main(): int {
+  val Result<int,Error> outcome = trap! (84 / 2);
+  match outcome over
+    on Ok(n) -> { return n; }
+    on Err(e) -> { return 1; }
+  end
+}

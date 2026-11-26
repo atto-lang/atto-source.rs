@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+// A trap boundary does not make an unlowered overflow safe to emit.
+pub fnc main(): int {
+  val Result<int,Error> result = trap! (-9223372036854775808 / -1);
+  return 42;
+}

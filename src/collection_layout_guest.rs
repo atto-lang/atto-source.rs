@@ -259,6 +259,7 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
         generators: vec![], main: 0, imports: vec![], data: vec![],
         heap: true, globals: vec![], actors: vec![],
         strings: false, guest_eh: false, raise_tag: false, catch_depth: false,
+        parse_int: false,
     })
 }
 

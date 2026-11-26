@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+fnc quotient(int n): int { return n / -1; }
+pub fnc main(): int { return quotient(7); }

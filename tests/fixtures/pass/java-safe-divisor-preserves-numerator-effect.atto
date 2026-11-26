@@ -1,0 +1,12 @@
+// expect-exit: 42
+// A safe divisor does not make the numerator pure. Even /1 must preserve
+// evaluation and ordinary throw capture at the caller's trap boundary.
+fnc fail(): int throws(Error) { throw! Error("numerator"); }
+fnc quotient(): int throws(Error) { return fail() / 1; }
+pub fnc main(): int {
+  val Result<int,Error> answer = trap! quotient();
+  match answer over
+    on Ok(_) -> { return 1; }
+    on Err(_) -> { return 42; }
+  end
+}

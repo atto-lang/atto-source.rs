@@ -1,0 +1,12 @@
+// expect-exit: 42
+fnc add(int a, int b): int { return a + b; }
+pub fnc main(): int {
+  int a = 7;
+  const b = a * 6;
+  const int c = b;
+  const d: int = c;
+  val e = add(d, 0);
+  let int f = 0;
+  f = e;
+  return f;
+}

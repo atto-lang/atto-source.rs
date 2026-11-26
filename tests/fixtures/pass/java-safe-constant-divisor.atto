@@ -1,0 +1,9 @@
+// expect-exit: 42
+fnc quotient(int n): int { return n / -3; }
+pub fnc main(): int {
+  if quotient(-7) neq 2 then return 1; fi
+  if quotient(7) neq -2 then return 2; fi
+  if quotient(-9223372036854775808) neq 3074457345618258602 then return 3; fi
+  if quotient(9223372036854775807) neq -3074457345618258602 then return 4; fi
+  return 42;
+}
