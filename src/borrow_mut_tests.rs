@@ -170,3 +170,34 @@ fn borrow_getter_elision_never_rewrites_computed_getters() {
         "a computed result is not the simple one-FieldGet typed-IR proof and must keep its call ABI"
     );
 }
+
+#[test]
+fn readonly_getter_elision_reloads_after_mutation_and_distinguishes_instances() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub mut int value = 10; end
+        fnc inspect(Parcel p): int { return p.value; }
+        fnc update(mut Parcel p): void { p.value = 32; }
+        pub fnc main(): int {
+            let first = new Parcel();
+            let second = new Parcel();
+            val before = FIRST_READ;
+            update(mut first);
+            val after = SECOND_READ;
+            val other = THIRD_READ;
+            return before + after + other - 10;
+        }
+    "#;
+    let calls = source
+        .replace("FIRST_READ", "inspect(first)")
+        .replace("SECOND_READ", "inspect(borrow! first)")
+        .replace("THIRD_READ", "inspect(second)");
+    let direct = source
+        .replace("FIRST_READ", "first.value")
+        .replace("SECOND_READ", "first.value")
+        .replace("THIRD_READ", "second.value");
+    assert_eq!(
+        crate::compile(&calls).expect("readonly calls around exclusive update"),
+        crate::compile(&direct).expect("direct reads around exclusive update"),
+        "elision must reload the field after mutation and retain each receiver identity"
+    );
+}
