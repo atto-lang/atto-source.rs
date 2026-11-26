@@ -410,7 +410,7 @@ fnc __chan_close(int c): void {
 // ----------------------------------------------------------- select plans
 // Experimental Channel<int> list-source profile. All operations below are
 // compiled into the guest's own Wasm memory, not simulated by JavaScript.
-// Plan layout: slots, live, FAIR cursor, version, dynamic, commit epoch (48 bytes),
+// Plan layout: slots, live, reserved, version, dynamic, generation FAIR cell (48 bytes),
 // followed by up to 256 stable, zero-based read-case channel pointers.
 
 // A SelectCase must never grant an implicit read capability for a channel
@@ -441,6 +441,9 @@ fnc __plan_from_list(int cases, int dynamic): int {
   __store(p, 0, n);
   __store(p, 8, n);
   __store(p, 32, dynamic);
+  val fair_cell = __alloc(8);
+  __store(fair_cell, 0, 0);
+  __store(p, 40, fair_cell);
   let i = 0;
   while i < n do
     val ch = __load(cases, 8 + 8 * i);
@@ -467,7 +470,7 @@ fnc __plan_try(int p, int fair): int {
   while k < n do
     let i = k;
     if fair != 0 then
-      i = __load(p, 16) + k;
+      i = __load(__load(p, 40), 0) + k;
       if i >= n then i = i - n; fi
     fi
     val ch = __load(p, 48 + 8 * i);
@@ -483,11 +486,8 @@ fnc __plan_try(int p, int fair): int {
           if fair != 0 then
             let next = i + 1;
             if next >= n then next = 0; fi
-            __store(p, 16, next);
+            __store(__load(p, 40), 0, next);
           fi
-          // Distinct from the structural version: every committed winner
-          // invalidates stale snapshots' right to overwrite this cursor.
-          __store(p, 40, __load(p, 40) + 1);
           return __some(winner);
         fi
       else
@@ -511,14 +511,25 @@ fnc __plan_version(int p): int {
   return __load(p, 24);
 }
 
+// Allocate a new generation cell before changing any live descriptors.
+// Outstanding snapshots continue to share the retired generation's cell.
+fnc __plan_new_fair_cell(int p): int {
+  val cell = __alloc(8);
+  __store(cell, 0, __load(__load(p, 40), 0));
+  return cell;
+}
+
 fnc __plan_remove(int p, int key): int {
   if __load(p, 32) == 0 then __panic(10); fi
   if key < 0 then __panic(10); fi
   if key >= __load(p, 0) then __panic(10); fi
   if __load(p, 48 + 8 * key) == 0 then return 0; fi
+  val version = __load(p, 24) + 1;
+  val cell = __plan_new_fair_cell(p);
   __store(p, 48 + 8 * key, 0);
   __store(p, 8, __load(p, 8) - 1);
-  __store(p, 24, __load(p, 24) + 1);
+  __store(p, 40, cell);
+  __store(p, 24, version);
   return 1;
 }
 
@@ -527,11 +538,14 @@ fnc __plan_put(int p, int key, int ch): void {
   if key < 0 then __panic(10); fi
   if key >= __load(p, 0) then __panic(10); fi
   __plan_check_case(ch);
+  val version = __load(p, 24) + 1;
+  val cell = __plan_new_fair_cell(p);
   if __load(p, 48 + 8 * key) == 0 then
     __store(p, 8, __load(p, 8) + 1);
   fi
   __store(p, 48 + 8 * key, ch);
-  __store(p, 24, __load(p, 24) + 1);
+  __store(p, 40, cell);
+  __store(p, 24, version);
 }
 
 // A pending nb select pins the ordered descriptor snapshot. Later put/remove
@@ -553,54 +567,29 @@ fnc __plan_snapshot(int p): int {
   return copy;
 }
 
-// Same-generation pending snapshots must scan from the last committed live
-// cursor, not from their creation-time cursor. An older generation retains
-// its captured descriptor order and must never overwrite a new generation.
-suspends fnc __plan_wait_opt(int p, int snapshot, int generation, int fair): int {
+// Each invocation pins descriptors plus the shared generation FAIR cell.
+// Both current and retired generations arbitrate from their own last commit;
+// no suspended invocation ever publishes cursor credit into a different cell.
+suspends fnc __plan_wait_opt(int snapshot, int fair): int {
   loop do
-    if fair != 0 then
-      if __load(p, 24) == generation then
-        __store(snapshot, 16, __load(p, 16));
-      fi
-    fi
     val got = __plan_try(snapshot, fair);
-    if got != 0 then
-      // Publish FAIR credit in the same non-suspending turn as the read.
-      __plan_commit_snapshot(p, generation, fair, got);
-      return got;
-    fi
+    if got != 0 then return got; fi
     __suspend();
   done
-}
-
-// Commit a snapshot's winner to the live FAIR cursor only if its captured
-// generation still exists. An intervening winner on the *same* generation
-// must not suppress this later committed winner's cursor advancement.
-fnc __plan_commit_snapshot(int p, int generation, int fair, int option): void {
-  if __load(p, 24) != generation then return; fi
-  if fair != 0 then
-    val winner = __load(option, 0);
-    let next = __load(winner, 0) + 1;
-    if next >= __load(p, 0) then next = 0; fi
-    __store(p, 16, next);
-  fi
-  __store(p, 40, __load(p, 40) + 1);
 }
 
 // Blocking selection captures the descriptors BEFORE it suspends. Mutations
 // after this point cannot retarget a registered waiter to a replacement slot.
 suspends fnc __plan_wait(int p, int fair): int {
-  val generation = __load(p, 24);
   val snapshot = __plan_snapshot(p);
-  val result = await __plan_wait_opt(p, snapshot, generation, fair);
+  val result = await __plan_wait_opt(snapshot, fair);
   return __load(result, 0);
 }
 
 fnc __plan_nb(int p, int fair): int {
-  val generation = __load(p, 24);
   val snapshot = __plan_snapshot(p);
   return task {
-    val answer = await __plan_wait_opt(p, snapshot, generation, fair);
+    val answer = await __plan_wait_opt(snapshot, fair);
     return answer;
   };
 }
