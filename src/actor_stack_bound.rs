@@ -1,7 +1,7 @@
 //! Fail-closed static bound for synchronous actor call chains in the browser
 //! compiler. This is AOT admission, NOT resumable actor-owned frame lowering.
 //! The generator runtime has a separate bounded continuation-frame ABI.
-use crate::check::{TActor, TExpr, TProgram, TStmt, TE};
+use crate::check::{TExpr, TProgram, TStmt, TE};
 use crate::diag::{Diagnostic, Pos};
 
 /// Conservative bound on statically nested source calls reachable from an
@@ -10,8 +10,7 @@ pub const MAX_ACTOR_STATIC_CALL_DEPTH: usize = 64;
 
 enum Work<'a> { Stmt(&'a TStmt), Expr(&'a TE) }
 
-fn direct_calls(stmts: &[TStmt]) -> Vec<usize> {
-    let mut work: Vec<Work<'_>> = stmts.iter().map(Work::Stmt).collect();
+fn direct_calls(mut work: Vec<Work<'_>>) -> Vec<usize> {
     let mut calls = Vec::new();
     while let Some(item) = work.pop() {
         match item {
@@ -103,8 +102,7 @@ fn reject(code: &'static str, detail: impl Into<String>) -> Diagnostic {
     Diagnostic::new(Pos { line: 1, col: 1 }, code, detail)
 }
 
-fn bound_one_actor(actor: &TActor, graph: &[Vec<usize>]) -> Result<(), Diagnostic> {
-    let Some(root) = actor.receive.map(|i| i as usize) else { return Ok(()); };
+fn bound_root(actor_name: &str, root: usize, graph: &[Vec<usize>]) -> Result<(), Diagnostic> {
     if root >= graph.len() {
         return Err(reject("E_ACTOR_STACK_CALL", "actor handler outside typed function table"));
     }
@@ -126,13 +124,13 @@ fn bound_one_actor(actor: &TActor, graph: &[Vec<usize>]) -> Result<(), Diagnosti
         }
         match state[callee] {
             1 => return Err(reject("E_ACTOR_STACK_RECURSION",
-                format!("actor {} reaches a recursive synchronous call cycle", actor.name))),
+                format!("actor {} reaches a recursive synchronous call cycle", actor_name))),
             0 => {
                 // The direct DFS path is already beyond the AOT profile limit;
                 // fail immediately instead of growing the compiler stack.
                 if traversal.len() >= MAX_ACTOR_STATIC_CALL_DEPTH {
                     return Err(reject("E_ACTOR_STACK_DEPTH",
-                        format!("actor {} exceeds {} source call frames", actor.name,
+                        format!("actor {} exceeds {} source call frames", actor_name,
                                 MAX_ACTOR_STATIC_CALL_DEPTH)));
                 }
                 state[callee] = 1;
@@ -143,7 +141,7 @@ fn bound_one_actor(actor: &TActor, graph: &[Vec<usize>]) -> Result<(), Diagnosti
     }
     if depth[root] > MAX_ACTOR_STATIC_CALL_DEPTH {
         return Err(reject("E_ACTOR_STACK_DEPTH",
-            format!("actor {} exceeds {} source call frames", actor.name,
+            format!("actor {} exceeds {} source call frames", actor_name,
                     MAX_ACTOR_STATIC_CALL_DEPTH)));
     }
     Ok(())
@@ -152,15 +150,36 @@ fn bound_one_actor(actor: &TActor, graph: &[Vec<usize>]) -> Result<(), Diagnosti
 /// Called after typing but before emitting any guest Wasm bytes.
 pub fn verify(program: &TProgram) -> Result<(), Diagnostic> {
     if program.actors.is_empty() { return Ok(()); }
-    let graph: Vec<_> = program.funcs.iter().map(|f| direct_calls(&f.body)).collect();
-    for actor in &program.actors { bound_one_actor(actor, &graph)?; }
+    let mut graph: Vec<_> = program.funcs.iter()
+        .map(|f| direct_calls(f.body.iter().map(Work::Stmt).collect())).collect();
+    let typed_count = graph.len();
+    for actor in &program.actors {
+        if let Some(root) = actor.receive {
+            bound_root(&actor.name, root as usize, &graph)?;
+        }
+        if !actor.inits.is_empty() {
+            // Initialization is a separate actor entry, including actors
+            // without receive. Charge one frame for the synthesized entry.
+            let calls = direct_calls(actor.inits.iter()
+                .map(|(_, value)| Work::Expr(value)).collect());
+            // Reject malformed indices before adding the synthetic root.
+            // Likewise reject malformed reachable indices into the new slot.
+            if calls.iter().any(|&i| i >= typed_count) {
+                return Err(reject("E_ACTOR_STACK_CALL", "invalid actor initializer call index"));
+            }
+            graph.push(calls);
+            let result = bound_root(&actor.name, typed_count, &graph);
+            graph.pop();
+            result?;
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::TFunc;
+    use crate::check::{TActor, TFunc};
     use crate::ast::Type;
     fn call(idx: u32) -> TStmt {
         TStmt::Expr(TE { e: TExpr::Call(idx, vec![]), ty: Type::Void })
@@ -219,6 +238,24 @@ mod tests {
     #[test] fn ignores_unreachable_recursive_helpers() {
         let p = program(vec![vec![], vec![call(1)]], 0);
         assert!(verify(&p).is_ok());
+    }
+    #[test] fn initializer_only_actor_rejects_recursive_helper() {
+        let mut p = program(vec![vec![call(0)]], 0);
+        p.actors[0].receive = None;
+        p.actors[0].inits.push((0, TE { e: TExpr::Call(0, vec![]), ty: Type::Void }));
+        assert!(verify(&p).is_err());
+    }
+    #[test] fn initializer_charges_its_entry_frame() {
+        let mut bodies = vec![vec![]; MAX_ACTOR_STATIC_CALL_DEPTH];
+        for i in 0..MAX_ACTOR_STATIC_CALL_DEPTH - 1 {
+            bodies[i].push(call((i + 1) as u32));
+        }
+        let mut p = program(bodies, 0);
+        p.actors[0].receive = None;
+        p.actors[0].inits.push((0, TE { e: TExpr::Call(1, vec![]), ty: Type::Void }));
+        assert!(verify(&p).is_ok());
+        p.actors[0].inits[0].1.e = TExpr::Call(0, vec![]);
+        assert!(verify(&p).is_err());
     }
     #[test] fn rejects_bad_typed_indices() {
         let p = program(vec![vec![call(999)]], 0);
