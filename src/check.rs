@@ -117,7 +117,7 @@ pub enum StrOp {
 pub enum TExpr {
     I64(i64),
     /// Checked inclusive signed-i64 refinement; evaluate the child exactly once.
-    RefinementCheck(Box<TE>, i64, i64),
+    RefinementCheck(Box<TE>, i64, i64, i32),
     F64(f64),
     Bool(bool),
     /// string value `offset << 32 | len` into the module's string data
@@ -1562,7 +1562,7 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
         | TExpr::CollectionAlloc(_)
         | TExpr::Spawn(_) => EscapeEffects::default(),
-        TExpr::RefinementCheck(v, _, _) | TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
+        TExpr::RefinementCheck(v, _, _, _) | TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
         | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
@@ -2279,7 +2279,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
     match &value.e {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
-        TExpr::RefinementCheck(a, _, _) | TExpr::IntToFloat(a) | TExpr::FNeg(a) |
+        TExpr::RefinementCheck(a, _, _, _) | TExpr::IntToFloat(a) | TExpr::FNeg(a) |
         TExpr::Neg(a) | TExpr::Not(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
@@ -2391,7 +2391,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
-        TExpr::RefinementCheck(a, _, _) | TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
+        TExpr::RefinementCheck(a, _, _, _) | TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),

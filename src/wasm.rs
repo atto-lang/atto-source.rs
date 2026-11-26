@@ -788,10 +788,11 @@ impl Emit<'_> {
                     BinOp::Div => self.call(self.l.helper(self.l.quantity_div.expect("division not admitted by checker"))),
                 }
             }
-            TExpr::RefinementCheck(value, min, max) => {
+            TExpr::RefinementCheck(value, min, max, failure) => {
                 self.expr(value);
                 self.op(0x42); sleb(&mut self.code, *min);
                 self.op(0x42); sleb(&mut self.code, *max);
+                self.op(0x41); sleb(&mut self.code, i64::from(*failure));
                 self.call(self.l.helper(self.l.refinement_check.expect("refinement requires verified profile")));
             }
             TExpr::Ternary(c, a, b) => {
@@ -1478,9 +1479,9 @@ fn quantity_div_body() -> (Sig, Vec<u8>, Vec<u8>) {
 fn refinement_check_body() -> (Sig, Vec<u8>, Vec<u8>) {
     // local 0: value; 1: minimum; 2: maximum. Signed comparisons.
     let mut c = vec![0x20,0,0x20,1,0x53,0x20,0,0x20,2,0x55,0x72,0x04,0x40];
-    panic(&mut c, PANIC_REFINEMENT);
+    c.extend_from_slice(&[0x20,3,0x24,0,0x00]);
     c.extend_from_slice(&[0x0b,0x20,0,0x0b]);
-    (Sig(vec![I64,I64,I64],vec![I64]),vec![0],c)
+    (Sig(vec![I64,I64,I64,I32],vec![I64]),vec![0],c)
 }
 fn emit_inner(p: &TProgram, quantity_panic: Option<i32>, quantity_division: bool) -> Vec<u8> {
     let heap_global = 1;
