@@ -783,7 +783,7 @@ impl Parser {
         Ok(out)
     }
 
-    /// A deliberately bounded straight-line scalar constructor proof. Do not
+    /// A bounded scalar constructor proof with exact fallthrough branch joins. Do not
     /// certify arbitrary calls, control flow or effects until the value ABI
     /// and full ownership checker can establish those contracts.
     fn prove_struct_constructor(
@@ -837,27 +837,58 @@ impl Parser {
                 _ => Err(invalid()),
             }
         }
+        // Each reachable fallthrough path must initialize the same fields.
+        // A missing else contributes the unchanged incoming state. Reject
+        // differing branch states rather than speculate on later conditions.
+        fn block<'a>(
+            body: &'a [Stmt], fields: &BTreeMap<&str, Type>, params: &BTreeMap<&str, Type>,
+            initialized: &mut BTreeSet<&'a str>, pos: Pos,
+        ) -> R<()> {
+            for stmt in body {
+                match stmt {
+                    Stmt::FieldAssign { target, field, value, pos: at }
+                        if matches!(&target.kind, ExprKind::SelfRef) => {
+                        let expected = fields.get(field.as_str()).copied().ok_or_else(||
+                            Diagnostic::new(*at, "E_STRUCT_INIT", "unknown struct field"))?;
+                        if initialized.contains(field.as_str()) {
+                            return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "struct field initialized twice"));
+                        }
+                        if scalar(value, fields, params, initialized)? != expected {
+                            return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "struct field initializer type mismatch"));
+                        }
+                        initialized.insert(field.as_str());
+                    }
+                    Stmt::If { arms, otherwise, pos: at } => {
+                        let mut joined = None;
+                        for (condition, branch) in arms {
+                            if scalar(condition, fields, params, initialized)? != Type::Bool {
+                                return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "constructor condition must be bool"));
+                            }
+                            let mut state = initialized.clone();
+                            block(branch, fields, params, &mut state, *at)?;
+                            if joined.as_ref().is_some_and(|prior| prior != &state) {
+                                return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "constructor branches initialize different fields"));
+                            }
+                            joined = Some(state);
+                        }
+                        let mut state = initialized.clone();
+                        if let Some(other) = otherwise {
+                            block(other, fields, params, &mut state, *at)?;
+                        }
+                        if joined.as_ref().is_some_and(|prior| prior != &state) {
+                            return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "constructor branches initialize different fields"));
+                        }
+                        *initialized = state;
+                    }
+                    _ => return Err(unsupported(pos, "constructor requires scalar assignments and bounded if branches")),
+                }
+            }
+            Ok(())
+        }
         let field_types: BTreeMap<&str, Type> = fields.iter().map(|(n,t)| (n.as_str(), *t)).collect();
         let param_types: BTreeMap<&str, Type> = params.iter().map(|p| (p.name.as_str(), p.ty)).collect();
         let mut initialized = BTreeSet::new();
-        for stmt in body {
-            match stmt {
-                Stmt::FieldAssign { target, field, value, pos: at }
-                    if matches!(&target.kind, ExprKind::SelfRef) => {
-                    let expected = field_types.get(field.as_str()).copied().ok_or_else(||
-                        Diagnostic::new(*at, "E_STRUCT_INIT", "unknown struct field"))?;
-                    if initialized.contains(field.as_str()) {
-                        return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "struct field initialized twice"));
-                    }
-                    let actual = scalar(value, &field_types, &param_types, &initialized)?;
-                    if actual != expected {
-                        return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "struct field initializer type mismatch"));
-                    }
-                    initialized.insert(field.as_str());
-                }
-                _ => return Err(unsupported(pos, "non-straight-line attached struct constructor proof")),
-            }
-        }
+        block(body, &field_types, &param_types, &mut initialized, pos)?;
         if initialized.len() != fields.len() {
             return Err(Diagnostic::new(pos, "E_STRUCT_INIT", "constructor leaves required fields uninitialized"));
         }

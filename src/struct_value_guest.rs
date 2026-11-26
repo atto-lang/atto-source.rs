@@ -48,6 +48,58 @@ fn member_expr(e: &Expr, params: &Slots, fields: &Slots) -> R<Expr> {
     Ok(Expr { kind, pos })
 }
 
+// Scratch slots are compiler-private scalars, never published as a value
+// before the parser's definite-initialization proof and this independent
+// lowering check agree. Every branch runs normally; no initializer is
+// duplicated or speculatively evaluated.
+fn constructor_block(
+    body: &[Stmt], params: &Slots, slots: &Slots, initialized: &mut Slots,
+    out: &mut Vec<Stmt>, pos: Pos,
+) -> R<()> {
+    for stmt in body {
+        match stmt {
+            Stmt::FieldAssign { target, field, value, pos: at }
+                if matches!(&target.kind, ExprKind::SelfRef) => {
+                let slot = slots.get(field).ok_or_else(|| denied(*at, "unknown constructor field"))?;
+                if initialized.contains_key(field) {
+                    return Err(denied(*at, "duplicate constructor initialization"));
+                }
+                let value = member_expr(value, params, initialized)?;
+                out.push(Stmt::Assign { name: slot.clone(), value, pos: *at });
+                initialized.insert(field.clone(), slot.clone());
+            }
+            Stmt::If { arms, otherwise, pos: at } => {
+                let mut lowered = Vec::new();
+                let mut joined = None;
+                for (condition, branch) in arms {
+                    let condition = member_expr(condition, params, initialized)?;
+                    let mut state = initialized.clone();
+                    let mut statements = Vec::new();
+                    constructor_block(branch, params, slots, &mut state, &mut statements, *at)?;
+                    if joined.as_ref().is_some_and(|prior| prior != &state) {
+                        return Err(denied(*at, "constructor branch states differ"));
+                    }
+                    joined = Some(state);
+                    lowered.push((condition, statements));
+                }
+                let mut state = initialized.clone();
+                let other = if let Some(branch) = otherwise {
+                    let mut statements = Vec::new();
+                    constructor_block(branch, params, slots, &mut state, &mut statements, *at)?;
+                    Some(statements)
+                } else { None };
+                if joined.as_ref().is_some_and(|prior| prior != &state) {
+                    return Err(denied(*at, "constructor fallthrough states differ"));
+                }
+                *initialized = state;
+                out.push(Stmt::If { arms: lowered, otherwise: other, pos: *at });
+            }
+            _ => return Err(denied(pos, "unsupported constructor control flow")),
+        }
+    }
+    Ok(())
+}
+
 struct MethodEntry {
     function: String,
     arity: usize,
@@ -169,6 +221,36 @@ impl MainLower<'_> {
             let at = arg.pos;
             out.push(binding(local.clone(), param.ty, arg, at));
             params.insert(param.name.clone(), local);
+        }
+        if ctor.body.iter().any(|stmt| matches!(stmt, Stmt::If { .. })) {
+            let mut slots = Slots::new();
+            for (i, (field, ty)) in self.decl.fields.iter().enumerate() {
+                let local = internal("scratch", id, i);
+                // Explicit private scratch initialization is required by
+                // the ordinary scalar checker. It is not a source struct
+                // default: the proof forbids reading it until assigned.
+                let kind = match ty {
+                    Type::Int => ExprKind::Int(Some(0)),
+                    Type::Bool => ExprKind::Bool(false),
+                    _ => return Err(denied(pos, "non-scalar constructor scratch")),
+                };
+                out.push(Stmt::Bind { kind: BindKind::Let, name: local.clone(),
+                    ty: Some(*ty), init: Expr { kind, pos }, pos });
+                slots.insert(field.clone(), local);
+            }
+            constructor_block(&ctor.body, &params, &slots, &mut initialized, out, pos)?;
+            if initialized.len() != self.decl.fields.len() {
+                return Err(denied(pos, "constructor fallthrough leaves a field uninitialized"));
+            }
+            let mut fields = Vec::new();
+            for (i, (field, ty)) in self.decl.fields.iter().enumerate() {
+                let scratch = initialized.get(field).ok_or_else(|| denied(pos, "missing constructor field"))?;
+                let local = internal("field", id, i);
+                out.push(binding(local.clone(), *ty, variable(scratch, pos), pos));
+                fields.push(local);
+            }
+            self.values.insert(name.to_owned(), LocalValue { fields });
+            return Ok(());
         }
         for stmt in &ctor.body {
             let Stmt::FieldAssign { target, field, value, pos: at } = stmt else {
