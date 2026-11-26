@@ -109,6 +109,49 @@ try {
     assert.ok(built.stderr.includes(diagnostic),source+': '+built.stderr);
     await assert.rejects(stat(out),{code:'ENOENT'});
   }
+  // Sibling closures share no environment storage. Test the identical
+  // compiler output with each intrinsic independently and in combination.
+  const siblings = 'pub fnc main():int { val offset = 2; val plus = |n| : int -> n+offset; val double: fnc(int)->int = |n| : int -> n*2; val seven: fnc()->int = || : int -> 7; return ';
+  let siblingBaseline;
+  for (const [form,expression] of [
+    ['direct','plus(3)+double(15)+seven()'],
+    ['call','plus.call(3)+double.call(15)+seven.call()'],
+    ['apply','plus(3)+double.apply((15,))+seven.apply(())'],
+    ['mixed','plus.call(3)+double.apply((15,))+seven.call()'],
+  ]) {
+    const source = join(work,'sibling-'+form+'.atto');
+    const out = source+'.wasm';
+    await writeFile(source,siblings+expression+'; }');
+    const built = run(source,out);
+    assert.equal(built.status,0,source+': '+built.stderr);
+    const bytes = await readFile(out);
+    assert.ok(WebAssembly.validate(bytes),source);
+    if (siblingBaseline) assert.deepEqual(bytes,siblingBaseline,source+': byte drift');
+    else siblingBaseline = bytes;
+    const module = new WebAssembly.Module(bytes);
+    for (const imp of WebAssembly.Module.imports(module)) {
+      assert.equal(imp.module,'atto');
+      assert.ok(allowed.has(imp.name));
+    }
+    const guest = new WebAssembly.Instance(module,imports);
+    assert.equal(guest.exports.main(),42n,source);
+    assert.equal(guest.exports.panic_code.value,0,source);
+    console.log('PASS sibling callable guest',form);
+  }
+  for (const [index,expression] of [
+    [0,'later(1)'],
+    [1,'later.call(1)'],
+    [2,'later.apply((1,))'],
+    [3,'later'],
+  ]) {
+    const source = join(work,'sibling-negative-'+index+'.atto');
+    const out = source+'.wasm';
+    await writeFile(source,'fnc later(int n):int { return n*100; } pub fnc main():int { val first = |n| : int -> '+expression+'; val later = |n| : int -> n+1; return first(1)+later(1); }');
+    const built = run(source,out);
+    assert.equal(built.status,1,source+': '+built.stderr);
+    assert.ok(built.stderr.includes('E_UNSUPPORTED'),source+': '+built.stderr);
+    await assert.rejects(stat(out),{code:'ENOENT'});
+  }
   for (const name of negative) {
     const path = fileURLToPath(new URL('./fixtures/fail/' + name, import.meta.url));
     const source = await readFile(path, 'utf8');
