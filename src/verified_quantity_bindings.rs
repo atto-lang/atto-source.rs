@@ -328,7 +328,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
             if !checks.is_empty(){return Err(p.err("E_VERIFY_UNSUPPORTED","strict ensures with control flow require separate proof"));}
             let mut mutable = Aliases::new();
             let (stmts, returns) = strict_block(p, &aliases, &signatures, &result,
-                &mut locals, &mut mutable, &mut slots, params.len(), 0)?;
+                &mut locals, &mut mutable, &mut slots, params.len(), 0, None)?;
             if !returns { return Err(p.err("E_VERIFY_RETURN", "not every path returns")); }
             body = stmts;
         } else {
@@ -375,8 +375,9 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         funcs.push(TFunc { name: name.clone(), params: vec![Type::Int;params.len()], ret: Type::Int, locals: slots, body });
         if public {
             p.expect(Tok::Eof)?;
+            let heap=funcs.iter().any(|f|f.locals.iter().any(|t|matches!(t,Type::Array(_))));
             return Ok(TProgram { funcs, generators: vec![], main: index, imports: vec![], data: vec![],
-                heap: false, globals: vec![], actors: vec![], strings: false, guest_eh: false,
+                heap, globals: vec![], actors: vec![], strings: false, guest_eh: false,
                 raise_tag: false, catch_depth: false });
         }
         signatures.insert(name, Signature { index, params, result, ensures:checks });
@@ -384,7 +385,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
 }
 
  // Closed strict CFG: while uses declared scalar invariants; no aliases,
-// suspension, shadowing, break/continue or external calls.
+// suspension, shadowing, or external calls. Lexical loop exits are checked.
  // Each local has a stable physical slot; mutable assignments replace its fact.
 fn loop_writes(p: &Parser<'_>) -> R<std::collections::BTreeSet<String>> {
     let mut writes = std::collections::BTreeSet::new();
@@ -406,9 +407,10 @@ fn loop_writes(p: &Parser<'_>) -> R<std::collections::BTreeSet<String>> {
     }
     Err(p.err("E_SYNTAX","unterminated strict loop"))
 }
+struct StrictLoopExit { invariants: Aliases, has_break: bool }
 fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
-    slots: &mut Vec<Type>, param_count: usize, depth: usize) -> R<(Vec<TStmt>, bool)> {
+    slots: &mut Vec<Type>, param_count: usize, depth: usize, mut active_loop: Option<&mut StrictLoopExit>) -> R<(Vec<TStmt>, bool)> {
     if depth > 16 { return Err(p.err("E_UNIT_LIMIT", "strict block depth")); }
     let mut body = Vec::new();
     let mut returned = false;
@@ -417,7 +419,23 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
         if p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "strict statement budget")); }
         p.budget -= 1;
         let pos = p.token().pos;
-        if p.word("return") {
+        if matches!(&p.token().tok, Tok::Ident(word) if word=="break" || word=="continue") {
+            let breaking=p.word("break");
+            if !breaking { p.expect_word("continue")?; }
+            p.expect(Tok::Semi)?;
+            let context=active_loop.as_deref_mut().ok_or_else(||error(pos,"E_VERIFY_UNSUPPORTED","loop exit outside strict while"))?;
+            if breaking { context.has_break=true; body.push(TStmt::Break); }
+            else {
+                for (name,declared) in &context.invariants {
+                    let (_,fact)=locals.get(name).ok_or_else(||error(pos,"E_VERIFY_UNSUPPORTED","continue outside local scope"))?;
+                    if !declared.range.contains(fact.range) || declared.unit!=fact.unit {
+                        return Err(error(pos,"E_REFINEMENT_BINDING","continue invariant not preserved"));
+                    }
+                }
+                body.push(TStmt::Continue);
+            }
+            returned=true;
+        } else if p.word("return") {
             let v = expr(p, aliases, locals, funcs, 0, 0)?;
             boundary(result, &v, pos, "E_REFINEMENT_RETURN")?;
             p.expect(Tok::Semi)?;
@@ -445,8 +463,9 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             }
             let (cond, mut yes, no) = strict_condition(p, aliases, &header, funcs)?;
             p.expect(Tok::LBrace)?;
+            let mut context=StrictLoopExit{invariants:mutable.iter().filter(|(name,_)|writes.contains(*name)).map(|(name,want)|(name.clone(),want.clone())).collect(),has_break:false};
             let (loop_body, always_returns) = strict_block(p, aliases, funcs, result,
-                &mut yes, &mut mutable.clone(), slots, param_count, depth+1)?;
+                &mut yes, &mut mutable.clone(), slots, param_count, depth+1, Some(&mut context))?;
             if !always_returns {
                 for (name, declared) in mutable.iter() {
                     let (_, fact) = yes.get(name).ok_or_else(||
@@ -456,9 +475,8 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                     }
                 }
             }
-            // Only the false guard edge can continue: break/continue remain
-            // unsupported. Zero iterations are included by header widening.
-            *locals = no;
+            // A possible break invalidates the false-header assumption.
+            *locals = if context.has_break { header } else { no };
             body.push(TStmt::Loop {cond:Some(cond),body:loop_body,update:Vec::new()});
         } else if p.word("if") {
             let (cond, yes, no) = strict_condition(p, aliases, locals, funcs)?;
@@ -466,11 +484,11 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             let mut yes = yes;
             let mut no = no;
             let (a, ar) = strict_block(p, aliases, funcs, result, &mut yes,
-                &mut mutable.clone(), slots, param_count, depth+1)?;
+                &mut mutable.clone(), slots, param_count, depth+1, active_loop.as_deref_mut())?;
             let (b, br) = if p.word("else") {
                 p.expect(Tok::LBrace)?;
                 strict_block(p, aliases, funcs, result, &mut no,
-                    &mut mutable.clone(), slots, param_count, depth+1)?
+                    &mut mutable.clone(), slots, param_count, depth+1, active_loop.as_deref_mut())?
             } else { (Vec::new(), false) };
             // Only incoming bindings survive lexical exit. Returning arms
             // contribute no continuation; otherwise take the interval hull.
@@ -500,7 +518,38 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                 };
                 if locals.contains_key(&name) { return Err(p.err("E_UNIT_DUPLICATE", "duplicate strict binding")); }
                 if is_let && wanted.is_none() { return Err(p.err("E_VERIFY_UNSUPPORTED", "mutable binding needs explicit type")); }
+                if p.token().tok==Tok::Semi {return Err(p.err("E_MISSING_INITIALIZER","explicit initializer required"));}
                 p.expect(Tok::Assign)?;
+                if matches!(&p.token().tok,Tok::Ident(n) if n=="Array") {
+                    if !is_val || wanted.is_some() || depth!=0 {
+                        return Err(p.err("E_VERIFY_UNSUPPORTED","fixed array requires a function-local inferred val outside control flow"));
+                    }
+                    p.at+=1;p.expect(Tok::Dot)?;p.expect_word("of")?;p.expect(Tok::LParen)?;
+                    let mut values=Vec::new();
+                    loop {
+                        if values.len()>=16{return Err(p.err("E_UNIT_LIMIT","fixed array cell budget"));}
+                        let v=expr(p,aliases,locals,funcs,0,0)?;
+                        compatible(&Unit::scalar(),&v.unit,pos)?;
+                        values.push(v);
+                        if p.take(Tok::RParen){break;}
+                        p.expect(Tok::Comma)?;
+                    }
+                    p.expect(Tok::Semi)?;
+                    let slot=(param_count+slots.len()) as u32;
+                    slots.push(Type::Array(0));
+                    let count=values.len() as u32;
+                    let range=values.iter().map(|v|v.range).reduce(Range::join).expect("nonempty");
+                    body.push(TStmt::Set(slot,TE{ty:Type::Array(0),e:TExpr::CollectionAlloc(count*8)}));
+                    for (index,v) in values.into_iter().enumerate(){
+                        body.push(TStmt::CollectionStore{array:TE{ty:Type::Array(0),e:TExpr::Local(slot)},
+                            offset:(index as u32)*8,value:v.ir});
+                    }
+                    // Internal length marker is not a source identifier. A receiver
+                    // cannot be returned, aliased, passed or used as scalar storage.
+                    locals.insert(format!("$array:{name}"),(slot,Refined{unit:Unit::scalar(),range:Range::exact(i64::from(count)),width:64}));
+                    locals.insert(name,(slot,Refined{unit:Unit::scalar(),range,width:64}));
+                    continue;
+                }
                 let v = expr(p, aliases, locals, funcs, 0, 0)?;
                 if let Some(want) = &wanted { boundary(want, &v, pos, "E_REFINEMENT_BINDING")?; }
                 p.expect(Tok::Semi)?;
@@ -727,6 +776,26 @@ fn atom_base(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Fun
         return Ok(Checked { width:sig.result.width,unit: sig.result.unit.clone(), range: sig.result.range, ir: int(TExpr::Call(sig.index,args)) });
     }
     let (slot,unit) = locals.get(&name).ok_or_else(|| error(pos,"E_UNIT_NAME","unknown immutable quantity binding"))?;
+    if let Some((_,length))=locals.get(&format!("$array:{name}")){
+        if !p.take(Tok::LBracket){return Err(error(pos,"E_VERIFY_UNSUPPORTED","array cannot escape or be used as scalar"));}
+        let index=expr(p,aliases,locals,funcs,0,depth+1)?;
+        p.expect(Tok::RBracket)?;
+        compatible(&Unit::scalar(),&index.unit,pos)?;
+        let count=length.range.lo;
+        if index.range.lo<0 || index.range.hi>=count{
+            return Err(error(pos,"E_VERIFY_UNPROVEN","index not proved within receiver bounds"));
+        }
+        if !matches!(&index.ir.e,TExpr::Local(_)|TExpr::I64(_)){
+            return Err(error(pos,"E_VERIFY_UNSUPPORTED","fixed array index requires scalar local or literal"));
+        }
+        let load=|i:i64|int(TExpr::CollectionLoad{array:Box::new(TE{ty:Type::Array(0),e:TExpr::Local(*slot)}),offset:(i as u32)*8});
+        let mut ir=load(index.range.hi);
+        for i in (index.range.lo..index.range.hi).rev(){
+            let test=bool_ir(TExpr::Bin(BinOp::Eq,Box::new(index.ir.clone()),Box::new(int(TExpr::I64(i)))));
+            ir=int(TExpr::Ternary(Box::new(test),Box::new(load(i)),Box::new(ir)));
+        }
+        return Ok(Checked{unit:Unit::scalar(),range:unit.range,ir,width:64});
+    }
     Ok(Checked { width:unit.width,unit:unit.unit.clone(), range: unit.range, ir:int(TExpr::Local(*slot)) })
 }
 fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Functions, precedence: u8, depth: usize) -> R<Checked> {
