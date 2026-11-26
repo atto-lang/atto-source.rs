@@ -211,6 +211,8 @@ pub fn aosoa_field_offset(
 /// nonoverlapping lanes, logical row count and the actual backing allocation.
 /// Returns a byte range only; it never creates a pointer or Rust reference.
 /// Caller must still prove ownership, allocation provenance and generation.
+// Keep the public layout-check API explicit; no caller may omit a bound.
+#[allow(clippy::too_many_arguments)]
 pub fn checked_aosoa_field_span(
     row: usize,
     row_count: usize,

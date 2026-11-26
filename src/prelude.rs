@@ -178,6 +178,8 @@ impl TypeInfo {
     }
 }
 
+// Keep the static table columns aligned with the explicit metadata contract.
+#[allow(clippy::too_many_arguments)]
 const fn info(
     name: &'static str, canonical: &'static str, scope: Scope, kind: Kind,
     min: u8, max: u8, ownership: Ownership, allocation: Allocation,

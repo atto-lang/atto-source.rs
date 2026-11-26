@@ -36,7 +36,12 @@ fn invalid_operator_types_and_retired_xor_remain_rejected() {
     invalid("pub fnc main(): int { stdio.println(true ^^ false); return 0; }");
     invalid("pub fnc main(): int { stdio.println(And(true)); return 0; }");
     invalid("pub fnc main(): int { stdio.println(And(true, 7)); return 0; }");
-    invalid("pub fnc main(): int { stdio.println(Or([])); return 0; }");
+    for name in ["And", "Or", "Xor"] {
+        for args in ["", "true", "false, 7", "true, 7", "[true, 7]", "[true], [false]", "[[true]]"] {
+            invalid(&format!("pub fnc main(): int {{ stdio.println({name}({args})); return 0; }}"));
+        }
+        valid(&format!("pub fnc main(): int {{ stdio.println({name}([])); stdio.println({name}([true])); stdio.println({name}([false])); return 0; }}"));
+    }
 }
 #[test]
 fn literal_bool_array_packs_cannot_become_general_array_runtime() {

@@ -170,3 +170,55 @@ fn excessive_inline_slot_capacity_is_rejected_before_initialization() {
         Err(ArenaError::CapacityTooLarge)
     ));
 }
+
+#[test]
+fn denied_admission_and_retirement_preserve_sibling_and_owned_values() {
+    use std::{cell::Cell, rc::Rc};
+    #[derive(Debug)]
+    struct DropProbe(Rc<Cell<u32>>, u64);
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    let first_drops = Rc::new(Cell::new(0));
+    let sibling_drops = Rc::new(Cell::new(0));
+    let mut first = FixedActorArena::<DropProbe, 2>::new(701, 1, 1).unwrap();
+    let mut sibling = FixedActorArena::<DropProbe, 1>::new(702, 1, 1).unwrap();
+    let root = first.try_insert(DropProbe(first_drops.clone(), 17)).unwrap();
+    let peer = sibling.try_insert(DropProbe(sibling_drops.clone(), 9)).unwrap();
+    let tail = first.try_insert(DropProbe(first_drops.clone(), 8)).unwrap();
+    for i in 0..8 {
+        let (error, rejected) = first.try_insert(DropProbe(first_drops.clone(), i))
+            .unwrap_err();
+        assert_eq!(error, ArenaError::CapacityExhausted);
+        assert_eq!(rejected.1, i);
+        assert_eq!(first_drops.get(), i as u32);
+        drop(rejected);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first.get(root).unwrap().1, 17);
+        assert_eq!(first.get(tail).unwrap().1, 8);
+    }
+    let released = first.take(tail).unwrap();
+    assert_eq!(first_drops.get(), 8);
+    drop(released);
+    let replacement = first.try_insert(DropProbe(first_drops.clone(), 42)).unwrap();
+    assert_eq!(replacement.slot(), tail.slot());
+    assert_ne!(replacement.generation(), tail.generation());
+    assert!(matches!(first.get(tail), Err(ArenaError::StaleGeneration)));
+    drop(first);
+    assert_eq!(first_drops.get(), 11);
+    assert_eq!(sibling_drops.get(), 0);
+    assert_eq!(sibling.get(peer).unwrap().1, 9);
+
+    let mut restarted = FixedActorArena::<DropProbe, 2>::new(701, 2, 1).unwrap();
+    assert!(matches!(restarted.get(root), Err(ArenaError::WrongIncarnation)));
+    let fresh = restarted.try_insert(DropProbe(first_drops.clone(), 0)).unwrap();
+    assert_eq!(fresh.slot(), 0);
+    assert_eq!(restarted.get(fresh).unwrap().1, 0);
+    drop(restarted);
+    drop(sibling);
+    assert_eq!(first_drops.get(), 12);
+    assert_eq!(sibling_drops.get(), 1);
+}

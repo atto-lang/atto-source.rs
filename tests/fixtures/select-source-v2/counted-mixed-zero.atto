@@ -1,0 +1,12 @@
+suspends fnc main(): int {
+  val Channel<int> incoming = Channel.new<int>(1);
+  writech incoming, 22;
+  val Future<int> f = select<int> { default: -> { return 20; } };
+  val Array[int] empty = await select<int>(0) fair over
+    when await f: int n -> { return n + 1; }
+    when readch incoming: int n -> { return n * 2; }
+    when await f: int n -> { return n; }
+  end;
+  if empty.size == 0 then return (await f) + (readch incoming); fi
+  return 0;
+}
