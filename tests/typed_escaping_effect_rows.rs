@@ -54,3 +54,12 @@ fn negative_unsupported_annotations_do_not_emit_guest() {
     bad("@Purity()\npub fnc main(): int { return 42; }", "E_UNSUPPORTED");
     bad("pub fnc main(): int Throws(Error) { return 42; }", "E_SYNTAX");
 }
+
+#[test]
+fn checked_unwrap_ordinary_effect_bounds() {
+    bad("@Throws()\npub fnc main(): int { val Option<int> x = None; return x.unwrap(); }", "E_EFFECT");
+    bad("fnc fail(): int throws(Error) { val Option<int> x = None; return x.unwrap(); }\n@Throws()\npub fnc main(): int { return fail(); }", "E_EFFECT");
+    good("fnc fail(): int throws(Error) { val Option<int> x = None; return x.unwrap(); }\n@Throws()\npub fnc main(): int { val Result<int,Error> r = trap! fail(); return 42; }");
+    good("@Throws()\npub fnc main(): int { val Option<int> x = None; val Result<int,Error> r = trap! x.unwrap(); return 42; }");
+    bad("pub fnc main(): int { val Option<int> x = None; return x.unwrap(42); }", "E_ARITY");
+}
