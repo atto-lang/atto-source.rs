@@ -636,6 +636,41 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
 mod strict_tests {
     use super::*;
     #[test]
+    fn divisor_exclusions_and_join_are_sound() {
+        let nonzero=restrict(Range::FULL,BinOp::Ne,0);
+        let both=restrict(nonzero,BinOp::Ne,-1);
+        assert!(!nonzero.has(0) && nonzero.has(-1));
+        assert!(!both.has(0) && !both.has(-1));
+        assert!(Range::exact(42).proves_binary(nonzero,BinOp::Div));
+        assert!(!Range::FULL.proves_binary(nonzero,BinOp::Div));
+        assert!(Range::FULL.proves_binary(both,BinOp::Div));
+        assert!(!Range::exact(-1).join(Range::exact(1)).has(0));
+        assert!(both.join(Range::exact(0)).has(0));
+        assert!(both.join(Range::exact(-1)).has(-1));
+        assert!(both.intersect(Range::new(-1,0)).is_none());
+        assert_eq!(restrict(Range::exact(0),BinOp::Ne,0),Range::exact(0));
+        assert_eq!(both.binary(Range::exact(1),BinOp::Add).holes,0);
+    }
+    #[test]
+    fn excluded_domain_union_intersection_and_division_cover_small_values() {
+        let mut facts=Vec::new();
+        for lo in -3..=3 { for hi in lo..=3 {
+            for holes in 0..=3 {
+                if let Some(r)=(Range{lo,hi,holes}).normalized() { facts.push(r); }
+            }
+        }}
+        for a in &facts { for b in &facts {
+            let union=a.join(*b); let intersection=a.intersect(*b);
+            for x in -3..=3 {
+                assert!(!(a.has(x)||b.has(x))||union.has(x));
+                assert_eq!(intersection.is_some_and(|r|r.has(x)),a.has(x)&&b.has(x));
+            }
+            let all=(-3..=3).filter(|x|a.has(*x)).all(|x|
+                (-3..=3).filter(|y|b.has(*y)).all(|y|x.checked_div(y).is_some()));
+            assert_eq!(a.proves_binary(*b,BinOp::Div),all);
+        }}
+    }
+    #[test]
     fn branch_facts_cover_every_sampled_concrete_successor() {
         let mut samples = vec![i64::MIN, i64::MIN+1, i64::MIN+2];
         samples.extend(-8..=7);
