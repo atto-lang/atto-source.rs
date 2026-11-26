@@ -67,9 +67,21 @@ for (const [src, expected] of [
   ['pub fnc main(): int { return 0b2; }', 'E_INTEGER_LITERAL'],
   ['pub fnc main(): int { return 1 ^^ true; }', 'E_TYPE'],
   ['pub fnc main(): int { return 0b; }', 'E_INTEGER_LITERAL'],
+  ['pub fnc main(): int { return 1 <<< 64; }', 'E_SHIFT_DISTANCE'],
+  ['pub fnc main(): int { return 1 >>> (-1); }', 'E_SHIFT_DISTANCE'],
+  ['pub fnc main(): int { return 1 ashr 64; }', 'E_SHIFT_DISTANCE'],
 ]) {
   const failure = compile(src);
   assert.equal(failure.ok, false, 'negative source cannot return a Wasm artifact');
   assert.ok(failure.diagnostic.includes(expected), failure.diagnostic);
 }
-console.log('PASS exact website bitwise source: wasm32 compiler -> guest Wasm = 188; native bytes equal; 3 negatives');
+for (const op of ['<<<', '>>>', 'ashr']) {
+  for (const count of [-1, 64]) {
+    const built = compile('fnc shift_count(): int { return ' + count + '; } pub fnc main(): int { return 1 ' + op + ' shift_count(); }');
+    assert.ok(built.ok, built.diagnostic);
+    const instance = new WebAssembly.Instance(new WebAssembly.Module(built.guest), {});
+    assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
+    assert.equal(instance.exports.panic_code.value, 8);
+  }
+}
+console.log('PASS exact website bitwise source; native bytes equal; six negatives and six dynamic shift traps');

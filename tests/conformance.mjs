@@ -400,10 +400,10 @@ check('wasm/name-section-matches-emitted-function-count', () => {
     assert.equal(pos, end, 'name subsection decoded exactly');
     assert.equal(end, bytes.length, 'no unexpected second subsection');
     assert.deepEqual(names.map(([index]) => index), Array.from({length: count}, (_, i) => i));
-    assert.equal(count, WebAssembly.Module.imports(mod).length + 4 + 1,
-      'imports + four checked helpers + main');
-    assert.deepEqual(names.slice(-5).map(([, name]) => name),
-      ['atto.checked_add','atto.checked_sub','atto.checked_mul','atto.checked_neg','main']);
+    assert.equal(count, WebAssembly.Module.imports(mod).length + 5 + 1,
+      'imports + five checked helpers + main');
+    assert.deepEqual(names.slice(-6).map(([, name]) => name),
+      ['atto.checked_add','atto.checked_sub','atto.checked_mul','atto.checked_neg','atto.checked_shift_count','main']);
     assert.ok(!names.some(([, name]) => name === 'atto.checked_rem'),
       'removed remainder helper must not appear in guest debug names');
   }

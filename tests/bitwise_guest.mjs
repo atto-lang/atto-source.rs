@@ -11,7 +11,7 @@ const cases = [
   ['12 & 10', 8n], ['12 | 10', 14n], ['12 ^^ 10', 6n],
   ['~12', -13n], ['8 <<< 2', 32n], ['32 >>> 2', 8n],
   ['-8 ashr 1', -4n], ['-1 >>> 1', 9223372036854775807n],
-  ['1 <<< 64', 1n], ['1 + 2 <<< 3', 24n], ['64 >>> 1 + 1', 16n],
+  ['1 <<< 63', -9223372036854775808n], ['1 + 2 <<< 3', 24n], ['64 >>> 1 + 1', 16n],
   ['12 & 10 | 2 ^^ 6', 12n],
   ['(1 | 2) <<< 1', 6n],
   ['(1 <<< 63) >>> 63', 1n],
@@ -44,7 +44,26 @@ try {
     assert.equal(instance.exports.main(), expected, expression);
     assert.equal(instance.exports.panic_code.value, 0, expression);
   }
-  console.log('PASS', i, 'bitwise Wasm guest execution cases');
+
+  for (const op of ['<<<', '>>>', 'ashr']) {
+    for (const distance of ['-1', '64', '9223372036854775807', '-9223372036854775808']) {
+      const src = join(tmp, 'bad-' + i + '.atto');
+      const bin = join(tmp, 'bad-' + i + '.wasm');
+      i++;
+      await writeFile(src, 'pub fnc main(): int { return 1 ' + op + ' (' + distance + '); }');
+      const rejected = spawnSync(attoc, [src, '-o', bin], { encoding: 'utf8', timeout: 30000 });
+      assert.equal(rejected.status, 1, rejected.stderr);
+      assert.match(rejected.stderr, /E_SHIFT_DISTANCE/);
+      await assert.rejects(readFile(bin), {code:'ENOENT'});
+      await writeFile(src, 'fnc shift_count(): int { return ' + distance + '; } pub fnc main(): int { return 1 ' + op + ' shift_count(); }');
+      const built = spawnSync(attoc, [src, '-o', bin], { encoding: 'utf8', timeout: 30000 });
+      assert.equal(built.status, 0, built.stderr);
+      const {instance} = await WebAssembly.instantiate(await readFile(bin), {});
+      assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
+      assert.equal(instance.exports.panic_code.value, 8, op + ' ' + distance);
+    }
+  }
+  console.log('PASS', i, 'bitwise Wasm guest execution/rejection cases');
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }

@@ -11,7 +11,7 @@ fn bitwise_operations_compile_and_emit_wasm() {
         "12 & 10", "12 | 10", "12 ^^ 10", "~12",
         "8 <<< 2", "32 >>> 2", "-8 ashr 1",
         "1 + 2 <<< 3", "64 >>> 1 + 1",
-        "1 <<< 64", "-1 >>> 1",
+        "1 <<< 63", "-1 >>> 1",
         "12 & 10 | 2 ^^ 6", "(1 | 2) <<< 1",
     ] {
         let bytes = compile(&source(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
@@ -90,5 +90,18 @@ fn canonical_caret_contexts_are_disjoint() {
                 "pub fnc main(): int { let x: int = 12; x ^= 10; return x; }",
                 "pub fnc main(): int { return true ^^ false; }"] {
         assert!(compile(src).is_err(), "{src}");
+    }
+}
+
+#[test]
+fn checked_shift_distance_literals_are_rejected_without_guest_bytes() {
+    for op in ["<<<", ">>>", "ashr"] {
+        for n in ["-1", "64", "9223372036854775807", "-9223372036854775808"] {
+            let expr = format!("1 {op} ({n})");
+            assert_eq!(compile(&source(&expr)).unwrap_err().code, "E_SHIFT_DISTANCE", "{expr}");
+        }
+        for n in [0, 63] {
+            compile(&source(&format!("1 {op} {n}"))).unwrap();
+        }
     }
 }

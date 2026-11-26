@@ -4099,6 +4099,22 @@ impl<'a> FnCx<'a> {
                         "bitwise operator '{}' requires two int operands, found {} and {}",
                         op.symbol(), self.tn(a.ty), self.tn(b.ty))));
                 }
+                if matches!(op, BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                    // Reject known bad literal counts before publishing a guest.
+                    // Nonliteral distances are checked after both operands execute.
+                    let distance = match &b.e {
+                        TExpr::I64(n) => Some(*n),
+                        TExpr::Neg(inner) => match &inner.e {
+                            TExpr::I64(n) => n.checked_neg(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if distance.is_some_and(|n| !(0..=63).contains(&n)) {
+                        return Err(Diagnostic::new(pos, "E_SHIFT_DISTANCE",
+                            "shift distance must be within 0..63"));
+                    }
+                }
                 return Ok(TE {
                     e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
                     ty: Type::Int,
