@@ -65,3 +65,25 @@ fn no_struct_class_fallback_or_unverified_guest() {
     let invalid = source.replace("is_origin() : bool", "bool * is_origin()");
     assert!(compile(&invalid).is_err());
 }
+
+#[test]
+fn scalar_constructor_initialization_rejects_missing_duplicate_unknown_wrong_type_and_early_read() {
+    for src in [
+        GROUPED.replace("self.y = y;", ""),
+        GROUPED.replace("self.y = y;", "self.x = y;"),
+        GROUPED.replace("self.y = y;", "self.z = y;"),
+        GROUPED.replace("self.y = y;", "self.y = true;"),
+        GROUPED.replace("self.x = x;", "self.x = self.y;"),
+        GROUPED.replace("self.x = x;", "self.x = publish(self);"),
+    ] {
+        let err = Parser::new(lex(&src).unwrap()).parse_struct_with_target()
+            .expect_err("invalid constructor must fail closed");
+        assert_eq!(err.code, "E_STRUCT_INIT");
+    }
+}
+
+#[test]
+fn constructor_can_read_an_earlier_initialized_scalar() {
+    let src = GROUPED.replace("self.y = y;", "self.y = self.x + y;");
+    assert!(Parser::new(lex(&src).unwrap()).parse_struct_with_target().is_ok());
+}
