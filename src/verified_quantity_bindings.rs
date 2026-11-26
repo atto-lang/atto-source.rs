@@ -70,7 +70,7 @@ impl Range {
                 let v = [a*c,a*d,b*c,b*d];
                 fits(*v.iter().min().unwrap(),*v.iter().max().unwrap())
             }
-            BinOp::Div => !other.has(0) && !(self.has(i64::MIN) && other.has(-1)),
+            BinOp::Div => !(other.has(0) || (self.has(i64::MIN) && other.has(-1))),
             _ => false,
         }
     }
@@ -425,6 +425,8 @@ fn strict_backedge(p: &Parser<'_>, facts: &Locals, declared: &Aliases) -> R<()> 
     }
     Ok(())
 }
+// Keep proof state, mutable locals and loop-exit authority explicit at recursion sites.
+#[allow(clippy::too_many_arguments)]
 fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
     slots: &mut Vec<Type>, param_count: usize, depth: usize, loops: &mut Vec<StrictLoopExit>, end_delimited: bool) -> R<(Vec<TStmt>, bool)> {
@@ -535,6 +537,7 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                 };
                 if locals.contains_key(&name) { return Err(p.err("E_UNIT_DUPLICATE", "duplicate strict binding")); }
                 if is_let && wanted.is_none() { return Err(p.err("E_VERIFY_UNSUPPORTED", "mutable binding needs explicit type")); }
+                if p.token().tok==Tok::Semi {return Err(p.err("E_MISSING_INITIALIZER","explicit initializer required"));}
                 p.expect(Tok::Assign)?;
                 if matches!(&p.token().tok,Tok::Ident(n) if n=="Array") {
                     if !is_val || wanted.is_some() || depth!=0 {
@@ -830,7 +833,7 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
             BinOp::Add | BinOp::Sub => { compatible(&left.unit,&right.unit,pos)?; left.unit.clone() }
             BinOp::Mul => left.unit.combine(&right.unit,false,pos)?,
             BinOp::Div => {
-                if !p.strict && aliases.is_empty() && left.unit == Unit::scalar() && right.unit == Unit::scalar() {
+                if !p.strict && aliases.is_empty() && !p.scalar_contract_profile && left.unit == Unit::scalar() && right.unit == Unit::scalar() {
                     return Err(error(pos,"E_UNIT_SCALAR_DIVISION","ordinary int division remains outside quantity profile"));
                 }
                 left.unit.combine(&right.unit,true,pos)?
