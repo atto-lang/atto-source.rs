@@ -797,7 +797,16 @@ impl Emit<'_> {
                     BinOp::Ge => self.op(0x59),
                     BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
                     BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                    BinOp::Div => unreachable!("division not admitted by checker"),
+                    BinOp::Div => {
+                        // Checker admits dynamic i64 division only with a
+                        // normalized constant divisor that cannot fault on
+                        // any signed numerator. Never silently emit an
+                        // unproved div_s or use Wasm traps as guest errors.
+                        assert!(int && b.ty == Type::Int &&
+                            matches!(&b.e, TExpr::I64(n) if *n != 0 && *n != -1),
+                            "unproved signed quotient in typed IR");
+                        self.op(0x7f); // i64.div_s, truncates toward zero
+                    }
                 }
             }
             TExpr::Ternary(c, a, b) => {

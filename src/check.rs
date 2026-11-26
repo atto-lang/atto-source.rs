@@ -4194,8 +4194,27 @@ impl<'a> FnCx<'a> {
                             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                                 format!("checked signed quotient: {reason}; typed ordinary guest error lowering required")));
                         }
+                        // With a statically known nonzero divisor other than -1,
+                        // every possible i64 numerator has a representable quotient.
+                        // Keep the numerator expression (and its effects) exactly once.
+                        // Normalize the divisor to an I64 so emission can recheck
+                        // this narrow proof independently.
+                        if let Some(rhs) = literal(&b) {
+                            if rhs != 0 && rhs != -1 {
+                                return Ok(TE {
+                                    e: TExpr::Bin(BinOp::Div, Box::new(a), Box::new(TE {
+                                        e: TExpr::I64(rhs), ty: Type::Int,
+                                    })),
+                                    ty: Type::Int,
+                                });
+                            }
+                            if rhs == 0 {
+                                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                                    "checked signed quotient: division_by_zero; typed ordinary guest error lowering required"));
+                            }
+                        }
                         return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                            "checked signed quotient requires proven safe literal operands or typed ordinary guest error lowering"));
+                            "checked signed quotient requires proven safe literal operands or a safe constant divisor, or typed ordinary guest error lowering"));
                     }
                 } else {
                     // Java binary numeric promotion: an int operand widens to float.
@@ -4222,7 +4241,7 @@ impl<'a> FnCx<'a> {
             }
             let ty = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
-                BinOp::Div => unreachable!("int / int folded or rejected above"),
+                BinOp::Div => unreachable!("int / int handled or rejected above"),
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr =>
                     unreachable!("bitwise operations handled before numeric promotion"),
