@@ -83,3 +83,22 @@ const fs = require('node:fs');
     assert!(output.status.success(), "guest execution failed: {}",
         String::from_utf8_lossy(&output.stderr));
 }
+
+#[test]
+fn named_aggregate_erasure_does_not_bypass_reserved_names() {
+    for alias in ["if", "while", "select", "boolean", "String", "Pointer",
+                  "ActorRef", "AtomicInt", "i64", "ReadLoan"] {
+        let source = format!("pub fnc main(): int {{ const Record<infer {alias}> r=(a=1); return r.a; }}");
+        assert_eq!(compile(&source).expect_err(&source).code, "E_TYPE_NAME", "{source}");
+    }
+    for source in [
+        "pub fnc main(): int { const Record<infer R> if=(a=1); return 0; }",
+        "pub fnc main(): int { const Record<infer R> r=(while=1); return 0; }",
+    ] {
+        assert_eq!(compile(source).expect_err(source).code, "E_TYPE_NAME", "{source}");
+    }
+    // Reserved checks are case sensitive, not a lowercasing normalization.
+    let source = "pub fnc main(): int { const Record<infer If> r=(a=1); const Record<If> s=(a=42); return s.a; }";
+    let bytes = compile(source).expect("distinct legal type name");
+    assert_guest_result(&bytes, 42);
+}
