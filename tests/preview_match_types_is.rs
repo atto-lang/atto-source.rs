@@ -117,3 +117,25 @@ fn legacy_match_and_other_published_guests_remain_compilable() {
     pass(include_str!("playground_previews/fib-match.atto"));
     pass("pub fnc main(): int { return 42; }");
 }
+
+#[test]
+fn bare_is_matches_legacy_type_arm_and_preserves_wildcard_requirement() {
+    let legacy = r#"
+        fnc read(Any value): int {
+            match value over
+              on is int -> { return 10; }
+              on is string as val item -> { return 42; }
+              on _ -> { return -1; }
+            end
+        }
+        pub fnc main(): int {
+            val message: Any = "hello";
+            return read(message);
+        }
+    "#;
+    let bare = legacy.replace("on is", "is");
+    pass(&bare);
+    assert_eq!(compile(legacy).unwrap(), compile(&bare).unwrap());
+    err(&bare.replace("on _", "_"), "E_UNSUPPORTED");
+    err(&bare.replace("is int", "is"), "E_UNSUPPORTED_TYPE");
+}

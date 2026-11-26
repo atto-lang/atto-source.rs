@@ -144,6 +144,10 @@ impl Builder {
 
     fn stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
         match stmt {
+            Stmt::UsingTelemetry { pos, .. } => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "telemetry spans inside generators require continuation-owned cleanup"));
+            }
             Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } => {
                 self.push(Instruction::Evaluate(stmt.clone()), *pos)?;
             }

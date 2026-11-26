@@ -1,0 +1,9 @@
+// expect-exit: 42
+define fnc int • bullet(int value) { return value; }
+define fnc int <- left(int value) { return value; }
+define fnc arrow(int value) -> int { return value; }
+define fnc colon(int value): int { return value; }
+define fnc colon_arrow(int value) : int -> { return value; }
+define pub fnc main(): int {
+    return bullet(6) + left(7) + arrow(8) + colon(9) + colon_arrow(12);
+}

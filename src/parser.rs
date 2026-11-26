@@ -304,7 +304,8 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
-        Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        Some(Stmt::Block(inner) | Stmt::UsingTelemetry { body: inner, .. }) =>
+            guard_failure_exits(inner),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
@@ -667,6 +668,12 @@ impl Parser {
                 }
             }
             match (self.word_at(at), self.word_at(at + 1)) {
+                (Some("define"), Some("fnc")) => {
+                    prog.funcs.push(self.parse_func()?);
+                }
+                (Some("define"), Some("pub")) if !public && self.word_at(at + 2) == Some("fnc") => {
+                    prog.funcs.push(self.parse_func()?);
+                }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
@@ -1501,6 +1508,7 @@ impl Parser {
                     out.push((ty, *pos));
                 }
                 Stmt::Block(body) | Stmt::StateWrite { body, .. } |
+                Stmt::UsingTelemetry { body, .. } |
                 Stmt::Loop { body, .. } | Stmt::While { body, .. } |
                 Stmt::ForIn { body, .. } => {
                     for stmt in body { collect(stmt, params, out)?; }
@@ -1583,7 +1591,13 @@ impl Parser {
             return Err(unsupported(self.pos(), "annotations"));
         }
         let start = self.pos();
-        self.eat_word("pub");
+        let public_prefix = self.eat_word("pub");
+        if self.eat_word("define") {
+            if !public_prefix { self.eat_word("pub"); }
+            if !self.is_word("fnc") {
+                return Err(self.expected("'fnc' after 'define'"));
+            }
+        }
         let is_pure = self.eat_word("pure");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
@@ -1841,8 +1855,18 @@ impl Parser {
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
 
+    // General callable aggregate formals still require a typed aggregate ABI.
+    fn reject_unlowered_callable_pattern(&self) -> R<()> {
+        if matches!(self.peek(), Tok::LParen | Tok::LBrace) ||
+            (matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::LBrace) {
+            return Err(unsupported(self.pos(), "callable aggregate parameter patterns (typed root projections)"));
+        }
+        Ok(())
+    }
+
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
+        self.reject_unlowered_callable_pattern()?;
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
@@ -2136,6 +2160,43 @@ impl Parser {
         }
     }
 
+    /// A single default has no readiness operands, registration or suspension.
+    /// Reuse the typed lexical block so return/break/continue retain their
+    /// enclosing targets. Every real arbitration or value form stays gated.
+    fn parse_default_select(&mut self, pos: Pos) -> R<Stmt> {
+        self.expect_word("do")?;
+        self.expect_word("select")?;
+        if matches!(self.word_at(0), Some("first" | "fair" | "random")) {
+            self.advance();
+        }
+        let braces = if self.eat(&Tok::LBrace) {
+            true
+        } else if self.eat_word("over") {
+            false
+        } else {
+            return Err(unsupported(pos, "procedural select requires a single default arm in braces or over/end"));
+        };
+        if !self.eat_word("default") {
+            return Err(unsupported(pos, "procedural select currently supports only a single default arm; channel/Future arbitration is not lowered"));
+        }
+        self.expect(Tok::Colon, "':' after select default")?;
+        self.eat(&Tok::Arrow);
+        if *self.peek() != Tok::LBrace {
+            return Err(self.expected("a braced select default body with at most one slim arrow"));
+        }
+        let body = self.parse_block()?;
+        if (braces && *self.peek() != Tok::RBrace) || (!braces && !self.is_word("end")) {
+            return Err(unsupported(pos, "procedural select currently supports only a single default arm"));
+        }
+        if braces {
+            self.expect(Tok::RBrace, "'}' after select")?;
+        } else {
+            self.expect_word("end")?;
+        }
+        self.eat(&Tok::Semi);
+        Ok(Stmt::Block(body))
+    }
+
     fn parse_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
         if *self.peek() == Tok::At {
@@ -2157,6 +2218,9 @@ impl Parser {
         }
         let word = self.word_at(0).map(str::to_owned);
         match word.as_deref() {
+            Some("using") if self.word_at(1) == Some("telemetry")
+                && self.peek_at(2) == &Tok::Dot && self.word_at(3) == Some("span") =>
+                self.parse_telemetry_scope(pos),
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
             Some("val" | "const" | "let") => {
@@ -2276,7 +2340,8 @@ impl Parser {
                 self.advance();
                 self.parse_match(true)
             }
-            Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
+            Some("do") if self.word_at(1) == Some("select") => self.parse_default_select(pos),
+            Some("do") if matches!(self.word_at(1), Some("switch" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
             // Narrow, executable Writable<string/int/bool/float> builtin.
@@ -2361,8 +2426,10 @@ impl Parser {
                         && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
                         Some((BinOp::BitOr, 2))
                     } else if *self.peek_at(1) == Tok::Caret
-                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
-                        Some((BinOp::BitXor, 2))
+                        && *self.peek_at(2) == Tok::Caret
+                        && *self.peek_at(3) == Tok::Assign
+                        && self.joined_at(1) && self.joined_at(2) {
+                        Some((BinOp::BitXor, 3))
                     } else if self.triple_at(1, &Tok::Lt) && *self.peek_at(4) == Tok::Assign
                         && self.joined_at(3) {
                         Some((BinOp::Shl, 4))
@@ -2458,6 +2525,31 @@ impl Parser {
         }
     }
 
+
+    fn parse_telemetry_scope(&mut self, pos: Pos) -> R<Stmt> {
+        for _ in 0..4 { self.advance(); }
+        self.expect(Tok::LParen, "'('")?;
+        let Tok::Str(operation) = self.peek().clone() else {
+            return Err(Diagnostic::new(self.pos(), "E_TELEMETRY_NAME",
+                "telemetry.span requires a literal operation name"));
+        };
+        if operation.is_empty() || operation.len() > 256 ||
+            operation.chars().any(char::is_control)
+        {
+            return Err(Diagnostic::new(self.pos(), "E_TELEMETRY_NAME",
+                "telemetry.span requires 1..256 UTF-8 bytes without control characters"));
+        }
+        self.advance();
+        self.expect(Tok::RParen, "')'")?;
+        self.expect_word("as")?;
+        let (alias, alias_pos) = self.ident("a span alias")?;
+        if alias == "_" {
+            return Err(Diagnostic::new(alias_pos, "E_TELEMETRY_ALIAS",
+                "telemetry.span requires a named alias"));
+        }
+        let body = self.parse_block()?;
+        Ok(Stmt::UsingTelemetry { operation, alias, body, pos })
+    }
 
     /// The Java/LLVM compound-keyword contract requires exactly adjacent
     /// ASCII critical-read / critical-write, not spaced subtraction tokens.
@@ -3165,6 +3257,18 @@ impl Parser {
         while *self.peek() == Tok::PipeGt {
             let pos = self.pos();
             self.advance();
+            if self.eat_word("await") {
+                if matches!(self.peek(), Tok::LParen | Tok::Lt) {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "pipeline await takes only the left-hand value"));
+                }
+                // This compiler has no Future suspension lowering. A checked
+                // non-converting int ascription is the immediate identity.
+                self.grow(1)?;
+                links += 1;
+                c = Expr { kind: ExprKind::Ascribe(Box::new(c), Type::Int, false), pos };
+                continue;
+            }
             let stage = self.parse_postfix()?;
             let (name, mut args) = match stage.kind {
                 ExprKind::Var(name) => (name, Vec::new()),
@@ -3236,12 +3340,20 @@ impl Parser {
                 // written inside an explicitly parenthesized subexpression.
                 let old = self.ascription_colon;
                 self.ascription_colon = false;
-                let a = self.parse_expr();
+                let a = if *self.peek() == Tok::LBrace {
+                    self.parse_single_result_ternary_block()
+                } else {
+                    self.parse_expr()
+                };
                 self.ascription_colon = old;
                 let a = a?;
                 self.expect(Tok::Colon, "':'")?;
                 self.enter()?;
-                let b = self.parse_ternary();
+                let b = if *self.peek() == Tok::LBrace {
+                    self.parse_single_result_ternary_block()
+                } else {
+                    self.parse_ternary()
+                };
                 self.leave();
                 return Ok(Expr {
                     kind: ExprKind::Ternary(Box::new(c), Box::new(a), Box::new(b?)),
@@ -3251,6 +3363,28 @@ impl Parser {
             _ => {}
         }
         Ok(c)
+    }
+
+    // Direct braces commit to an executable arm, not a record literal.
+    // A single explicit result needs no new scope or synthesized closure.
+    // Multi-statement arms require checked lexical cleanup lowering.
+    fn parse_single_result_ternary_block(&mut self) -> R<Expr> {
+        self.expect(Tok::LBrace, "'{'")?;
+        if !self.eat_word("return") && !self.eat(&Tok::Caret) {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "ternary block requires explicit return or ^; statement prefixes are not lowered"));
+        }
+        let old = self.ascription_colon;
+        self.ascription_colon = true;
+        let value = self.parse_expr();
+        self.ascription_colon = old;
+        let value = value?;
+        self.eat(&Tok::Semi);
+        if !self.eat(&Tok::RBrace) {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "single-result ternary block requires closing '}'"));
+        }
+        Ok(value)
     }
 
     /// Short-circuit logical operators are distinct from comma/pipe condition
@@ -3331,6 +3465,11 @@ impl Parser {
         let mut links = 0;
         while *self.peek() == Tok::Caret {
             let pos = self.pos();
+            if *self.peek_at(1) != Tok::Caret || !self.joined_at(0) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "single infix caret is invalid; use adjacent ^^ for integer XOR"));
+            }
+            self.advance();
             self.advance();
             self.grow(1)?;
             links += 1;
@@ -3523,17 +3662,21 @@ impl Parser {
                     "'++' and '--' exist only in a for update clause",
                 ))
             }
-            Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            Tok::Ident(s) if s == "await" => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ascribe(Box::new(inner), Type::Int, false), pos });
+            },
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "freeze" | "weak" | "pin" | "drop")
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "move" | "share" | "freeze" | "weak" | "pin" | "drop")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
                     "borrow" => OwnershipOp::Borrow,
                     "copy" => OwnershipOp::Copy,
-                    "take" => OwnershipOp::Take,
+                    "take" | "move" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
                     "freeze" => OwnershipOp::Freeze,
                     "weak" => OwnershipOp::Weak,
@@ -3541,8 +3684,14 @@ impl Parser {
                     "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
+                let is_transfer = action == OwnershipOp::Take;
                 self.advance(); // name
                 let first_bang = self.advance(); // !
+                if is_transfer && (first_bang.pos.line != pos.line ||
+                    first_bang.pos.col != pos.col + 4) {
+                    return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
+                        "take! and move! require an adjacent bang"));
+                }
                 // 'copy!!' is a single canonical operator only when the word
                 // and both bangs are adjacent. 'copy! !x' stays a shallow copy
                 // of the logical negation, never a deep copy.
@@ -3787,6 +3936,7 @@ impl Parser {
                 if params.len() >= MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
                 }
+                self.reject_unlowered_callable_pattern()?;
                 let (name, pos) = self.ident("a lambda parameter")?;
                 if params.contains(&name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
@@ -3962,7 +4112,7 @@ impl Parser {
                 "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
-                w if is_reserved(w) => {
+                w if is_reserved(w) && !(w == "types" && *self.peek_at(1) == Tok::Dot) => {
                     return Err(Diagnostic::new(
                         pos,
                         "E_SYNTAX",

@@ -9,6 +9,8 @@
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+/// Bounded static synchronous actor call graphs; not continuation lowering.
+pub mod actor_stack_bound;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
 pub mod collection_layout;
 /// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
@@ -46,13 +48,32 @@ pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
 pub mod const_import_link;
 pub mod import_link;
+pub mod import_v2;
+pub mod import_tree;
+pub mod static_import_graph;
+/// Checked physical layout metadata; does not admit guest reference operations.
+pub mod ref_layout;
+// Host-only substrates; no guest ownership or physical layout certification.
+pub mod owner_arena;
+pub mod actor_arena;
+pub mod layout_trace;
+pub mod layout_plan;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
+mod verified_quantities;
+mod allocation_guarantees;
+pub mod verified_bounds;
+mod quantity_scale;
+/// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
+pub mod registry_namespace;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;
+/// Canonical cache-key envelope only; no artifact reuse authority.
+pub mod compiler_cache_key;
+pub mod incremental;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
@@ -95,6 +116,30 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     compile_inner(&source, None)
 }
 
+/// Opt-in verified scalar profile. The ordinary compiler and linked-source
+/// paths remain unchanged. Strict requests never fall back to ordinary emission.
+pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    let pos = Pos { line: 1, col: 1 };
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
+    }
+    let tokens = lexer::lex(source)?;
+    if allocation_guarantees::present(&tokens) {
+        return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "allocation guarantees use the ordinary checked AOT profile"));
+    }
+    match verified_quantities::lower_mode(source, &tokens, true)? {
+        Some(verified_quantities::Lowered::Typed(program)) => {
+            let bytes = wasm::emit_quantity_program(&program);
+            if bytes.len() > wasm::MAX_OUTPUT {
+                return Err(Diagnostic::new(pos, "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+            }
+            Ok(bytes)
+        }
+        _ => Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED",
+            "strict verification currently supports only typed quantity programs")),
+    }
+}
+
 /// Compile with a caller-supplied logical, package-relative source file path.
 /// Required when the source declares `use default namespace[(N)];`.
 pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
@@ -108,15 +153,54 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    let source = library::expand(source)?;
+    if allocation_guarantees::present(&lexer::lex(source)?) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
+            "annotated linked-source compilation requires a verified cross-file effect contract"));
+    }
+    let mut checked_load = |path: &std::path::Path| -> std::io::Result<String> {
+        let loaded = load(path)?;
+        if lexer::lex(&loaded).ok().is_some_and(|t| allocation_guarantees::present(&t)) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "annotated dependency requires a verified cross-file effect contract"));
+        }
+        Ok(loaded)
+    };
+    let source = library::expand_for_file_linker(source)?;
     // Bounded relative-file scalar `import const` can substitute only
     // verified literal values, before the existing checker and guest emitter.
     // Full package and environment-backed initialization still fail closed.
-    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut load)? {
+    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut checked_load)? {
         return compile_prelexed(tokens, Some(logical_path));
     }
-    let tokens = import_link::lower(&source, logical_path, load)?;
+    let tokens = import_link::lower(&source, logical_path, checked_load)?;
     compile_prelexed(tokens, Some(logical_path))
+}
+
+// Only select the typed lane for a file-leading sequence of dimension/unit
+// declarations followed by a scalar refinement alias. In particular, do not
+// revive the retired closed-expression evaluator, scan inside function bodies,
+// or hijack arbitrary type declarations. This is a routing predicate, not
+// semantic admission: verified_quantities validates every declaration and body.
+fn typed_quantity_header(tokens: &[lexer::Token]) -> bool {
+    use lexer::Tok;
+    let word = |i: usize, s: &str| tokens.get(i)
+        .is_some_and(|t| matches!(&t.tok, Tok::Ident(n) if n == s));
+    let mut i = 0;
+    while word(i, "define") && (word(i + 1, "dimension") || word(i + 1, "unit")) {
+        i += 2;
+        while let Some(t) = tokens.get(i) {
+            if t.tok == Tok::Semi { break; }
+            if matches!(t.tok, Tok::Eof | Tok::LBrace | Tok::RBrace) { return false; }
+            i += 1;
+        }
+        if !tokens.get(i).is_some_and(|t| t.tok == Tok::Semi) { return false; }
+        i += 1;
+    }
+    word(i, "type") &&
+        tokens.get(i + 1).is_some_and(|t| matches!(&t.tok, Tok::Ident(_))) &&
+        tokens.get(i + 2).is_some_and(|t| t.tok == Tok::Assign) &&
+        (word(i + 3, "int") || word(i + 3, "i64") || word(i + 3, "i32")) &&
+        word(i + 4, "where")
 }
 
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
@@ -128,11 +212,34 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    compile_prelexed(lexer::lex(source)?, logical_path)
+    let tokens = lexer::lex(source)?;
+    if allocation_guarantees::present(&tokens) {
+        return allocation_guarantees::compile(tokens);
+    }
+    // Admit bounded typed quantity/refinement sources and explicitly
+    // contracted private scalar headers. The typed lowerer checks the entire
+    // file; errors never fall back to the ordinary parser or host evaluation.
+    if verified_quantities::scalar_contract_header(&tokens) || typed_quantity_header(&tokens) {
+        let pos = tokens[0].pos;
+        match verified_quantities::lower(source, &tokens)? {
+            Some(verified_quantities::Lowered::Typed(program)) => {
+                let bytes = wasm::emit_quantity_program(&program);
+                if bytes.len() > wasm::MAX_OUTPUT {
+                    return Err(Diagnostic::new(pos, "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+                }
+                return Ok(bytes);
+            }
+            _ => return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "scalar contract did not produce a typed program")),
+        }
+    }
+    compile_prelexed(tokens, logical_path)
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    if allocation_guarantees::present(&tokens) {
+        return allocation_guarantees::compile(tokens);
+    }
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
@@ -155,6 +262,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
+        actor_stack_bound::verify(&program)?;
         let bytes = wasm::emit(&program);
         if bytes.len() > wasm::MAX_OUTPUT {
             return Err(Diagnostic::new(Pos { line: 1, col: 1 },
@@ -360,6 +468,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
+    actor_stack_bound::verify(&typed)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
@@ -429,6 +538,15 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_mode(length, false)
+    }
+
+    #[no_mangle]
+    pub extern "C" fn compile_strict_i64(length: i32) -> i32 {
+        compile_mode(length, true)
+    }
+
+    fn compile_mode(length: i32, strict: bool) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -469,7 +587,8 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            let result = if strict { super::compile_verified_strict(source) } else { super::compile(source) };
+            match result {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0

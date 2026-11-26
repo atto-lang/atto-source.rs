@@ -1,4 +1,4 @@
-use oreslang_source_rs::{
+use atto_compiler::{
     layout_plan::{FieldSpec, LayoutPlan},
     ref_layout::{LayoutKind, RefError},
 };

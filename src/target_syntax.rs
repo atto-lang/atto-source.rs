@@ -51,6 +51,8 @@ pub struct TargetHeaders {
     pub namespace: Option<String>,
     /// Local names of static imports. Export paths are not resolved or linked here.
     pub imports: Vec<String>,
+    /// Typed mixed-kind selections, syntax-only until authenticated linking.
+    pub mixed_imports: Vec<crate::import_v2::MixedImport>,
     /// Local aliases from typed `import const` selections; names only, not linked.
     pub const_imports: Vec<String>,
     /// File-scoped static `define const` declaration names (parse-only).
@@ -114,6 +116,11 @@ impl Cursor<'_> {
             }
             _ => Err(self.err("E_SYNTAX", "expected an identifier")),
         }
+    }
+    // `types` remains reserved for ordinary declarations, but the canonical
+    // core/types file identity is legal in namespace components.
+    fn namespace_ident(&mut self) -> R<String> {
+        if self.take_word("types") { Ok("types".to_owned()) } else { self.ident() }
     }
     /// Parse a comma-separated list of static public export paths.
     /// This stage only records the *local* bindings: it does not resolve
@@ -505,12 +512,12 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                     "namespace declaration must precede all imports and declarations"));
             }
             c.expect_word("namespace")?;
-            let mut components = vec![c.ident()?];
+            let mut components = vec![c.namespace_ident()?];
             while c.take(&Tok::Dot) {
                 if components.len() >= 32 {
                     return Err(c.err("E_NAMESPACE_DEPTH", "namespace has more than 32 components"));
                 }
-                components.push(c.ident()?);
+                components.push(c.namespace_ident()?);
             }
             out.namespace = Some(components.join("."));
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
@@ -523,6 +530,47 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                !out.struct_forwards.is_empty() || !out.state_owners.is_empty() ||
                !out.constructors.is_empty() || !out.receivers.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
+            }
+            if crate::import_v2::is_mixed(toks, c.i) {
+                let (mixed, end) = crate::import_v2::parse_mixed(toks, c.i)?;
+                // Cap the aggregate file import set, not merely each list.
+                if out.imports.len().saturating_add(mixed.selectors.len()) > crate::import_v2::MAX_ITEMS {
+                    return Err(c.err("E_SOURCE_LIMIT", "too many file import bindings"));
+                }
+                for item in &mixed.selectors {
+                    if out.mixed_imports.iter().flat_map(|m| m.selectors.iter())
+                        .any(|prior| crate::import_v2::obstructs(prior, item)) {
+                        return Err(c.err("E_DUPLICATE", "non-namespace import obstructs qualified binding"));
+                    }
+                    let alias = &item.binding;
+                    if out.imports.contains(alias) {
+                        return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
+                    }
+                    import_sites.push((alias.clone(), pos));
+                    if item.kind == crate::import_v2::Kind::Const { out.const_imports.push(alias.clone()); }
+                    out.imports.push(alias.clone());
+                }
+                out.mixed_imports.push(mixed);
+                c.i = end;
+                decls += 1;
+                continue;
+            }
+            if let Some((bindings, end)) = crate::library::builtin_bindings(toks, c.i - 1)? {
+                if out.imports.len().saturating_add(bindings.len()) > crate::import_v2::MAX_ITEMS {
+                    return Err(c.err("E_SOURCE_LIMIT", "too many file import bindings"));
+                }
+                for alias in bindings {
+                    if out.imports.iter().any(|prior| prior == &alias
+                        || crate::import_v2::strict_prefix(prior, &alias)
+                        || crate::import_v2::strict_prefix(&alias, prior)) {
+                        return Err(c.err("E_DUPLICATE", format!("overlapping builtin import binding '{alias}'")));
+                    }
+                    import_sites.push((alias.clone(), pos));
+                    out.imports.push(alias);
+                }
+                c.i = end;
+                decls += 1;
+                continue;
             }
             let mut bindings = Vec::new();
             let const_only = c.take_word("const");
@@ -578,6 +626,9 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 _ => return Err(c.err("E_SYNTAX", "expected a nonempty quoted import path")),
             }
             c.expect(&Tok::Semi, "expected ';' after import")?;
+            if out.imports.len().saturating_add(bindings.len()) > crate::import_v2::MAX_ITEMS {
+                return Err(c.err("E_SOURCE_LIMIT", "too many file import bindings"));
+            }
             for alias in bindings {
                 if out.imports.contains(&alias) {
                     return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
@@ -764,12 +815,20 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     // shadow a declared nominal owner or a file-level callable. Detect
     // collisions independent of declaration order, before any lowering.
     for (import_name, import_pos) in &import_sites {
+        // A declared file-local value/callable/nominal cannot also serve
+        // as the root of an explicitly qualified mixed namespace alias.
+        let blocked_prefix = import_name.contains('.')
+            && function_names.iter().chain(out.constants.iter())
+                .chain(out.actors.iter()).chain(out.classes.iter())
+                .chain(out.class_forwards.iter()).chain(out.struct_forwards.iter())
+                .chain(out.definitions.iter().map(|d| &d.name))
+                .any(|n| crate::import_v2::strict_prefix(n, import_name));
         let nominal_collision = out.actors.contains(import_name)
             || out.classes.contains(import_name)
             || out.class_forwards.contains(import_name)
             || out.struct_forwards.contains(import_name)
             || out.definitions.iter().any(|decl| &decl.name == import_name);
-        if nominal_collision || function_names.contains(import_name)
+        if blocked_prefix || nominal_collision || function_names.contains(import_name)
             || out.constants.contains(import_name) {
             return Err(Diagnostic::new(*import_pos, "E_DUPLICATE",
                 format!("import binding '{import_name}' conflicts with a local declaration")));

@@ -8,21 +8,33 @@ fn source(expr: &str) -> String {
 #[test]
 fn bitwise_operations_compile_and_emit_wasm() {
     for expr in [
-        "12 & 10", "12 | 10", "12 ^ 10", "~12",
+        "12 & 10", "12 | 10", "12 ^^ 10", "~12",
         "8 <<< 2", "32 >>> 2", "-8 ashr 1",
         "1 + 2 <<< 3", "64 >>> 1 + 1",
-        "1 <<< 64", "-1 >>> 1",
-        "12 & 10 | 2 ^ 6", "(1 | 2) <<< 1",
+        "1 <<< 63", "-1 >>> 1", "-1 >>> 63", "-1 ashr 63",
+        "12 & 10 | 2 ^^ 6", "(1 | 2) <<< 1",
     ] {
         let bytes = compile(&source(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
         assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0", "{expr}");
     }
 }
 
+// atto-spec language/bitwise-and-stream-operators-v1.md, BW-008:
+// invalid shift distances must fail, never inherit Wasm's modulo-64 rule.
+#[test]
+fn invalid_literal_shift_distances_are_rejected() {
+    for op in ["<<<", ">>>", "ashr"] {
+        for count in ["-1", "64", "65", "9223372036854775807"] {
+            let expr = format!("1 {op} {count}");
+            assert_eq!(compile(&source(&expr)).unwrap_err().code, "E_SHIFT_DISTANCE", "{expr}");
+        }
+    }
+}
+
 #[test]
 fn compound_assignment_uses_local_mutability_and_original_value() {
     for assignment in [
-        "x &= 10", "x |= 2", "x ^= 7",
+        "x &= 10", "x |= 2", "x ^^= 7",
         "x <<<= 2", "x >>>= 1", "x ashr= 1",
     ] {
         let src = format!("pub fnc main(): int {{ let x: int = 12; {assignment}; return x; }}");
@@ -34,7 +46,7 @@ fn compound_assignment_uses_local_mutability_and_original_value() {
 
 #[test]
 fn bitwise_is_strictly_integer_only() {
-    for expr in ["1.0 & 2", "1 | true", "true ^ false", "1.5 <<< 2",
+    for expr in ["1.0 & 2", "1 | true", "true ^^ false", "1.5 <<< 2",
                  "1 >>> 1.0", "1 ashr false", "~true"] {
         assert_eq!(compile(&source(expr)).unwrap_err().code, "E_TYPE", "{expr}");
     }
@@ -74,6 +86,9 @@ fn existing_io_and_boolean_operators_are_unchanged() {
     compile("pub fnc main(): int { if (1 | 2) eq 3 then return 1; fi return 0; }").unwrap();
     compile("pub fnc main(): int { if (true || false) then return 1; fi return 0; }").unwrap();
     compile("pub fnc main(): int { if true && false || true then return 1; fi return 0; }").unwrap();
+    for bad in ["1 ^ 2", "1 ^ ^ 2", "1 ^^^ 2"] {
+        assert!(compile(&source(bad)).is_err(), "{bad}");
+    }
     assert!(compile(&source("1 << 2")).is_err()); // Not a bit shift
     assert!(compile(&source("8 >> 2")).is_err()); // Not a bit shift
 }

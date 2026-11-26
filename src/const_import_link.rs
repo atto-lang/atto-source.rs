@@ -96,18 +96,30 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
         return Err(fail(Pos::default(), "E_SOURCE_LIMIT", "imported file exceeds byte limit"));
     }
     let tokens = lexer::lex(src)?;
-    reject_reserved(&tokens)?;
+    file_constants_tokens(&tokens)
+}
+
+fn file_constants_tokens(tokens: &[Token]) -> R<BTreeMap<String, ConstExport>> {
+    Ok(provider_declarations(tokens)?.0)
+}
+
+// The declaration scanner is shared by the relative and frozen registry lanes.
+// Function ranges exclude EOF and never include a constant declaration.
+type ProviderDeclarations = (BTreeMap<String, ConstExport>, Vec<std::ops::Range<usize>>);
+fn provider_declarations(tokens: &[Token]) -> R<ProviderDeclarations> {
+    reject_reserved(tokens)?;
+    let mut functions = Vec::new();
     let mut i = 0usize;
     let mut exports = BTreeMap::new();
     while tokens.get(i).is_some_and(|t| t.tok != Tok::Eof) {
         let pos = tokens[i].pos;
-        if i == 0 && word(&tokens, i, "use") {
+        if i == 0 && word(tokens, i, "use") {
             i += 1;
-            expect_word(&tokens, &mut i, "namespace", pos)?;
-            get_ident(&tokens, &mut i, pos)?;
+            expect_word(tokens, &mut i, "namespace", pos)?;
+            get_ident(tokens, &mut i, pos)?;
             while tokens.get(i).is_some_and(|t| t.tok == Tok::Dot) {
                 i += 1;
-                get_ident(&tokens, &mut i, pos)?;
+                get_ident(tokens, &mut i, pos)?;
             }
             if tokens.get(i).is_none_or(|t| t.tok != Tok::Semi) {
                 return Err(fail(pos, "E_SYNTAX", "expected ';' after source namespace"));
@@ -116,13 +128,13 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
             continue;
         }
         let declaration_start = i;
-        let public = if word(&tokens, i, "pub") { i += 1; true } else { false };
-        if word(&tokens, i, "fnc") {
+        let public = if word(tokens, i, "pub") { i += 1; true } else { false };
+        if word(tokens, i, "fnc") {
             // Preserve negative kind evidence without executing or linking
             // imported functions. Only braced direct callable declarations
             // are recognized; their bodies are never evaluated.
             i += 1;
-            let name = get_ident(&tokens, &mut i, pos)?;
+            let name = get_ident(tokens, &mut i, pos)?;
             let start = i;
             while tokens.get(i).is_some_and(|t| !matches!(t.tok, Tok::LBrace | Tok::Eof)) {
                 i += 1;
@@ -163,6 +175,7 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
                 return Err(fail(pos, "E_UNSUPPORTED",
                     "constant provider contains unsupported function declaration"));
             }
+            functions.push(declaration_start..i);
             if exports.insert(name.clone(), ConstExport { public, value: None }).is_some() {
                 return Err(fail(pos, "E_DUPLICATE", format!("duplicate imported export '{name}'")));
             }
@@ -171,19 +184,19 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
             }
             continue;
         }
-        expect_word(&tokens, &mut i, "define", pos)?;
-        let public_define = if word(&tokens, i, "pub") { i += 1; true } else { false };
+        expect_word(tokens, &mut i, "define", pos)?;
+        let public_define = if word(tokens, i, "pub") { i += 1; true } else { false };
         if public && public_define {
             return Err(fail(pos, "E_SYNTAX", "duplicate pub modifier on constant"));
         }
         let public = public || public_define;
-        expect_word(&tokens, &mut i, "const", pos)?;
-        let ty = get_ident(&tokens, &mut i, pos)?;
+        expect_word(tokens, &mut i, "const", pos)?;
+        let ty = get_ident(tokens, &mut i, pos)?;
         if !matches!(ty.as_str(), "int" | "bool" | "string") {
             return Err(fail(pos, "E_UNSUPPORTED", "only scalar int/bool/string file constants are linkable"));
         }
-        let name = get_ident(&tokens, &mut i, pos)?;
-        if tokens.get(i).is_some_and(|t| t.tok == Tok::Assign) || word(&tokens, i, "as") {
+        let name = get_ident(tokens, &mut i, pos)?;
+        if tokens.get(i).is_some_and(|t| t.tok == Tok::Assign) || word(tokens, i, "as") {
             i += 1;
         } else {
             return Err(fail(pos, "E_SYNTAX", "expected = or as in static constant"));
@@ -233,10 +246,76 @@ fn file_constants(src: &str) -> R<BTreeMap<String, ConstExport>> {
             return Err(fail(pos, "E_SOURCE_LIMIT", "too many file constants"));
         }
     }
-    Ok(exports)
+    Ok((exports, functions))
 }
 
-fn is_disallowed_reference_context(tokens: &[Token], i: usize) -> Option<&'static str> {
+/// Validate each physical source unit before combining a namespace. This
+/// prevents an incomplete declaration in one file consuming another file.
+pub(crate) fn registry_file_inventory(tokens: &[Token]) -> R<BTreeMap<String,bool>> {
+    let (exports,_) = provider_declarations(tokens)?;
+    if exports.is_empty(){return Err(fail(Pos::default(),"E_MANIFEST","empty registry source unit"));}
+    Ok(exports.into_iter().map(|(name,item)|(name,item.public)).collect())
+}
+
+/// Frozen registry provider inventory, derived only from authenticated tokens.
+pub(crate) struct RegistryProvider {
+    pub literals: BTreeMap<String, (bool, Vec<Tok>)>,
+    pub functions: BTreeMap<String, bool>,
+    pub function_tokens: Vec<Token>,
+}
+
+/// Select the mixed-provider lane only when a top-level define is present.
+/// The existing direct-function lane retains its original behavior otherwise.
+pub(crate) fn registry_provider(tokens: &[Token], start: usize) -> R<Option<RegistryProvider>> {
+    let mut depth=0usize;
+    let mut contains_define=false;
+    for t in &tokens[start..] {
+        match &t.tok {
+            Tok::LBrace=>depth+=1,
+            Tok::RBrace=>depth=depth.saturating_sub(1),
+            Tok::Ident(s) if depth==0 && s=="define"=>contains_define=true,
+            _=>{}
+        }
+    }
+    if !contains_define{return Ok(None);}
+    let (exports,ranges)=provider_declarations(tokens)?;
+    let mut literals=BTreeMap::new();
+    let mut functions=BTreeMap::new();
+    for (name,item) in exports {
+        if let Some(value)=item.value{literals.insert(name,(item.public,value));}
+        else{functions.insert(name,item.public);}
+    }
+    let mut body=Vec::new();
+    for range in ranges {
+        // Substitution is restricted to expression references. In particular,
+        // a parameter/local with the same spelling cannot capture a literal.
+        for i in range {
+            let t=&tokens[i];
+            if let Tok::Ident(s)=&t.tok {
+                if let Some((_,value))=literals.get(s) {
+                    if let Some(code)=is_disallowed_reference_context(tokens,i){
+                        return Err(fail(t.pos,code,"provider constant used in disallowed context"));
+                    }
+                    body.push(Token{tok:Tok::LParen,pos:t.pos});
+                    body.extend(value.iter().cloned().map(|tok|Token{tok,pos:t.pos}));
+                    body.push(Token{tok:Tok::RParen,pos:t.pos});
+                    if body.len()>lexer::MAX_TOKENS{return Err(fail(t.pos,"E_SOURCE_LIMIT","provider token limit exceeded"));}
+                    continue;
+                }
+            }
+            body.push(t.clone());
+            if body.len()>lexer::MAX_TOKENS{return Err(fail(t.pos,"E_SOURCE_LIMIT","provider token limit exceeded"));}
+        }
+    }
+    body.push(tokens.last().cloned().ok_or_else(||fail(Pos::default(),"E_EOF","missing provider EOF"))?);
+    if !functions.is_empty() {
+        let (parsed,_)=crate::import_link::functions(&body)?;
+        if parsed!=functions{return Err(fail(Pos::default(),"E_INTERNAL","provider declaration inventory mismatch"));}
+    }
+    Ok(Some(RegistryProvider{literals,functions,function_tokens:body}))
+}
+
+pub(crate) fn is_disallowed_reference_context(tokens: &[Token], i: usize) -> Option<&'static str> {
     let before = i.checked_sub(1).and_then(|n| tokens.get(n));
     let after = tokens.get(i + 1);
     if after.is_some_and(|t| matches!(t.tok, Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus))
@@ -244,17 +323,17 @@ fn is_disallowed_reference_context(tokens: &[Token], i: usize) -> Option<&'stati
             if matches!(s.as_str(), "mut" | "borrow" | "take" | "drop"))) {
         return Some("E_ASSIGN_CONST");
     }
+    if before.is_some_and(|t| matches!(&t.tok, Tok::Ident(s)
+        if matches!(s.as_str(), "fnc" | "routine" | "val" | "let" | "const"
+            | "class" | "actor" | "enum" | "int" | "bool" | "string"))) {
+        return Some("E_DUPLICATE");
+    }
     if after.is_some_and(|t| t.tok == Tok::LParen) {
         return Some("E_IMPORT_KIND");
     }
     if before.is_some_and(|t| t.tok == Tok::Dot)
         || after.is_some_and(|t| t.tok == Tok::Dot) {
         return Some("E_UNSUPPORTED");
-    }
-    if before.is_some_and(|t| matches!(&t.tok, Tok::Ident(s)
-        if matches!(s.as_str(), "fnc" | "routine" | "val" | "let" | "const"
-            | "class" | "actor" | "enum" | "int" | "bool" | "string"))) {
-        return Some("E_DUPLICATE");
     }
     None
 }
@@ -273,6 +352,9 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         return Ok(None);
     }
     reject_reserved(&tokens)?;
+    // Validate the original source ordering before extracting the imports.
+    // This prevents late namespace headers becoming first after rewriting.
+    let tokens = crate::namespace::normalize(&tokens, Some(logical))?;
     // A namespace header is legal before import declarations. Preserve its
     // original tokens for namespace::normalize and the production checker:
     // this bounded literal linker must not silently discard source identity.

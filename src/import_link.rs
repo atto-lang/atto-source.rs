@@ -67,6 +67,7 @@ struct Import {
     path: PathBuf,
     namespace: Option<String>,
     names: Vec<(String, String)>,
+    typed: Option<crate::import_v2::MixedImport>,
     pos: Pos,
 }
 struct FileUnit {
@@ -90,6 +91,19 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
     while word(toks.get(i), "import") {
         let pos = toks[i].pos;
         i += 1;
+        if crate::import_v2::is_mixed(toks, i) {
+            let (typed, end) = crate::import_v2::parse_mixed(toks, i)?;
+            if !crate::import_v2::local_function_group(&typed) {
+                return Err(diagnostic(pos, "E_UNSUPPORTED", "only grouped local direct functions are linked"));
+            }
+            let crate::import_v2::Source::Local(value) = &typed.source else { unreachable!() };
+            let path = import_path(logical, value, pos)?;
+            let names = typed.selectors.iter().map(|s| (s.path.clone(), s.binding.clone())).collect();
+            result.push(Import { path, namespace: None, names, typed: Some(typed), pos });
+            if result.len() > MAX_BINDINGS { return Err(diagnostic(pos, "E_SOURCE_LIMIT", "too many import declarations")); }
+            i = end;
+            continue;
+        }
         let mut namespace = None;
         let mut names = Vec::new();
         if toks.get(i).is_some_and(|t| t.tok == Tok::Star) {
@@ -128,9 +142,17 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
             return Err(diagnostic(pos, "E_SYNTAX", "expected ';' after file import"));
         }
         i += 1;
-        result.push(Import { path, namespace, names, pos });
+        result.push(Import { path, namespace, names, typed: None, pos });
         if result.len() > MAX_BINDINGS {
             return Err(diagnostic(pos, "E_SOURCE_LIMIT", "too many import declarations"));
+        }
+    }
+    // Validate the complete binding inventory before any loader invocation.
+    let mut names = BTreeSet::new();
+    for imp in &result {
+        for name in imp.namespace.iter().chain(imp.names.iter().map(|(_, local)| local)) {
+            if !names.insert(name) { return Err(diagnostic(imp.pos, "E_DUPLICATE", "duplicate file import binding")); }
+            if names.len() > MAX_BINDINGS { return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "too many file import bindings")); }
         }
     }
     let mut remaining = toks[..prefix_end].to_vec();
@@ -156,7 +178,7 @@ fn imported_function_tokens(tokens: &[Token], logical: &Path) -> R<Vec<Token>> {
     Ok(normalized[end + 1..].to_vec())
 }
 
-fn functions(tokens: &[Token]) -> R<(BTreeMap<String, bool>, BTreeSet<usize>)> {
+pub(crate) fn functions(tokens: &[Token]) -> R<(BTreeMap<String, bool>, BTreeSet<usize>)> {
     let mut funcs = BTreeMap::new();
     let mut heads = BTreeSet::new();
     let mut i = 0;
@@ -284,6 +306,16 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             id
         };
         let file = &units[id];
+        if let Some(typed) = &imp.typed {
+            use crate::static_import_graph::{ExportView, Origin, Scope};
+            use crate::import_v2::{Kind, Source};
+            let Source::Local(requested) = &typed.source else { unreachable!() };
+            // Actual parsed file declarations, not caller-supplied export metadata.
+            // The existing trusted loader authorizes the canonical relative path.
+            let mut view = ExportView::new(Origin::Local(requested.clone()));
+            for (name, public) in &file.funcs { view.add(name, name, Kind::Fnc, *public).map_err(|mut d| { d.pos = imp.pos; d })?; }
+            Scope::new().bind_mixed(&view, typed).map_err(|mut d| { d.pos = imp.pos; d })?;
+        }
         let mut add = |local: String, export: Option<String>| -> R<()> {
             if root_names.contains(&local) || bound.contains_key(&local) {
                 return Err(diagnostic(imp.pos, "E_DUPLICATE", format!("import '{local}' collides with local declaration")));
@@ -301,7 +333,13 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         }
     }
     let mut rewritten_root = Vec::new();
+    // The root header is identity metadata, never an imported binding use.
+    let header_len = if word(root.first(), "use") && word(root.get(1), "namespace") {
+        root.iter().position(|t| t.tok == Tok::Semi)
+            .ok_or_else(|| diagnostic(root[0].pos, "E_SYNTAX", "unterminated namespace header"))? + 1
+    } else { 0 };
     for (i, t) in root.iter().enumerate() {
+        if i < header_len { rewritten_root.push(t.clone()); continue; }
         if let Tok::Ident(name) = &t.tok {
             if let Some(binding) = bound.get(name) {
                 if let Some(export) = &binding.export {
@@ -354,4 +392,41 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         return Err(diagnostic(imports[0].pos, "E_SOURCE_LIMIT", "linked source token budget exceeded"));
     }
     Ok(all)
+}
+
+
+/// Derive a narrow registry export view from real parsed source, never from
+/// caller-asserted public/kind flags. This profile admits one explicit source
+/// namespace and direct functions only; no transitive imports or nominal ABI.
+pub(crate) fn registry_function_exports(source: &str, logical: &Path)
+    -> R<(String, BTreeMap<String, bool>)> {
+    if source.len() > crate::SOURCE_CAP {
+        return Err(diagnostic(Pos::default(), "E_SOURCE_LIMIT", "registry source exceeds limit"));
+    }
+    let raw = lexer::lex(source)?;
+    let normalized = crate::namespace::normalize(&raw, Some(logical))?;
+    for t in &normalized {
+        if matches!(&t.tok, Tok::Ident(s) if s.starts_with("__atto_")) {
+            return Err(diagnostic(t.pos, "E_RESERVED", "compiler-generated identifier in registry source"));
+        }
+    }
+    if !word(normalized.first(), "use") || !word(normalized.get(1), "namespace") {
+        return Err(diagnostic(Pos::default(), "E_MANIFEST", "registry namespace source requires a namespace header"));
+    }
+    let end = normalized.iter().position(|t| t.tok == Tok::Semi)
+        .ok_or_else(|| diagnostic(Pos::default(), "E_SYNTAX", "unterminated registry namespace"))?;
+    let mut names = Vec::new();
+    for (i, t) in normalized[2..end].iter().enumerate() {
+        match (&t.tok, i % 2) {
+            (Tok::Ident(s), 0) => names.push(s.as_str()),
+            (Tok::Dot, 1) => {},
+            _ => return Err(diagnostic(t.pos, "E_SYNTAX", "invalid registry namespace")),
+        }
+    }
+    let namespace = names.join(".");
+    let (exports, _) = functions(&normalized[end + 1..])?;
+    if exports.is_empty() {
+        return Err(diagnostic(Pos::default(), "E_MANIFEST", "registry namespace contains no functions"));
+    }
+    Ok((namespace, exports))
 }

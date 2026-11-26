@@ -1,6 +1,6 @@
 //! Validated scalar MIR. This is intentionally an Oreslang IR, not Cranelift IR.
 use crate::{
-    frontend::{Expr, Program},
+    frontend::{Export, ExportScope, Expr, Program},
     ref_layout::ManagedRefLayout,
 };
 use std::collections::{HashMap, HashSet};
@@ -10,6 +10,7 @@ use std::fmt;
 pub struct Module {
     pub functions: Vec<Function>,
     pub managed_refs: ManagedRefLayout,
+    pub exports: Vec<Export>,
 }
 #[derive(Clone, Debug)]
 pub struct Function {
@@ -36,6 +37,31 @@ fn failure(class: &'static str, message: impl Into<String>) -> SemanticError {
         message: message.into(),
     }
 }
+// Mirrors the protected ADT/collection/loan identity subset in src/prelude.rs.
+// The scalar backend cannot lower these identities as ordinary user routines.
+fn protected_identity(name: &str) -> bool {
+    matches!(
+        name,
+        "Option"
+            | "Some"
+            | "None"
+            | "Result"
+            | "Ok"
+            | "Err"
+            | "Array"
+            | "FixedArray"
+            | "Vector"
+            | "List"
+            | "FixedList"
+            | "Slice"
+            | "Tuple"
+            | "Map"
+            | "Set"
+            | "ReadLoan"
+            | "WriteLoan"
+    )
+}
+
 fn validate_expr(
     expr: &Expr,
     variables: &HashSet<String>,
@@ -91,6 +117,15 @@ pub fn lower_with_ref_layout(
 ) -> Result<Module, SemanticError> {
     let mut signatures = HashMap::new();
     for function in &program.functions {
+        if protected_identity(&function.name) {
+            return Err(failure(
+                "reserved_collection_name",
+                format!(
+                    "compiler-owned identity '{}' cannot name a scalar function",
+                    function.name
+                ),
+            ));
+        }
         if signatures
             .insert(function.name.clone(), function.params.len())
             .is_some()
@@ -99,6 +134,19 @@ pub fn lower_with_ref_layout(
                 "duplicate_declaration",
                 format!("duplicate function '{}'", function.name),
             ));
+        }
+    }
+    let mut export_names = HashSet::new();
+    for export in &program.exports {
+        if !export_names.insert(export.name.as_str()) {
+            return Err(failure("duplicate_export", "duplicate MIR export"));
+        }
+        let function = program.functions.iter().find(|f| f.name == export.name)
+            .ok_or_else(|| failure("export_unresolved", "MIR export must name a local function"))?;
+        if (export.scope == ExportScope::Public && !function.exported)
+            || (export.scope == ExportScope::Package && (function.exported || function.name == "main"))
+        {
+            return Err(failure("export_visibility_conflict", "inconsistent MIR export linkage"));
         }
     }
     let mut functions = Vec::with_capacity(program.functions.len());
@@ -135,6 +183,7 @@ pub fn lower_with_ref_layout(
     Ok(Module {
         functions,
         managed_refs,
+        exports: program.exports,
     })
 }
 #[cfg(test)]

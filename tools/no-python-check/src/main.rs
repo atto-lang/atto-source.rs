@@ -65,8 +65,7 @@ fn python_command_word(line: &str) -> bool {
             if at > 0
                 && !matches!(
                     bytes[at - 1],
-                    b' ' | b'\t' | b':' | b'/' | b'\\' | b'(' | b';'
-                        | b'&' | b'|' | b'=' | b'\'' | b'"' | b'\x60'
+                    b' ' | b'\t' | b':' | b'/' | b'\\' | b'(' | b';' | b'&' | b'|' | b'=' | b'\'' | b'"' | b'\x60'
                 )
             {
                 continue;
@@ -76,10 +75,7 @@ fn python_command_word(line: &str) -> bool {
                 end += 1;
             }
             // python3.12/pypy3.10, but not a file name like python3.md.
-            while end + 1 < bytes.len()
-                && bytes[end] == b'.'
-                && bytes[end + 1].is_ascii_digit()
-            {
+            while end + 1 < bytes.len() && bytes[end] == b'.' && bytes[end + 1].is_ascii_digit() {
                 end += 1;
                 while end < bytes.len() && bytes[end].is_ascii_digit() {
                     end += 1;
@@ -92,8 +88,7 @@ fn python_command_word(line: &str) -> bool {
             if end == bytes.len()
                 || matches!(
                     bytes[end],
-                    b' ' | b'\t' | b';' | b'&' | b'|' | b'(' | b')'
-                        | b'<' | b'>' | b'$' | b'\'' | b'"' | b'\x60'
+                    b' ' | b'\t' | b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>' | b'$' | b'\'' | b'"' | b'\x60'
                 )
             {
                 return true;
@@ -104,12 +99,7 @@ fn python_command_word(line: &str) -> bool {
 }
 
 fn python_shebang(body: &str) -> bool {
-    let first = body
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
+    let first = body.lines().next().unwrap_or("").trim().to_ascii_lowercase();
     first.starts_with("#!")
         && (first.contains("/python")
             || first.contains("env python")
@@ -121,8 +111,7 @@ fn python_shebang(body: &str) -> bool {
 fn violations(path: &str, body: &str) -> Vec<String> {
     let mut messages = Vec::new();
     if forbidden_path(path) {
-        messages
-            .push("Python source, notebook, dependency manifest, or environment file".to_string());
+        messages.push("Python source, notebook, dependency manifest, or environment file".to_string());
     }
     if python_shebang(body) {
         messages.push("Python/PyPy shebang".to_string());
@@ -149,11 +138,7 @@ fn main() {
     }
 
     let mut found = 0usize;
-    for raw in output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|v| !v.is_empty())
-    {
+    for raw in output.stdout.split(|byte| *byte == 0).filter(|v| !v.is_empty()) {
         let name = String::from_utf8_lossy(raw);
         let file = Path::new(&root).join(name.as_ref());
 
@@ -215,7 +200,9 @@ mod tests {
         assert!(!forbidden_execution_line("- name: Reject Python files and execution"));
         assert!(!forbidden_execution_line("name: Prohibit Python"));
         assert!(!forbidden_execution_line("/tmp/check-no-python ."));
-        assert!(!forbidden_execution_line("run: cargo run --manifest-path tools/no-python-check/Cargo.toml -- ."));
+        assert!(!forbidden_execution_line(
+            "run: cargo run --manifest-path tools/no-python-check/Cargo.toml -- ."
+        ));
         assert!(forbidden_execution_line("run: /tmp/check-no-python . && python3 tests/run.py"));
         assert!(forbidden_execution_line("/usr/bin/python3 script.py"));
     }

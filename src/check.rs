@@ -55,10 +55,12 @@ pub enum Import {
     StateRegister,
     StateEnter,
     StateLeave,
+    TraceSpanBegin,
+    TraceSpanEnd,
 }
 
 impl Import {
-    pub const ALL: [Import; 10] = [
+    pub const ALL: [Import; 12] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -69,6 +71,8 @@ impl Import {
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
+        Import::TraceSpanBegin,
+        Import::TraceSpanEnd,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -82,6 +86,8 @@ impl Import {
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
+            Import::TraceSpanBegin => "trace_span_begin",
+            Import::TraceSpanEnd => "trace_span_end",
         }
     }
 }
@@ -112,6 +118,8 @@ pub enum StrOp {
 #[derive(Clone, Debug)]
 pub enum TExpr {
     I64(i64),
+    /// Checked inclusive signed-i64 refinement; evaluate the child exactly once.
+    RefinementCheck(Box<TE>, i64, i64, i32),
     F64(f64),
     Bool(bool),
     /// string value `offset << 32 | len` into the module's string data
@@ -135,6 +143,9 @@ pub enum TExpr {
     Ternary(Box<TE>, Box<TE>, Box<TE>),
     Call(u32, Vec<TE>),
     Builtin(Builtin, Box<TE>, Box<TE>),
+    /// Compiler-owned telemetry span imports. Source cannot refer to the token.
+    TraceSpanBegin { offset: u32, len: u32 },
+    TraceSpanEnd { token: u32 },
     /// `stdio.print` / `stdio.println` of an int or bool value
     Print {
         value: Box<TE>,
@@ -479,6 +490,7 @@ struct FnCx<'a> {
     unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// > 0 while checking an isolated defer/recover body.
     cleanup_depth: u32,
+    telemetry_aliases: Vec<String>,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
     /// Non-escaping error-view binder; only explicitly admitted read-only
@@ -1555,8 +1567,9 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
         | TExpr::CollectionAlloc(_)
+        | TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. }
         | TExpr::Spawn(_) => EscapeEffects::default(),
-        TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
+        TExpr::RefinementCheck(v, _, _, _) | TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
         | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
@@ -1991,6 +2004,11 @@ fn ctor_init_stmts(
                 ctor_init_stmts(body, &mut nested, fields, true)?;
                 true
             }
+            Stmt::UsingTelemetry { body, .. } => {
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
             Stmt::Try { body, catch, finally, .. } => {
                 // Exception edges / cleanup order are not yet part of the
                 // constructor CFG. Inspect all reads but do not allow
@@ -2108,6 +2126,7 @@ fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
             Stmt::Return(Some(expr), _) => constructor_self_expr(expr, captured)?,
             Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::StateWrite { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::UsingTelemetry { body, .. }
             | Stmt::Block(body) => constructor_self_stmts(body, captured)?,
             Stmt::Try { body, catch, finally, .. } => {
                 constructor_self_stmts(body, captured)?;
@@ -2273,7 +2292,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
     match &value.e {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
-        TExpr::IntToFloat(a) | TExpr::FNeg(a) |
+        TExpr::RefinementCheck(a, _, _, _) | TExpr::IntToFloat(a) | TExpr::FNeg(a) |
         TExpr::Neg(a) | TExpr::Not(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
@@ -2323,7 +2342,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-        TExpr::AdtPropagate { .. } => false,
+        TExpr::AdtPropagate { .. } |
+        TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. } => false,
     }
 }
 
@@ -2385,7 +2405,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
-        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
+        TExpr::RefinementCheck(a, _, _, _) | TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
@@ -2456,6 +2476,7 @@ impl<'a> FnCx<'a> {
             data,
             unwind: None,
             cleanup_depth: 0,
+            telemetry_aliases: Vec::new(),
             recover_cursor: None,
             recover_error: None,
             trace: None,
@@ -2604,6 +2625,10 @@ impl<'a> FnCx<'a> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        if self.telemetry_aliases.iter().any(|alias| alias == name) {
+            return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
+                format!("opaque span alias '{name}' cannot be shadowed")));
+        }
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
         }
@@ -2712,6 +2737,7 @@ impl<'a> FnCx<'a> {
                 Stmt::While { .. } | Stmt::Loop { .. } | Stmt::For { .. } | Stmt::ForIn { .. }
                 | Stmt::Break(_) | Stmt::Continue(_) => Some("loops (needs canonical fixed-point analysis)"),
                 Stmt::Try { .. } | Stmt::Defer { .. } | Stmt::Recover { .. }
+                | Stmt::UsingTelemetry { .. }
                 | Stmt::Throw(..) | Stmt::Raise(..) => Some("unwind, cleanup or failure statement"),
                 Stmt::StateWrite { .. } | Stmt::Yield(..) | Stmt::YieldFrom(..) =>
                     Some("protected state or generator statement"),
@@ -2815,6 +2841,8 @@ impl<'a> FnCx<'a> {
                 let msg = self.guest_error_message(error, "raise", *pos)?;
                 TStmt::Raise(msg)
             }
+            Stmt::UsingTelemetry { operation, alias, body, pos } =>
+                self.telemetry_scope(operation, alias, body, *pos)?,
             Stmt::Try { body, catch, finally, pos } => {
                 self.unwind_frame(*pos, "try")?;
                 let saved = self.temp(Type::Bool, *pos)?;
@@ -3073,6 +3101,43 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    fn telemetry_scope(&mut self, operation: &str, alias: &str, body: &[Stmt], pos: Pos) -> R<TStmt> {
+        self.unwind_frame(pos, "using telemetry.span")?;
+        if self.lookup(alias).is_some() || self.telemetry_aliases.iter().any(|a| a == alias)
+            || alias == "self"
+        {
+            return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
+                format!("span alias '{alias}' shadows an active binding")));
+        }
+
+        let token = self.temp(Type::Int, pos)?;
+        let saved = self.temp(Type::Bool, pos)?;
+        let (offset, len) = self.string(operation, pos)?;
+        self.imports.extend([Import::TraceSpanBegin, Import::TraceSpanEnd]);
+        // The existing finally lowering cannot branch out of a protected
+        // region to an enclosing loop. Loops inside the scope remain valid.
+        let loops = std::mem::replace(&mut self.loops, 0);
+        self.telemetry_aliases.push(alias.to_owned());
+        let body = self.scoped(body);
+        self.telemetry_aliases.pop();
+        self.loops = loops;
+
+        // Begin before entering the unwind region, then reuse the same
+        // return/throw/raise cleanup path as an ordinary verified finally.
+        Ok(TStmt::Block(vec![
+            TStmt::Set(token, TE { e: TExpr::TraceSpanBegin { offset, len }, ty: Type::Int }),
+            TStmt::Try {
+                saved,
+                body: body?,
+                catch: None,
+                finally: Some(vec![TStmt::Expr(TE {
+                    e: TExpr::TraceSpanEnd { token }, ty: Type::Void,
+                })]),
+                pos,
+            },
+        ]))
+    }
+
     /// `match`: the subject is evaluated once into a temp; arms are tried in
     /// source order; a guard runs only after its pattern matched. The checker
     /// rejects unreachable arms and requires exhaustiveness (Java reference:
@@ -3302,8 +3367,6 @@ impl<'a> FnCx<'a> {
                     let (tag, needed) = match (sty, name.as_str()) {
                         (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
-            (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
-            (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::OptionInt, "None") => (0, None),
@@ -3706,6 +3769,16 @@ impl<'a> FnCx<'a> {
                 // argument position (see args()). A standalone borrow! must
                 // never become an owned return or a stored carrier handle.
                 let value = self.value(inner)?;
+                // A concrete Copy carrier can be read from a named owner,
+                // not borrowed from a temporary. Do not turn borrow! into
+                // a general expression-copy operator for ADT temporaries.
+                if matches!(value.ty, Type::OptionInt | Type::ResultIntStr
+                    | Type::ResultIntInt | Type::OptionResultIntStr)
+                    && !matches!(&inner.kind, ExprKind::Var(_))
+                {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "borrow! of a concrete ADT requires a named owner"));
+                }
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
                         tr.borrow_escaping(*slot, false, pos);
@@ -3865,6 +3938,20 @@ impl<'a> FnCx<'a> {
     }
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
+        let reference = match &e.kind {
+            ExprKind::Var(name) | ExprKind::Call(name, _) => Some(name),
+            ExprKind::Member(base, _) | ExprKind::MethodCall(base, _, _) => match &base.kind {
+                ExprKind::Var(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = reference {
+            if self.telemetry_aliases.iter().any(|alias| alias == name) {
+                return Err(Diagnostic::new(e.pos, "E_TELEMETRY_ALIAS",
+                    format!("opaque span alias '{name}' cannot be used as a guest value")));
+            }
+        }
         if let Some(tr) = self.trace.as_mut() {
             // straight-line-v1 allowlist: every other expression form has
             // ownership effects (receivers, captures, branches, actors) that
@@ -4009,16 +4096,48 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        // The parser bounds tree height, but a left-associated chain still
+        // consumed a large native checker frame per operator. Walk that spine
+        // iteratively, preserving exact source order, per-node types and
+        // checked overflow. Right subtrees use the existing checker.
+        let mut spine = vec![(op, r, pos)];
+        let mut left = l;
+        while let ExprKind::Binary(op, lhs, rhs) = &left.kind {
+            spine.push((*op, rhs.as_ref(), left.pos));
+            left = lhs.as_ref();
+        }
+        let mut value = self.value(left)?;
+        for (op, rhs, pos) in spine.into_iter().rev() {
+            let right = self.value(rhs)?;
+            value = self.binary_values(op, value, right, pos)?;
+        }
+        Ok(value)
+    }
+
+    #[inline(never)]
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr) {
                 if a.ty != Type::Int || b.ty != Type::Int {
                     return Err(type_err(pos, format!(
                         "bitwise operator '{}' requires two int operands, found {} and {}",
                         op.symbol(), self.tn(a.ty), self.tn(b.ty))));
+                }
+                if matches!(op, BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                    let literal = match &b.e {
+                        TExpr::I64(n) => Some(*n),
+                        TExpr::Neg(inner) => match &inner.e {
+                            TExpr::I64(n) => n.checked_neg(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if literal.is_some_and(|n| !(0..64).contains(&n)) {
+                        return Err(Diagnostic::new(pos, "E_SHIFT_DISTANCE",
+                            "shift distance must be in 0..63"));
+                    }
                 }
                 return Ok(TE {
                     e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
@@ -4813,8 +4932,21 @@ impl<'a> FnCx<'a> {
         }
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
+        // Lowering evaluates the receiver before the arguments, and the
+        // method uses it after all arguments have evaluated. A live local
+        // receiver must therefore survive their evaluation. A receiver
+        // already transferred into a temporary (`(take! x).method(...)`)
+        // owns that value independently of the source local's moved state.
+        let live_receiver = match &recv.e {
+            TExpr::Local(slot) if !self.moved.contains(slot) => Some(*slot),
+            _ => None,
+        };
         let mut targs = vec![recv];
         targs.extend(self.args(&label, args, &m.params)?);
+        if live_receiver.is_some_and(|slot| self.moved.contains(&slot)) {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "cannot move a method receiver while evaluating its arguments"));
+        }
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,
@@ -4832,48 +4964,57 @@ impl<'a> FnCx<'a> {
             _ => None,
         } {
             if self.lookup(name).is_none() {
-                // An array literal in this exact builtin position is an
-                // unescaped, read-only scalar argument pack. No general
-                // heap Array<bool> value, indexing, or mutable alias exists.
-                let values: &[Expr] = if args.len() == 1 {
-                    match &args[0].kind {
-                        ExprKind::Array(items) => {
-                            if items.iter().any(|e| !matches!(&e.kind,
-                                ExprKind::Bool(_) | ExprKind::Var(_))) {
-                                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                                    "boolean array gate pack admits only immutable bool literals or bindings"));
-                            }
-                            items
-                        }
-                        _ => return Err(Diagnostic::new(pos, "E_ARITY",
-                            format!("{name} expects at least 2 bool arguments or a scalar array literal"))),
+                // Array syntax is a bounded temporary pack in this profile,
+                // not a general Array<bool> allocation or ownership claim.
+                let pack = args.len() == 1 && matches!(&args[0].kind, ExprKind::Array(_));
+                let values: &[Expr] = if pack {
+                    let ExprKind::Array(items) = &args[0].kind else { unreachable!() };
+                    if items.iter().any(|e| !matches!(&e.kind,
+                        ExprKind::Bool(_) | ExprKind::Var(_))) {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "boolean array gate pack admits only bool literals or bindings"));
                     }
+                    items
                 } else { args };
-                if values.len() < 2 {
+                if !pack && values.len() < 2 {
                     return Err(Diagnostic::new(pos, "E_ARITY",
-                        format!("{name} expects at least 2 bool arguments")));
+                        format!("{name} expects at least 2 bool arguments or one array literal")));
                 }
                 if values.len() > crate::parser::MAX_PARAMS {
                     return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
                         format!("{name} has too many boolean operands")));
                 }
-                // Normal functions eagerly evaluate all arguments; nested
-                // typed binary builtins retain exact left-to-right behavior.
-                let mut iter = values.iter();
-                let first = iter.next().expect("checked operand minimum");
-                let mut accumulated = self.value(first)?;
-                if accumulated.ty != Type::Bool {
-                    return Err(type_err(first.pos, format!("{name} needs bool arguments")));
-                }
-                for arg in iter {
+                // Check every source operand before emitting control flow,
+                // including operands that will be skipped at runtime.
+                let mut checked = Vec::with_capacity(values.len());
+                for arg in values {
                     let next = self.value(arg)?;
                     if next.ty != Type::Bool {
                         return Err(type_err(arg.pos, format!("{name} needs bool arguments")));
                     }
-                    accumulated = TE {
-                        e: TExpr::Builtin(b, Box::new(accumulated), Box::new(next)),
-                        ty: Type::Bool,
+                    checked.push(next);
+                }
+                let literal = |value| TE { e: TExpr::Bool(value), ty: Type::Bool };
+                let mut iter = checked.into_iter();
+                let Some(mut accumulated) = iter.next() else {
+                    return Ok(literal(b == Builtin::And));
+                };
+                // Scalar And/Or use existing typed conditional lowering.
+                // Array packs and XOR retain eager evaluation in source order.
+                if !pack && b != Builtin::Xor {
+                    if let Some(tr) = self.trace.as_mut() {
+                        tr.unavailable("named Boolean conditional (needs canonical joins)");
+                    }
+                }
+                for next in iter {
+                    let e = match (pack, b) {
+                        (false, Builtin::And) => TExpr::Ternary(
+                            Box::new(accumulated), Box::new(next), Box::new(literal(false))),
+                        (false, Builtin::Or) => TExpr::Ternary(
+                            Box::new(accumulated), Box::new(literal(true)), Box::new(next)),
+                        _ => TExpr::Builtin(b, Box::new(accumulated), Box::new(next)),
                     };
+                    accumulated = TE { e, ty: Type::Bool };
                 }
                 return Ok(accumulated);
             }

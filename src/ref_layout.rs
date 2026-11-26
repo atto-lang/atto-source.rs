@@ -128,7 +128,8 @@ impl Region {
             return Err(RefError::BadAlignment);
         }
         let align = 1usize << shift;
-        if !base.is_multiple_of(align) {
+        // Power-of-two alignment; compatible with the pinned Rust MSRV.
+        if base & (align - 1) != 0 {
             return Err(RefError::BadAlignment);
         }
         base.checked_add(byte_len).ok_or(RefError::Overflow)?;
@@ -141,7 +142,7 @@ impl Region {
 
     pub fn encode_offset(self, offset: usize) -> Result<CompressedRef, RefError> {
         let align = 1usize << self.shift;
-        if !offset.is_multiple_of(align) {
+        if offset & (align - 1) != 0 {
             return Err(RefError::BadAlignment);
         }
         if offset >= self.byte_len {
@@ -210,6 +211,8 @@ pub fn aosoa_field_offset(
 /// nonoverlapping lanes, logical row count and the actual backing allocation.
 /// Returns a byte range only; it never creates a pointer or Rust reference.
 /// Caller must still prove ownership, allocation provenance and generation.
+// Keep the public layout-check API explicit; no caller may omit a bound.
+#[allow(clippy::too_many_arguments)]
 pub fn checked_aosoa_field_span(
     row: usize,
     row_count: usize,
