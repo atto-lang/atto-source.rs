@@ -75,13 +75,39 @@ for (const [src, expected] of [
   assert.equal(failure.ok, false, 'negative source cannot return a Wasm artifact');
   assert.ok(failure.diagnostic.includes(expected), failure.diagnostic);
 }
-for (const op of ['<<<', '>>>', 'ashr']) {
-  for (const count of [-1, 64]) {
-    const built = compile('fnc shift_count(): int { return ' + count + '; } pub fnc main(): int { return 1 ' + op + ' shift_count(); }');
-    assert.ok(built.ok, built.diagnostic);
-    const instance = new WebAssembly.Instance(new WebAssembly.Module(built.guest), {});
-    assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
-    assert.equal(instance.exports.panic_code.value, 8);
+const matrixDir = await mkdtemp(join(tmpdir(), 'atto-checked-shift-differential-'));
+try {
+  const {writeFile} = await import('node:fs/promises');
+  let executed = 0;
+  for (const [op, boundary] of [['<<<', -9223372036854775808n], ['>>>', 0n], ['ashr', 0n]]) {
+    for (const count of ['0', '63', '-1', '64', '-9223372036854775808', '9223372036854775807']) {
+      for (const compound of [false, true]) {
+        const body = compound
+          ? 'let x: int = 1; x ' + op + '= shift_count(); return x;'
+          : 'return 1 ' + op + ' shift_count();';
+        const text = 'fnc shift_count(): int { return ' + count + '; } pub fnc main(): int { ' + body + ' }';
+        const built = compile(text);
+        assert.ok(built.ok, built.diagnostic);
+        const src = join(matrixDir, executed + '.atto');
+        const out = join(matrixDir, executed + '.wasm');
+        await writeFile(src, text, {flag:'wx'});
+        const native = spawnSync(attoc, [src, '-o', out], {encoding:'utf8', timeout:30000});
+        assert.equal(native.status, 0, native.stderr);
+        assert.deepEqual(Buffer.from(built.guest), await readFile(out), text);
+        const instance = new WebAssembly.Instance(new WebAssembly.Module(built.guest), {});
+        if (count === '0' || count === '63') {
+          assert.equal(instance.exports.main(), count === '0' ? 1n : boundary, text);
+          assert.equal(instance.exports.panic_code.value, 0, text);
+        } else {
+          assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError, text);
+          assert.equal(instance.exports.panic_code.value, 8, text);
+        }
+        executed++;
+      }
+    }
   }
+  assert.equal(executed, 36);
+  console.log('PASS exact website bitwise source; six negatives and 36 native/browser byte-identical shift cases');
+} finally {
+  await rm(matrixDir, {recursive:true, force:true});
 }
-console.log('PASS exact website bitwise source; native bytes equal; six negatives and six dynamic shift traps');
