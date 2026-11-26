@@ -458,6 +458,17 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_mode(length, false)
+    }
+
+    /// Optional ABI-v2 capability, explicitly selected by the browser host.
+    /// It cannot fall back to ordinary compilation.
+    #[no_mangle]
+    pub extern "C" fn compile_strict_i64(length: i32) -> i32 {
+        compile_mode(length, true)
+    }
+
+    fn compile_mode(length: i32, strict: bool) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -498,7 +509,8 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            let result = if strict { super::compile_verified_strict(source) } else { super::compile(source) };
+            match result {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0
