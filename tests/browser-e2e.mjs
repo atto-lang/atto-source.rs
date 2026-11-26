@@ -79,6 +79,28 @@ try{
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+  // Distinct outputs prevent stale UI state from passing a positive.
+  const genericSource=expr=>'fnc identity<T>(T value): T { return value; } pub fnc main(): int { return '+expr+'; }';
+  for(const [expr,result] of [
+    ['identity<int>(43)',43],['identity<T=int>(44)',44],
+    ['identity<T=int>(value:45)',45],['identity<T=int>(20)+identity<int>(26)',46]
+  ]) {
+    assert.equal(await run(genericSource(expr),'main() -> '+result),'main() -> '+result);
+    console.log('BROWSER_GENERIC_PASS '+expr);
+  }
+  let recovery=50;
+  for(const [expr,diagnostic] of [
+    ['identity<U=int>(42)','E_TYPE'],
+    ['identity<T=int>(wrong:42)','E_TYPE'],
+    ['identity<T=int>(value:true)','E_TYPE']
+  ]) {
+    assert.match(await run(genericSource(expr),diagnostic),new RegExp('^'+diagnostic+':'));
+    assert.equal(await run(genericSource('identity<int>('+recovery+')'),'main() -> '+recovery),'main() -> '+recovery);
+    recovery++;
+    console.log('BROWSER_GENERIC_REJECT '+expr);
+  }
+  console.log('BROWSER_GENERIC_VERIFIED 4 positive + 3 rejection/recovery pairs');
+  if(process.env.ATTO_GENERIC_BROWSER_ONLY!=='1'){
   const linkedMtdSource = await readFile(new URL('./fixtures/pass/173-class-mtd-executable.atto', import.meta.url), 'utf8');
   assert.equal(await run(linkedMtdSource, 'main() -> 20'), 'main() -> 20');
   console.log('PASS browser: compiled native class mtd methods dispatch and return 20');
@@ -225,6 +247,9 @@ try{
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
+  }
+  assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
+  assert.ok(requests.every(x=>x.method==='GET'));
 }finally{
   try{ws?.close()}catch{}
   if(chrome?.exitCode===null){chrome.kill('SIGKILL');await sleep(200)}
