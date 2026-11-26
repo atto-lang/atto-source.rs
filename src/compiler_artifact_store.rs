@@ -46,7 +46,7 @@ fn remove_pending(root:&File)->io::Result<()> {
     if unsafe{unlinkat(root.as_raw_fd(),name.as_ptr(),0)}==0{return Ok(());}
     let e=io::Error::last_os_error();if e.kind()==io::ErrorKind::NotFound{Ok(())}else{Err(e)}
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-incremental-cache"))]
 pub(crate) mod authority;
 pub struct ArtifactStore { root:LockedRoot }
 impl ArtifactStore {

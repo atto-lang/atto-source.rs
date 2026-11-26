@@ -16,6 +16,9 @@ on:
       - 'src/linker.rs'
       - 'src/compiler_cache_ledger.rs'
       - 'src/compiler_cache_session.rs'
+      - 'src/experimental_incremental.rs'
+      - 'tests/experimental_incremental.rs'
+      - 'Cargo.toml'
       - '.github/workflows/compiler-cache-key.yml'
 permissions:
   contents: read
@@ -50,3 +53,5 @@ jobs:
           cargo test --lib compiler_cache_ledger::tests:: -- --nocapture
           cargo test --test package_resolver -- --nocapture
           cargo test --test multihop_linker -- --nocapture
+          cargo check --no-default-features
+          cargo test --features experimental-incremental-cache --test experimental_incremental -- --nocapture
