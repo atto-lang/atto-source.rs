@@ -1,6 +1,6 @@
 //! Conservative, actual typed-IR allocation/copy proof for closed scalar modules.
 //! No annotations are discarded by an alternate lowering path.
-use crate::{ast::Type, check::{TExpr, TStmt, TE}, lexer::{Tok, Token}, Diagnostic, Pos};
+use crate::{ast::{Type, BinOp}, check::{TExpr, TStmt, TE}, lexer::{Tok, Token}, Diagnostic, Pos};
 
 fn marker(t: &Tok) -> Option<&'static str> {
     match t {
@@ -16,6 +16,14 @@ fn scalar(t: Type) -> bool { matches!(t, Type::Int | Type::Bool) }
 fn expr(e: &TE, proven: &[bool]) -> bool {
     scalar(e.ty) && match &e.e {
         TExpr::I64(_) | TExpr::Bool(_) | TExpr::Local(_) => true,
+        // Direct scalar opcodes only. Checked arithmetic helpers and
+        // additional effectful IR remain outside this proof revision.
+        TExpr::Bin(op, a, b) => matches!(op, BinOp::BitAnd | BinOp::BitOr |
+            BinOp::BitXor | BinOp::Shl | BinOp::LShr | BinOp::AShr |
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt |
+            BinOp::Ge | BinOp::And | BinOp::Or) && expr(a, proven) && expr(b, proven),
+        TExpr::Not(a) => expr(a, proven),
+        TExpr::Ternary(c, a, b) => expr(c, proven) && expr(a, proven) && expr(b, proven),
         TExpr::Call(target, args) => proven.get(*target as usize) == Some(&true)
             && args.iter().all(|a| expr(a, proven)),
         _ => false,
@@ -88,5 +96,61 @@ pub(crate) fn compile(tokens: Vec<Token>) -> Result<Vec<u8>, Diagnostic> {
     if bytes.len() > crate::wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(pos, "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
     }
+    if !memoryless_sections(&bytes) {
+        return Err(Diagnostic::new(pos, code, "emitted scalar module violates memoryless guarantee envelope"));
+    }
     Ok(bytes)
+}
+
+// Defense in depth: require the actual emitted binary to have no imports,
+// linear memory, tables, element/data segments, start function or tags.
+// This is NOT a general Wasm verifier or an independent all-path proof.
+fn memoryless_sections(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"\0asm\x01\0\0\0") { return false; }
+    let mut i = 8usize;
+    let mut seen = [false; 13];
+    let mut previous = 0u8;
+    while i < bytes.len() {
+        let id = bytes[i]; i += 1;
+        // The closed scalar emitter needs only these core sections.
+        if !matches!(id, 0 | 1 | 3 | 6 | 7 | 10) { return false; }
+        if id != 0 {
+            if id <= previous || seen[id as usize] { return false; }
+            previous = id;
+            seen[id as usize] = true;
+        }
+        let mut size = 0u32;
+        let mut complete = false;
+        for shift in (0..35).step_by(7) {
+            let Some(&b) = bytes.get(i) else { return false; };
+            i += 1;
+            if shift == 28 && b > 0x0f { return false; }
+            size |= u32::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 { complete = true; break; }
+        }
+        if !complete { return false; }
+        let Some(end) = i.checked_add(size as usize) else { return false; };
+        if end > bytes.len() { return false; }
+        i = end;
+    }
+    seen[1] && seen[3] && seen[7] && seen[10]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::memoryless_sections;
+    #[test]
+    fn rejects_forbidden_sections_and_truncation() {
+        let actual = crate::compile("@noalloc\n@nocopy\npub fnc main():int { return 42; }").unwrap();
+        assert!(memoryless_sections(&actual));
+        for id in [2, 4, 5, 8, 9, 11, 12, 13] {
+            let mut altered = actual.clone();
+            altered.extend([id, 0]);
+            assert!(!memoryless_sections(&altered), "forbidden section {id}");
+        }
+        for suffix in [&[0, 0x80][..], &[0, 0xff, 0xff, 0xff, 0xff, 0x10][..], &[0, 10, 1][..]] {
+            let mut altered = actual.clone(); altered.extend(suffix);
+            assert!(!memoryless_sections(&altered));
+        }
+    }
 }
