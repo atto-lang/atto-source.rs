@@ -536,4 +536,51 @@ end"#;
         fs::rename(t.0.join("saved"),&path).unwrap();assert!(a.lease("tenant/a",&pin,SECRET).is_ok());
         println!("CACHE_AUTHORITY|symlink-hardlink-fifo-denied|bad-cas-no-mutation");
     }
+
+    #[test]
+    fn twelve_source_locked_package_differential(){
+        use crate::{compiler_cache_session::{Session,Mode,Outcome},compiler_cache_ledger as ledger,
+            library::TargetOs,sha256::{hex_digest,sha256},package_resolver::SnapshotSource};
+        let t=Temp::new();let cache=t.0.join("cache");let host=t.0.join("host");
+        for dir in [&cache,&host]{fs::DirBuilder::new().mode(0o700).create(dir).unwrap();}
+        let store=ArtifactStore::open(&cache).unwrap();
+        let authority=authority::Authority::open(&host).unwrap();
+        let pin=sha256(&ledger::record("tenant/a",1,SECRET).unwrap());
+        authority.provision("tenant/a",1,SECRET,&pin).unwrap();
+        let compiler=session_compiler_identity();let toolchain=hex_digest(b"fixture toolchain attestation");
+        let session=Session{store:&store,scope:"tenant/a",compiler_digest:&compiler,toolchain_digest:&toolchain,target:TargetOs::Posix};
+        let inputs=[
+            SnapshotSource{path:"src/main.atto",source:include_str!("../tests/fixtures/incremental_locked/src/main.atto")},
+            SnapshotSource{path:"lib/m00.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m00.atto")},
+            SnapshotSource{path:"lib/m01.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m01.atto")},
+            SnapshotSource{path:"lib/m02.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m02.atto")},
+            SnapshotSource{path:"lib/m03.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m03.atto")},
+            SnapshotSource{path:"lib/m04.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m04.atto")},
+            SnapshotSource{path:"lib/m05.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m05.atto")},
+            SnapshotSource{path:"lib/m06.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m06.atto")},
+            SnapshotSource{path:"lib/m07.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m07.atto")},
+            SnapshotSource{path:"lib/m08.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m08.atto")},
+            SnapshotSource{path:"lib/m09.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m09.atto")},
+            SnapshotSource{path:"lib/m10.atto",source:include_str!("../tests/fixtures/incremental_locked/lib/m10.atto")},
+        ];
+        let lock=package_lock(&inputs);let source_pin=hex_digest(lock.as_bytes());
+        let build=|mode,lock:&str,source_pin:&str,inputs:&[SnapshotSource<'_>]|session.build(mode,&authority,&pin,SECRET,"src/main.atto",MANIFEST,lock,source_pin,inputs);
+        let cold=build(Mode::Cold,&lock,&source_pin,&inputs).unwrap();
+        assert_eq!(cold.outcome,Outcome::Compiled);
+        let warm=build(Mode::Incremental,&lock,&source_pin,&inputs).unwrap();
+        assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(warm.bytes,cold.bytes);
+        let path=host.join("fixture.wasm");fs::write(&path,&warm.bytes).unwrap();execute_wasm(&path);
+        let edited=inputs[11].source.replace("return 2;","return 3;");
+        let mut changed=inputs;changed[11].source=&edited;
+        assert_eq!(build(Mode::Incremental,&lock,&source_pin,&changed).unwrap_err().code,"E_LOCK_HASH");
+        let updated_lock=package_lock(&changed);let updated_pin=hex_digest(updated_lock.as_bytes());
+        let next=build(Mode::Incremental,&updated_lock,&updated_pin,&changed).unwrap();
+        assert_eq!(next.outcome,Outcome::Compiled);
+        assert_eq!(next.bytes,crate::package_resolver::compile_locked_snapshot("src/main.atto",MANIFEST,&updated_lock,&updated_pin,&changed).unwrap());
+        fs::write(&path,&next.bytes).unwrap();execute_wasm_result(&path,"43");
+        assert_eq!(build(Mode::Incremental,&updated_lock,&updated_pin,&changed).unwrap().outcome,Outcome::Reused);
+        // This is whole-package output reuse, NOT proof of 11 per-unit
+        // parse/type/codegen reuses. Keep those independent gates open.
+        println!("CACHE_TWELVE_SOURCE|three-namespace-headers|two-unnamespaced|cold-warm=42|edit=43|whole-package-reuse-only");
+    }
 }
