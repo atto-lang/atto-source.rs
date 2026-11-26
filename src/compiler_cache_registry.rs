@@ -92,7 +92,7 @@ fn token_digest(tokens:&[Token])->Result<String,Diagnostic>{
     Ok(hex_digest(&out))
 }
 pub(crate) fn prepare(root:Snapshot<'_>,deps:&[RegistryDependency<'_>],target:TargetOs,
-    compiler:&str,toolchain:&str,previous:&RegistryMemo)->Result<Prepared,Diagnostic>{
+    compiler:&str,toolchain:&str,previous:&RegistryMemo, bound_input_reuse:bool)->Result<Prepared,Diagnostic>{
     if root.sources.len()!=1||deps.is_empty()||deps.len()>16{
         return Err(err("E_UNSUPPORTED","registry cache requires one application source and 1-16 approved dependencies"));
     }
@@ -141,13 +141,21 @@ pub(crate) fn prepare(root:Snapshot<'_>,deps:&[RegistryDependency<'_>],target:Ta
         let (checked,semantic)=pass.finish();
         memo.checked=checked;work.semantic=semantic;
         let bindings=token_digest(&tokens)?;
-        // All approved dependency locks are included, even if unused.
-        // This conservative profile never reuses against a changed provider.
-        let dependencies:Vec<_>=ordered.values().map(|d|key::Dependency{identity:d.name,digest:d.trusted_lock_sha256}).collect();
+        // Opt-in reuse is confined to the exact fully resolved compiler input.
+        // Every current lock and raw source has already been authenticated,
+        // every import resolved, and admitted namespace checks performed.
+        // Preserve the entire approved package-name and manifest domain;
+        // changing a package's version, namespace map or export map misses.
+        // This is not a trusted snapshot identity or a persistent typed proof.
+        let manifests:Vec<_>=ordered.values().map(|d|hex_digest(d.manifest.as_bytes())).collect();
+        let dependencies:Vec<_>=ordered.values().zip(&manifests).map(|(d,manifest)|
+            key::Dependency{identity:d.name,digest:if bound_input_reuse{manifest.as_str()}else{d.trusted_lock_sha256}}).collect();
         let target_hash=hex_digest(format!("atto-wasm-stage-v1|wasm32|abi={}|os={}",crate::ABI_VERSION,
             match target{TargetOs::Posix=>"posix",TargetOs::Windows=>"windows"}).as_bytes());
-        let config=hex_digest(b"registry-root-v1|single-file|explicit-host-approved-dependency-set|ordinary-registry-compiler");
-        let encoded=key::encode(&key::Input{stage:"registry-wasm-module",owner:&identity,unit_kind:"source-unit",unit:root.entry,
+        let config=hex_digest(if bound_input_reuse {
+            &b"registry-root-v2|single-file|fully-resolved-exact-token-input|authenticated-package-manifest-domain"[..]
+        } else { &b"registry-root-v1|single-file|explicit-host-approved-dependency-set|ordinary-registry-compiler"[..] });
+        let encoded=key::encode(&key::Input{stage:if bound_input_reuse{"registry-wasm-bound-input-v2"}else{"registry-wasm-module"},owner:&identity,unit_kind:"source-unit",unit:root.entry,
             compiler,toolchain,target:&target_hash,configuration:&config,sources:root.trusted_lock_sha256,bindings:&bindings,
             generated:None,dependencies:&dependencies}).map_err(|e|err("E_CACHE_KEY",e))?;
         let mut bytes=[0u8;32];for(i,b)in bytes.iter_mut().enumerate(){*b=u8::from_str_radix(&encoded[i*2..i*2+2],16).map_err(|_|err("E_CACHE_KEY","invalid encoded key"))?;}
