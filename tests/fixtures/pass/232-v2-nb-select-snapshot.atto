@@ -22,5 +22,21 @@ pub suspends fnc main(): int {
   writech right, 9;
   // Both live cases are ready. A stale snapshot must not move FAIR to slot 1.
   val SelectResult live = select fair from plan;
-  return got.unwrap().value + live.value - 7;
+  // Two ready channels, with enough left data to expose a stale FAIR probe.
+  val a = Channel<int>.bounded(2);
+  val b = Channel<int>.bounded(1);
+  writech a, 20;
+  writech a, 99;
+  writech b, 22;
+  val SelectPlan shared = SelectPlan.from_list([
+    SelectCase.read(a), SelectCase.read(b)
+  ]);
+  val Future<Option<SelectResult>> waiting = nb select fair from shared;
+  val Option<SelectResult> immediate = try select fair from shared;
+  val Option<SelectResult> deferred = await waiting;
+  // Regardless of whether the task ran before the immediate probe,
+  // the two committed reads must use different slots and total 42.
+  return got.unwrap().value + live.value - 7
+    + immediate.unwrap().value + deferred.unwrap().value - 42
+    + immediate.unwrap().index + deferred.unwrap().index - 1;
 }
