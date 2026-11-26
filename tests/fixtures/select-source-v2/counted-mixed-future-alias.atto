@@ -1,0 +1,12 @@
+suspends fnc main(): int {
+  val Channel<int> incoming = Channel.new<int>(2);
+  writech incoming, 5;
+  writech incoming, 6;
+  val Future<int> pending = select<int> { default: -> { return 20; } };
+  val Array[int] values = await select<int>(3) over
+    when await pending: int n -> { return n; }
+    when readch incoming: int n -> { return n * 2; }
+    when await pending: int n -> { return n; }
+  end;
+  return values[0] + values[1] + values[2];
+}

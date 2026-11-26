@@ -30,7 +30,8 @@ impl Unit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArithmeticFailure { Overflow, DivisionByZero }
 pub(crate) type Outcome = Result<i64, ArithmeticFailure>;
-pub(crate) enum Lowered { Closed(Outcome), Typed(crate::check::TProgram) }
+// Closed expressions are checked but are not admitted by either typed compiler entry.
+pub(crate) enum Lowered { Closed, Typed(crate::check::TProgram) }
 #[derive(Clone)]
 struct Value { unit: Unit, number: Outcome }
 fn error(pos: Pos, code: &'static str, message: &str) -> Diagnostic { Diagnostic::new(pos, code, message) }
@@ -107,7 +108,7 @@ pub(crate) fn lower_mode(source: &str, tokens: &[Token], strict: bool) -> R<Opti
     if result.unit != Unit::scalar() { return Err(p.err("E_UNIT_ERASURE", "int return requires scalar scale one")); }
     // Complete grammar and all arithmetic were checked before erasure. Ordinary
     // compiler emits the Wasm guest; there is no runtime solver or source eval.
-    Ok(Some(Lowered::Closed(result.number)))
+    Ok(Some(Lowered::Closed))
 }
 
 struct Parser<'a> {
