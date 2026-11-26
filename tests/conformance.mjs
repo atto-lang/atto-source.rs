@@ -476,7 +476,7 @@ check('canonical-caret/eager-order-vs-lazy-boolean', () => {
   const guest = runGuest(r.wasm);
   assert.equal(guest.ok, true);
   assert.equal(guest.value, 6n);
-  assert.equal(guest.stdout, 'left\\nright\\nfalse\\ntrue\\n');
+  assert.equal(guest.stdout, ['left', 'right', 'false', 'true', ''].join('\n'));
 });
 
 // ---- limits and robustness ---------------------------------------------------
