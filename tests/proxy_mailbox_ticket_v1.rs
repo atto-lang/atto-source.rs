@@ -19,8 +19,8 @@ fn ticket(m: &Mailbox, r: Id, value: i64) -> proxy_mailbox_ticket_v1::HostTicket
 }
 #[test]
 fn exact_mail_not_other_actor_completion_and_backpressure() {
-    let a = Mailbox::new(13, 14, 1).unwrap();
-    let b = Mailbox::new(13, 14, 1).unwrap();
+    let a = Mailbox::new(11, 13, 14, 1).unwrap();
+    let b = Mailbox::new(11, 13, 14, 1).unwrap();
     let t1 = ticket(&a, route(101, 14), 11);
     let first = a.dispatch().unwrap();
     let queued = ticket(&a, route(102, 14), 12);
@@ -46,7 +46,7 @@ fn exact_mail_not_other_actor_completion_and_backpressure() {
 }
 #[test]
 fn four_concurrent_producers_cannot_corrupt_128_unique_results() {
-    let mail = Arc::new(Mailbox::new(13, 14, 256).unwrap());
+    let mail = Arc::new(Mailbox::new(11, 13, 14, 256).unwrap());
     let mut producers = vec![];
     for p in 0..4 {
         let m = mail.clone();
@@ -75,7 +75,7 @@ fn four_concurrent_producers_cannot_corrupt_128_unique_results() {
 }
 #[test]
 fn panic_abandons_pending_and_restart_fences_incarnation() {
-    let m = Mailbox::new(13, 14, 2).unwrap();
+    let m = Mailbox::new(11, 13, 14, 2).unwrap();
     let failed = ticket(&m, route(201, 14), -1);
     let turn = m.dispatch().unwrap();
     let abandoned = ticket(&m, route(202, 14), 20);
@@ -86,7 +86,7 @@ fn panic_abandons_pending_and_restart_fences_incarnation() {
     assert!(matches!(m.admit(route(203, 14), 1), Admission::Closed));
     assert!(m.dispatch().is_none());
     assert!(m.conservation());
-    let next = Mailbox::new(13, 15, 1).unwrap();
+    let next = Mailbox::new(11, 13, 15, 1).unwrap();
     assert!(matches!(next.admit(route(204, 14), 1), Admission::Stale));
     assert!(next.snapshot(&failed).is_none());
     let fresh = ticket(&next, route(205, 15), 8);
@@ -97,12 +97,24 @@ fn panic_abandons_pending_and_restart_fences_incarnation() {
 }
 #[test]
 fn close_denies_new_receipts_but_drain_can_commit() {
-    let m = Mailbox::new(13, 14, 1).unwrap();
+    let m = Mailbox::new(11, 13, 14, 1).unwrap();
     let old = ticket(&m, route(300, 14), 3);
     m.close();
     assert!(matches!(m.admit(route(301, 14), 3), Admission::Closed));
     let turn = m.dispatch().unwrap();
     assert!(m.commit(&turn, 4));
     assert_eq!(m.snapshot(&old).unwrap().result, Some(4));
+    assert!(m.conservation());
+}
+
+#[test]
+fn empty_mailbox_rejects_wrong_tenant_without_spending_credit() {
+    let m = Mailbox::new(11, 13, 14, 1).unwrap();
+    assert!(matches!(m.admit(Id { tenant: 88, ..route(501, 14) }, 7), Admission::Stale));
+    assert!(m.dispatch().is_none());
+    let t = ticket(&m, route(501, 14), 7);
+    let turn = m.dispatch().unwrap();
+    assert!(m.commit(&turn, 14));
+    assert!(m.snapshot(&t).is_some());
     assert!(m.conservation());
 }
