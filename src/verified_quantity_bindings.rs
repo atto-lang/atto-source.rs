@@ -310,7 +310,8 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
     }
 }
 
- // Closed strict CFG: no loops, aliases, suspension, shadowing or external calls.
+ // Closed strict CFG: while uses declared scalar invariants; no aliases,
+// suspension, shadowing, break/continue or external calls.
  // Each local has a stable physical slot; mutable assignments replace its fact.
 fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
@@ -329,6 +330,37 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             p.expect(Tok::Semi)?;
             body.push(TStmt::Return(Some(v.ir)));
             returned = true;
+        } else if p.word("while") {
+            // A loop header must cover entry AND every backedge. The
+            // declared mutable scalar refinements are inductive invariants:
+            // each assignment is checked against them. Never use an entry
+            // singleton or a previous iteration's transient narrowing here.
+            let mut header = locals.clone();
+            for (name, declared) in mutable.iter() {
+                let (_, fact) = header.get_mut(name).ok_or_else(||
+                    error(pos,"E_VERIFY_UNSUPPORTED","loop invariant outside local scope"))?;
+                if !declared.range.contains(fact.range) || declared.unit != fact.unit {
+                    return Err(error(pos,"E_VERIFY_UNPROVEN","loop invariant not established at entry"));
+                }
+                *fact = declared.clone();
+            }
+            let (cond, mut yes, no) = strict_condition(p, aliases, &header, funcs)?;
+            p.expect(Tok::LBrace)?;
+            let (loop_body, always_returns) = strict_block(p, aliases, funcs, result,
+                &mut yes, &mut mutable.clone(), slots, param_count, depth+1)?;
+            if !always_returns {
+                for (name, declared) in mutable.iter() {
+                    let (_, fact) = yes.get(name).ok_or_else(||
+                        error(pos,"E_VERIFY_UNSUPPORTED","loop backedge outside local scope"))?;
+                    if !declared.range.contains(fact.range) || declared.unit != fact.unit {
+                        return Err(error(pos,"E_VERIFY_UNPROVEN","loop invariant not preserved"));
+                    }
+                }
+            }
+            // Only the false guard edge can continue: break/continue remain
+            // unsupported. Zero iterations are included by header widening.
+            *locals = no;
+            body.push(TStmt::Loop {cond:Some(cond),body:loop_body,update:Vec::new()});
         } else if p.word("if") {
             let (cond, yes, no) = strict_condition(p, aliases, locals, funcs)?;
             p.expect(Tok::LBrace)?;
