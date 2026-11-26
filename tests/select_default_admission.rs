@@ -56,6 +56,7 @@ fn mixed_counted_portable_sources_fail_closed_until_guest_lowering() {
     for (name, source) in [
         ("counted-mixed-future-alias", include_str!("fixtures/select-source-v2/counted-mixed-future-alias.atto")),
         ("counted-multi-channel-fair", include_str!("fixtures/select-source-v2/counted-multi-channel-fair.atto")),
+        ("counted-distinct-alias-projection", include_str!("fixtures/select-source-v2/counted-distinct-alias-projection.atto")),
         ("counted-mixed-zero", include_str!("fixtures/select-source-v2/counted-mixed-zero.atto")),
     ] {
         assert!(compile(source).is_err(), "{name}: unsupported counted source must not emit guest bytes");

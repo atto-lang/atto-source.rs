@@ -830,7 +830,7 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
             BinOp::Add | BinOp::Sub => { compatible(&left.unit,&right.unit,pos)?; left.unit.clone() }
             BinOp::Mul => left.unit.combine(&right.unit,false,pos)?,
             BinOp::Div => {
-                if !p.strict && aliases.is_empty() && left.unit == Unit::scalar() && right.unit == Unit::scalar() {
+                if !p.strict && aliases.is_empty() && !p.scalar_contract_profile && left.unit == Unit::scalar() && right.unit == Unit::scalar() {
                     return Err(error(pos,"E_UNIT_SCALAR_DIVISION","ordinary int division remains outside quantity profile"));
                 }
                 left.unit.combine(&right.unit,true,pos)?
