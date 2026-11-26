@@ -229,6 +229,19 @@ fn scalar_literal(item: &[Token]) -> Option<&'static str> {
         _ => None,
     }
 }
+// Preserve the old finite-float admission invariant independently of token
+// reconstruction. Keeping source tokens must not widen accepted literals.
+fn validate_expression_tokens(tokens: &[Token]) -> R<()> {
+    for t in tokens {
+        if let Tok::Float(bits) = t.tok {
+            if !f64::from_bits(bits).is_finite() {
+                return Err(error(t.pos, "E_FLOAT_LITERAL",
+                    "non-finite scalar tuple literal is not admitted"));
+            }
+        }
+    }
+    Ok(())
+}
 fn constant_tuple(rhs: &[Token]) -> bool {
     tuple_items(rhs).is_some_and(|items| items.iter().all(|x| scalar_literal(x).is_some()))
 }
@@ -315,6 +328,7 @@ fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<(String, usize),
         }
         let rhs = &tokens[b.rhs_start_index..end];
         checked_rhs(rhs, functions, b.pos)?;
+        validate_expression_tokens(rhs)?;
         let actual_arity = if let Some(items) = tuple_items(rhs) {
             items.len()
         } else {
@@ -391,6 +405,7 @@ fn rewrite_literal_tuples(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R
             i += 1;
             continue;
         };
+        validate_expression_tokens(&tokens[i..=close])?;
         let detected: Option<Vec<String>> = items.iter().map(|x| scalar_literal(x).map(str::to_owned)).collect();
         let shape_name = if let Some(parts) = detected {
             shape_for(parts, shapes, tokens[i].pos)?
