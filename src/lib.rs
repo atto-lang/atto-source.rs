@@ -26,28 +26,44 @@ pub mod collection_layout_type;
 #[allow(clippy::needless_return)]
 pub mod copy_graph_v1;
 pub mod borrow_export;
+/// Fail-closed compiler-core preflight for sealed Future-family ownership.
+pub mod core_future_ownership;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
+pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+/// Immutable profile-aware canonical names visible without explicit imports.
+pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
 pub mod scalar_generic;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
+pub mod const_import_link;
 pub mod import_link;
+pub mod import_v2;
+pub mod import_tree;
+pub mod static_import_graph;
+/// Checked physical layout metadata; does not admit guest reference operations.
+pub mod ref_layout;
+pub mod layout_plan;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
-pub mod incremental;
+/// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
+pub mod registry_namespace;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;
+/// Canonical cache-key envelope only; no artifact reuse authority.
+pub mod compiler_cache_key;
+pub mod incremental;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
@@ -86,22 +102,31 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
-    compile_inner(source, None)
+    let source = library::expand(source)?;
+    compile_inner(&source, None)
 }
 
 /// Compile with a caller-supplied logical, package-relative source file path.
 /// Required when the source declares `use default namespace[(N)];`.
 pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
     -> Result<Vec<u8>, Diagnostic> {
-    compile_inner(source, Some(logical_path))
+    let source = library::expand(source)?;
+    compile_inner(&source, Some(logical_path))
 }
 
 /// Compile a project entry with trusted caller-supplied relative source loading.
 pub fn compile_with_imports<F>(
-    source: &str, logical_path: &std::path::Path, load: F,
+    source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    let tokens = import_link::lower(source, logical_path, load)?;
+    let source = library::expand_for_file_linker(source)?;
+    // Bounded relative-file scalar `import const` can substitute only
+    // verified literal values, before the existing checker and guest emitter.
+    // Full package and environment-backed initialization still fail closed.
+    if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut load)? {
+        return compile_prelexed(tokens, Some(logical_path));
+    }
+    let tokens = import_link::lower(&source, logical_path, load)?;
     compile_prelexed(tokens, Some(logical_path))
 }
 
@@ -120,6 +145,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // Affine Future-family violations are diagnosed before any lowerer/emitter.
+    // Valid candidates still fail closed until typed await/actor runtime exists.
+    core_future_ownership::preflight(&original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
@@ -306,6 +334,27 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
             // inside the lowering helper, never silently compiled as classes.
             let lowered = target_syntax::lower_class_receivers(&toks, &headers)?;
             parser::Parser::new(lowered).parse_program()?
+        } else if headers.namespace.is_some()
+            && headers.imports.is_empty()
+            && headers.actors.is_empty()
+            && headers.class_forwards.is_empty()
+            && headers.state_owners.is_empty()
+            && headers.struct_forwards.is_empty()
+            && headers.constructors.is_empty()
+            && headers.definitions.is_empty()
+            && headers.receivers.is_empty()
+            && headers.receiver_sites.is_empty()
+        {
+            // A source namespace is pure file identity, not an implicit import.
+            // The target declaration parser has already validated the header
+            // and admitted only directly declared ordinary functions here.
+            // Strip only that verified leading header and send the remaining
+            // source through the normal compiler, checker and Wasm emitter.
+            // This never lowers actor/receiver/runtime capability syntax.
+            let end = toks.iter().position(|t| t.tok == lexer::Tok::Semi)
+                .ok_or_else(|| Diagnostic::new(toks[0].pos, "E_SYNTAX",
+                    "unterminated file namespace"))?;
+            parser::Parser::new(toks[end + 1..].to_vec()).parse_program()?
         } else {
             // Actor mtd stays strictly syntax/type preflight only. An ActorRef
             // must never acquire unverified synchronous method dispatch.

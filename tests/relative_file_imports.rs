@@ -71,3 +71,40 @@ fn untrusted_imports_cannot_create_forged_compiler_identifiers() {
 fn browser_single_file_abi_still_rejects_unresolved_imports() {
     assert!(compile("import square from \"./math.atto\"; pub fnc main(): int {return square(7); }").is_err());
 }
+
+#[test]
+fn grouped_relative_function_imports_use_production_typed_linker() {
+    let dep = "fnc twice(int x): int {return x+x;} pub fnc square(int x): int {return x*x;} pub fnc add(int x): int {return twice(x);}";
+    let legacy = wasm("import square as calc, add from './math.atto'; pub fnc main(): int {return calc(6)+add(3);}", dep);
+    for clause in ["import fnc [square as calc, add] from './math.atto';",
+                   "import fnc (square as calc, add) from './math.atto';",
+                   "import [fnc square as calc, fnc add] from './math.atto';",
+                   "import ([fnc square as calc, add]) from './math.atto';"] {
+        let src = format!("{clause} pub fnc main(): int {{return calc(6)+add(3);}}");
+        assert_eq!(wasm(&src, dep), legacy, "{clause}");
+    }
+}
+#[test]
+fn typed_local_groups_enforce_public_exports_and_no_implicit_binding() {
+    let dep = "fnc hidden(int x): int {return x;} pub fnc square(int x): int {return hidden(x)*x;}";
+    assert_eq!(code("import fnc [square, hidden] from './math.atto'; pub fnc main(): int {return square(6);}", dep), "E_PRIVATE");
+    assert_eq!(code("import fnc [square, missing] from './math.atto'; pub fnc main(): int {return square(6);}", dep), "E_UNBOUND");
+    assert!(build("import fnc [square as calc] from './math.atto'; pub fnc main(): int {return square(6);}", dep).is_err());
+    assert!(compile("import fnc [square] from './math.atto'; pub fnc main(): int {return square(6);}").is_err());
+}
+#[test]
+fn grouped_relative_preflight_denies_invalid_later_clauses_before_io() {
+    for root in [
+        "import fnc [square] from './math.atto'; import fnc [square] from './math.atto';",
+        "import fnc [square] from './math.atto'; import class [C] from './math.atto';",
+        "import fnc [square] from './math.atto'; import fnc [x] from pkg '@a/b/c';",
+        "import fnc [square] from './math.atto'; import fnc [x] from '../../escape.atto';",
+    ] {
+        let mut loads = 0;
+        let src = format!("{root} pub fnc main(): int {{return 42;}}");
+        assert!(compile_with_imports(&src, Path::new("project/main.atto"), |_| {
+            loads += 1; Ok(MATH.into())
+        }).is_err(), "{root}");
+        assert_eq!(loads, 0, "{root}");
+    }
+}

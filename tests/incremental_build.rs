@@ -200,3 +200,30 @@ fn missing_entry_and_duplicate_paths_fail_closed() {
     dup[3].path = "lib/math.atto";
     assert_eq!(build_key("src/main.atto", &dup).unwrap_err().code, "E_DUPLICATE");
 }
+
+#[test]
+fn package_rebind_is_reported_as_edit_even_when_source_is_unchanged() {
+    let mut c = IncrementalCompiler::default();
+    let mut u = graph3(MATH);
+    c.changed_since_last(&u);
+    u[2].package = "acme@1.0.1";
+    assert_eq!(c.changed_since_last(&u), set(&["lib/math.atto"]));
+}
+
+#[test]
+fn cached_compile_does_not_suppress_borrow_export() {
+    let u = graph3(MATH);
+    let mut c = IncrementalCompiler::default();
+    let expected = c.compile("src/main.atto", &u).unwrap();
+    atto_compiler::borrow_export::begin();
+    let direct = compile_linked("src/main.atto", &u);
+    let direct_records = atto_compiler::borrow_export::finish();
+    assert_eq!(direct.unwrap(), expected);
+    assert!(!direct_records.is_empty());
+    atto_compiler::borrow_export::begin();
+    let warm = c.compile("src/main.atto", &u);
+    let warm_records = atto_compiler::borrow_export::finish();
+    assert_eq!(warm.unwrap(), expected);
+    assert_eq!(warm_records.len(), direct_records.len());
+    assert_eq!(c.stats().hits, 0);
+}

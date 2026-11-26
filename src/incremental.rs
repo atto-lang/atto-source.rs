@@ -20,8 +20,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 type R<T> = Result<T, Diagnostic>;
 
-const KEY_DOMAIN: &[u8] = b"atto-incremental-build-key-v1\0";
-const MAX_UNITS: usize = 256;
+const KEY_DOMAIN: &[u8] = b"atto-incremental-build-key-v2\0";
+const MAX_UNITS: usize = 64;
 pub const DEFAULT_CAPACITY: usize = 64;
 pub const MAX_CAPACITY: usize = 4096;
 
@@ -52,6 +52,9 @@ impl ImportGraph {
         }
         let mut edges = BTreeMap::new();
         for unit in units {
+            if unit.source.len() > crate::SOURCE_CAP {
+                return Err(err("E_SOURCE_LIMIT", "source unit exceeds browser source limit"));
+            }
             let imports = linker::import_paths(unit.source, unit.path)?;
             if edges.insert(unit.path.to_string(), imports).is_some() {
                 return Err(err("E_DUPLICATE", "duplicate canonical source file path"));
@@ -121,6 +124,10 @@ fn build_key_with_graph(entry: &str, units: &[LinkUnit<'_>], graph: &ImportGraph
     buf.extend_from_slice(KEY_DOMAIN);
     push_field(&mut buf, crate::COMPILER_VERSION.as_bytes());
     push_field(&mut buf, &crate::ABI_VERSION.to_le_bytes());
+    push_field(&mut buf, match crate::library::target_os() {
+        crate::library::TargetOs::Posix => b"posix",
+        crate::library::TargetOs::Windows => b"windows",
+    });
     push_field(&mut buf, entry.as_bytes());
     push_field(&mut buf, &(by_path.len() as u64).to_le_bytes());
     for (path, unit) in &by_path {
@@ -141,7 +148,7 @@ pub struct CacheStats {
 /// Bounded FIFO cache of compiled guest artifacts and diagnostics.
 pub struct IncrementalCompiler {
     capacity: usize,
-    entries: BTreeMap<BuildKey, R<Vec<u8>>>,
+    entries: BTreeMap<BuildKey, (Vec<String>, R<Vec<u8>>)>,
     order: VecDeque<BuildKey>,
     last_digests: BTreeMap<String, [u8; 32]>,
     stats: CacheStats,
@@ -182,10 +189,30 @@ impl IncrementalCompiler {
     /// Compile through the cache. A hit returns a byte-identical artifact
     /// (or the identical diagnostic) without invoking the compiler.
     pub fn compile(&mut self, entry: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
+        // Snapshot platform configuration once, including concurrent changes
+        // to the host's default. Never publish an artifact under a different
+        // OS key than the compiler actually used.
+        let target = crate::library::target_os();
+        crate::library::with_target_os(target, || self.compile_scoped(entry, units))
+    }
+
+    fn compile_scoped(&mut self, entry: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
+        // A cached artifact cannot recreate ownership evidence side effects.
+        if crate::borrow_export::enabled() {
+            return linker::compile_linked(entry, units);
+        }
         let key = build_key(entry, units)?;
-        if let Some(found) = self.entries.get(&key) {
-            self.stats.hits += 1;
-            return found.clone();
+        let paths: Vec<String> = units.iter().map(|u| u.path.to_string()).collect();
+        if let Some((prior_order, found)) = self.entries.get(&key) {
+            // The linker may report the first invalid supplied input in
+            // caller order. Never serve a diagnostic from another ordering.
+            if found.is_ok() || prior_order == &paths {
+                self.stats.hits += 1;
+                return found.clone();
+            }
+        }
+        if self.entries.remove(&key).is_some() {
+            self.order.retain(|old| old != &key);
         }
         self.stats.misses += 1;
         let result = linker::compile_linked(entry, units);
@@ -195,7 +222,7 @@ impl IncrementalCompiler {
                 self.stats.evictions += 1;
             }
         }
-        self.entries.insert(key, result.clone());
+        self.entries.insert(key, (paths, result.clone()));
         self.order.push_back(key);
         result
     }
@@ -206,7 +233,12 @@ impl IncrementalCompiler {
     pub fn changed_since_last(&mut self, units: &[LinkUnit<'_>]) -> BTreeSet<String> {
         let now: BTreeMap<String, [u8; 32]> = units
             .iter()
-            .map(|u| (u.path.to_string(), sha256::sha256(u.source.as_bytes())))
+            .map(|u| {
+                let mut identity = Vec::new();
+                push_field(&mut identity, u.package.as_bytes());
+                push_field(&mut identity, u.source.as_bytes());
+                (u.path.to_string(), sha256::sha256(&identity))
+            })
             .collect();
         let mut changed = BTreeSet::new();
         for (path, digest) in &now {
@@ -221,5 +253,23 @@ impl IncrementalCompiler {
         }
         self.last_digests = now;
         changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::{with_target_os, TargetOs};
+    #[test]
+    fn platform_is_part_of_key_and_scope_restores() {
+        let units = [LinkUnit { path: "main.atto", package: "a@1.0.0", source: "pub fnc main(): int { return 42; }" }];
+        let a = with_target_os(TargetOs::Posix, || build_key("main.atto", &units).unwrap());
+        let b = with_target_os(TargetOs::Windows, || {
+            assert_eq!(crate::library::target_os(), TargetOs::Windows);
+            assert_eq!(with_target_os(TargetOs::Posix, crate::library::target_os), TargetOs::Posix);
+            assert_eq!(crate::library::target_os(), TargetOs::Windows);
+            build_key("main.atto", &units).unwrap()
+        });
+        assert_ne!(a,b);
     }
 }

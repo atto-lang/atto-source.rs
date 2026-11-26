@@ -1,0 +1,9 @@
+// Expected: runtime failure. A successful return would mean the secure
+// backend boundary silently fell back to ordinary in-memory clearing.
+import module secure from "atto.alloc/secure";
+pub fnc main(): int {
+  let mut b = secure.scrub_buffer(4);
+  if !b.append(19); do return 1; fi
+  b.secure_clear();
+  return 42;
+}
