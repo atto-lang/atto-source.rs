@@ -158,11 +158,17 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
     let mut foreign = BTreeSet::new();
     let mut internal = BTreeSet::new();
     let mut directive_count = 0usize;
+    let mut braces = 0usize;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
     let mut out = Vec::new();
     let mut i = 0;
     while i < t.len() {
         let pos = t[i].pos;
         if word(&t, i, "export") {
+            if braces != 0 || parens != 0 || brackets != 0 {
+                return Err(error(pos, "E_SCOPE", "export directives must be file-level"));
+            }
             if directive_count >= 128 {
                 return Err(error(pos, "E_SOURCE_LIMIT", "export budget exceeded"));
             }
@@ -231,6 +237,15 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
                 i += 1;
                 continue;
             }
+        }
+        match t[i].tok {
+            Tok::LBrace => braces += 1,
+            Tok::RBrace => braces = braces.saturating_sub(1),
+            Tok::LParen => parens += 1,
+            Tok::RParen => parens = parens.saturating_sub(1),
+            Tok::LBracket => brackets += 1,
+            Tok::RBracket => brackets = brackets.saturating_sub(1),
+            _ => {}
         }
         out.push(t[i].clone());
         i += 1;
