@@ -126,3 +126,16 @@ fn runtime_scalar_witness_does_not_weaken_take_send_gate() {
     let err = compile(&source).expect_err("copyable scalar is not a permit for take! escrow");
     assert_eq!(err.code, "E_ACTOR_TRANSFER_UNSUPPORTED");
 }
+
+#[test]
+fn canonical_bool_actor_negative_fixtures_do_not_emit_wasm() {
+    // Byte-identical fixtures from the canonical conformance bool-v1 registry.
+    for (source, code) in [
+        (include_str!("fixtures/fail/typed-actor-bool-v1/02-receives-handler-mismatch.atto"), "E_ACTOR_RECEIVES"),
+        (include_str!("fixtures/fail/typed-actor-bool-v1/03-sends-void-invalid.atto"), "E_ACTOR_SEND_CONTRACT"),
+        (include_str!("fixtures/fail/typed-actor-bool-v1/04-duplicate-sends-clause.atto"), "E_ACTOR_CONTRACT"),
+    ] {
+        let error = compile(source).expect_err("canonical negative must not emit a Wasm artifact");
+        assert_eq!(error.code, code);
+    }
+}

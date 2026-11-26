@@ -1,0 +1,13 @@
+// ACTOR-BOOL-02; TARGET_REJECT=E_ACTOR_RECEIVES; NOT_EXECUTED
+define actor Flag receives int sends never as
+  let bool enabled = false;
+  susp receive(ActorMail<bool> mail): void {
+    self.enabled = mail.value;
+    stdio.println(self.enabled);
+    return;
+  }
+end
+pub susp fnc main(): int {
+  val flag = spawn Flag();
+  return 0;
+}
