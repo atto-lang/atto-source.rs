@@ -66,5 +66,19 @@ try {
       }
     }
   }
+  // Exact conformance #608 fixture bytes, not synthesized equivalents.
+  // Four positive language targets are unsupported here, not parity passes.
+  const countedNames = ["counted-three","counted-zero","counted-one","counted-alias","reject-counted-negative","reject-counted-bool","reject-counted-scalar","reject-counted-default","reject-counted-write"];
+  for (const name of countedNames) {
+    const src = 'tests/fixtures/select-source-v2/' + name + '.atto';
+    const source = await readFile(src, 'utf8');
+    const bin = join(dir, 'counted-' + name + '.wasm');
+    const r = spawnSync(attoc, [src, '-o', bin], { encoding: 'utf8', timeout: 30000 });
+    assert.ifError(r.error);
+    assert.ok(Number.isInteger(r.status) && r.status !== 0, name + ': native unexpectedly emitted guest');
+    assert.equal(browser(source), null, name + ': browser unexpectedly emitted guest');
+    await assert.rejects(access(bin), {code: 'ENOENT'});
+  }
+  console.log('COUNTED_SELECT_EXACT_ADMISSION_PASS 9 native and 9 browser no-artifact rejections; 4 positive targets unsupported');
   console.log('SELECT_DEFAULT_GUEST_PASS 5 native/wasm32 byte-identical executions; 15 negative no-artifact cases');
 } finally { await rm(dir, { recursive: true, force: true }); }
