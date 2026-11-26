@@ -126,6 +126,22 @@ impl HostSession {
     /// and an explicit independently pinned external provider set.
     pub fn build_registry(&mut self,mode:Mode,current_pin:&[u8;32],master:[u8;32],
         snapshot:Snapshot<'_>,dependencies:&[RegistryDependency<'_>])->Result<RegistryBuild,Diagnostic>{
+        self.build_registry_impl(mode,current_pin,master,snapshot,dependencies,false)
+    }
+
+    /// Experimental opt-in artifact reuse across changed provider locks.
+    /// The current complete source inventories and independently approved
+    /// locks are always authenticated and resolved before any cache lookup.
+    /// Exact bound token bytes (including positions), all provider manifests,
+    /// root lock, compiler/toolchain/target and authority remain key inputs.
+    /// No default policy change, no persisted typed proof or lock authority.
+    pub fn build_registry_bound_input(&mut self,mode:Mode,current_pin:&[u8;32],master:[u8;32],
+        snapshot:Snapshot<'_>,dependencies:&[RegistryDependency<'_>])->Result<RegistryBuild,Diagnostic>{
+        self.build_registry_impl(mode,current_pin,master,snapshot,dependencies,true)
+    }
+
+    fn build_registry_impl(&mut self,mode:Mode,current_pin:&[u8;32],master:[u8;32],
+        snapshot:Snapshot<'_>,dependencies:&[RegistryDependency<'_>],bound_input_reuse:bool)->Result<RegistryBuild,Diagnostic>{
         use crate::{compiler_cache_registry as registry,compiler_artifact_receipt as receipt,diag::Pos};
         let err=|code|Diagnostic::new(Pos::default(),code,"registry cache admission or storage failed");
         // Isolated-check memoization also changes evidence side effects.
@@ -135,7 +151,7 @@ impl HostSession {
         let secret=lease.secret();
         let empty=registry::RegistryMemo::default();
         let previous=if mode==Mode::Cold{&empty}else{&self.registry_memo};
-        let prepared=registry::prepare(snapshot,dependencies,self.target,&self.compiler,&self.toolchain,previous)?;
+        let prepared=registry::prepare(snapshot,dependencies,self.target,&self.compiler,&self.toolchain,previous,bound_input_reuse)?;
         if mode==Mode::Incremental {
             if let Some(bytes)=self.cache.load(&prepared.key,&secret).map_err(|_|err("E_CACHE_READ"))?{
                 let work=prepared.work;

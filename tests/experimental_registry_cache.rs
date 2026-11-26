@@ -189,3 +189,59 @@ fn pinned_unnamespaced_sibling_edit_reuses_namespace_checks_and_preserves_guest(
     assert_eq!(reopened.outcome,Outcome::Reused);assert_eq!(reopened.bytes,changed.bytes);
     println!("REGISTRY_LOCAL_SIBLING_CACHE|guest=42|stale-pin-denied|namespace-check-reused|byte-equivalent|reopen-artifact-reused");
 }
+
+
+#[test]
+fn bound_input_cache_reauthenticates_and_reuses_only_exact_resolved_input(){
+    let t=Temp(std::env::temp_dir().join(format!("atto-registry-bound-input-{}",std::process::id())));
+    fs::DirBuilder::new().mode(0o700).create(&t.0).unwrap();
+    let cache=t.0.join("cache");let authority=t.0.join("authority");
+    for dir in [&cache,&authority]{fs::DirBuilder::new().mode(0o700).create(dir).unwrap();}
+    let compiler=hex_digest(&fs::read("/proc/self/exe").unwrap());
+    let toolchain=hex_digest(b"bound input cache test");
+    let open=||HostSession::open(&cache,&authority,"tenant/bound-input",BuildIdentity{compiler_sha256:&compiler,toolchain_sha256:&toolchain,target:TargetOs::Posix}).unwrap();
+    let mut session=open();let pin=sha256(&session.proposed_record(1,MASTER).unwrap());session.provision(1,MASTER,&pin).unwrap();
+    let app="import namespace math as provider from pkg '@org/project/provider'; pub fnc main(): int { return provider.get(41); }";
+    let roots=[SnapshotSource{path:"main.atto",source:app}];let root_lock=lock(ROOT,&roots);let root_pin=hex_digest(root_lock.as_bytes());
+    let root=||Snapshot{entry:"main.atto",manifest:ROOT,lockfile:&root_lock,trusted_lock_sha256:&root_pin,sources:&roots};
+    let original=[SnapshotSource{path:"src/math/main.atto",source:MATH},
+        SnapshotSource{path:"src/math/local.atto",source:"pub fnc local(): int { return 1; }"}];
+    let changed=[original[0],SnapshotSource{path:"src/math/local.atto",source:"pub fnc local(): int { return 2; }"}];
+    let l1=lock(PROVIDER,&original);let p1=hex_digest(l1.as_bytes());
+    let l2=lock(PROVIDER,&changed);let p2=hex_digest(l2.as_bytes());
+    let d1=||RegistryDependency{name:"@org/project/provider",manifest:PROVIDER,lockfile:&l1,trusted_lock_sha256:&p1,sources:&original};
+    let d2=||RegistryDependency{sources:&changed,lockfile:&l2,trusted_lock_sha256:&p2,..d1()};
+    let conservative=session.build_registry(Mode::Cold,&pin,MASTER,root(),&[d1()]).unwrap();
+    let cold=session.build_registry_bound_input(Mode::Incremental,&pin,MASTER,root(),&[d1()]).unwrap();
+    assert_eq!(cold.outcome,Outcome::Compiled);assert_eq!(cold.bytes,conservative.bytes);
+    execute(&cold.bytes,"42");
+    let before=files(&cache);
+    assert_eq!(session.build_registry_bound_input(Mode::Incremental,&pin,MASTER,root(),&[RegistryDependency{sources:&changed,..d1()}]).unwrap_err().code,"E_LOCK_HASH");
+    assert_eq!(files(&cache),before);
+    let reused=session.build_registry_bound_input(Mode::Incremental,&pin,MASTER,root(),&[d2()]).unwrap();
+    assert_eq!(reused.outcome,Outcome::Reused);assert_eq!(reused.bytes,cold.bytes);
+    assert_eq!(reused.verified_dependencies,1);assert_eq!(reused.rebuilt_provider_views,1);
+    assert_eq!((reused.checked_namespaces,reused.reused_namespace_checks),(0,1));
+    assert_eq!(files(&cache),before);
+    drop(session);let mut session=open();
+    let reopened=session.build_registry_bound_input(Mode::Incremental,&pin,MASTER,root(),&[d2()]).unwrap();
+    assert_eq!(reopened.outcome,Outcome::Reused);assert_eq!(reopened.bytes,cold.bytes);
+    assert_eq!(reopened.checked_namespaces,1);
+    let provider_edit=MATH.replace("x+1","x+2");
+    let edited=[SnapshotSource{path:"src/math/main.atto",source:&provider_edit},changed[1]];
+    let l3=lock(PROVIDER,&edited);let p3=hex_digest(l3.as_bytes());
+    let d3=||RegistryDependency{sources:&edited,lockfile:&l3,trusted_lock_sha256:&p3,..d1()};
+    let edit=session.build_registry_bound_input(Mode::Incremental,&pin,MASTER,root(),&[d3()]).unwrap();
+    assert_eq!(edit.outcome,Outcome::Compiled);execute(&edit.bytes,"43");
+    let verified=FrozenRegistry::verify("@org/project/provider",PROVIDER,&l3,&p3,&edited).unwrap();
+    assert_eq!(edit.bytes,compile_registry_guest(app,&[&verified]).unwrap());
+    let version=PROVIDER.replace("1.0.0","1.0.1");let lv=lock(&version,&edited);let pv=hex_digest(lv.as_bytes());
+    let versioned=session.build_registry_bound_input(Mode::Incremental,&pin,MASTER,root(),&[RegistryDependency{manifest:&version,lockfile:&lv,trusted_lock_sha256:&pv,..d3()}]).unwrap();
+    assert_eq!(versioned.outcome,Outcome::Compiled);assert_eq!(versioned.bytes,edit.bytes);
+    let malformed=[edited[0],SnapshotSource{path:"src/math/local.atto",source:"pub fnc local(: int {"}];
+    let lm=lock(PROVIDER,&malformed);let pm=hex_digest(lm.as_bytes());
+    let before=files(&cache);
+    assert!(session.build_registry_bound_input(Mode::Incremental,&pin,MASTER,root(),&[RegistryDependency{sources:&malformed,lockfile:&lm,trusted_lock_sha256:&pm,..d1()}]).is_err());
+    assert_eq!(files(&cache),before);
+    println!("REGISTRY_BOUND_INPUT_CACHE|guest=42/43|policy-domain-separated|local-edit-and-reopen-hit|stale-and-malformed-denied|provider-and-manifest-edit-miss|clean-equivalent");
+}
