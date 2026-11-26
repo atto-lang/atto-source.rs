@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 const pins={
- 'core/arena_limits':'5928e893a2ce1baadb0376a4ccb14f63249f77d4',
+ 'core/arena_limits':'96d14731780b041d92ff518ca9c6c125bcd3d4c7',
  'alloc/arena_lifecycle':'e4795c6d4bd561be3d913cdc617d103d0e2828c8'
 };
 for(const [path,pin] of Object.entries(pins))test('exact reference '+path,()=>{
@@ -18,7 +18,7 @@ test('quota placement model matches independent widened oracle',()=>{
  const aligns=[-1n,0n,1n,2n,3n,4n,8n,16n,32n,1n<<62n,M];
  const model=(cursor,count,alignment,limit)=>{
    if(cursor<0n||count<0n||limit<0n||cursor>limit||alignment<=0n||(alignment&(alignment-1n))!==0n)return -1n;
-   const r=cursor-(cursor/alignment)*alignment,pad=r===0n?0n:alignment-r;
+   const r=cursor&(alignment-1n),pad=r===0n?0n:alignment-r;
    if(count===0n)return cursor;
    if(pad>limit-cursor)return -1n;
    const start=cursor+pad;
