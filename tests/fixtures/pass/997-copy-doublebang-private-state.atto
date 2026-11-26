@@ -1,7 +1,7 @@
 // expect-exit: 42
 // java: rejects
 // Synthesized copy code sees private fields without exposing reflection APIs.
-define class Secret as
+define class Secret implements DeepCopyable<Secret> as
     mut int secret = 1;
     constructor(int x) {
         self.secret = x;
