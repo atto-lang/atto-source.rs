@@ -3367,8 +3367,6 @@ impl<'a> FnCx<'a> {
                     let (tag, needed) = match (sty, name.as_str()) {
                         (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
-            (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
-            (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::OptionInt, "None") => (0, None),
@@ -4952,48 +4950,57 @@ impl<'a> FnCx<'a> {
             _ => None,
         } {
             if self.lookup(name).is_none() {
-                // An array literal in this exact builtin position is an
-                // unescaped, read-only scalar argument pack. No general
-                // heap Array<bool> value, indexing, or mutable alias exists.
-                let values: &[Expr] = if args.len() == 1 {
-                    match &args[0].kind {
-                        ExprKind::Array(items) => {
-                            if items.iter().any(|e| !matches!(&e.kind,
-                                ExprKind::Bool(_) | ExprKind::Var(_))) {
-                                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                                    "boolean array gate pack admits only immutable bool literals or bindings"));
-                            }
-                            items
-                        }
-                        _ => return Err(Diagnostic::new(pos, "E_ARITY",
-                            format!("{name} expects at least 2 bool arguments or a scalar array literal"))),
+                // Array syntax is a bounded temporary pack in this profile,
+                // not a general Array<bool> allocation or ownership claim.
+                let pack = args.len() == 1 && matches!(&args[0].kind, ExprKind::Array(_));
+                let values: &[Expr] = if pack {
+                    let ExprKind::Array(items) = &args[0].kind else { unreachable!() };
+                    if items.iter().any(|e| !matches!(&e.kind,
+                        ExprKind::Bool(_) | ExprKind::Var(_))) {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "boolean array gate pack admits only bool literals or bindings"));
                     }
+                    items
                 } else { args };
-                if values.len() < 2 {
+                if !pack && values.len() < 2 {
                     return Err(Diagnostic::new(pos, "E_ARITY",
-                        format!("{name} expects at least 2 bool arguments")));
+                        format!("{name} expects at least 2 bool arguments or one array literal")));
                 }
                 if values.len() > crate::parser::MAX_PARAMS {
                     return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
                         format!("{name} has too many boolean operands")));
                 }
-                // Normal functions eagerly evaluate all arguments; nested
-                // typed binary builtins retain exact left-to-right behavior.
-                let mut iter = values.iter();
-                let first = iter.next().expect("checked operand minimum");
-                let mut accumulated = self.value(first)?;
-                if accumulated.ty != Type::Bool {
-                    return Err(type_err(first.pos, format!("{name} needs bool arguments")));
-                }
-                for arg in iter {
+                // Check every source operand before emitting control flow,
+                // including operands that will be skipped at runtime.
+                let mut checked = Vec::with_capacity(values.len());
+                for arg in values {
                     let next = self.value(arg)?;
                     if next.ty != Type::Bool {
                         return Err(type_err(arg.pos, format!("{name} needs bool arguments")));
                     }
-                    accumulated = TE {
-                        e: TExpr::Builtin(b, Box::new(accumulated), Box::new(next)),
-                        ty: Type::Bool,
+                    checked.push(next);
+                }
+                let literal = |value| TE { e: TExpr::Bool(value), ty: Type::Bool };
+                let mut iter = checked.into_iter();
+                let Some(mut accumulated) = iter.next() else {
+                    return Ok(literal(b == Builtin::And));
+                };
+                // Scalar And/Or use existing typed conditional lowering.
+                // Array packs and XOR retain eager evaluation in source order.
+                if !pack && b != Builtin::Xor {
+                    if let Some(tr) = self.trace.as_mut() {
+                        tr.unavailable("named Boolean conditional (needs canonical joins)");
+                    }
+                }
+                for next in iter {
+                    let e = match (pack, b) {
+                        (false, Builtin::And) => TExpr::Ternary(
+                            Box::new(accumulated), Box::new(next), Box::new(literal(false))),
+                        (false, Builtin::Or) => TExpr::Ternary(
+                            Box::new(accumulated), Box::new(literal(true)), Box::new(next)),
+                        _ => TExpr::Builtin(b, Box::new(accumulated), Box::new(next)),
                     };
+                    accumulated = TE { e, ty: Type::Bool };
                 }
                 return Ok(accumulated);
             }
