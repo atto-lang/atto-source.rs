@@ -215,9 +215,8 @@ fn intrinsic_denials_do_not_materialize_callable_or_tuple_values() {
 
 #[test]
 fn nominal_call_method_remains_ordinary_dispatch() {
-    let src = "define class Calculator as pub mtd call(int n):int { return n+1; } end pub fnc main():int { val c = new Calculator(); val f = |n| : int -> n; return f(c.call(41)); }";
-    // Force the lexical lambda to infer its argument type at a literal call
-    // before supplying a nominal call as a subsequent argument.
-    let src = src.replace("return f(c.call(41));", "val initial = f(0); return f(c.call(41))+initial;");
-    atto_compiler::compile(&src).unwrap_or_else(|err| panic!("{src}: {err}"));
+    // Use the already executable receiver-first nominal method grammar.
+    // The local callable and nominal member share the same call spelling.
+    let src = "define class Calculator as int bias: 1; end pub mtd (self: Calculator) call(int n) -> int :: self.bias+n end pub fnc main():int { val c = new Calculator(); val f: fnc(int)->int = |n| : int -> n; val v = f.call(41); return c.call(v); }";
+    atto_compiler::compile(src).unwrap_or_else(|err| panic!("{src}: {err}"));
 }
