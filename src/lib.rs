@@ -9,6 +9,7 @@
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+pub mod actor_bounded_checkpoint_v2;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
 pub mod collection_layout;
 /// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
