@@ -1,5 +1,5 @@
 // Actual compiler-generated Wasm: no mocked compiler or host arithmetic fallback.
-// Run after cargo build --release --bin attoc:
+// Run after native and wasm32 release compiler builds:
 // node tests/allocation_guarantees_checked_arithmetic_guest.mjs
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
@@ -36,6 +36,9 @@ const cases = [
   ['x*2', hi, null], ['-x', lo, null],
   ['x+1', lo, lo+1n], ['x-1', hi, hi-1n],
   ['x*0', lo, 0n],
+  ['1 <<< x', 63n, lo], ['-1 >>> x', 63n, 1n], ['-9 ashr x', 2n, -3n],
+  ...['1 <<< x','-1 >>> x','-9 ashr x'].flatMap(expr =>
+    [-1n,64n,hi].map(arg => [expr,arg,null,8])),
 ];
 
 function compile(source, flags=['--single-source']) {
@@ -77,7 +80,7 @@ function verifyMemoryless(bytes) {
 }
 
 try {
-  for(const [expr,arg,expected] of cases) {
+  for(const [expr,arg,expected,panicCode=1] of cases) {
     const source='@noalloc\n@nocopy\nfnc f(x:int):int { return '+expr+'; } pub fnc main():int { return f('+literal(arg)+'); }';
     const {result,output}=compile(source);
     assert.equal(result.status,0,result.stderr);
@@ -90,11 +93,19 @@ try {
     assert.equal(instance.exports.panic_code.value,0);
     if(expected===null) {
       assert.throws(()=>instance.exports.main(),WebAssembly.RuntimeError);
-      assert.equal(instance.exports.panic_code.value,1,'must be integer overflow');
+      assert.equal(instance.exports.panic_code.value,panicCode,'checked panic identity');
     } else {
       assert.equal(instance.exports.main(),expected);
       assert.equal(instance.exports.panic_code.value,0);
     }
+  }
+  for(const op of ['<<<','>>>','ashr']) {
+    const source='@noalloc\n@nocopy\npub fnc main():int { return 1 '+op+' 64; }';
+    const denied=compile(source);
+    assert.equal(denied.result.status,1,denied.result.stderr);
+    assert.match(denied.result.stderr,/E_SHIFT_DISTANCE/);
+    assert.ok(!existsSync(denied.output));
+    assert.equal(compileBrowser(source),null);
   }
   const rejectedSource='@noalloc\nfnc f(x:int):int { return x/2; } pub fnc main():int { return f(42); }';
   const denied=compile(rejectedSource);
@@ -120,5 +131,5 @@ try {
   const conflict=compile('@noalloc\npub fnc main():int { return 42; }',['--single-source','--verify=strict']);
   assert.equal(conflict.result.status,2);
   assert.ok(!existsSync(conflict.output));
-  console.log('MEMORYLESS_CHECKED_ARITHMETIC_GUEST_PASS '+cases.length+' byte-identical guests + 1 dual denial + recovery');
+  console.log('MEMORYLESS_CHECKED_ARITHMETIC_GUEST_PASS '+cases.length+' byte-identical guests + 4 dual denials + recovery');
 } finally { rmSync(dir,{recursive:true,force:true}); }
