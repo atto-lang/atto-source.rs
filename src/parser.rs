@@ -278,6 +278,9 @@ struct CallableHeader {
     arrow_type: bool,
     colon_type: bool,
     return_first: bool,
+    declared_effects: Option<DeclaredEffects>,
+    inline_effects: bool,
+    trailing_result: bool,
 }
 
 /// Members collected from a class or actor body.
@@ -1307,7 +1310,7 @@ impl Parser {
     /// Normalize name-first and return-first headers to one callable signature.
     /// The left arrow is a single lexical token and never a value operator.
     fn parse_named_callable_header(
-        &mut self, what: &'static str,
+        &mut self, what: &'static str, prefix_effects: Option<DeclaredEffects>,
     ) -> R<CallableHeader> {
         let return_first = self.is_return_first_header();
         let prefixed_type = if return_first {
@@ -1333,6 +1336,21 @@ impl Parser {
         if what == "a method name" && *self.peek() == Tok::LParen {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
+        let is_function = what == "a function name";
+        self.reject_unverified_resource_clause()?;
+        let trailing_result = !return_first && self.at_inline_failure_clause();
+        if trailing_result && !is_function {
+            return Err(unsupported(self.pos(), "method failure contracts"));
+        }
+        let mut declared_effects = prefix_effects;
+        if trailing_result {
+            declared_effects = self.parse_effect_clauses(declared_effects)?;
+            self.reject_unverified_resource_clause()?;
+            if *self.peek() != Tok::Arrow {
+                return Err(Diagnostic::new(self.pos(), "E_RETURN_ANNOTATION",
+                    "a trailing callable result requires '->'"));
+            }
+        }
         let arrow_type = !return_first && *self.peek() == Tok::Arrow;
         let colon_type = !return_first && *self.peek() == Tok::Colon;
         let (ret, infer) = if let Some(annotation) = prefixed_type {
@@ -1344,16 +1362,68 @@ impl Parser {
         } else {
             self.parse_return_spec(&params)?
         };
+        self.reject_unverified_resource_clause()?;
+        let suffix = self.at_inline_failure_clause();
+        if suffix && trailing_result {
+            return Err(Diagnostic::new(self.pos(), "E_EFFECT_ORDER",
+                "failure clause after trailing result annotation"));
+        }
+        if suffix && !is_function {
+            return Err(unsupported(self.pos(), "method failure contracts"));
+        }
+        if suffix {
+            declared_effects = self.parse_effect_clauses(declared_effects)?;
+            self.reject_unverified_resource_clause()?;
+        }
+        if (suffix || trailing_result) && matches!(self.peek(), Tok::Arrow | Tok::Colon) {
+            return Err(Diagnostic::new(self.pos(), "E_RETURN_TYPE_CONFLICT",
+                "duplicate callable result annotation"));
+        }
         Ok(CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
+            declared_effects, inline_effects: suffix || trailing_result, trailing_result,
         })
+    }
+
+    fn at_inline_failure_clause(&self) -> bool {
+        matches!(self.word_at(0), Some("throws" | "raises" | "panics" | "Throws" | "Raises" | "Panics"))
+    }
+
+    // Resource maps are never converted into an unconstrained callable.
+    // The browser backend does not yet prove stack/operation/allocation bounds.
+    fn reject_unverified_resource_clause(&self) -> R<()> {
+        if matches!(self.word_at(0), Some("effects" | "budget"))
+            && *self.peek_at(1) == Tok::LBrace {
+            return Err(Diagnostic::new(self.pos(), "E_UNSUPPORTED",
+                "structured callable resource contracts require verified bound enforcement"));
+        }
+        Ok(())
+    }
+
+    fn parse_inline_effect_body(&mut self, trailing_result: bool) -> R<Vec<Stmt>> {
+        if *self.peek() == Tok::LBrace {
+            return self.parse_block();
+        }
+        if self.eat_word("begin") {
+            return self.parse_explicit_end_body_with_empty(true);
+        }
+        let explicit = self.eat(&Tok::ColonColon);
+        if !explicit && !trailing_result {
+            return Err(Diagnostic::new(self.pos(), "E_BODY_DELIMITER",
+                "return-before-effects callable requires '{', 'begin' or '::'"));
+        }
+        if self.pos().line <= self.toks[self.i - 1].pos.line {
+            return Err(Diagnostic::new(self.pos(), "E_BODY_NEWLINE",
+                "statement/end callable body requires a physical newline"));
+        }
+        self.parse_explicit_end_body_with_empty(true)
     }
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let CallableHeader {
-            name, pos, params, ret, infer, arrow_type, colon_type, return_first,
-        } = self.parse_named_callable_header("a method name")?;
+            name, pos, params, ret, infer, arrow_type, colon_type, return_first, ..
+        } = self.parse_named_callable_header("a method name", None)?;
         // For an explicit inferred result, the comma/end body still has a
         // checked tail return, never a silently discarded terminal expression.
         let body = self.parse_callable_body(arrow_type, colon_type, return_first,
@@ -1628,8 +1698,8 @@ impl Parser {
         };
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
-        } = self.parse_named_callable_header("a function name")?;
-        let declared_effects = self.parse_effect_clauses(prefix_effects)?;
+            declared_effects, inline_effects, trailing_result,
+        } = self.parse_named_callable_header("a function name", prefix_effects)?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1639,8 +1709,12 @@ impl Parser {
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
         self.in_generator = is_generator;
-        let body = self.parse_callable_body(arrow_type, colon_type, return_first,
-            if infer { Type::Int } else { ret })?;
+        let body = if inline_effects {
+            self.parse_inline_effect_body(trailing_result)?
+        } else {
+            self.parse_callable_body(arrow_type, colon_type, return_first,
+                if infer { Type::Int } else { ret })?
+        };
         self.in_generator = false;
         let ret = if infer { self.infer_callable_return(&body, &params)? } else { ret };
         let _ = start;
@@ -1740,19 +1814,29 @@ impl Parser {
                 }
                 _ => return Ok(any.then_some(declared)),
             };
-            if *self.peek_at(1) != Tok::LParen {
-                return Ok(any.then_some(declared));
-            }
             let pos = self.pos();
             self.advance();
-            self.advance();
-            let types = self.parse_failure_error_types(kind)?;
+            let types = if self.eat(&Tok::LParen) {
+                self.parse_failure_error_types(kind)?
+            } else {
+                let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
+                if ty != "Error" {
+                    return Err(Diagnostic::new(ty_pos, "E_TYPE",
+                        "only the built-in Error is executable in this browser backend"));
+                }
+                if *self.peek() == Tok::Comma
+                    && !matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_TYPE",
+                        "multiple or unsupported unparenthesized error types"));
+                }
+                vec![ty]
+            };
             Self::record_failure_types(&mut declared, kind, types, pos)?;
             any = true;
             // Existing signature grammar permits optional comma separators.
             if *self.peek() == Tok::Comma
                 && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
-                && *self.peek_at(2) == Tok::LParen
             {
                 self.advance();
             }
