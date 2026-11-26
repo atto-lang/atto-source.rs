@@ -328,7 +328,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
             if !checks.is_empty(){return Err(p.err("E_VERIFY_UNSUPPORTED","strict ensures with control flow require separate proof"));}
             let mut mutable = Aliases::new();
             let (stmts, returns) = strict_block(p, &aliases, &signatures, &result,
-                &mut locals, &mut mutable, &mut slots, params.len(), 0)?;
+                &mut locals, &mut mutable, &mut slots, params.len(), 0, &mut Vec::new())?;
             if !returns { return Err(p.err("E_VERIFY_RETURN", "not every path returns")); }
             body = stmts;
         } else {
@@ -406,9 +406,19 @@ fn loop_writes(p: &Parser<'_>) -> R<std::collections::BTreeSet<String>> {
     }
     Err(p.err("E_SYNTAX","unterminated strict loop"))
 }
+struct StrictLoopExit { header: Locals, declared: Aliases, breaks: Option<Locals> }
+fn strict_backedge(p: &Parser<'_>, facts: &Locals, declared: &Aliases) -> R<()> {
+    for (name, want) in declared {
+        let (_, fact) = facts.get(name).ok_or_else(|| p.err("E_VERIFY_UNSUPPORTED", "loop backedge outside local scope"))?;
+        if !want.range.contains(fact.range) || want.unit != fact.unit {
+            return Err(p.err("E_VERIFY_UNPROVEN", "loop invariant not preserved"));
+        }
+    }
+    Ok(())
+}
 fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
-    slots: &mut Vec<Type>, param_count: usize, depth: usize) -> R<(Vec<TStmt>, bool)> {
+    slots: &mut Vec<Type>, param_count: usize, depth: usize, loops: &mut Vec<StrictLoopExit>) -> R<(Vec<TStmt>, bool)> {
     if depth > 16 { return Err(p.err("E_UNIT_LIMIT", "strict block depth")); }
     let mut body = Vec::new();
     let mut returned = false;
@@ -423,6 +433,24 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             p.expect(Tok::Semi)?;
             body.push(TStmt::Return(Some(v.ir)));
             returned = true;
+        } else if matches!(&p.token().tok, Tok::Ident(n) if n=="break" || n=="continue") {
+            let is_break=p.word("break");
+            if !is_break { p.expect_word("continue")?; }
+            p.expect(Tok::Semi)?;
+            let frame=loops.last_mut().ok_or_else(|| error(pos,"E_VERIFY_UNSUPPORTED","loop exit outside loop"))?;
+            if is_break {
+                // Project onto header scope; branch-local and nested locals never escape.
+                let mut edge=frame.header.clone();
+                for (name, (_, fact)) in &mut edge {
+                    fact.range=locals.get(name).ok_or_else(||error(pos,"E_VERIFY_UNSUPPORTED","break outside header scope"))?.1.range;
+                }
+                frame.breaks=Some(match frame.breaks.take(){Some(old)=>join_facts(old,&edge),None=>edge});
+                body.push(TStmt::Break);
+            } else {
+                strict_backedge(p,locals,&frame.declared)?;
+                body.push(TStmt::Continue);
+            }
+            returned=true;
         } else if p.word("while") {
             // A loop header must cover entry AND every backedge. The
             // declared mutable scalar refinements are inductive invariants:
@@ -445,20 +473,14 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             }
             let (cond, mut yes, no) = strict_condition(p, aliases, &header, funcs)?;
             p.expect(Tok::LBrace)?;
-            let (loop_body, always_returns) = strict_block(p, aliases, funcs, result,
-                &mut yes, &mut mutable.clone(), slots, param_count, depth+1)?;
-            if !always_returns {
-                for (name, declared) in mutable.iter() {
-                    let (_, fact) = yes.get(name).ok_or_else(||
-                        error(pos,"E_VERIFY_UNSUPPORTED","loop backedge outside local scope"))?;
-                    if !declared.range.contains(fact.range) || declared.unit != fact.unit {
-                        return Err(error(pos,"E_VERIFY_UNPROVEN","loop invariant not preserved"));
-                    }
-                }
-            }
-            // Only the false guard edge can continue: break/continue remain
-            // unsupported. Zero iterations are included by header widening.
-            *locals = no;
+            loops.push(StrictLoopExit { header, declared: mutable.clone(), breaks: None });
+            let (loop_body, terminated) = strict_block(p, aliases, funcs, result,
+                &mut yes, &mut mutable.clone(), slots, param_count, depth+1, loops)?;
+            let frame=loops.pop().expect("nearest loop context");
+            if !terminated { strict_backedge(p,&yes,&frame.declared)?; }
+            // A break bypasses the false header guard. Merge only projected
+            // break facts with the normal false edge, including zero trips.
+            *locals = match frame.breaks {Some(edge)=>join_facts(no,&edge),None=>no};
             body.push(TStmt::Loop {cond:Some(cond),body:loop_body,update:Vec::new()});
         } else if p.word("if") {
             let (cond, yes, no) = strict_condition(p, aliases, locals, funcs)?;
@@ -466,11 +488,11 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             let mut yes = yes;
             let mut no = no;
             let (a, ar) = strict_block(p, aliases, funcs, result, &mut yes,
-                &mut mutable.clone(), slots, param_count, depth+1)?;
+                &mut mutable.clone(), slots, param_count, depth+1, loops)?;
             let (b, br) = if p.word("else") {
                 p.expect(Tok::LBrace)?;
                 strict_block(p, aliases, funcs, result, &mut no,
-                    &mut mutable.clone(), slots, param_count, depth+1)?
+                    &mut mutable.clone(), slots, param_count, depth+1, loops)?
             } else { (Vec::new(), false) };
             // Only incoming bindings survive lexical exit. Returning arms
             // contribute no continuation; otherwise take the interval hull.
