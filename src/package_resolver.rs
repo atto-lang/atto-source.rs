@@ -535,6 +535,62 @@ pub fn compile_locked_snapshot(
     expected_lock_sha256: &str,
     inputs: &[SnapshotSource<'_>],
 ) -> R<Vec<u8>> {
+    let target = crate::library::target_os();
+    crate::library::with_target_os(target, || {
+        let prepared = prepare_locked_snapshot(entry, manifest, lockfile, expected_lock_sha256, inputs)?;
+        crate::compile(&prepared.linked)
+    })
+}
+
+/// Internal authenticated graph and lowered source, never a verified artifact.
+/// Keep source closure checks on the same path for clean and cache-candidate builds.
+pub(crate) struct PreparedLockedSnapshot {
+    pub(crate) linked: String,
+    pub(crate) identity: String,
+    pub(crate) memo: SnapshotMemo,
+    pub(crate) work: SnapshotWork,
+}
+
+/// Bounded process-local source transformation memo. The exact manifest,
+/// target, canonical path and authenticated source digest are its witnesses.
+/// No cached authorization, type checking, ownership or generated code.
+#[derive(Default)]
+pub(crate) struct SnapshotMemo {
+    manifest: String,
+    target: Option<crate::library::TargetOs>,
+    units: BTreeMap<String, MemoUnit>,
+}
+struct MemoUnit {
+    digest: String,
+    rewritten: String,
+    imports: Option<Vec<String>>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SnapshotWork {
+    pub(crate) rewritten: usize,
+    pub(crate) reused: usize,
+}
+pub(crate) fn prepare_locked_snapshot(
+    entry: &str,
+    manifest: &str,
+    lockfile: &str,
+    expected_lock_sha256: &str,
+    inputs: &[SnapshotSource<'_>],
+) -> R<PreparedLockedSnapshot> {
+    prepare_locked_snapshot_memoized(entry, manifest, lockfile, expected_lock_sha256, inputs, &SnapshotMemo::default())
+}
+
+pub(crate) fn prepare_locked_snapshot_memoized(
+    entry: &str,
+    manifest: &str,
+    lockfile: &str,
+    expected_lock_sha256: &str,
+    inputs: &[SnapshotSource<'_>],
+    previous: &SnapshotMemo,
+) -> R<PreparedLockedSnapshot> {
+    if manifest.len() > MAX_MANIFEST || lockfile.len() > MAX_MANIFEST * 4 {
+        return Err(error("E_LOCK", "snapshot manifest or lock exceeds budget"));
+    }
     if !linker::path_ok(entry) {
         return Err(error("E_IMPORT_PATH", "snapshot entry path is not canonical"));
     }
@@ -553,7 +609,10 @@ pub fn compile_locked_snapshot(
     if inputs.is_empty() || inputs.len() > MAX_FILES || inputs.len() != pins.files.len() {
         return Err(error("E_LOCK_HASH", "snapshot file count differs from trusted lock"));
     }
-    let mut sources = BTreeMap::new();
+    let target = crate::library::target_os();
+    let reusable = previous.manifest == manifest && previous.target == Some(target);
+    let mut memo = SnapshotMemo { manifest: manifest.to_owned(), target: Some(target), units: BTreeMap::new() };
+    let mut work = SnapshotWork::default();
     for input in inputs {
         if !linker::path_ok(input.path) {
             return Err(error("E_IMPORT_PATH", "snapshot source path is not canonical"));
@@ -571,13 +630,24 @@ pub fn compile_locked_snapshot(
                 format!("snapshot source content mismatch for '{}'", input.path),
             ));
         }
-        let source = linker::resolve_manifest_imports(input.source, input.path, &metadata)?;
-        metadata.check_provider(input.path, &source)?;
-        if sources.insert(input.path, source).is_some() {
+        if memo.units.contains_key(input.path) {
             return Err(error("E_DUPLICATE", "duplicate snapshot source path"));
         }
+        let cached = if reusable { previous.units.get(input.path).filter(|u| &u.digest == want) } else { None };
+        let unit = if let Some(cached) = cached {
+            work.reused += 1;
+            MemoUnit { digest: cached.digest.clone(), rewritten: cached.rewritten.clone(), imports: cached.imports.clone() }
+        } else {
+            work.rewritten += 1;
+            let rewritten = linker::resolve_manifest_imports(input.source, input.path, &metadata)?;
+            MemoUnit { digest: want.clone(), rewritten, imports: None }
+        };
+        // Provider authority and the complete binding graph are revalidated
+        // for every build, even when a source transformation is reused.
+        metadata.check_provider(input.path, &unit.rewritten)?;
+        memo.units.insert(input.path.to_owned(), unit);
     }
-    if sources.len() != pins.files.len() {
+    if memo.units.len() != pins.files.len() {
         return Err(error("E_LOCK_HASH", "missing snapshot source"));
     }
     let mut seen = BTreeSet::new();
@@ -589,28 +659,32 @@ pub fn compile_locked_snapshot(
         if seen.len() > MAX_FILES {
             return Err(error("E_SOURCE_LIMIT", "snapshot graph too large"));
         }
-        let source = sources
-            .get(path.as_str())
+        let unit = memo.units
+            .get_mut(path.as_str())
             .ok_or_else(|| error("E_LOCK_HASH", format!("snapshot omitted reachable source '{path}'")))?;
-        for child in linker::import_paths(source, &path)? {
+        if unit.imports.is_none() {
+            unit.imports = Some(linker::import_paths(&unit.rewritten, &path)?);
+        }
+        for child in unit.imports.as_ref().expect("initialized above") {
             // Snapshot membership includes owned package files only. The
             // compiler independently supplies vetted built-in source.
             if child.starts_with("__atto_builtin/alloc/") { continue; }
-            pending.push(child);
+            pending.push(child.clone());
         }
     }
-    if seen.len() != sources.len() {
+    if seen.len() != memo.units.len() {
         return Err(error("E_LOCK_HASH", "snapshot includes sources unreachable from its entry"));
     }
-    let units: Vec<LinkUnit<'_>> = sources
+    let units: Vec<LinkUnit<'_>> = memo.units
         .iter()
-        .map(|(path, source)| LinkUnit {
+        .map(|(path, unit)| LinkUnit {
             path,
-            source,
+            source: &unit.rewritten,
             package: &identity,
         })
         .collect();
-    linker::compile_linked(entry, &units)
+    let linked = linker::prepare_linked(entry, &units)?;
+    Ok(PreparedLockedSnapshot { linked, identity, memo, work })
 }
 
 

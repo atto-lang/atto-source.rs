@@ -13,6 +13,11 @@ description = "AttoLang subset compiler targeting browser WebAssembly, itself bu
 name = "atto_compiler"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# Explicit trusted-host experimental API; no automatic CLI activation.
+experimental-incremental-cache = []
+
 [profile.release]
 opt-level = "s"
 lto = true

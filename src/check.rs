@@ -1687,7 +1687,7 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
 /// safely within cleanup; an escaping raise can never be suppressed by
 /// an ordinary catch/trap. Unreachable-code precision remains deliberately
 /// conservative until the CFG effect solver is complete.
-fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
+fn inferred_escape_effects(funcs: &[TFunc]) -> Vec<EscapeEffects> {
     let mut effects = vec![EscapeEffects::default(); funcs.len()];
     loop {
         let mut changed = false;
@@ -1700,6 +1700,15 @@ fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
         }
         if !changed { break; }
     }
+    effects
+}
+/// Compiler-private summary for already checked scalar callable metadata.
+/// Fatal panics and general runtime effects are deliberately not certified.
+pub(crate) fn checked_escape_summary(funcs:&[TFunc])->Vec<(bool,bool)> {
+    inferred_escape_effects(funcs).into_iter().map(|e|(e.throws,e.raises)).collect()
+}
+fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
+    let effects=inferred_escape_effects(funcs);
     // A clause list asserts an upper bound on the ordinary exceptional
     // channels, not merely an annotation for documentation. Omission of a
     // clause inside an explicit list means that effect cannot escape.

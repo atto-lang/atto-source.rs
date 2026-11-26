@@ -4,6 +4,26 @@ on:
     paths:
       - 'src/compiler_cache_key.rs'
       - 'src/lib.rs'
+      - 'src/compiler_artifact_receipt.rs'
+      - 'src/compiler_artifact_store.rs'
+      - 'src/compiler_artifact_store/authority.rs'
+      - 'tests/fixtures/incremental_locked/**'
+      - 'src/secure_fs.rs'
+      - 'src/compiler_cache_witness.rs'
+      - 'src/compiler_cache_key_policy.rs'
+      - 'src/library.rs'
+      - 'src/package_resolver.rs'
+      - 'src/linker.rs'
+      - 'src/compiler_cache_ledger.rs'
+      - 'src/compiler_cache_session.rs'
+      - 'src/experimental_incremental.rs'
+      - 'src/compiler_cache_registry.rs'
+      - 'src/registry_namespace.rs'
+      - 'src/registry_check_memo.rs'
+      - 'src/check.rs'
+      - 'tests/experimental_registry_cache.rs'
+      - 'tests/experimental_incremental.rs'
+      - 'Cargo.toml'
       - '.github/workflows/compiler-cache-key.yml'
 permissions:
   contents: read
@@ -30,3 +50,16 @@ jobs:
           set -eu
           rustc --version
           cargo test --lib compiler_cache_key::tests:: -- --nocapture
+          cargo test --lib compiler_artifact_receipt::tests:: -- --nocapture
+          cargo test --lib compiler_artifact_store::tests:: -- --nocapture
+          cargo test --lib secure_fs::tests:: -- --nocapture
+          cargo test --lib compiler_cache_witness::tests:: -- --nocapture
+          cargo test --lib compiler_cache_key_policy::tests:: -- --nocapture
+          cargo test --lib compiler_cache_ledger::tests:: -- --nocapture
+          cargo test --lib registry_check_memo::tests:: -- --nocapture
+          cargo test --test package_resolver -- --nocapture
+          cargo test --test multihop_linker -- --nocapture
+          cargo check --no-default-features
+          cargo test --features experimental-incremental-cache --test experimental_incremental -- --nocapture
+          cargo test --test registry_namespace -- --nocapture
+          cargo test --features experimental-incremental-cache --test experimental_registry_cache -- --nocapture

@@ -65,11 +65,30 @@ pub mod verified_bounds;
 mod quantity_scale;
 /// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
 pub mod registry_namespace;
+mod registry_check_memo;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;
 /// Canonical cache-key envelope only; no artifact reuse authority.
 pub mod compiler_cache_key;
+/// Candidate trusted-ledger envelope only, no executable cache loading.
+pub mod compiler_artifact_receipt;
+// Experimental trusted-host candidate; default builds do not expose it.
+#[cfg(all(any(test, feature = "experimental-incremental-cache"), target_os = "linux", target_arch = "x86_64"))]
+mod compiler_cache_witness;
+#[cfg(all(any(test, feature = "experimental-incremental-cache"), target_os = "linux", target_arch = "x86_64"))]
+mod compiler_cache_key_policy;
+#[cfg(all(any(test, feature = "experimental-incremental-cache"), target_os = "linux", target_arch = "x86_64"))]
+mod compiler_cache_ledger;
+#[cfg(all(any(test, feature = "experimental-incremental-cache"), target_os = "linux", target_arch = "x86_64"))]
+mod compiler_cache_session;
+/// Explicit experimental trusted-host compilation API; not enabled by default.
+#[cfg(all(feature = "experimental-incremental-cache", target_os = "linux", target_arch = "x86_64"))]
+pub mod experimental_incremental;
+#[cfg(all(feature = "experimental-incremental-cache", target_os = "linux", target_arch = "x86_64"))]
+mod compiler_cache_registry;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod compiler_artifact_store;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.

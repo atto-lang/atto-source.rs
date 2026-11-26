@@ -620,3 +620,36 @@ commit, source/private-carrier Actions have not reported executed test steps;
 treat guest conformance as **NOT_EXECUTED** until a real run succeeds.
 See [language spec](https://github.com/atto-lang/atto-spec/pull/32) and
 [remaining implementation tracker](https://github.com/atto-lang/atto-source.rs/issues/180).
+
+## Experimental trusted-host incremental compiler (Linux x86-64)
+
+The Rust library feature `experimental-incremental-cache` exposes an explicit
+`experimental_incremental::HostSession`. Default builds and `attoc` remain
+unchanged. This is a bounded single-package immutable-snapshot candidate,
+not production activation. The separate experimental registry build path accepts a single locked application source and up to 16 explicitly host-approved frozen provider snapshots; no transitive dependency acquisition. Use separate
+host-protected owner-only authority and cache roots, independently attested
+compiler/toolchain digests and an independently current ledger pin. Masters
+must be provisioned by the trusted host and must not be passed through CLI
+arguments, guest APIs or logs. Rotation is locally fenced by authority leases;
+the external durable pin provider and its recovery protocol are not included.
+Cold mode explicitly compiles and publishes; incremental mode fails closed
+on integrity errors. Source transformation reuse counters do not imply
+skipped type checking or independently emitted code units. Run
+`cargo test --features experimental-incremental-cache --test experimental_incremental -- --nocapture`.
+
+The registry lane memoizes immutable verified provider views in-process by
+approved package name, lock digest and target. Even memo hits reauthenticate
+all supplied current source bytes and resolve the whole root graph. Failed
+compilation or publication cannot commit staged views. Provider-view counts
+are distinct from typecheck or code generation work; a changed provider still
+causes complete guest code generation on a final-artifact miss.
+
+The direct-function registry lane additionally memoizes exact successful
+isolated namespace semantic checks in the current process. All source
+and binding authority checks remain mandatory. It reports actual fresh
+and reused isolated-check counts, and partial compiler-derived callable
+signature drift (scalar types, parameter names and mutability, declared
+effect bounds and inferred escaping throw/raise). These fingerprints are
+reporting only; they do not certify full public ABI, fatal panic effects,
+ownership or nominal contracts. A changed unit is always checked; on an
+artifact miss the whole linked program is still checked and emitted.

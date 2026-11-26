@@ -387,7 +387,7 @@ pub fn bind_registry_aliases(scope: &mut Scope, declarations: &str,
 /// namespace objects are possible. The ordinary compiler still handles
 /// type checking, private module lowering and Wasm emission.
 pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<u8>> {
-    compile_registry_guest_inner(source, packages, None, None)
+    crate::compile_prelexed(prepare_registry_guest(source, packages)?, None)
 }
 
 /// Compile an application root using an explicitly supplied, verified current
@@ -396,11 +396,21 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
 /// is trusted package-relative metadata for default namespace normalization.
 pub fn compile_contextual_guest(source: &str, current: &FrozenRegistry,
     packages: &[&FrozenRegistry], logical: Option<&Path>) -> R<Vec<u8>> {
-    compile_registry_guest_inner(source, packages, Some(current), logical)
+    crate::compile_prelexed(prepare_registry_guest_inner(source, packages, Some(current), logical, None)?, None)
 }
 
-fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry],
-    current: Option<&'a FrozenRegistry>, logical: Option<&Path>) -> R<Vec<u8>> {
+/// Resolve the actual current import graph before cache lookup. This is
+/// compiler-private prepared input, not a verified typed program.
+pub(crate) fn prepare_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<crate::lexer::Token>> {
+    prepare_registry_guest_inner(source, packages, None, None, None)
+}
+pub(crate) fn prepare_registry_guest_memoized(source:&str,packages:&[&FrozenRegistry],
+    pass:&mut crate::registry_check_memo::Pass<'_>)->R<Vec<crate::lexer::Token>> {
+    prepare_registry_guest_inner(source,packages,None,None,Some(pass))
+}
+fn prepare_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry],
+    current: Option<&'a FrozenRegistry>, logical: Option<&Path>,
+    mut memo:Option<&mut crate::registry_check_memo::Pass<'_>>) -> R<Vec<crate::lexer::Token>> {
     use crate::lexer::{self, Tok, Token};
     use crate::import_v2::{self, Source};
     fn word(t: Option<&Token>, value: &str) -> bool {
@@ -606,7 +616,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
         let checked=crate::check::check(&parsed)?;
         if !checked.imports.is_empty(){return Err(err("E_UNSUPPORTED","external enum guest cannot request host imports"));}
-        return crate::compile_prelexed(linked,None);
+        return Ok(linked);
     }
     if admitted.values().any(|p| !p.enum_metadata.is_empty()) && !admitted.values().any(|p| !p.class_metadata.is_empty()){
         return Err(err("E_UNSUPPORTED","external enum execution requires bounded nominal match"));
@@ -968,14 +978,15 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
         let parsed=crate::parser::Parser::new(linked.clone()).parse_program()?;
         let checked=crate::check::check(&parsed)?;
         if !checked.imports.is_empty(){return Err(err("E_UNSUPPORTED","external class guest cannot request host imports"));}
-        return crate::compile_prelexed(linked,None);
+        return Ok(linked);
     }
 
     // Prepare deterministic private module owners for each verified source
     // namespace. Package name order, not caller or import order, determines
     // synthetic owner names. No synthesized names can occur in source.
     let mut modules=BTreeMap::new();
-    let mut linked=Vec::new();
+    let mut staged_modules=Vec::new();
+    let mut aggregate_tokens=0usize;
     for p in admitted.values() {
         for (ns,(file,body)) in &p.sources {
             if modules.len()>=64 { return Err(err("E_SOURCE_LIMIT","too many linked registry namespaces")); }
@@ -1006,12 +1017,16 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                     }
                 }
             }
-            let mut isolated=funcs[..funcs.len()-1].to_vec();
-            isolated.extend(lexer::lex("pub fnc main(): int { return 0; }")?);
-            let parsed=crate::parser::Parser::new(isolated).parse_program()?;
-            let checked=crate::check::check(&parsed)?;
-            if !checked.imports.is_empty() { return Err(err("E_UNSUPPORTED","registry dependency cannot request ambient host imports")); }
+            // Reuse only an exact successful closed-unit check in this
+            // process. Current visibility, free-call and binding checks above
+            // still run. Nominal lanes do not consult this memo.
+            if let Some(pass)=memo.as_deref_mut() {
+                pass.admit(&p.name,ns,funcs,&names)?;
+            } else {
+                crate::registry_check_memo::check_closed(funcs)?;
+            }
             let pos=normalized[0].pos;
+            let mut linked=Vec::new();
             linked.extend([id("define",pos),id("module",pos),id(&owner,pos),id("as",pos)]);
             for (j,t) in funcs.iter().enumerate() {
                 if t.tok==Tok::Eof { continue; }
@@ -1025,13 +1040,17 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 linked.push(t.clone());
             }
             linked.push(id("end",pos));
+            aggregate_tokens=aggregate_tokens.saturating_add(linked.len());
+            if aggregate_tokens>lexer::MAX_TOKENS { return Err(err("E_SOURCE_LIMIT","registry guest token budget exceeded")); }
+            staged_modules.push((owner.clone(),linked));
             modules.insert((p.name.clone(),ns.clone()),owner);
-            if linked.len()>lexer::MAX_TOKENS { return Err(err("E_SOURCE_LIMIT","registry guest token budget exceeded")); }
         }
     }
     // Only direct static calls can consume registry bindings. Every reference
     // beginning with an admitted binding root must resolve to a public fnc.
     // Unknown qualified expressions fail closed, not as ambient members.
+    let mut reachable= BTreeSet::new();
+    let mut linked=Vec::new();
     while i<tokens.len() {
         let t=&tokens[i];
         if let Tok::Ident(name)=&t.tok {
@@ -1075,6 +1094,7 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                 if target.kind!=Kind::Fnc { return Err(Diagnostic::new(t.pos,"E_IMPORT_KIND","registry call requires exported function")); }
                 let (ns,member)=target.declaration.rsplit_once('.').ok_or_else(||err("E_INTERNAL","invalid verified function identity"))?;
                 let owner=modules.get(&(p.name.clone(),ns.to_string())).ok_or_else(||err("E_INTERNAL","verified function owner not linked"))?;
+                reachable.insert(owner.clone());
                 linked.extend([id(owner,t.pos),token(Tok::Dot,t.pos),id(member,t.pos)]);
                 i=end; continue;
             }
@@ -1083,7 +1103,16 @@ fn compile_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
             return Err(Diagnostic::new(t.pos,"E_UNBOUND","unbound qualified registry guest reference"));
         }
         linked.push(t.clone()); i+=1;
-        if linked.len()>lexer::MAX_TOKENS { return Err(err("E_SOURCE_LIMIT","registry guest token budget exceeded")); }
+        if aggregate_tokens.saturating_add(linked.len())>lexer::MAX_TOKENS { return Err(err("E_SOURCE_LIMIT","registry guest token budget exceeded")); }
     }
-    crate::compile_prelexed(linked,None)
+    // Every admitted namespace was checked above, even if not reached by the
+    // consumer. Closed direct-function units cannot reference other units.
+    // Only materialize modules with a resolved direct call; keep whole
+    // reached modules for internal calls. No class/enum lane changes.
+    if aggregate_tokens.saturating_add(linked.len())>lexer::MAX_TOKENS { return Err(err("E_SOURCE_LIMIT","registry guest token budget exceeded")); }
+    let mut output=Vec::new();
+    for (owner,body) in staged_modules { if reachable.contains(&owner){output.extend(body);} }
+    output.extend(linked);
+    let linked=output;
+    Ok(linked)
 }

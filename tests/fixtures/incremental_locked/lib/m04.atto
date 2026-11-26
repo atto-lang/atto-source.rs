@@ -1,0 +1,5 @@
+use namespace groupb;
+export pub[pkg] module M4;
+define module M4 as
+    pub fnc value(): int { return 4; }
+end

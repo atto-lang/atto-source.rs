@@ -1,0 +1,13 @@
+use namespace groupa;
+import module M0 from "+lib/m00.atto";
+import module M1 from "+lib/m01.atto";
+import module M2 from "+lib/m02.atto";
+import module M3 from "+lib/m03.atto";
+import module M4 from "+lib/m04.atto";
+import module M5 from "+lib/m05.atto";
+import module M6 from "+lib/m06.atto";
+import module M7 from "+lib/m07.atto";
+import module M8 from "+lib/m08.atto";
+import module M9 from "+lib/m09.atto";
+import module M10 from "+lib/m10.atto";
+pub fnc main(): int { return M0.value() + M1.value() + M2.value() + M3.value() + M4.value() + M5.value() + M6.value() + M7.value() + M8.value() + M9.value() + M10.value(); }

@@ -1,0 +1,4 @@
+export pub[pkg] module M9;
+define module M9 as
+    pub fnc value(): int { return 4; }
+end
