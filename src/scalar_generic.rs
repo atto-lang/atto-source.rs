@@ -269,6 +269,15 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             || base
                 .windows(2)
                 .any(|w| matches!(word(&w[0]), Some("val" | "let" | "const")) && word(&w[1]) == Some(template.name.as_str()))
+            // Port the conservative scope guard from #478 onto current main.
+            || base.windows(3).any(|w| {
+                (word(&w[1]) == Some(template.name.as_str())
+                    && scalar(&w[0]).is_some()
+                    && matches!(w[2].tok, Tok::Comma | Tok::RParen | Tok::Assign | Tok::LParen))
+                    || (word(&w[0]) == Some(template.name.as_str())
+                        && w[1].tok == Tok::Colon
+                        && scalar(&w[2]).is_some())
+            })
         {
             return Err(error(
                 template.pos,
@@ -300,17 +309,24 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         }
         let mut args_at = at + 1;
         let explicit = if base.get(args_at).map(|t| &t.tok) == Some(&Tok::Lt) {
-            let chosen = base.get(args_at + 1).and_then(scalar).ok_or_else(|| {
+            let mut value_at = args_at + 1;
+            if base.get(value_at + 1).map(|t| &t.tok) == Some(&Tok::Assign) {
+                if base.get(value_at).and_then(word) != Some(templates[tid].parameter.as_str()) {
+                    return Err(error(base[at].pos, "E_TYPE", "unknown named generic parameter"));
+                }
+                value_at += 2;
+            }
+            let chosen = base.get(value_at).and_then(scalar).ok_or_else(|| {
                 error(
                     base[at].pos,
                     "E_UNSUPPORTED_TYPE",
                     "generic type argument must be an admitted scalar",
                 )
             })?;
-            if base.get(args_at + 2).map(|t| &t.tok) != Some(&Tok::Gt) {
+            if base.get(value_at + 1).map(|t| &t.tok) != Some(&Tok::Gt) {
                 return Err(error(base[at].pos, "E_UNSUPPORTED", "generic call needs one type argument"));
             }
-            args_at += 3;
+            args_at = value_at + 2;
             Some(chosen)
         } else {
             None
@@ -375,6 +391,16 @@ pub fn lower(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             "E_UNSUPPORTED",
             "uninstantiated generic definition cannot be type-checked in this browser profile",
         ));
+    }
+    // Bound expansion before cloning any template (#478 current-main port).
+    let projected = requested.iter().fold(out.len().checked_add(1), |total, ((tid, _), _)| {
+        let instance = &templates[*tid].source;
+        let length = instance.len().checked_sub(3)?
+            .checked_sub(usize::from(word(&instance[0]) == Some("pub")))?;
+        total?.checked_add(length)
+    });
+    if !projected.is_some_and(|length| length <= MAX_TOKENS) {
+        return Err(error(templates[0].pos, "E_SOURCE_LIMIT", "expanded generics exceed token budget"));
     }
     for ((tid, to), generated) in &requested {
         out.extend(specialize(&templates[*tid], to, generated)?);
@@ -485,4 +511,53 @@ mod tests {
         let src = "define class C as pub fnc calculate<T>(int x): T { return x as T; } end pub fnc main(): int { return 0; }";
         assert_eq!(lower(lex(src).unwrap()).unwrap_err().code, "E_UNSUPPORTED");
     }
+    #[test]
+    fn named_and_positional_scalar_types_share_one_specialization() {
+        let source = "fnc identity<T>(T x): T { return x; } pub fnc main(): int { return identity<T=int>(20) + identity<int>(22); }";
+        let lowered = lower(lex(source).unwrap()).unwrap();
+        let words: Vec<_> = lowered.iter().filter_map(word).collect();
+        assert_eq!(words.iter().filter(|w| **w == "__atto_generic_0_int").count(), 3);
+        assert!(!words.contains(&"T"));
+        assert!(crate::compile(source).is_ok());
+    }
+
+    #[test]
+    fn malformed_named_scalar_generics_fail_before_wasm_emission() {
+        for expression in ["identity<U=int>(42)", "identity<t=int>(42)",
+            "identity<T=3>(42)", "identity<T=int,T=int>(42)",
+            "identity<T=int,bool>(42)", "identity[T=int](42)",
+            "identity<T=int](42)", "identity<T=int>"] {
+            let source = format!("fnc identity<T>(T x): T {{ return x; }} pub fnc main(): int {{ return {expression}; }}");
+            assert!(crate::compile(&source).is_err(), "{expression}");
+        }
+    }
+
+    #[test]
+    fn named_specialization_does_not_bypass_shadow_checks() {
+        let source = "fnc identity<T>(T x): T { return x; } fnc other(int identity): int { return identity; } pub fnc main(): int { return identity<T=int>(42); }";
+        assert_eq!(lower(lex(source).unwrap()).unwrap_err().code, "E_DUPLICATE");
+    }
+
+    #[test]
+    fn projected_generic_expansion_is_bounded() {
+        let mut source = String::new();
+        for n in 0..MAX_GENERIC_FUNCTIONS {
+            source.push_str(&format!("fnc repeat{n}<T>(int x): T {{ "));
+            for _ in 0..120 {
+                source.push_str("val unused = 1; ");
+            }
+            source.push_str("return x as T; } ");
+        }
+        source.push_str("pub fnc main(): int { ");
+        for n in 0..MAX_GENERIC_FUNCTIONS {
+            for ty in ["int", "float", "bool", "string"] {
+                source.push_str(&format!("val v = repeat{n}<T={ty}>(5); "));
+            }
+        }
+        source.push_str("return 0; }");
+        let tokens = lex(&source).unwrap();
+        assert!(tokens.len() < MAX_TOKENS);
+        assert_eq!(lower(tokens).unwrap_err().code, "E_SOURCE_LIMIT");
+    }
+
 }
