@@ -195,6 +195,17 @@ fn read_binder(tokens: &[Token], start: usize, end: usize, pos: Pos) -> Result<S
 /// suspension-effect verification and guest execution. Unimplemented forms
 /// are subsequently rejected by the browser compiler before guest emission.
 pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
+    inspect_inner(tokens, false)
+}
+
+/// The compiler may defer explicit int declaration syntax with a computed
+/// RHS to the checked scalar parser. Path-shaped channel reads still go
+/// through the existing I/O preflight, including its effect diagnostics.
+pub(crate) fn inspect_for_compiler(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
+    inspect_inner(tokens, true)
+}
+
+fn inspect_inner(tokens: &[Token], scalar_declarations: bool) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
         let Some(operator) = op_at(tokens, i) else { continue; };
@@ -261,6 +272,17 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         if mode == Mode::Detached && (operator == Direction::Read || reversed_read) {
             return Err(Diagnostic::new(op_pos, "E_IO_DISCARD",
                 "detached read cannot bind to the caller; use do readch channel, |outcome| -> void { ... }"));
+        }
+        if scalar_declarations && reversed_read && context == Context::Standalone
+            && mode == Mode::Direct && i == lhs_start + 3
+            && tokens.get(lhs_start + 1).and_then(word) == Some("int")
+            && tokens.get(lhs_start + 2).and_then(word)
+                .is_some_and(|name| !crate::parser::is_reserved(name))
+            && path(tokens, rhs_start, end).is_none()
+        {
+            // This is only a syntax handoff, not a capability or type grant.
+            // The parser inserts a checked int ascription and normal binding.
+            continue;
         }
         let (direction, subject, binder) = if reversed_read {
             let binding = read_binder(tokens, lhs_start, i, op_pos)?;
