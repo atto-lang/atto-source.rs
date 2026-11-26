@@ -528,12 +528,13 @@ impl Emit<'_> {
                 field_op(&mut self.code, *ty, *offset, true);
             }
             TStmt::StateCriticalWrite(body) => {
+                assert!(crate::check::state_ir_region(body, None, true), "invalid typed scalar state region");
                 // Synchronous, never-park: the host authenticates this
                 // container/continuation and either grants immediately or
                 // fails closed. Yield/throw/defer in this lexical scope are
                 // rejected by the frontend's restricted state profile.
                 let slot = self.state_ticket_slot.expect("protected state uses a ticket local");
-                debug_assert_eq!(self.state_write_depth, 0);
+                assert_eq!(self.state_write_depth, 0, "nested typed lease");
                 self.get(0); // typed receiver: protected state self
                 self.i32c(1); // write mode
                 self.call(self.l.import(Import::StateEnter));
@@ -941,7 +942,9 @@ impl Emit<'_> {
                 field_op(&mut self.code, v.ty, *offset, false);
             }
             TExpr::StateWriteValue { body, result } => {
-                debug_assert_eq!(self.state_write_depth, 0);
+                assert!(crate::check::state_ir_region(body, Some(result), false) && v.ty == result.ty,
+                    "invalid typed scalar state expression region");
+                assert_eq!(self.state_write_depth, 0, "nested typed lease");
                 let slot = self.state_ticket_slot.expect("protected write value ticket local");
                 self.get(0);
                 self.i32c(1);
@@ -957,9 +960,12 @@ impl Emit<'_> {
                 self.call(self.l.import(Import::StateLeave));
             }
             TExpr::StateSnapshot { ctor, fields } => {
+                assert!(!fields.is_empty() && fields.len() <= 16 && matches!(v.ty, Type::Class(_)) &&
+                    fields.iter().all(|(ty, offset)| matches!(ty, Type::Int | Type::Bool) && crate::check::state_offset(*offset)),
+                    "invalid typed state snapshot shape");
                 // Fixed receiver and scalar loads only. No allocation, user
                 // call, suspension or per-field ticket inside the read lease.
-                debug_assert_eq!(self.state_write_depth, 0);
+                assert_eq!(self.state_write_depth, 0, "nested typed lease");
                 let slot = self.state_ticket_slot.expect("protected snapshot ticket local");
                 self.get(0);
                 self.i32c(0);
@@ -978,6 +984,8 @@ impl Emit<'_> {
                 self.calls.push((at, self.code.len(), *ctor));
             }
             TExpr::StateFieldRead { obj, offset } => {
+                assert!(crate::check::state_receiver(obj) && crate::check::state_offset(*offset) &&
+                    matches!(v.ty, Type::Int | Type::Bool), "invalid typed state field read");
                 if self.state_write_depth == 0 {
                     // Read an immutable scalar by value. The host owns the
                     // ticket, never the source code or the Wasm guest.
