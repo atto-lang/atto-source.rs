@@ -1778,29 +1778,65 @@ impl Parser {
         Ok(params)
     }
 
-    /// Parse a direct factory pipeline input. A parenthesized argument list
+    /// Parse a factory pipeline input. A parenthesized argument list
     /// supplies multiple factory arguments in source order; a single scalar
     /// is one argument. Do not send the closure-producing stage through the
     /// ordinary named-function-only pipeline parser.
     fn parse_cleanup_pipeline_args(&mut self) -> R<Vec<Expr>> {
+        let mut grouped = None;
         if *self.peek() == Tok::LParen {
             let mut trial = self.clone();
             if let Ok(args) = trial.parse_args() {
                 if trial.eat(&Tok::PipeGt) {
                     *self = trial;
-                    return Ok(args);
+                    grouped = Some(args);
                 }
             }
         }
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
-        let argument = self.parse_logical_or();
+        let result = (|| -> R<Vec<Expr>> {
+            let mut args = match grouped {
+                Some(args) => args,
+                None => {
+                    let argument = self.parse_logical_or()?;
+                    self.expect(Tok::PipeGt, "'|>' before the cleanup factory")?;
+                    vec![argument]
+                }
+            };
+            let mut links = 0;
+            // Only the final inline stage produces a registration callback.
+            // Preceding scalar named stages use ordinary forward-call lowering.
+            while !(*self.peek() == Tok::LParen && *self.peek_at(1) == Tok::Pipe) {
+                let pos = self.pos();
+                if args.len() != 1 {
+                    return Err(unsupported(pos, "multi-argument intermediate cleanup pipeline stages"));
+                }
+                if self.is_word("await") || self.is_word("defer") || self.is_word("recover") {
+                    return Err(unsupported(pos, "suspending or registration-valued intermediate cleanup stages"));
+                }
+                let stage = self.parse_postfix()?;
+                let (name, mut stage_args) = match stage.kind {
+                    ExprKind::Var(name) => (name, Vec::new()),
+                    ExprKind::Call(name, args) => (name, args),
+                    _ => return Err(unsupported(pos, "cleanup pipeline stages other than named function calls")),
+                };
+                if stage_args.len() >= MAX_PARAMS {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pipeline exceeds the call argument limit"));
+                }
+                self.grow(1)?;
+                links += 1;
+                stage_args.insert(0, args.pop().expect("checked scalar pipeline input"));
+                args.push(Expr { kind: ExprKind::Call(name, stage_args), pos });
+                self.expect(Tok::PipeGt, "'|>' before the next stage or inline cleanup factory")?;
+            }
+            self.height -= links;
+            Ok(args)
+        })();
         self.cond = saved;
         self.leave();
-        let argument = argument?;
-        self.expect(Tok::PipeGt, "'|>' before the cleanup factory")?;
-        Ok(vec![argument])
+        result
     }
 
     fn parse_nullary_cleanup_body(&mut self) -> R<Vec<Stmt>> {
