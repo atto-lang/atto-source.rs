@@ -151,9 +151,18 @@ fn class_methods_are_recorded_as_unavailable() {
 
 #[test]
 fn non_ownership_rejects_do_not_export_a_partial_graph() {
-    let r = main_record("pub fnc main(): int { val c = new C(); val d = copy! c; return 1; }");
-    assert_eq!(code(&r), Some("E_COPY"));
+    let r = main_record("pub fnc main(): int { val c = new C(); return missing; }");
+    assert_eq!(code(&r), Some("E_UNBOUND"));
     assert!(matches!(&r.mir, Err(why) if why.contains("non-ownership")));
+    assert!(!r.prefix_at_error);
+}
+
+#[test]
+fn flat_shallow_copy_acceptance_does_not_forge_a_mir_graph() {
+    let r = main_record("pub fnc main(): int { val c = new C(); val d = copy! c; return d.x; }");
+    assert_eq!(code(&r), None);
+    assert!(matches!(&r.mir, Err(why) if why.contains("flat shallow-copy trace requires a dedicated MIR event")));
+    assert!(!r.prefix_at_error);
 }
 
 // ---------------------------------------------------------------------------

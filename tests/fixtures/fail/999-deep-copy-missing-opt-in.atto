@@ -1,0 +1,3 @@
+// expect-error: E_COPY_OPT_IN_REQUIRED
+define class Parcel as pub let int value = 42; end
+pub fnc main(): int { val p = new Parcel(); val q = copy!! p; return q.value; }

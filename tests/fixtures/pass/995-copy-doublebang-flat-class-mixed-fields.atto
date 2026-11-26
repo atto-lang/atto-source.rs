@@ -1,7 +1,7 @@
 // expect-exit: 42
 // java: rejects
 // i64 + f64 + immutable string slots are copied with their original types.
-define class Parcel as
+define class Parcel implements DeepCopyable<Parcel> as
     pub let int number = 42;
     pub float score: 1.5;
     pub string label: "hello";

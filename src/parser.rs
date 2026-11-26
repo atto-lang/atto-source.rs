@@ -221,6 +221,9 @@ pub fn is_unlowered_ownership_intrinsic(name: &str) -> bool {
 }
 
 fn reject_intrinsic_type_name(name: &str, pos: Pos) -> R<()> {
+    if name == "DeepCopyable" {
+        return Err(Diagnostic::new(pos, "E_RESERVED_TYPE", "DeepCopyable is a reserved core copy marker"));
+    }
     if is_unlowered_ownership_intrinsic(name) {
         return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
             format!("ownership or synchronization intrinsic '{name}' is not lowered by this compiler")));
@@ -728,6 +731,19 @@ impl Parser {
                 "Pointer is a compiler-known builtin and may not be defined as a user class",
             ));
         }
+        // Only the reserved core, exact-self marker is admitted in this
+        // flat-class profile. Other nominal composition remains separate.
+        let deep_copy_opt_in = if self.eat_word("implements") {
+            self.expect_word("DeepCopyable")?;
+            self.expect(Tok::Lt, "'<' after DeepCopyable")?;
+            let (target, target_pos) = self.ident("the exact class name")?;
+            if target != name {
+                return Err(Diagnostic::new(target_pos, "E_COPY_OPT_IN_REQUIRED",
+                    "DeepCopyable must name exact concrete self"));
+            }
+            self.expect(Tok::Gt, "'>' after DeepCopyable self")?;
+            true
+        } else { false };
         self.decl_head("class")?;
         self.expect_word("as")?;
         let m = self.parse_members(&name, false, "end")?;
@@ -736,6 +752,7 @@ impl Parser {
             pos,
             public,
             state_container: false,
+            deep_copy_opt_in,
             fields: m.fields,
             ctor: m.ctor,
             methods: m.methods,
@@ -816,7 +833,7 @@ impl Parser {
         if fields.is_empty() {
             return Err(Diagnostic::new(pos, "E_STATE", "protected state requires at least one scalar field"));
         }
-        Ok(ClassDecl { name, pos, public, state_container: true,
+        Ok(ClassDecl { name, pos, public, state_container: true, deep_copy_opt_in: false,
             fields, ctor: None, methods })
     }
 
@@ -3658,13 +3675,13 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "freeze" | "weak" | "pin" | "drop")
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "move" | "share" | "freeze" | "weak" | "pin" | "drop")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
                     "borrow" => OwnershipOp::Borrow,
                     "copy" => OwnershipOp::Copy,
-                    "take" => OwnershipOp::Take,
+                    "take" | "move" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
                     "freeze" => OwnershipOp::Freeze,
                     "weak" => OwnershipOp::Weak,
@@ -3674,6 +3691,10 @@ impl Parser {
                 };
                 self.advance(); // name
                 let first_bang = self.advance(); // !
+                if action == OwnershipOp::Take &&
+                    (first_bang.pos.line != pos.line || first_bang.pos.col != pos.col + 4) {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX", "transfer bang must be contiguous"));
+                }
                 // 'copy!!' is a single canonical operator only when the word
                 // and both bangs are adjacent. 'copy! !x' stays a shallow copy
                 // of the logical negation, never a deep copy.

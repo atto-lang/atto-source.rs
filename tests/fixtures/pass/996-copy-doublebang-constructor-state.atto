@@ -1,7 +1,7 @@
 // expect-exit: 42
 // java: rejects
 // copy!! must copy the post-constructor state, not run the constructor again.
-define class Counter as
+define class Counter implements DeepCopyable<Counter> as
     mut int value = 1;
     constructor(int x) {
         self.value = x;

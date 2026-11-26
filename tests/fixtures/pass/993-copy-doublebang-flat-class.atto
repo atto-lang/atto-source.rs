@@ -1,7 +1,7 @@
 // expect-exit: 42
 // java: rejects
 // Generated AOT copier allocates a distinct class instance; source retains value.
-define class Parcel as
+define class Parcel implements DeepCopyable<Parcel> as
     pub let int value = 42;
 end
 pub fnc main(): int {

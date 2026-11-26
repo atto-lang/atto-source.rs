@@ -22,6 +22,6 @@ pub fnc main(): int {
   val moved = take! parcel;
   stdio.println(moved.value);
   val shared_number = share! 42;
-  val grouped_compatibility = copy!(0); // legacy grouped operands remain valid
+  val grouped_compatibility = copy! (0); // grouped operands require a keyword separator
   return copied + shared_number + grouped_compatibility;
 }
