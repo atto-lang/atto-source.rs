@@ -45,9 +45,9 @@ const overloadMain = `pub fnc main(): int {
     stdio.println(q.pick(p.sum()));
     return 0;
 }`;
-const branching = decl.replace('self.x = x; self.y = y;', 'if x > 0 { self.x = x; } else { self.x = 0 - x; } self.y = self.x + y;');
-const nestedBranching = decl.replace('self.x = x; self.y = y;', 'if x > 0 { if y > 0 { self.x = x; } else { self.x = y; } } else { self.x = 0; } self.y = self.x + y;');
-const skippedTrap = decl.replace('self.x = x; self.y = y;', 'if x > 0 { self.x = x; } else { self.x = 1 / y; } self.y = y;');
+const branching = decl.replace('self.x = x; self.y = y;', 'if x > 0 { self.x = x; } else { self.x = 0 - x; } fi self.y = self.x + y;');
+const nestedBranching = decl.replace('self.x = x; self.y = y;', 'if x > 0 { if y > 0 { self.x = x; } else { self.x = y; } fi } else { self.x = 0; } fi self.y = self.x + y;');
+const skippedTrap = decl.replace('self.x = x; self.y = y;', 'if x > 0 { self.x = x; } else { self.x = 1 / y; } fi self.y = y;');
 const positives = [
     ['constructor-branch-true', branching + '\n' + main, '40\n300\nfalse\n'],
     ['constructor-branch-false', branching + '\n' + main.replace('10, 20', '-10, 20'), '40\n300\nfalse\n'],
