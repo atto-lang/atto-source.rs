@@ -1,0 +1,4 @@
+// expect-reject
+// expect-error: unknown compiler-owned atto.core module
+import module num from "atto.core/../core/num";
+pub fnc main(): int { return 0; }

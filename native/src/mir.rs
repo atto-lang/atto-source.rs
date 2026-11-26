@@ -36,6 +36,31 @@ fn failure(class: &'static str, message: impl Into<String>) -> SemanticError {
         message: message.into(),
     }
 }
+// Mirrors the protected ADT/collection/loan identity subset in src/prelude.rs.
+// The scalar backend cannot lower these identities as ordinary user routines.
+fn protected_identity(name: &str) -> bool {
+    matches!(
+        name,
+        "Option"
+            | "Some"
+            | "None"
+            | "Result"
+            | "Ok"
+            | "Err"
+            | "Array"
+            | "FixedArray"
+            | "Vector"
+            | "List"
+            | "FixedList"
+            | "Slice"
+            | "Tuple"
+            | "Map"
+            | "Set"
+            | "ReadLoan"
+            | "WriteLoan"
+    )
+}
+
 fn validate_expr(
     expr: &Expr,
     variables: &HashSet<String>,
@@ -91,6 +116,15 @@ pub fn lower_with_ref_layout(
 ) -> Result<Module, SemanticError> {
     let mut signatures = HashMap::new();
     for function in &program.functions {
+        if protected_identity(&function.name) {
+            return Err(failure(
+                "reserved_collection_name",
+                format!(
+                    "compiler-owned identity '{}' cannot name a scalar function",
+                    function.name
+                ),
+            ));
+        }
         if signatures
             .insert(function.name.clone(), function.params.len())
             .is_some()

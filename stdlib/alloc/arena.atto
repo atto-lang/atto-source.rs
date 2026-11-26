@@ -1,0 +1,27 @@
+// alloc/arena (atto-source.rs): deterministic bump placement over an explicit
+// (used, capacity) cursor. No hidden heap, no GC; reset frees everything.
+import module mem from "atto.core/mem";
+define module arena as
+  pub fnc place(int used, int capacity, int size, int align): Option<int> {
+    if used < 0 || capacity < used || size < 0 then return None; fi
+    match mem.align_up(used, align) over
+      on Some(at) -> {
+        if at > capacity then return None; fi
+        if size > capacity - at then return None; fi
+        return Some(at);
+      }
+      on None -> { return None; }
+    end
+  }
+  pub fnc advance(int used, int capacity, int size, int align): int {
+    match arena.place(used, capacity, size, align) over
+      on Some(at) -> { return at + size; }
+      on None -> { return used; }
+    end
+  }
+  pub fnc remaining(int used, int capacity): int {
+    if used >= capacity then return 0; fi
+    return capacity - used;
+  }
+  pub fnc reset(): int { return 0; }
+end

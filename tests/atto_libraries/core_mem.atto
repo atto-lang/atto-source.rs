@@ -1,0 +1,11 @@
+// expect-exit: 42
+import module mem from "atto.core/mem";
+import module option from "atto.core/option";
+pub fnc main(): int {
+  val int up = option.unwrap_or(mem.align_up(13, 8), 0);
+  val int down = option.unwrap_or(mem.align_down(13, 8), 0);
+  val int bad = option.is_none(mem.align_up(13, 6)) ? 1 : 0;
+  val int pow2 = (mem.is_power_of_two(64) ? 1 : 0) + (mem.is_power_of_two(0) ? 10 : 0);
+  val int aligned = (mem.is_aligned(24, 8) ? 1 : 0) + (mem.is_aligned(25, 8) ? 10 : 0);
+  return up + down + bad + pow2 + aligned + mem.log2_floor(1024) + 5;
+}

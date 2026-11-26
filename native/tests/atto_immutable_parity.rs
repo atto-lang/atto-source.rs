@@ -30,11 +30,13 @@ fn immutable_default_forms_all_compile_from_validated_scalar_mir() {
         ("call-in-initializer", "const x = add(20,22); return x;"),
     ];
     for (name, body) in cases {
-        let source = format!(
-            "pub fnc main(): int {{ {body} }} fnc add(int a,int b): int {{ return a+b; }}"
-        );
+        let source =
+            format!("pub fnc main(): int {{ {body} }} fnc add(int a,int b): int {{ return a+b; }}");
         assert!(checked(&source).is_ok(), "{name}: should typecheck");
-        assert!(compile(&source).is_ok(), "{name}: should emit native object");
+        assert!(
+            compile(&source).is_ok(),
+            "{name}: should emit native object"
+        );
     }
 }
 
@@ -77,7 +79,10 @@ fn unsupported_mutable_spellings_stay_rejected() {
         "val x = 7; val y = x + 1; y = 9; return y;",
     ] {
         let source = format!("pub fnc main(): int {{ {body} }}");
-        assert!(compile(&source).is_err(), "{body}: no unimplemented mutable lowering");
+        assert!(
+            compile(&source).is_err(),
+            "{body}: no unimplemented mutable lowering"
+        );
     }
 }
 
@@ -90,7 +95,10 @@ fn canonical_define_fnc_spellings_keep_export_and_scalar_checks() {
     ] {
         let parsed = frontend::parse(source).expect("canonical fnc form");
         assert_eq!(parsed.functions[0].exported, exported);
-        assert!(compile(source).is_ok(), "canonical definition should compile");
+        assert!(
+            compile(source).is_ok(),
+            "canonical definition should compile"
+        );
     }
     for source in [
         "define actor Worker as end",
@@ -98,6 +106,9 @@ fn canonical_define_fnc_spellings_keep_export_and_scalar_checks() {
         "define enum Status as end",
         "define define fnc main(): int { return 42; }",
     ] {
-        assert!(checked(source).is_err(), "{source}: unsupported kinds fail closed");
+        assert!(
+            checked(source).is_err(),
+            "{source}: unsupported kinds fail closed"
+        );
     }
 }
