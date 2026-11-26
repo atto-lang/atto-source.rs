@@ -22,7 +22,13 @@ pub fn check_noncapturing(
     lambda: &Expr, expected_params: Option<&[Type]>, expected_result: Option<Type>
 ) -> R<CheckedLambda> {
     let (names, annotated, body) = match &lambda.kind {
-        ExprKind::Lambda { params, return_type, body } => (params, return_type, body),
+        ExprKind::Lambda { params, return_type, body, suspends } => {
+            if *suspends {
+                return Err(err(lambda.pos, "E_UNSUPPORTED",
+                    "suspending lambda analysis needs effect-aware continuation checking"));
+            }
+            (params, return_type, body)
+        },
         _ => return Err(err(lambda.pos, "E_TYPE", "expected a lambda")),
     };
     let types: &[Type] = match expected_params {
