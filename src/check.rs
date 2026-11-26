@@ -3771,6 +3771,13 @@ impl<'a> FnCx<'a> {
                 // argument position (see args()). A standalone borrow! must
                 // never become an owned return or a stored carrier handle.
                 let value = self.value(inner)?;
+                // The concrete ADT value-copy lane is restricted to named
+                // owners; a temporary has no admitted lexical loan lifetime.
+                if matches!(value.ty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr)
+                    && !matches!(&inner.kind, ExprKind::Var(_))
+                {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on a concrete ADT requires a named owner"));
+                }
                 if !is_copy_scalar(value.ty) {
                     if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
                         tr.borrow_escaping(*slot, false, pos);
