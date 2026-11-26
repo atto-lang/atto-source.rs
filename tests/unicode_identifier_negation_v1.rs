@@ -24,15 +24,22 @@ fn unicode_guest_compiles_and_not_lowers_like_bang() {
 #[test]
 fn rejects_invalid_negation_and_hidden_bidi() {
     for source in [
-        "pub fnc main(): bool { return ¬1; }",
+        "pub fnc main(): int { if ¬1 then return 42; else return 0; fi }",
         "pub fnc main(): int { return 未定義; }",
-        "pub fnc main(bool b): bool { return b¬; }",
-        "pub fnc main(bool b): bool { return b ¬eq true; }",
-        "pub fnc main(bool b): bool { return b ¬= true; }",
+        "pub fnc main(): int { val b = true; if b¬ then return 42; else return 0; fi }",
+        "pub fnc main(): int { val b = true; if b ¬eq true then return 42; else return 0; fi }",
+        "pub fnc main(): int { val b = true; if b ¬= true then return 42; else return 0; fi }",
     ] {
         assert!(compile(source).is_err(), "{source}");
     }
     for source in ["// \u{202e}", "/* \u{2066} */", "\"\u{200f}\""] {
         assert_eq!(lex(source).unwrap_err().code, "E_SOURCE_BIDI");
+    }
+}
+
+#[test]
+fn invalid_unicode_not_has_real_type_diagnostic() {
+    for source in ["pub fnc main(): int { if ¬1 then return 42; else return 0; fi }", "pub fnc main(): int { if false && ¬1 then return 42; else return 0; fi }"] {
+        assert_eq!(compile(source).unwrap_err().code, "E_TYPE");
     }
 }

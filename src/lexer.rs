@@ -103,7 +103,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if c == '\0' {
             return Err(Diagnostic::new(pos, "E_NUL", "NUL characters are not allowed in source"));
         }
-        if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+        if matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c') {
             bump!();
             continue;
         }
@@ -139,11 +139,27 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if out.len() >= MAX_TOKENS {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many tokens"));
         }
+        if matches!(c, '⧖' | '∂') {
+            bump!();
+            out.push(Token { tok: Tok::Ident("suspends".to_owned()), pos });
+            continue;
+        }
         if c.is_alphabetic() || c == '_' || c == '〇' {
             let mut s = String::new();
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '〇') {
                 s.push(chars[i]);
                 bump!();
+            }
+            // Transfer aliases have exactly the same source separator rule.
+            // Preserve comparison spellings and ordinary longer identifiers.
+            if matches!(s.as_str(), "take" | "move") && chars.get(i) == Some(&'!')
+                && chars.get(i + 1) != Some(&'=')
+                && !(chars.get(i + 1) == Some(&'e') && chars.get(i + 2) == Some(&'q')
+                    && chars.get(i + 3).is_none_or(|c| !(c.is_alphanumeric() || *c == '_' || *c == '〇')))
+                && !chars.get(i + 1).is_some_and(|c| matches!(*c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c'))
+            {
+                return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
+                    "whitespace required after the complete transfer keyword bang"));
             }
             // Generator delegation is a single contiguous lexical spelling.
             // Do not consume a separated star: `yield *value` is not `yield*`.
@@ -151,7 +167,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 bump!();
                 Tok::YieldStar
             } else {
-                Tok::Ident(s)
+                Tok::Ident(if s == "susp" { "suspends".to_owned() } else { s })
             };
             out.push(Token { tok, pos });
             continue;
@@ -411,4 +427,26 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         pos: Pos { line, col },
     });
     Ok(out)
+}
+
+#[cfg(test)]
+mod suspension_alias_lex_tests {
+    use super::*;
+    #[test]
+    fn exact_aliases_share_the_existing_effect_word() {
+        for spelling in ["suspends", "susp", "⧖", "∂"] {
+            let source = format!("{spelling} fnc");
+            let tokens = lex(&source).expect("valid alias");
+            assert_eq!(tokens[0].tok, Tok::Ident("suspends".into()));
+            assert_eq!(tokens[1].tok, Tok::Ident("fnc".into()));
+            assert_eq!(tokens[0].pos.col, 1);
+            assert_eq!(tokens[1].pos.col, spelling.chars().count() as u32 + 2);
+        }
+        let tokens = lex("suspension susp2 π \"⧖ ∂ susp\" // ⧖ ∂").unwrap();
+        for (i, name) in ["suspension", "susp2", "π"].iter().enumerate() {
+            assert_eq!(tokens[i].tok, Tok::Ident((*name).into()));
+        }
+        assert_eq!(tokens[3].tok, Tok::Str("⧖ ∂ susp".into()));
+        assert_eq!(tokens[4].tok, Tok::Eof);
+    }
 }
