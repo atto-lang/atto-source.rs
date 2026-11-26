@@ -9,12 +9,13 @@
 // Runtime root slots (`__rt`): 1 current task, 2 first task, 3 last task,
 // 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes,
 // 9 admitted live plan invocations (guest-wide, including unawaited Futures),
-// 10 free frame-stack blocks (each 4096 bytes).
+// 10 free frame-stack blocks (each 4096 bytes), 11 free task records.
 //
-// Task record (80 bytes): 0 done, 8 value, 16 status (0 new, 1 suspended,
-// 2 finished), 24 entry closure, 32 frame-stack base, 40 saved frame-stack
-// top, 48 next task, 56 wake time, 64 deadline, 72 active span guard stack. A task is also a Future:
-// the first two words are the Future layout.
+// Task record (80 bytes): 0 stable Future pointer, 8 reserved, 16 status
+// (0 new, 1 suspended, 2 finished), 24 entry closure, 32 frame-stack base,
+// 40 saved frame-stack top, 48 next task, 56 wake time, 64 deadline,
+// 72 active span guard stack. Free records use offset 48 as free-list next.
+// Future record (16 bytes): 0 done, 8 value. Never reuse a Future address.
 
 fnc __box(int tag, int v): int {
   val b = __alloc(16);
@@ -140,8 +141,31 @@ fnc __task_release_stack(int t): void {
   __set_rt(10, base);
 }
 
+fnc __task_acquire_record(): int {
+  val free = __rt(11);
+  if free == 0 then return __alloc(80); fi
+  __set_rt(11, __load(free, 48));
+  __store(free, 48, 0);
+  return free;
+}
+
+fnc __task_release_record(int t): void {
+  if __load(t, 16) != 2 then __panic(10); fi
+  if __load(t, 32) != 0 then __panic(10); fi
+  if __load(t, 72) != 0 then __panic(10); fi
+  let offset = 0;
+  while offset < 80 do
+    __store(t, offset, 0);
+    offset = offset + 8;
+  done
+  __store(t, 48, __rt(11));
+  __set_rt(11, t);
+}
+
 fnc __task_spawn(int clo): int {
-  val t = __alloc(80);
+  val future = __fut_new();
+  val t = __task_acquire_record();
+  __store(t, 0, future);
   __store(t, 24, clo);
   __store(t, 32, __task_acquire_stack());
   if __rt(2) == 0 then
@@ -151,7 +175,7 @@ fnc __task_spawn(int clo): int {
   fi
   __set_rt(3, t);
   __set_rt(4, 1);
-  return t;
+  return future;
 }
 
 // Run one task until it finishes or suspends.
@@ -183,9 +207,7 @@ fnc __resume(int t): void {
     __store(t, 56, 0);
     __store(t, 64, 0);
     __store(t, 16, 2);
-    __store(t, 8, r);
-    __store(t, 0, 1);
-    __set_rt(4, 1);
+    __fut_done(__load(t, 0), r);
   fi
   __set_rt(1, 0);
 }
@@ -216,7 +238,8 @@ fnc __sched(int main): int {
           __store(previous, 48, next_task);
         fi
         if __rt(3) == t then __set_rt(3, previous); fi
-        __store(t, 48, 0);
+        // The list no longer references t, and its settled Future is separate.
+        __task_release_record(t);
       else
         previous = t;
       fi
