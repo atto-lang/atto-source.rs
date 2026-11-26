@@ -534,6 +534,8 @@ pub enum ExprKind {
     /// `handle_state(critical-read |s| -> s.field)` scope. Never ordinary
     /// class member access: the checker must prove a protected state lease.
     StateRead(StateProjection),
+    /// Restricted write callback yielding a scalar, not a callable return.
+    StateWriteValue(Vec<Stmt>, Box<Expr>),
     /// `new Class(args)`
     New(String, Vec<Expr>),
     /// `spawn Actor()`
