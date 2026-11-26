@@ -19,6 +19,12 @@ fn default_only_procedural_select_uses_normal_checked_blocks() {
 fn unsupported_or_malformed_selects_never_emit_guest_bytes() {
     for source in [
         "pub fnc main(): int { do select {} return 0; }",
+        "pub fnc main(): int { return select(3) { default: -> { return 42; } }; }",
+        "pub fnc main(): int { return select<int>(3) over default: -> { return 42; } end; }",
+        "pub fnc main(): int { return await select<int>(3) { default: -> { return 42; } }; }",
+        "pub fnc main(): int { return nb select(3) over default: -> { return 42; } end; }",
+        "pub fnc main(): int { do select(3) { default: {} } return 0; }",
+        "pub fnc main(): int { return try select(0) { default: -> { return 42; } }; }",
         "pub fnc main(): int { do select over end return 0; }",
         "pub fnc main(): int { do select { default: -> -> {} } return 0; }",
         "pub fnc main(): int { do select over default: => {} end return 0; }",

@@ -25,6 +25,12 @@ const positive = [
 ];
 const negative = [
   'do select {} return 0;',
+  'return select(3) { default: -> { return 42; } };',
+  'return select<int>(3) over default: -> { return 42; } end;',
+  'return await select<int>(3) { default: -> { return 42; } };',
+  'return nb select(3) over default: -> { return 42; } end;',
+  'do select(3) { default: {} } return 0;',
+  'return try select(0) { default: -> { return 42; } };',
   'do select { default: -> -> {} } return 0;',
   'do select { default: {} default: {} } return 0;',
   'do select { when readch ch: val v {} } return 0;',
@@ -60,5 +66,5 @@ try {
       }
     }
   }
-  console.log('SELECT_DEFAULT_GUEST_PASS 5 native/wasm32 byte-identical executions; 9 negative no-artifact cases');
+  console.log('SELECT_DEFAULT_GUEST_PASS 5 native/wasm32 byte-identical executions; 15 negative no-artifact cases');
 } finally { await rm(dir, { recursive: true, force: true }); }
