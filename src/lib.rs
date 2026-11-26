@@ -51,6 +51,9 @@ pub mod import_tree;
 pub mod static_import_graph;
 /// Checked physical layout metadata; does not admit guest reference operations.
 pub mod ref_layout;
+// Host-only substrates; no guest ownership or physical layout certification.
+pub mod owner_arena;
+pub mod layout_trace;
 pub mod layout_plan;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
