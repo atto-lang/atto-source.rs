@@ -210,6 +210,9 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
         j += 1;
         if out.len() >= MAX_DECLS { return Err(diag(t[start].pos, "E_SOURCE_LIMIT", "too many nominal definitions")); }
         let owner = name(t, j)?;
+        if owner == "DeepCopyable" {
+            return Err(diag(t[j].pos, "E_RESERVED_TYPE", "DeepCopyable is a reserved core marker"));
+        }
         j += 1;
         let mut parents = Vec::new();
         let mut contracts = Vec::new();
@@ -227,7 +230,19 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
                 j += 1;
             }
         }
-        if is(t, j, "implements") {
+        // Preserve the exact core marker for the typed class parser. Do
+        // not lower it as a structural trait or inherit it from a base.
+        if is(t, j, "implements") && is(t, j + 1, "DeepCopyable") {
+            if kind != Kind::Class || !parents.is_empty()
+                || t.get(j + 2).map(|x| &x.tok) != Some(&Tok::Lt)
+                || !is(t, j + 3, &owner)
+                || t.get(j + 4).map(|x| &x.tok) != Some(&Tok::Gt)
+                || !is(t, j + 5, "as") {
+                return Err(diag(t[j].pos, "E_COPY_OPT_IN_REQUIRED",
+                    "flat concrete class requires sole exact-self DeepCopyable marker"));
+            }
+            j += 5;
+        } else if is(t, j, "implements") {
             j += 1;
             loop {
                 if contracts.len() >= MAX_BASES { return Err(diag(t[start].pos, "E_SOURCE_LIMIT", "too many contracts")); }
