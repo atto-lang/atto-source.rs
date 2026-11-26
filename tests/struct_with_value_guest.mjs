@@ -33,6 +33,10 @@ const two = `pub fnc main(): int {
     return 0;
 }`;
 const positives = [
+    ['type-first-binding', decl + '\n' + main.replace('let p =', 'let Point p ='), '30\n200\nfalse\n'],
+    ['postfix-type-binding', decl + '\n' + main.replace('let p =', 'let p: Point ='), '30\n200\nfalse\n'],
+    ['independent-scalar-copies', decl + '\n' + main.replace('    stdio.println(p.sum());', '    let Point q = p;\n    let r: Point = copy! q;\n    stdio.println(r.sum());'), '30\n200\nfalse\n'],
+
     ['grouped', decl + '\n' + main, '30\n200\nfalse\n'],
     ['chained', chained + '\n' + main, '30\n200\nfalse\n'],
     ['postfix', decl.replace('int • sum()', 'sum(): int').replace('int <- product()', 'product(): int') + '\n' + main, '30\n200\nfalse\n'],
@@ -41,6 +45,12 @@ const positives = [
     ['origin', decl + '\n' + main.replace('10, 20', '0, 0'), '0\n0\ntrue\n'],
 ];
 const negatives = [
+    ['wrong-owner-annotation', decl + '\n' + main.replace('let p =', 'let Other p =')],
+    ['scalar-annotation-on-struct', decl + '\n' + main.replace('let p =', 'let int p =')],
+    ['runtime-const-struct', decl + '\n' + main.replace('let p =', 'const p =')],
+    ['wrong-copy-annotation', decl + '\n' + main.replace('    stdio.println(p.sum());', '    let Other q = copy! p;\n    stdio.println(q.sum());')],
+    ['unsupported-deep-copy', decl + '\n' + main.replace('    stdio.println(p.sum());', '    let q = copy!! p;\n    stdio.println(q.sum());')],
+
     ['asterisk', decl.replace('is_origin() : bool', 'bool * is_origin()') + '\n' + main],
     ['missing-field', decl.replace('self.y = y;', '') + '\n' + main],
     ['bad-field-read', decl.replace('self.x = x;', 'self.x = self.y;') + '\n' + main],
@@ -66,6 +76,9 @@ try {
         assert.equal(result.status, 0, name + ': ' + result.stderr);
         const bytes = await readFile(output);
         const module = new WebAssembly.Module(bytes);
+        const exports = WebAssembly.Module.exports(module);
+        assert.ok(exports.every(e => !e.name.startsWith('$struct_')), name + ': generated symbol escaped');
+        assert.ok(exports.every(e => e.kind !== 'memory'), name + ': unexpected guest memory');
         const imports = WebAssembly.Module.imports(module);
         assert.ok(imports.every(i => i.module === 'atto' && ['print_i64','print_bool','print_newline'].includes(i.name)), name);
         let stdout = '';
