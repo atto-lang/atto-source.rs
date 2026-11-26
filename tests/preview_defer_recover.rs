@@ -686,3 +686,25 @@ fn cleanup_pipeline_chain_preserves_scalar_call_checks() {
         assert!(compile(src).is_err(), "unsupported callback pipeline emitted guest Wasm: {src}");
     }
 }
+
+#[test]
+fn canonical_bang_exception_pipeline_keeps_typed_unwind_boundary() {
+    pass(r#"pub fnc main(): int {
+        recover 42 |> (|int x| -> |err, ctx| -> { return x; });
+        raise! new Error("original");
+    }"#);
+    pass(r#"pub fnc main(): int {
+        try { throw! Error("ordinary"); }
+        catch (Error err) { return 42; }
+    }"#);
+    reject("E_TYPE", r#"pub fnc main(): int { raise! "not Error"; }"#);
+    reject("E_BANG_KEYWORD_WHITESPACE", r#"pub fnc main(): int { raise!new Error("bad"); }"#);
+    reject("E_TRAP_BANG_RESULT_UNVERIFIED", r#"pub fnc main(): int { trap! 7; return 42; }"#);
+    for src in [
+        r#"pub fnc main(): int { raise!! new Error("bad"); }"#,
+        r#"pub fnc main(): int { raise !new Error("bad"); }"#,
+        r#"pub fnc main(): int { panic! Error("bad"); }"#,
+    ] {
+        assert!(compile(src).is_err(), "unsupported exception form emitted Wasm: {src}");
+    }
+}
