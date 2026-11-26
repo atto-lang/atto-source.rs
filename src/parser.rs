@@ -629,7 +629,7 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> R<Program> {
         if self.unsafe_syntax_analysis {
-            crate::unsafe_admission::analyze(&self.toks)?;
+            crate::unsafe_admission::analyze_structure(&self.toks)?;
         } else {
             // Any direct Parser entry is also a guest-context boundary.
             crate::unsafe_admission::reject_unlowered(&self.toks)?;
@@ -720,6 +720,9 @@ impl Parser {
         }
         prog.type_names = std::mem::take(&mut self.type_names);
         prog.array_types = std::mem::take(&mut self.array_types);
+        if self.unsafe_syntax_analysis {
+            crate::check::validate_unsafe_context(&prog)?;
+        }
         Ok(prog)
     }
 
