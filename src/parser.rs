@@ -2314,6 +2314,18 @@ impl Parser {
                 Ok(Stmt::Continue(pos))
             }
             Some("match") => self.parse_match(false),
+            Some("do") if self.word_at(1) == Some("sync") && self.word_at(2) == Some("task") => {
+                // The discard flag is syntax, not an implicit cast. Reject
+                // non-void type parameters BEFORE parsing an untrusted body,
+                // so unsupported body syntax cannot mask E_TASK_RETURN_TYPE.
+                self.advance();
+                let task_pos = self.pos();
+                let kind = self.parse_inline_task(true)?;
+                self.terminator()?;
+                Ok(Stmt::Expr(Expr { kind, pos: task_pos }))
+            }
+            Some("do") if self.word_at(1) == Some("task") =>
+                Err(unsupported(pos, "supervised task statements")),
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
@@ -2385,6 +2397,9 @@ impl Parser {
                     pos,
                 }))
             }
+            Some("sync") if self.word_at(1) == Some("task") =>
+                Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "standalone sync task requires 'do sync task'; a value-producing sync task must be used as an expression")),
             Some("trap") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;
@@ -2494,6 +2509,13 @@ impl Parser {
                         "E_UNSUPPORTED",
                         "'++' and '--' exist only in a for update clause",
                     ));
+                }
+                if matches!(e.kind, ExprKind::InlineTask { .. }) {
+                    // Parentheses reset the primary expression but do NOT
+                    // introduce a value-consuming context: (sync task {});
+                    // must not bypass the mandatory 'do' statement prefix.
+                    return Err(Diagnostic::new(e.pos, "E_SYNTAX",
+                        "standalone sync task requires 'do sync task'; use sync task<T> only in a value context"));
                 }
                 self.terminator()?;
                 Ok(Stmt::Expr(e))
@@ -3973,6 +3995,26 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+    /// Lexical inline task. Parsing is not permission to execute effects:
+    /// the checker separately allowlists primitive bindings, assignment,
+    /// branches and task-local return. All other statements fail closed.
+    fn parse_inline_task(&mut self, discard: bool) -> R<ExprKind> {
+        let pos = self.pos();
+        self.expect_word("sync")?;
+        self.expect_word("task")?;
+        let declared_type = if self.eat(&Tok::Lt) {
+            let t = self.parse_type()?;
+            self.expect(Tok::Gt, "'>' after sync task type")?;
+            Some(t)
+        } else { None };
+        if discard && declared_type.is_some_and(|ty| ty != Type::Void) {
+            return Err(Diagnostic::new(pos, "E_TASK_RETURN_TYPE",
+                "'do sync task' permits only <void>; non-void inline results must be used in an expression"));
+        }
+        let body = self.parse_block()?;
+        Ok(ExprKind::InlineTask { declared_type, body, discard })
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -4056,6 +4098,10 @@ impl Parser {
                     }
                     self.advance();
                     ExprKind::Spawn(actor)
+                }
+                "sync" if self.word_at(1) == Some("task") => self.parse_inline_task(false)?,
+                "task" if matches!(self.peek_at(1), Tok::Lt | Tok::LBrace) => {
+                    return Err(unsupported(pos, "typed or inferred task expressions"));
                 }
                 "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))

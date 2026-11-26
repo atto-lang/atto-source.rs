@@ -41,6 +41,12 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute caller-local typed sync task guests and fail-closed cases
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node --check tests/sync_task_inline_guest.mjs
+          node tests/sync_task_inline_guest.mjs
       - name: Execute constant import guests and fail-closed import checks
         env:
           ATTOC: target/release/attoc
