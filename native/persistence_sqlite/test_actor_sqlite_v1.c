@@ -101,8 +101,31 @@ int main(void){
     unsigned char bad[36];memcpy(bad,one,sizeof(bad));bad[35]^=1;
     must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA,bad,sizeof(bad),&seq),ATTO_ACTOR_STORE_CORRUPT,"invalid checksum");
     must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA+1,one,sizeof(one),&seq),ATTO_ACTOR_STORE_SCHEMA,"invalid schema");
+    unsigned char alternate[36];snapshot(SCHEMA+1,43,alternate);
+    must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA+1,alternate,sizeof(alternate),&seq),
+         ATTO_ACTOR_STORE_SCHEMA,"implicit schema migration rejected");
+    assert(seq==0);
+    recover(db,"actor:1",42,1);
     atto_actor_db *other=NULL;must(atto_actor_db_open(path,&other),0,"second instance open");
-    uint64_t new_epoch=0;must(atto_actor_activate(other,"actor:1",&new_epoch),0,"fence first");assert(new_epoch==epoch+1);
+    uint64_t new_epoch=99;
+    must(atto_actor_activate_and_load(other,"actor:1",SCHEMA+1,&new_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_SCHEMA,"wrong schema revival rolls back epoch");
+    assert(new_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_load_fenced(db,"actor:1",epoch,SCHEMA,&missing,&missing_len,&missing_seq),0,"old owner survives failed activation");
+    assert(missing_len==36 && missing_seq==1 && memcmp(missing,one,36)==0);
+    atto_actor_free(missing);
+    must(atto_actor_activate_and_load(other,"actor:1",SCHEMA,&new_epoch,&missing,&missing_len,&missing_seq),0,"atomic revival");
+    assert(new_epoch==epoch+1 && missing_len==36 && missing_seq==1 && memcmp(missing,one,36)==0);
+    atto_actor_free(missing);
+    must(atto_actor_load_fenced(db,"actor:1",epoch,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_STALE_EPOCH,"old owner cannot restore");
+    assert(missing==NULL && missing_len==0 && missing_seq==0);
+    uint64_t fresh=0;
+    must(atto_actor_activate_and_load(other,"actor:fresh",SCHEMA,&fresh,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_ABSENT,"fresh actor atomic activation");
+    assert(fresh==1 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_load_fenced(other,"actor:fresh",fresh+1,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_STALE_EPOCH,"absence does not bypass fencing");
     must(atto_actor_commit(db,"actor:1",epoch,1,SCHEMA,one,sizeof(one),&seq),ATTO_ACTOR_STORE_STALE_EPOCH,"old epoch fenced");
     unsigned char two[36];snapshot(SCHEMA,100,two);
     must(atto_actor_commit(other,"actor:1",new_epoch,1,SCHEMA,two,sizeof(two),&seq),0,"new epoch commit");assert(seq==2);
@@ -114,9 +137,90 @@ int main(void){
     must(atto_actor_activate(db,"actor:1",&new_epoch),0,"new final epoch");assert(new_epoch>=4);
     must(atto_actor_commit(db,"actor:1",new_epoch,2,SCHEMA,two,sizeof(two),&seq),ATTO_ACTOR_STORE_STALE_SEQUENCE,"reject replay");
     must(atto_actor_commit(db,"actor:1",new_epoch,3,SCHEMA,two,sizeof(two),&seq),0,"final commit");assert(seq==4);
+    /* A valid new checkpoint must not silently erase corrupted durable history. */
+    sqlite3 *raw=NULL;
+    assert(sqlite3_open(path,&raw)==SQLITE_OK);
+    /* The stored tag must agree with the embedded schema even if the caller
+     * requests another schema. Corruption is not a migration opportunity. */
+    assert(sqlite3_exec(raw,"UPDATE atto_actor_snapshots SET schema_tag=zeroblob(8) WHERE actor_id='actor:1';",NULL,NULL,NULL)==SQLITE_OK);
+    must(atto_actor_load(db,"actor:1",SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"inconsistent stored schema tag on load");
+    must(atto_actor_commit(db,"actor:1",new_epoch,4,SCHEMA,two,sizeof(two),&seq),
+         ATTO_ACTOR_STORE_CORRUPT,"inconsistent stored schema tag on commit");
+    assert(seq==0);
+    unsigned char zero_schema[36];snapshot(0,123,zero_schema);
+    must(atto_actor_commit(db,"actor:1",new_epoch,4,0,zero_schema,sizeof(zero_schema),&seq),
+         ATTO_ACTOR_STORE_CORRUPT,"caller matching corrupt tag cannot overwrite");
+    sqlite3_stmt *restore=NULL;
+    assert(sqlite3_prepare_v2(raw,"UPDATE atto_actor_snapshots SET schema_tag=?1 WHERE actor_id='actor:1';",-1,&restore,NULL)==SQLITE_OK);
+    assert(sqlite3_bind_blob(restore,1,two+9,8,SQLITE_TRANSIENT)==SQLITE_OK);
+    assert(sqlite3_step(restore)==SQLITE_DONE);
+    sqlite3_finalize(restore);
+    assert(sqlite3_exec(raw,"UPDATE atto_actor_snapshots SET snapshot=zeroblob(36) WHERE actor_id='actor:1';",NULL,NULL,NULL)==SQLITE_OK);
+    assert(sqlite3_close(raw)==SQLITE_OK);
+    must(atto_actor_commit(db,"actor:1",new_epoch,4,SCHEMA,two,sizeof(two),&seq),
+         ATTO_ACTOR_STORE_CORRUPT,"corrupt prior checkpoint cannot be overwritten");
+    assert(seq==0);
+    must(atto_actor_load(db,"actor:1",SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"corrupt row retained for recovery");
+    assert(missing==NULL && missing_len==0 && missing_seq==0);
+    uint64_t failed_epoch=99;
+    must(atto_actor_activate_and_load(db,"actor:1",SCHEMA,&failed_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"corrupt restore fails atomically");
+    assert(failed_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_load_fenced(db,"actor:1",new_epoch,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"failed revival did not rotate epoch");
+    /* Delete only the checkpoint, not its epoch row. Reopening cannot
+     * manufacture a new actor or repair the missing checkpoint. */
+    assert(sqlite3_open(path,&raw)==SQLITE_OK);
+    assert(sqlite3_exec(raw,"DELETE FROM atto_actor_snapshots WHERE actor_id='actor:1';",NULL,NULL,NULL)==SQLITE_OK);
+    assert(sqlite3_close(raw)==SQLITE_OK);
+    atto_actor_db_close(db);
+    must(atto_actor_db_open(path,&db),0,"reopen after checkpoint deletion");
+    must(atto_actor_activate_and_load(db,"actor:1",SCHEMA,&failed_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"deleted checkpoint not a fresh actor");
+    assert(failed_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_commit(db,"actor:1",new_epoch,0,SCHEMA,two,sizeof(two),&seq),
+         ATTO_ACTOR_STORE_CORRUPT,"cannot reset initialized actor at sequence zero");
+    assert(seq==0);
+    must(atto_actor_load_fenced(db,"actor:fresh",fresh,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_ABSENT,"genuinely uninitialized actor remains absent across reopen");
     atto_actor_db_close(db);
     /* Delete test database and journal artifacts from trusted tempdir. */
     char wal[532],shm[532];snprintf(wal,sizeof(wal),"%s-wal",path);snprintf(shm,sizeof(shm),"%s-shm",path);
+    unlink(wal);unlink(shm);unlink(path);
+    /* Migrate a real pre-marker schema, including an ambiguous epoch-only row. */
+    assert(sqlite3_open(path,&raw)==SQLITE_OK);
+    assert(sqlite3_exec(raw,
+        "CREATE TABLE atto_actor_epochs(actor_id TEXT PRIMARY KEY NOT NULL,epoch INTEGER NOT NULL CHECK(epoch>0));"
+        "CREATE TABLE atto_actor_snapshots(actor_id TEXT PRIMARY KEY NOT NULL REFERENCES atto_actor_epochs(actor_id),"
+        "sequence INTEGER NOT NULL CHECK(sequence>0),schema_tag BLOB NOT NULL CHECK(length(schema_tag)=8),"
+        "snapshot BLOB NOT NULL CHECK(length(snapshot)<=4096 AND length(snapshot)>=27));"
+        "INSERT INTO atto_actor_epochs VALUES('legacy:known',7),('legacy:ambiguous',5);",
+        NULL,NULL,NULL)==SQLITE_OK);
+    sqlite3_stmt *legacy=NULL;
+    assert(sqlite3_prepare_v2(raw,"INSERT INTO atto_actor_snapshots VALUES('legacy:known',3,?1,?2);",-1,&legacy,NULL)==SQLITE_OK);
+    assert(sqlite3_bind_blob(legacy,1,one+9,8,SQLITE_TRANSIENT)==SQLITE_OK);
+    assert(sqlite3_bind_blob(legacy,2,one,sizeof(one),SQLITE_TRANSIENT)==SQLITE_OK);
+    assert(sqlite3_step(legacy)==SQLITE_DONE);
+    sqlite3_finalize(legacy);
+    assert(sqlite3_close(raw)==SQLITE_OK);
+    must(atto_actor_db_open(path,&db),0,"migrate legacy schema");
+    must(atto_actor_activate_and_load(db,"legacy:known",SCHEMA,&new_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_OK,"legacy snapshot retained");
+    assert(new_epoch==8 && missing_seq==3 && missing_len==36 && memcmp(missing,one,36)==0);
+    atto_actor_free(missing);
+    must(atto_actor_activate_and_load(db,"legacy:ambiguous",SCHEMA,&failed_epoch,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_CORRUPT,"legacy absence quarantined");
+    assert(failed_epoch==0 && missing==NULL && missing_len==0 && missing_seq==0);
+    must(atto_actor_activate_and_load(db,"new:actor",SCHEMA,&fresh,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_ABSENT,"new identity after migration");
+    assert(fresh==1 && missing_seq==0);
+    atto_actor_db_close(db);
+    must(atto_actor_db_open(path,&db),0,"idempotent migration reopen");
+    must(atto_actor_load_fenced(db,"new:actor",fresh,SCHEMA,&missing,&missing_len,&missing_seq),
+         ATTO_ACTOR_STORE_ABSENT,"reopen does not reclassify fresh actors");
+    atto_actor_db_close(db);
     unlink(wal);unlink(shm);unlink(path);rmdir(dir);
     puts("PASS native sqlite actor state: epoch CAS, corruption, SIGKILL after/before COMMIT, reload");
     return 0;

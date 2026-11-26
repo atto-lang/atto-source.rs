@@ -1,0 +1,13 @@
+// expect-error: E_BORROW
+// A temporary ADT has no independently proven owner lifetime.
+fnc option_value(): Option<int> { return Some(42); }
+fnc present(Option<int> value): bool {
+  match value over
+    on Some(item) -> { return true; }
+    on None -> { return false; }
+  end
+}
+pub fnc main(): int {
+  if present(borrow! option_value()) then return 42; fi
+  return 0;
+}

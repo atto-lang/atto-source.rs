@@ -1,0 +1,59 @@
+name: Rust core Option/Result borrowed guest (exact-head, real Wasm)
+on:
+  pull_request:
+    paths:
+      - 'src/check.rs'
+      - 'core/option.atto'
+      - 'core/result.atto'
+      - 'tests/core_option_result/**'
+      - 'tests/core_option_result_scalar.rs'
+      - 'tests/core_option_result_namespace.rs'
+      - '.github/workflows/core-option-result-borrow-exact-head.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust-compiled-wasm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact immutable source PR head without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source Git head and complete root tree before compilation
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git status --porcelain)"
+          printf 'RUST_OPTION_BORROW_EXACT_HEAD=%s\n' "$EXPECTED_HEAD"
+          printf 'RUST_OPTION_BORROW_ROOT_TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+          for path in src/check.rs core/option.atto core/result.atto tests/core_option_result_scalar.rs tests/core_option_result/borrowed_read_42.atto tests/core_option_result/negative_affine_borrow_escape.atto tests/core_option_result/negative_unproved_affine_option.atto tests/core_option_result/negative_borrow_option_temporary.atto tests/core_option_result/negative_borrow_mut_option.atto tests/core_option_result/negative_borrow_option_return.atto; do
+            test "$(git rev-parse "HEAD:$path")" = "$(git hash-object --no-filters "$path")"
+          done
+      - name: Install Node used to run actual compiled WebAssembly
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - name: Print Rust and Node compiler identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+          node --version
+      - name: Execute real Rust-to-Wasm guest and typed negative tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --test core_option_result_scalar -- --nocapture
+          cargo test --locked --test core_option_result_namespace -- --nocapture
+          cargo test --locked --test ownership_complete_vocabulary -- --nocapture
+          printf 'RUST_COMPILED_WASM_GUEST_SUITE=EXECUTED_ONLY_IF_ALL_TESTS_PASSED\n'
+          printf 'NATIVE_AOT_AND_SANITIZERS=NOT_EXECUTED\n'

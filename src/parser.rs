@@ -304,7 +304,8 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
-        Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        Some(Stmt::Block(inner) | Stmt::UsingTelemetry { body: inner, .. }) =>
+            guard_failure_exits(inner),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
@@ -547,11 +548,12 @@ impl Parser {
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Result types")?;
-                if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                match (good, bad) {
+                    (Type::Int, Type::Str) => Type::ResultIntStr,
+                    (Type::Int, Type::Int) => Type::ResultIntInt,
+                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser ADT v1 admits only Result<int,string> and Result<int,int>")),
                 }
-                Type::ResultIntStr
             },
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
@@ -1500,6 +1502,7 @@ impl Parser {
                     out.push((ty, *pos));
                 }
                 Stmt::Block(body) | Stmt::StateWrite { body, .. } |
+                Stmt::UsingTelemetry { body, .. } |
                 Stmt::Loop { body, .. } | Stmt::While { body, .. } |
                 Stmt::ForIn { body, .. } => {
                     for stmt in body { collect(stmt, params, out)?; }
@@ -2156,6 +2159,9 @@ impl Parser {
         }
         let word = self.word_at(0).map(str::to_owned);
         match word.as_deref() {
+            Some("using") if self.word_at(1) == Some("telemetry")
+                && self.peek_at(2) == &Tok::Dot && self.word_at(3) == Some("span") =>
+                self.parse_telemetry_scope(pos),
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
             Some("val" | "const" | "let") => {
@@ -2457,6 +2463,31 @@ impl Parser {
         }
     }
 
+
+    fn parse_telemetry_scope(&mut self, pos: Pos) -> R<Stmt> {
+        for _ in 0..4 { self.advance(); }
+        self.expect(Tok::LParen, "'('")?;
+        let Tok::Str(operation) = self.peek().clone() else {
+            return Err(Diagnostic::new(self.pos(), "E_TELEMETRY_NAME",
+                "telemetry.span requires a literal operation name"));
+        };
+        if operation.is_empty() || operation.len() > 256 ||
+            operation.chars().any(char::is_control)
+        {
+            return Err(Diagnostic::new(self.pos(), "E_TELEMETRY_NAME",
+                "telemetry.span requires 1..256 UTF-8 bytes without control characters"));
+        }
+        self.advance();
+        self.expect(Tok::RParen, "')'")?;
+        self.expect_word("as")?;
+        let (alias, alias_pos) = self.ident("a span alias")?;
+        if alias == "_" {
+            return Err(Diagnostic::new(alias_pos, "E_TELEMETRY_ALIAS",
+                "telemetry.span requires a named alias"));
+        }
+        let body = self.parse_block()?;
+        Ok(Stmt::UsingTelemetry { operation, alias, body, pos })
+    }
 
     /// The Java/LLVM compound-keyword contract requires exactly adjacent
     /// ASCII critical-read / critical-write, not spaced subtraction tokens.
@@ -3235,12 +3266,20 @@ impl Parser {
                 // written inside an explicitly parenthesized subexpression.
                 let old = self.ascription_colon;
                 self.ascription_colon = false;
-                let a = self.parse_expr();
+                let a = if *self.peek() == Tok::LBrace {
+                    self.parse_single_result_ternary_block()
+                } else {
+                    self.parse_expr()
+                };
                 self.ascription_colon = old;
                 let a = a?;
                 self.expect(Tok::Colon, "':'")?;
                 self.enter()?;
-                let b = self.parse_ternary();
+                let b = if *self.peek() == Tok::LBrace {
+                    self.parse_single_result_ternary_block()
+                } else {
+                    self.parse_ternary()
+                };
                 self.leave();
                 return Ok(Expr {
                     kind: ExprKind::Ternary(Box::new(c), Box::new(a), Box::new(b?)),
@@ -3250,6 +3289,28 @@ impl Parser {
             _ => {}
         }
         Ok(c)
+    }
+
+    // Direct braces commit to an executable arm, not a record literal.
+    // A single explicit result needs no new scope or synthesized closure.
+    // Multi-statement arms require checked lexical cleanup lowering.
+    fn parse_single_result_ternary_block(&mut self) -> R<Expr> {
+        self.expect(Tok::LBrace, "'{'")?;
+        if !self.eat_word("return") && !self.eat(&Tok::Caret) {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "ternary block requires explicit return or ^; statement prefixes are not lowered"));
+        }
+        let old = self.ascription_colon;
+        self.ascription_colon = true;
+        let value = self.parse_expr();
+        self.ascription_colon = old;
+        let value = value?;
+        self.eat(&Tok::Semi);
+        if !self.eat(&Tok::RBrace) {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "single-result ternary block requires closing '}'"));
+        }
+        Ok(value)
     }
 
     /// Short-circuit logical operators are distinct from comma/pipe condition

@@ -1,4 +1,8 @@
-use oreslang_source_rs::trace_sites::{TraceError, TraceEvent, TraceMode, TraceSites};
+// Exercise the host profiling substrate without adding it to the browser compiler API.
+#[path = "../src/trace_sites.rs"]
+mod trace_sites;
+
+use trace_sites::{TraceError, TraceEvent, TraceMode, TraceSites};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
