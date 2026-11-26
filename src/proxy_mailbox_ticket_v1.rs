@@ -39,6 +39,7 @@ struct Inner {
 }
 pub struct HostProxyMailboxTicketsV1 {
     owner: Arc<()>,
+    tenant: u64,
     actor: u64,
     incarnation: u64,
     capacity: usize,
@@ -51,9 +52,9 @@ fn valid(route: ReceiptIdentityV1) -> bool {
         route.placement_epoch != 0 && route.message_id != 0 && route.attempt != 0
 }
 impl HostProxyMailboxTicketsV1 {
-    pub fn new(actor: u64, incarnation: u64, capacity: usize) -> Option<Self> {
-        if actor == 0 || incarnation == 0 || !(1..=4096).contains(&capacity) { return None; }
-        Some(Self { owner: Arc::new(()), actor, incarnation, capacity,
+    pub fn new(tenant: u64, actor: u64, incarnation: u64, capacity: usize) -> Option<Self> {
+        if tenant == 0 || actor == 0 || incarnation == 0 || !(1..=4096).contains(&capacity) { return None; }
+        Some(Self { owner: Arc::new(()), tenant, actor, incarnation, capacity,
             inner: Mutex::new(Inner { queue: VecDeque::new(), current: None,
                 closed: false, fenced: false, admitted: 0, processed: 0,
                 failed: 0, abandoned: 0 }) })
@@ -62,7 +63,7 @@ impl HostProxyMailboxTicketsV1 {
     // No ticket is issued on invalid, stale, closed or full admission.
     pub fn admit(&self, route: ReceiptIdentityV1, value: i64) -> Admission {
         if !valid(route) { return Admission::Invalid; }
-        if route.target_actor != self.actor ||
+        if route.tenant != self.tenant || route.target_actor != self.actor ||
             route.target_incarnation != self.incarnation { return Admission::Stale; }
         let mut inner = self.inner.lock().expect("host mailbox poisoned");
         if inner.closed || inner.fenced { return Admission::Closed; }
