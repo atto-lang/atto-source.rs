@@ -182,6 +182,10 @@ pub enum TExpr {
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
+    /// Checked closed scalar unwrap: failure is a private ordinary throw,
+    /// not a return, raise, or engine trap. The receiver is evaluated once.
+    AdtUnwrap { source: Box<TE>, tmp: u32, error_tmp: u32,
+        message_offset: u32, message_len: u32, success_tag: u32 },
     /// Checked physical-array cell load at a compiler-planned in-bounds
     /// byte offset. Never represented as a class field or untrusted pointer.
     CollectionLoad { array: Box<TE>, offset: u32 },
@@ -1527,9 +1531,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         &|e| matches!(e.e, TExpr::IntParse { .. })));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-            TExpr::ErrorNew { .. } | TExpr::IntParse { .. })));
+            TExpr::ErrorNew { .. } | TExpr::IntParse { .. } | TExpr::AdtUnwrap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
-        || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
+        || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. } | TExpr::AdtUnwrap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
     let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     Ok(TProgram {
@@ -1589,6 +1593,8 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::StateFieldRead { obj: v, .. }
         | TExpr::PrintObj { obj: v, .. } | TExpr::IntParse { value: v, .. } =>
             expr_escape_effects(v, effects),
+        TExpr::AdtUnwrap { source, .. } =>
+            expr_escape_effects(source, effects).union(EscapeEffects { throws: true, raises: false }),
         TExpr::Trap { value: v, .. } =>
             expr_escape_effects(v, effects).without_throw(),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b)
@@ -2358,7 +2364,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ErrorNew { .. } |
-        TExpr::AdtPropagate { .. } | TExpr::IntParse { .. } => false,
+        TExpr::AdtPropagate { .. } | TExpr::AdtUnwrap { .. } | TExpr::IntParse { .. } => false,
     }
 }
 
@@ -2430,7 +2436,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
-        TExpr::AdtPropagate { source, .. } => any_in(source, f),
+        TExpr::AdtPropagate { source, .. } | TExpr::AdtUnwrap { source, .. } => any_in(source, f),
         TExpr::IntParse { value, .. } => any_in(value, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
@@ -2459,7 +2465,7 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
 fn uses_str(e: &TE) -> bool {
     e.ty == Type::Str
         || matches!(e.e, TExpr::Str(..) | TExpr::StrConst(..) |
-            TExpr::PrintStrVal { .. } | TExpr::IntParse { .. })
+            TExpr::PrintStrVal { .. } | TExpr::IntParse { .. } | TExpr::AdtUnwrap { .. })
         || matches!(&e.e, TExpr::PrintObj { pieces, .. } if pieces.iter().any(|p| matches!(p, PrintPiece::Field(_, Type::Str))))
 }
 
@@ -4861,6 +4867,24 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn method_on(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if name == "unwrap" && matches!(recv.ty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntError) {
+            if self.owner != Owner::TopLevel || self.cleanup_depth > 0 || self.finally_depth > 0
+                || self.loops != 0 {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "checked unwrap outside the top-level scalar function profile needs audited cleanup integration"));
+            }
+            self.arity("Option/Result.unwrap", 0, args.len(), pos)?;
+            let (success_tag, message) = if recv.ty == Type::OptionInt {
+                (1, "called Option::unwrap() on a None value")
+            } else {
+                (0, "called Result::unwrap() on an Err value")
+            };
+            let tmp = self.temp(recv.ty, pos)?;
+            let error_tmp = self.temp(Type::Error, pos)?;
+            let (message_offset, message_len) = self.string(message, pos)?;
+            return Ok(TE { e: TExpr::AdtUnwrap { source: Box::new(recv),
+                tmp, error_tmp, message_offset, message_len, success_tag }, ty: Type::Int });
+        }
         if recv.ty == Type::Str {
             return self.string_method(recv, name, args, pos);
         }
