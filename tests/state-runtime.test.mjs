@@ -66,3 +66,70 @@ test('bounded instances and forged pointer fail closed', () => {
   runtime.imports.state_leave(t);
   runtime.complete();
 });
+
+
+test('throwing observers cannot orphan tickets or interrupt retirement', () => {
+  const events=[];
+  const runtime=createStateRuntime({onEvent:e=>{
+    events.push(e.kind);
+    assert.equal(Object.isFrozen(e),true);
+    throw new Error('observer failed');
+  }});
+  const {state_register,state_enter,state_leave}=runtime.imports;
+  state_register(0);
+  const ticket=state_enter(0,1);
+  assert.equal(typeof ticket,'bigint');
+  assert.equal(runtime.snapshot().active,1);
+  runtime.beginRetire(0);
+  assert.equal(runtime.quiescent(0),false);
+  state_leave(ticket);
+  assert.equal(runtime.quiescent(0),true);
+  runtime.complete();
+  assert.equal(runtime.snapshot().quiescent,true);
+  assert.deepEqual(events,['register','enter','retire','leave','complete']);
+  assert.equal(runtime.observerFailureCount(),5);
+});
+
+test('observer cannot reenter any mutating admission operation', () => {
+  let runtime, ticket;
+  let probes=0;
+  runtime=createStateRuntime({onEvent:e=>{
+    if (e.kind!=='enter') return;
+    const {state_register,state_enter,state_leave}=runtime.imports;
+    for (const action of [
+      ()=>state_register(8), ()=>state_enter(0,0),
+      ()=>state_leave(ticket), ()=>runtime.beginRetire(0),
+      ()=>runtime.complete(), ()=>runtime.abort(),
+    ]) {
+      assert.throws(action,/observer cannot mutate admission/);
+      probes++;
+    }
+    assert.equal(runtime.snapshot().active,1);
+  }});
+  runtime.imports.state_register(0);
+  ticket=runtime.imports.state_enter(0,1);
+  assert.equal(probes,6);
+  assert.equal(runtime.observerFailureCount(),0);
+  assert.equal(runtime.snapshot().containers,1);
+  assert.equal(runtime.snapshot().retired,false);
+  runtime.imports.state_leave(ticket);
+  runtime.complete();
+});
+
+test('observer reentry failure is isolated during physical abort', () => {
+  let runtime;
+  runtime=createStateRuntime({onEvent:e=>{
+    if (e.kind==='abort') runtime.imports.state_register(8);
+  }});
+  runtime.imports.state_register(0);
+  const ticket=runtime.imports.state_enter(0,1);
+  runtime.abort();
+  assert.equal(runtime.observerFailureCount(),1);
+  assert.equal(runtime.snapshot().active,0);
+  assert.equal(runtime.snapshot().quiescent,true);
+  assert.throws(()=>runtime.imports.state_leave(ticket),/replayed/);
+});
+
+test('invalid observer rejected at runtime construction', () => {
+  assert.throws(()=>createStateRuntime({onEvent:42}),/invalid state observer/);
+});
