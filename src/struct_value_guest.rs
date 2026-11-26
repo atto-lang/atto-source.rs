@@ -17,6 +17,10 @@ fn variable(name: &str, pos: Pos) -> Expr {
 fn binding(name: String, ty: Type, init: Expr, pos: Pos) -> Stmt {
     Stmt::Bind { kind: BindKind::Val, name, ty: Some(ty), init, pos }
 }
+fn field_binding(name: String, ty: Type, init: Expr, pos: Pos, writable: bool) -> Stmt {
+    Stmt::Bind { kind: if writable { BindKind::Let } else { BindKind::Val },
+        name, ty: Some(ty), init, pos }
+}
 fn internal(kind: &str, index: usize, slot: usize) -> String {
     // '$' cannot appear in a source identifier, so source cannot capture or
     // call compiler-generated local and method symbols.
@@ -100,19 +104,38 @@ fn constructor_block(
     Ok(())
 }
 
+fn mutating_statements(m: &Method, fields: &Slots, params: &Slots) -> R<Vec<Stmt>> {
+    let mut out = Vec::new();
+    for (index, stmt) in m.body.iter().enumerate() {
+        match stmt {
+            Stmt::FieldAssign { target, field, value, pos }
+                if matches!(&target.kind, ExprKind::SelfRef) => {
+                let local = fields.get(field).ok_or_else(|| denied(*pos, "unknown mutable receiver field"))?;
+                out.push(Stmt::Assign { name: local.clone(), value: member_expr(value, params, fields)?, pos: *pos });
+            }
+            Stmt::Return(None, _) if index + 1 == m.body.len() => {}
+            _ => return Err(denied(m.pos, "mutable method requires closed scalar self assignments and optional final void return")),
+        }
+    }
+    Ok(out)
+}
+
 struct MethodEntry {
     function: String,
     arity: usize,
     parameter_types: Vec<Type>,
     result: Type,
+    mutable_index: Option<usize>,
 }
 struct LocalValue {
     fields: Vec<String>,
+    writable: bool,
 }
 struct MainLower<'a> {
     decl: &'a StructWithTarget,
     methods: &'a BTreeMap<(String, usize), Vec<MethodEntry>>,
     type_names: &'a [(String, Pos)],
+    writable_bindings: &'a [Pos],
     names: BTreeSet<String>,
     scalars: BTreeMap<String, Type>,
     values: BTreeMap<String, LocalValue>,
@@ -184,6 +207,9 @@ impl MainLower<'_> {
                 if candidates.next().is_some() || value.fields.len() + args.len() != method.arity {
                     return Err(denied(pos, "ambiguous or invalid flattened method signature"));
                 }
+                if method.mutable_index.is_some() {
+                    return Err(denied(pos, "mutable struct method is a standalone void statement"));
+                }
                 let mut actual: Vec<_> = value.fields.iter().map(|s| variable(s, pos)).collect();
                 actual.extend(lowered);
                 ExprKind::Call(method.function.clone(), actual)
@@ -194,6 +220,7 @@ impl MainLower<'_> {
     }
 
     fn construct(&mut self, name: &str, args: &[Expr], pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
+        let writable = self.writable_bindings.contains(&pos);
         let lowered = args.iter().map(|arg| self.expr(arg)).collect::<R<Vec<_>>>()?;
         let types = lowered.iter().map(|arg| self.scalar_type(arg)).collect::<R<Vec<_>>>()?;
         let mut candidates = self.decl.constructors.iter().filter(|(_, c)|
@@ -246,10 +273,10 @@ impl MainLower<'_> {
             for (i, (field, ty)) in self.decl.fields.iter().enumerate() {
                 let scratch = initialized.get(field).ok_or_else(|| denied(pos, "missing constructor field"))?;
                 let local = internal("field", id, i);
-                out.push(binding(local.clone(), *ty, variable(scratch, pos), pos));
+                out.push(field_binding(local.clone(), *ty, variable(scratch, pos), pos, writable));
                 fields.push(local);
             }
-            self.values.insert(name.to_owned(), LocalValue { fields });
+            self.values.insert(name.to_owned(), LocalValue { fields, writable });
             return Ok(());
         }
         for stmt in &ctor.body {
@@ -263,12 +290,12 @@ impl MainLower<'_> {
                 .ok_or_else(|| denied(*at, "unknown constructor field"))?;
             let local = internal("field", id, i);
             let init = member_expr(value, &params, &initialized)?;
-            out.push(binding(local.clone(), *ty, init, *at));
+            out.push(field_binding(local.clone(), *ty, init, *at, writable));
             initialized.insert(field.clone(), local);
         }
         let fields = self.decl.fields.iter().map(|(n, _)| initialized.get(n).cloned()
             .ok_or_else(|| denied(pos, "constructor leaves uninitialized field"))).collect::<R<Vec<_>>>()?;
-        self.values.insert(name.to_owned(), LocalValue { fields });
+        self.values.insert(name.to_owned(), LocalValue { fields, writable });
         Ok(())
     }
 
@@ -292,6 +319,7 @@ impl MainLower<'_> {
     // Flat scalar values are copied into distinct immutable locals, never
     // aliased or passed through the identity-bearing class copy machinery.
     fn copy_value(&mut self, name: &str, source: &str, pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
+        let writable = self.writable_bindings.contains(&pos);
         let value = self.values.get(source).ok_or_else(|| denied(pos, "copy requires a local scalar struct"))?;
         if value.fields.len() != self.decl.fields.len() {
             return Err(denied(pos, "invalid struct field plan"));
@@ -301,10 +329,48 @@ impl MainLower<'_> {
         let mut fields = Vec::with_capacity(value.fields.len());
         for (i, (old, (_, ty))) in value.fields.iter().zip(&self.decl.fields).enumerate() {
             let local = internal("copy", id, i);
-            out.push(binding(local.clone(), *ty, variable(old, pos), pos));
+            out.push(field_binding(local.clone(), *ty, variable(old, pos), pos, writable));
             fields.push(local);
         }
-        self.values.insert(name.to_owned(), LocalValue { fields });
+        self.values.insert(name.to_owned(), LocalValue { fields, writable });
+        Ok(())
+    }
+
+    // This bounded profile never stores a loan or passes a struct value
+    // to a callback: a direct named receiver has exactly one owner. Take
+    // scalar argument snapshots before writes, then execute its closed body
+    // in order against only that receiver's independent storage.
+    fn mutate(&mut self, base: &Expr, name: &str, args: &[Expr], pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
+        let ExprKind::Var(owner) = &base.kind else {
+            return Err(denied(pos, "mutable receiver must be a named local struct"));
+        };
+        let value = self.values.get(owner).ok_or_else(|| denied(pos, "unknown struct receiver"))?;
+        if !value.writable {
+            return Err(Diagnostic::new(pos, "E_BORROW_MUT_REQUIRED", "mutable method needs writable local receiver authority"));
+        }
+        let fields: Slots = self.decl.fields.iter().zip(&value.fields)
+            .map(|((name, _), local)| (name.clone(), local.clone())).collect();
+        let lowered = args.iter().map(|arg| self.expr(arg)).collect::<R<Vec<_>>>()?;
+        let types = lowered.iter().map(|arg| self.scalar_type(arg)).collect::<R<Vec<_>>>()?;
+        let entries = self.methods.get(&(name.to_owned(), args.len())).ok_or_else(||
+            Diagnostic::new(pos, "E_ARITY", "no matching attached method arity"))?;
+        let mut selected = entries.iter().filter(|entry| entry.parameter_types == types);
+        let entry = selected.next().ok_or_else(|| Diagnostic::new(pos, "E_TYPE", "no matching attached method signature"))?;
+        if selected.next().is_some() {
+            return Err(denied(pos, "ambiguous attached method"));
+        }
+        let index = entry.mutable_index.ok_or_else(|| denied(pos, "readonly value method is not a mutable statement"))?;
+        let m = &self.decl.methods[index];
+        let id = self.next;
+        self.next += 1;
+        let mut params = Slots::new();
+        for (i, (p, arg)) in m.params.iter().zip(lowered).enumerate() {
+            let local = internal("mut_arg", id, i);
+            let at = arg.pos;
+            out.push(binding(local.clone(), p.ty, arg, at));
+            params.insert(p.name.clone(), local);
+        }
+        out.extend(mutating_statements(m, &fields, &params)?);
         Ok(())
     }
 
@@ -352,6 +418,8 @@ impl MainLower<'_> {
                     out.push(Stmt::Expr(Expr { kind: ExprKind::Call(name.clone(), vec![self.expr(&args[0])?]),
                         pos: *pos }));
                 }
+                Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, name, args), pos }) =>
+                    self.mutate(base, name, args, *pos, &mut out)?,
                 Stmt::Return(Some(e), pos) => out.push(Stmt::Return(Some(self.expr(e)?), *pos)),
                 _ => return Err(denied(self.decl.pos, "only immutable scalar/struct local construction, scalar println and return are admitted")),
             }
@@ -366,7 +434,7 @@ impl MainLower<'_> {
 pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
     let mut parser = Parser::new(tokens);
     let decl = parser.parse_struct_with_target()?;
-    let mut program = parser.parse_program()?;
+    let (mut program, writable_bindings) = parser.parse_struct_value_program()?;
     if !program.classes.is_empty() || !program.enums.is_empty() || !program.actors.is_empty()
         || program.actor_interface.is_some() || !program.array_types.is_empty()
         || program.funcs.len() != 1 {
@@ -383,13 +451,11 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
     let mut methods = BTreeMap::new();
     let mut lowered = Vec::new();
     for (i, m) in decl.methods.iter().enumerate() {
-        if m.is_static || m.params.iter().any(|p| p.mutable) || m.ret == Type::Void
+        let is_mutable = decl.mutable_methods.contains(&i);
+        if m.is_static || m.params.iter().any(|p| p.mutable) || (is_mutable != (m.ret == Type::Void))
             || decl.fields.len() + m.params.len() > MAX_PARAMS {
             return Err(denied(m.pos, "attached method outside scalar readonly profile"));
         }
-        let [Stmt::Return(Some(e), ret_pos)] = m.body.as_slice() else {
-            return Err(denied(m.pos, "readonly method requires exactly one scalar return expression"));
-        };
         let mut params = Slots::new();
         let mut fields = Slots::new();
         let mut flat = Vec::new();
@@ -405,19 +471,49 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
         }
         let function = internal("method", i, 0);
         let entry = MethodEntry { function: function.clone(), arity: flat.len(),
-            parameter_types: m.params.iter().map(|p| p.ty).collect(), result: m.ret };
+            parameter_types: m.params.iter().map(|p| p.ty).collect(), result: m.ret,
+            mutable_index: is_mutable.then_some(i) };
         let overloads = methods.entry((m.name.clone(), m.params.len())).or_insert_with(Vec::new);
         if overloads.iter().any(|prior: &MethodEntry| prior.parameter_types == entry.parameter_types) {
             return Err(denied(m.pos, "duplicate exact attached method parameter signature"));
         }
         overloads.push(entry);
-        lowered.push(Func { name: function, pos: m.pos, is_generator: false, is_pure: false,
-            declared_effects: None, params: flat, ret: m.ret,
-            body: vec![Stmt::Return(Some(member_expr(e, &params, &fields)?), *ret_pos)] });
+        if is_mutable {
+            // Validate even an unused method with the ordinary checker.
+            // Its private proof function writes only local scalar scratch
+            // copies, and is removed from the emitted program below.
+            let mut scratch = Slots::new();
+            let mut body = Vec::new();
+            for (j, (name, ty)) in decl.fields.iter().enumerate() {
+                let original = fields.get(name).ok_or_else(|| denied(m.pos, "missing receiver slot"))?;
+                let local = internal("mut_proof", i, j);
+                body.push(field_binding(local.clone(), *ty, variable(original, m.pos), m.pos, true));
+                scratch.insert(name.clone(), local);
+            }
+            body.extend(mutating_statements(m, &scratch, &params)?);
+            body.push(Stmt::Return(None, m.pos));
+            lowered.push(Func { name: function, pos: m.pos, is_generator: false, is_pure: false,
+                declared_effects: None, params: flat, ret: Type::Void, body });
+        } else {
+            let [Stmt::Return(Some(e), ret_pos)] = m.body.as_slice() else {
+                return Err(denied(m.pos, "readonly method requires exactly one scalar return expression"));
+            };
+            lowered.push(Func { name: function, pos: m.pos, is_generator: false, is_pure: false,
+                declared_effects: None, params: flat, ret: m.ret,
+                body: vec![Stmt::Return(Some(member_expr(e, &params, &fields)?), *ret_pos)] });
+        }
     }
-    let mut lower = MainLower { decl: &decl, methods: &methods, type_names: &program.type_names, names: BTreeSet::new(),
+    let mut lower = MainLower { decl: &decl, methods: &methods, type_names: &program.type_names, writable_bindings: &writable_bindings, names: BTreeSet::new(),
         scalars: BTreeMap::new(), values: BTreeMap::new(), next: 0 };
     program.funcs[0].body = lower.body(&program.funcs[0].body)?;
     program.funcs.extend(lowered);
+    // The proof functions allow the real typed checker to validate all
+    // mutating bodies, including unused declarations. They are deliberately
+    // not part of the actual emitted guest, and cannot be called from source.
+    if !decl.mutable_methods.is_empty() {
+        crate::check::check(&program)?;
+        let proofs: BTreeSet<_> = decl.mutable_methods.iter().map(|&i| internal("method", i, 0)).collect();
+        program.funcs.retain(|f| !proofs.contains(&f.name));
+    }
     Ok(program)
 }
