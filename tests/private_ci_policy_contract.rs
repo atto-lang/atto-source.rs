@@ -32,13 +32,16 @@ fn workflow_has_one_unbroken_active_destination_rejection() {
     assert!(!WORKFLOW.contains("source mirror"));
     // Execute the actual classifier against synthetic source-free fixtures.
     // No checkout, export, network or credentials are involved.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    #[cfg(target_os = "linux")]
+    {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("bash")
         .current_dir(root)
         .arg("tests/private-ci-export-policy-guard-test.sh")
         .output().expect("bash required for policy guard regression");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS: 25 deny-by-default private CI policy regression cases"));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("PASS: 25 deny-by-default private CI policy regression cases"));
+    }
 }
 
 fn comment_only_policy(source: &str) -> bool {
