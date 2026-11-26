@@ -78,7 +78,9 @@ define module json as
         return false;
       fi
       self.index = self.index + 1;
-      self.decoded = new Array<int>();
+      // Only object keys need decoded storage; string values are validated in place.
+      // Keep the previous scratch untouched when capture is false.
+      if capture; do self.decoded = new Array<int>(); fi
       while self.index < self.length; do
         let int ch = self.source.get(self.index);
         self.index = self.index + 1;
