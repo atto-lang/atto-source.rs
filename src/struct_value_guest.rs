@@ -58,6 +58,7 @@ struct LocalValue {
 struct MainLower<'a> {
     decl: &'a StructWithTarget,
     methods: &'a BTreeMap<(String, usize), MethodEntry>,
+    type_names: &'a [(String, Pos)],
     names: BTreeSet<String>,
     scalars: BTreeSet<String>,
     values: BTreeMap<String, LocalValue>,
@@ -140,6 +141,42 @@ impl MainLower<'_> {
         Ok(())
     }
 
+    fn validate_value_binding(&self, ty: Option<Type>, kind: BindKind, pos: Pos) -> R<()> {
+        if kind == BindKind::Const {
+            return Err(denied(pos, "runtime struct value is not a compile-time const"));
+        }
+        if let Some(t) = ty {
+            let matches_owner = match t {
+                Type::Named(index) => self.type_names.get(index as usize)
+                    .is_some_and(|(name, _)| name == &self.decl.name),
+                _ => false,
+            };
+            if !matches_owner {
+                return Err(Diagnostic::new(pos, "E_TYPE", "struct binding annotation must name its exact nominal owner"));
+            }
+        }
+        Ok(())
+    }
+
+    // Flat scalar values are copied into distinct immutable locals, never
+    // aliased or passed through the identity-bearing class copy machinery.
+    fn copy_value(&mut self, name: &str, source: &str, pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
+        let value = self.values.get(source).ok_or_else(|| denied(pos, "copy requires a local scalar struct"))?;
+        if value.fields.len() != self.decl.fields.len() {
+            return Err(denied(pos, "invalid struct field plan"));
+        }
+        let id = self.next;
+        self.next += 1;
+        let mut fields = Vec::with_capacity(value.fields.len());
+        for (i, (old, (_, ty))) in value.fields.iter().zip(&self.decl.fields).enumerate() {
+            let local = internal("copy", id, i);
+            out.push(binding(local.clone(), *ty, variable(old, pos), pos));
+            fields.push(local);
+        }
+        self.values.insert(name.to_owned(), LocalValue { fields });
+        Ok(())
+    }
+
     fn body(&mut self, body: &[Stmt]) -> R<Vec<Stmt>> {
         let mut out = Vec::new();
         for stmt in body {
@@ -150,12 +187,23 @@ impl MainLower<'_> {
                     }
                     if let ExprKind::Call(owner, args) = &init.kind {
                         if owner == &self.decl.name {
-                            if ty.is_some() || *kind == BindKind::Const {
-                                return Err(denied(*pos, "struct construction requires inferred let/val in this profile"));
-                            }
+                            self.validate_value_binding(*ty, *kind, *pos)?;
                             self.construct(name, args, *pos, &mut out)?;
                             continue;
                         }
+                    }
+                    let copy_source = match &init.kind {
+                        ExprKind::Var(source) if self.values.contains_key(source) => Some(source.as_str()),
+                        ExprKind::Ownership(OwnershipOp::Copy, false, inner) => match &inner.kind {
+                            ExprKind::Var(source) if self.values.contains_key(source) => Some(source.as_str()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(source) = copy_source {
+                        self.validate_value_binding(*ty, *kind, *pos)?;
+                        self.copy_value(name, source, *pos, &mut out)?;
+                        continue;
                     }
                     if ty.is_some_and(|t| !matches!(t, Type::Int | Type::Bool)) {
                         return Err(denied(*pos, "non-scalar local type"));
@@ -229,7 +277,7 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
             declared_effects: None, params: flat, ret: m.ret,
             body: vec![Stmt::Return(Some(member_expr(e, &params, &fields)?), *ret_pos)] });
     }
-    let mut lower = MainLower { decl: &decl, methods: &methods, names: BTreeSet::new(),
+    let mut lower = MainLower { decl: &decl, methods: &methods, type_names: &program.type_names, names: BTreeSet::new(),
         scalars: BTreeSet::new(), values: BTreeMap::new(), next: 0 };
     program.funcs[0].body = lower.body(&program.funcs[0].body)?;
     program.funcs.extend(lowered);
