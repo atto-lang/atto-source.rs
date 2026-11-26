@@ -63,6 +63,7 @@ pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
 mod verified_quantities;
+mod allocation_guarantees;
 pub mod verified_bounds;
 mod quantity_scale;
 /// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
@@ -123,6 +124,9 @@ pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
     }
     let tokens = lexer::lex(source)?;
+    if allocation_guarantees::present(&tokens) {
+        return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "allocation guarantees use the ordinary checked AOT profile"));
+    }
     match verified_quantities::lower_mode(source, &tokens, true)? {
         Some(verified_quantities::Lowered::Typed(program)) => {
             let bytes = wasm::emit_quantity_program(&program);
@@ -170,6 +174,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
         ));
     }
     let tokens = lexer::lex(source)?;
+    if allocation_guarantees::present(&tokens) {
+        return allocation_guarantees::compile(tokens);
+    }
     // Admit only the bounded, explicitly contracted private scalar header.
     // The existing lowerer checks the entire file; errors never fall back.
     if verified_quantities::scalar_contract_header(&tokens) {
@@ -190,6 +197,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    if allocation_guarantees::present(&tokens) {
+        return allocation_guarantees::compile(tokens);
+    }
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
