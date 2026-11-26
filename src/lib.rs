@@ -46,6 +46,8 @@ pub mod linker;
 pub mod package_resolver;
 pub mod units;
 mod verified_quantities;
+/// Reusable proof primitive; collection identity integration remains pending.
+pub mod verified_bounds;
 mod quantity_scale;
 #[cfg(target_os = "linux")]
 mod secure_fs;
@@ -89,6 +91,22 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     compile_inner(source, None)
+}
+
+/// Experimental fail-closed strict profile: only file-local immutable
+/// signed-i64 quantities and refinements are supported. No fallback, imports,
+/// proof-dependent check elimination, or whole-language safety certification.
+pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    let pos = Pos { line: 1, col: 1 };
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
+    }
+    let tokens = lexer::lex(source)?;
+    match verified_quantities::lower_mode(source, &tokens, true)? {
+        Some(lowered @ verified_quantities::Lowered::Typed(_)) => compile_quantity(lowered, None),
+        _ => Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED",
+            "strict verification currently supports only typed quantity programs")),
+    }
 }
 
 /// Compile with a caller-supplied logical, package-relative source file path.
