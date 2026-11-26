@@ -2639,7 +2639,8 @@ impl Parser {
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
                 || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array"))
-                    && *self.peek_at(1) == Tok::Lt))
+                    && *self.peek_at(1) == Tok::Lt)
+                || (self.word_at(0) == Some("Array") && *self.peek_at(1) == Tok::LBracket))
         {
             // Recognize generic type-first bindings without treating
             // 'Option' as a variable name and '<' as a comparison.

@@ -67,6 +67,14 @@ pub fn parse(tokens: &[Token], start: usize) -> Result<(ArrayType, usize), Diagn
         return Err(diag(tokens, start, "E_LAYOUT_SYNTAX", "expected Array generic type"));
     }
     let mut i = start + 1;
+    // Square brackets are designated positional type-only shorthand.
+    // Named layout arguments remain strictly angle-bracket syntax.
+    if is(tokens, i, Tok::LBracket) {
+        i += 1;
+        let element = ident(tokens, &mut i, "expected nominal Array element type")?;
+        expect(tokens, &mut i, Tok::RBracket, "expected ']' after Array element type")?;
+        return Ok((ArrayType { element, layout: Storage::Aos, pos }, i));
+    }
     expect(tokens, &mut i, Tok::Lt, "expected '<' for Array generics")?;
     let mut element: Option<String> = None;
     let mut physical: Option<Storage> = None;

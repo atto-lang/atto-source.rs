@@ -108,3 +108,24 @@ fn array_like_text_does_not_trigger_generic_source_admission() {
     let wasm = atto_compiler::compile(ordinary).expect("comment must not authorize array lowering");
     assert_eq!(&wasm[..4], b"\0asm");
 }
+
+#[test]
+fn designated_array_brackets_share_type_identity_without_layout_aliasing() {
+    let p = parse(r#"
+        fnc main() -> int {
+            let Array[int] x = [];
+            let y: Array<int> = [];
+            let z: Array<T=int, layout=aos> = [];
+            return 0;
+        }
+    "#);
+    assert_eq!(p.array_types.len(), 1);
+    assert_eq!(p.array_types[0].element, "int");
+    for stmt in &p.funcs[0].body[..3] {
+        assert!(matches!(stmt, Stmt::Bind { ty: Some(Type::Array(0)), .. }));
+    }
+    for ty in ["Array[T=int]", "Array[int,layout=aos]", "Array[int>", "Array<int]", "Array[]"] {
+        let source = format!("fnc main() -> int {{ let x: {ty} = []; return 0; }}");
+        assert!(Parser::new(lexer::lex(&source).unwrap()).parse_program().is_err(), "{ty}");
+    }
+}
