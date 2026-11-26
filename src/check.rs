@@ -3938,6 +3938,16 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
+                // Ordered comparisons must not silently round an i64 to f64.
+                // Until exact mixed-carrier ordering is implemented, reject
+                // this pair as equality already does. Explicit conversion
+                // remains a separately checked operation.
+                if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+                    && a.ty != b.ty
+                {
+                    return Err(type_err(pos,
+                        "mixed int/float ordering requires explicit conversion"));
+                }
                 // Spec chapter 17: int/int is checked signed quotient.
                 // Preserve the existing floating path when a float is present.
                 if a.ty != Type::Int || b.ty != Type::Int {
