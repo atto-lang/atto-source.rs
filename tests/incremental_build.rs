@@ -258,6 +258,38 @@ fn byte_budget_evicts_even_below_entry_capacity() {
 }
 
 #[test]
+fn exact_hits_skip_import_graph_validation_but_edits_and_invalid_inputs_do_not() {
+    let mut c = IncrementalCompiler::default();
+    let u = graph3(MATH);
+    let clean = compile_linked("src/main.atto", &u).unwrap();
+    assert_eq!(c.compile("src/main.atto", &u).unwrap(), clean);
+    assert_eq!(c.graph_validations(), 1);
+    for _ in 0..16 {
+        assert_eq!(c.compile("src/main.atto", &u).unwrap(), clean);
+    }
+    let mut reversed = graph3(MATH);
+    reversed.reverse();
+    assert_eq!(c.compile("src/main.atto", &reversed).unwrap(), clean);
+    assert_eq!(c.graph_validations(), 1);
+    assert_eq!(c.stats().hits, 17);
+
+    let edited = graph3(MATH_TRIPLE);
+    assert_eq!(
+        c.compile("src/main.atto", &edited).unwrap(),
+        compile_linked("src/main.atto", &edited).unwrap()
+    );
+    assert_eq!(c.graph_validations(), 2);
+
+    let mut duplicate = graph3(MATH);
+    duplicate[2].path = duplicate[1].path;
+    let want = build_key("src/main.atto", &duplicate).unwrap_err();
+    assert_eq!(c.compile("src/main.atto", &duplicate).unwrap_err(), want);
+    assert_eq!(c.graph_validations(), 3);
+    assert_eq!(c.compile("src/main.atto", &u).unwrap(), clean);
+    assert_eq!(c.graph_validations(), 3);
+}
+
+#[test]
 fn refresh_planner_rechecks_missing_provider_and_transitive_users() {
     let mut p = RefreshPlanner::default();
     let complete = graph3(MATH);

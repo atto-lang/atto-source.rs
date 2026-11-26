@@ -1,0 +1,1 @@
+suspends fnc main(): int { val Array[int] result = await select<int>(3) { default: -> { return 42; } }; return 0; }

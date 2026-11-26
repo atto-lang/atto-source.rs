@@ -271,3 +271,66 @@ fn same_shape_anonymous_values_remain_distinct_nominal_types() {
         }
     "#);
 }
+
+
+#[test]
+fn string_key_pair_factory_and_canonical_type_compile() {
+    pass(r#"pub fnc main(): int {
+        val p: Pair<int> = Pair.of("first-name", 42);
+        val q: Pair<string,int> = Pair.of("other", 42);
+        val r = Pair.of("third", 42);
+        return p.second + q.second + r.second;
+    }"#);
+    pass(r#"fnc make(string key): int {
+        val p: Pair<int> = Pair.of(key, 42);
+        return p.second;
+    }
+    pub fnc main(): int { return make("runtime"); }"#);
+}
+#[test]
+fn pair_rejects_non_string_key_independently_of_consumer() {
+    reject_code("pub fnc main(): int { val p = Pair.of(42,5); return 0; }","E_TYPE");
+    reject_code("pub fnc main(): int { val p = Pair.of(true,5); return 0; }","E_TYPE");
+    reject_code("pub fnc main(): int { val p: Pair<int,int> = Pair(42,5); return 0; }","E_TYPE");
+    for src in [
+        "pub fnc main(): int { val p: Pair<int> = Pair.of(42,5); return 0; }",
+        "pub fnc main(): int { val p: Pair<int> = Pair.of(true,5); return 0; }",
+        "pub fnc main(): int { val p: Pair<int> = Pair.of(); return 0; }",
+        "pub fnc main(): int { val p: Pair<int> = Pair.of(\"a\"); return 0; }",
+        "pub fnc main(): int { val p: Pair<int> = Pair.of(\"a\",5,6); return 0; }",
+        "pub fnc main(): int { val p: Pair<int> = Pair.of(\"a\",false); return 0; }",
+        "pub fnc main(): int { val Pair = 42; val p = Pair.of(\"a\",5); return 0; }",
+    ] { reject(src); }
+}
+#[test]
+fn entry_keeps_non_string_key_type_and_distinct_nominal_identity() {
+    pass("pub fnc main(): int { val e: Entry<int,int> = Entry.of(42,5); return e.key; }");
+    reject("pub fnc main(): int { val p: Pair<int> = Entry.of(\"a\",5); return 0; }");
+}
+
+
+#[test]
+fn product_factory_witnesses_and_literal_entry_inference() {
+    pass(r#"pub fnc main(): int {
+        val e = Entry.of(42,5);
+        val p: Pair<int> = Pair.of<string,int>("name", 42);
+        val q = Pair.of<int>("runtime", 20+22);
+        val f = Entry.of<int,int>(e.key, q.second);
+        return f.value + p.second;
+    }"#);
+    pass(r#"fnc make(string key, int value): int {
+        val p = Pair.of<int>(key,value);
+        return p.second;
+    }
+    pub fnc main(): int { return make("runtime",42); }"#);
+    for source in [
+        r#"pub fnc main(): int {val p: Pair<int> = Pair.of<bool>("a",true); return 0;}"#,
+        r#"pub fnc main(): int {val e: Entry<int,int> = Entry.of<string,int>("a",5); return 0;}"#,
+        r#"pub fnc main(): int {val p = Pair.of<int>(42,5); return 0;}"#,
+        r#"pub fnc main(): int {val p = Pair.of<int,int>(42,5); return 0;}"#,
+        r#"pub fnc main(): int {val Entry=1;val e=Entry.of(42,5); return 0;}"#,
+        r#"pub fnc main(): int {val p = Pair.of<int>("a",(5]); return 0;}"#,
+        r#"pub fnc main(): int {val e = Entry.of<int,int>(42,[5)); return 0;}"#,
+        r#"pub fnc main(): int {val p=Pair.of<int>("a",5);return p.key;}"#,
+    ] { reject(source); }
+}

@@ -50,3 +50,7 @@ detection, bounded eviction, and fail-closed missing entry and duplicate paths.
 ## Current-main reconciliation
 
 The process-local key includes target OS; compilation pins that value on the synchronous compiler thread. Borrow-report mode bypasses the cache so evidence is not suppressed. Error cache hits require the same input order because the linker can choose the first invalid input in caller order. Package identity changes now invalidate editor refresh even when file bytes are unchanged. This remains a whole-build in-memory cache, not namespace-selective codegen or a persistent cache. The shared durable cache envelope in `compiler_cache_key.rs` remains separate. New-head execution is required; old local receipts do not qualify the merged candidate.
+
+### Exact-hit work avoidance
+
+The in-memory cache hashes the bounded complete input inventory before graph admission. Exact previously admitted hits skip repeated import-graph parsing; misses still run the original graph validator. The `graph_validations()` counter distinguishes this work from linker-internal parsing. The public `build_key` API retains full validation. Invalid inventories preserve existing diagnostic precedence; borrow evidence still bypasses reuse. No wall-clock improvement is claimed until benchmarked.

@@ -193,6 +193,7 @@ fn effect_budget_rejects_adversarial_mir_without_recursive_export() {
         expr = frontend::Expr::Negate(Box::new(expr));
     }
     let module = mir::Module {
+        exports: vec![],
         functions: vec![mir::Function {
             symbol: "edge".to_string(),
             exported: true,
