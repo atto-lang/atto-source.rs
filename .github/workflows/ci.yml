@@ -55,6 +55,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/io_shorthand_guest.mjs
+      - name: Execute immediate await receiver guests and fail-closed diagnostics
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/immediate_await_guest.mjs
       - name: Execute bitwise operators in native-generated Wasm guests
         env:
           ATTOC: target/release/attoc

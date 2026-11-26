@@ -56,6 +56,9 @@ pub mod layout_plan;
 pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
+mod verified_quantities;
+pub mod verified_bounds;
+mod quantity_scale;
 /// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
 pub mod registry_namespace;
 #[cfg(target_os = "linux")]
@@ -103,6 +106,27 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let source = library::expand(source)?;
     compile_inner(&source, None)
+}
+
+/// Opt-in verified scalar profile. The ordinary compiler and linked-source
+/// paths remain unchanged. Strict requests never fall back to ordinary emission.
+pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    let pos = Pos { line: 1, col: 1 };
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
+    }
+    let tokens = lexer::lex(source)?;
+    match verified_quantities::lower_mode(source, &tokens, true)? {
+        Some(verified_quantities::Lowered::Typed(program)) => {
+            let bytes = wasm::emit_quantity_program(&program);
+            if bytes.len() > wasm::MAX_OUTPUT {
+                return Err(Diagnostic::new(pos, "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+            }
+            Ok(bytes)
+        }
+        _ => Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED",
+            "strict verification currently supports only typed quantity programs")),
+    }
 }
 
 /// Compile with a caller-supplied logical, package-relative source file path.
@@ -439,6 +463,15 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_mode(length, false)
+    }
+
+    #[no_mangle]
+    pub extern "C" fn compile_strict_i64(length: i32) -> i32 {
+        compile_mode(length, true)
+    }
+
+    fn compile_mode(length: i32, strict: bool) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -479,7 +512,8 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            let result = if strict { super::compile_verified_strict(source) } else { super::compile(source) };
+            match result {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0

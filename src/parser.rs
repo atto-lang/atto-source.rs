@@ -3252,6 +3252,18 @@ impl Parser {
         while *self.peek() == Tok::PipeGt {
             let pos = self.pos();
             self.advance();
+            if self.eat_word("await") {
+                if matches!(self.peek(), Tok::LParen | Tok::Lt) {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "pipeline await takes only the left-hand value"));
+                }
+                // This compiler has no Future suspension lowering. A checked
+                // non-converting int ascription is the immediate identity.
+                self.grow(1)?;
+                links += 1;
+                c = Expr { kind: ExprKind::Ascribe(Box::new(c), Type::Int, false), pos };
+                continue;
+            }
             let stage = self.parse_postfix()?;
             let (name, mut args) = match stage.kind {
                 ExprKind::Var(name) => (name, Vec::new()),
@@ -3640,7 +3652,11 @@ impl Parser {
                     "'++' and '--' exist only in a for update clause",
                 ))
             }
-            Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            Tok::Ident(s) if s == "await" => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ascribe(Box::new(inner), Type::Int, false), pos });
+            },
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
@@ -4079,7 +4095,7 @@ impl Parser {
                 "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
-                w if is_reserved(w) => {
+                w if is_reserved(w) && !(w == "types" && *self.peek_at(1) == Tok::Dot) => {
                     return Err(Diagnostic::new(
                         pos,
                         "E_SYNTAX",
