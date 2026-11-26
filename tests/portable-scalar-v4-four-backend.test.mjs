@@ -1,4 +1,5 @@
-// Canonical v3 signed-i64 guest comparison for native and wasm32 Rust compilers.
+// Canonical v5 signed-i64 guest comparison for native and wasm32 Rust compilers.
+// v5 division prose is historical; this corpus does not test division. See merged spec #151.
 // A host-side BigInt oracle alone is never a passing Atto guest test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,9 +9,9 @@ import {readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync} from 'node
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-const manifestBytes = readFileSync(new URL('../contracts/parity/portable-scalar-v4-20261119.json', import.meta.url));
+const manifestBytes = readFileSync(new URL('../contracts/parity/portable-scalar-v5-20261120.json', import.meta.url));
 const manifest = JSON.parse(manifestBytes.toString('utf8'));
-const canonicalBlob = '8185a1b4bf0e0a776b4168cad4805fc40660327d';
+const canonicalBlob = '6258a584dff3a86d47d3f6a6d338bd7d589a7def';
 const blobSha = bytes => createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
 const attoc = process.env.ATTOC;
 assert.ok(attoc, 'ATTOC must name a built native Atto compiler; missing compiler is not a skip');
@@ -51,9 +52,9 @@ function executeGuest(bytes) {
   return instance.exports.main();
 }
 
-test('scalar-v4 contract is the unchanged Cranelift/Wasm Git blob', () => {
+test('scalar-v5 contract is the unchanged Cranelift Git blob', () => {
   assert.equal(blobSha(manifestBytes), canonicalBlob);
-  assert.equal(manifest.schema_version, '2026-11-19.scalar-v4');
+  assert.equal(manifest.schema_version, '2026-11-20.scalar-v5');
   assert.equal(manifest.scope, 'import-free-pure-i64');
   assert.deepEqual([manifest.positive.length,manifest.compile_reject.length,manifest.checked_overflow.length], [13,4,4]);
   const all = [...manifest.positive, ...manifest.compile_reject, ...manifest.checked_overflow];
@@ -69,8 +70,8 @@ for (const [kind,rows] of Object.entries({
   positive:manifest.positive, compile_reject:manifest.compile_reject, checked_overflow:manifest.checked_overflow
 })) {
   for (const row of rows) {
-    test('real native/wasm32 compiler + Wasm guest scalar-v4 ' + kind + ' ' + row.id, () => {
-      const directory = mkdtempSync(join(tmpdir(), 'atto-four-backend-v3-'));
+    test('real native/wasm32 compiler + Wasm guest scalar-v5 ' + kind + ' ' + row.id, () => {
+      const directory = mkdtempSync(join(tmpdir(), 'atto-four-backend-v5-'));
       try {
         const source = 'pub fnc main(): int { return ' + row.expression + '; }\n';
         const sourcePath = join(directory, 'main.atto');
