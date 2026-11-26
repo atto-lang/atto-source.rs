@@ -257,6 +257,87 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// Source HTTP actors require request/mail ownership, state-loan, cancellation
+/// and physical shutdown lowering. An optional host HTTP server is not proof
+/// of an executable source actor. Only examine actual lexer tokens, not text
+/// inside comments; preserve normal user identifiers such as `http`.
+fn reject_http_actor_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define {
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut http = false;
+        while let Some(next) = tokens.get(cursor) {
+            let modifier = match next.kind {
+                Kind::Pub => true,
+                Kind::Identifier => matches!(
+                    next.text.as_str(),
+                    "private"
+                        | "shared"
+                        | "untrusted"
+                        | "serial"
+                        | "http"
+                        | "tcp"
+                        | "websocket"
+                        | "ws"
+                        | "stream"
+                        | "unary"
+                        | "abstract"
+                ),
+                _ => false,
+            };
+            if !modifier {
+                break;
+            }
+            http |= next.text == "http";
+            cursor += 1;
+        }
+        if http {
+            if let Some(next) = tokens.get(cursor) {
+                if next.kind == Kind::Identifier
+                    && matches!(next.text.as_str(), "actor" | "isoactor")
+                {
+                    return Err(ParseError {
+                        offset: next.start,
+                        class: "http_actor_backend_unsupported",
+                        message: "HTTP_ACTOR_BACKEND_UNSUPPORTED: Rust scalar compiler cannot lower source HTTP actor request/mail lifetimes, guarded state, or physical shutdown".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// This scalar backend has no singleton identity or guarded shared-memory lowering.
+/// The word stays contextual for ordinary scalar identifiers.
+fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (i, token) in tokens.iter().enumerate() {
+        let after = match token.kind {
+            Kind::Define => {
+                if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Pub) {
+                    i + 2
+                } else {
+                    i + 1
+                }
+            }
+            Kind::Pub if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Define) => i + 2,
+            _ => continue,
+        };
+        if let Some(next) = tokens.get(after) {
+            if next.kind == Kind::Identifier && next.text == "singleton" {
+                return Err(ParseError {
+                    offset: next.start,
+                    class: "singleton_unsupported",
+                    message: "ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and owned shared-region RW lowering".into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -303,7 +384,9 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
+    reject_singleton_declarations(&tokens)?;
     reject_execution_domains(&tokens)?;
+    reject_http_actor_declarations(&tokens)?;
     let mut parser = Parser {
         tokens,
         cursor: 0,
@@ -440,8 +523,16 @@ impl Parser {
         let mut params = Vec::new();
         if self.peek() != Some(Kind::RParen) {
             loop {
-                self.expect(Kind::Int)?;
-                params.push(self.expect(Kind::Identifier)?.text);
+                let name = if self.peek() == Some(Kind::Int) {
+                    self.expect(Kind::Int)?;
+                    self.expect(Kind::Identifier)?.text
+                } else {
+                    let name = self.expect(Kind::Identifier)?.text;
+                    self.expect(Kind::Colon)?;
+                    self.expect(Kind::Int)?;
+                    name
+                };
+                params.push(name);
                 if self.peek() == Some(Kind::Comma) {
                     self.expect(Kind::Comma)?;
                 } else {

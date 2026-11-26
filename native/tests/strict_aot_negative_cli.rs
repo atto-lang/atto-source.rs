@@ -49,7 +49,7 @@ impl Drop for Scratch {
 fn repo_root() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf() }
 fn fixture_path(name: &str, expected: &str) -> PathBuf {
     assert!(name.ends_with(".atto") && !name.contains('/') && !name.contains('\\'));
-    let dir = repo_root().join("tests/fixtures/strict_aot_negative");
+    let dir = repo_root().join("../tests/fixtures/strict_aot_negative");
     let dir_meta = fs::symlink_metadata(&dir).expect("fixture directory missing");
     assert!(dir_meta.is_dir() && !dir_meta.file_type().is_symlink());
     let path = dir.join(name);
