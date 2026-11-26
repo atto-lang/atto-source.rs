@@ -63,6 +63,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/immediate_await_guest.mjs
+      - name: Execute directional scalar declaration guests
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/directional_scalar_guest.mjs
       - name: Execute bitwise operators in native-generated Wasm guests
         env:
           ATTOC: target/release/attoc
