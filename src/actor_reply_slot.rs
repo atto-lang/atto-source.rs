@@ -212,5 +212,19 @@ impl<T> ReplyRegistry<T> {
         self.completed_order.retain(|index| *index != t.index);
         Ok(result)
     }
+    /// Caller explicitly relinquishes all interest in this reply. Fence the
+    /// exact permit, drop any staged or settled value, and reclaim capacity.
+    /// No terminal receipt is published: the caller has abandoned observation.
+    pub fn abandon(&mut self, t: &Ticket) -> Result<(), SlotFault> {
+        let s = self.current(t)?;
+        s.phase = Phase::Free;
+        if let Some(next) = s.generation.checked_add(1) {
+            s.generation = next;
+        } else {
+            s.phase = Phase::PermanentlyRetired;
+        }
+        self.completed_order.retain(|index| *index != t.index);
+        Ok(())
+    }
     pub fn completed_count(&self) -> usize { self.completed_order.len() }
 }
