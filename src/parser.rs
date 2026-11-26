@@ -1843,8 +1843,18 @@ impl Parser {
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
 
+    // General callable aggregate formals still require a typed aggregate ABI.
+    fn reject_unlowered_callable_pattern(&self) -> R<()> {
+        if matches!(self.peek(), Tok::LParen | Tok::LBrace) ||
+            (matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::LBrace) {
+            return Err(unsupported(self.pos(), "callable aggregate parameter patterns (typed root projections)"));
+        }
+        Ok(())
+    }
+
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
+        self.reject_unlowered_callable_pattern()?;
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
@@ -3901,6 +3911,7 @@ impl Parser {
                 if params.len() >= MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
                 }
+                self.reject_unlowered_callable_pattern()?;
                 let (name, pos) = self.ident("a lambda parameter")?;
                 if params.contains(&name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
