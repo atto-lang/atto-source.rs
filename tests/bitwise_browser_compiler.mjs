@@ -260,6 +260,54 @@ try {
   assert.deepEqual(await readFile(floatArtifact), Buffer.from(division.guest),
     'native and wasm32 compilers must produce byte-identical float division guests');
 
+  // Run the native harness's dynamic shift matrix through the actual wasm32
+  // compiler too, comparing exact guest bytes before executing each guest.
+  const runtimeForms = [
+    ['return 1 <<< distance;', 1n, -9223372036854775808n],
+    ['return -1 >>> distance;', -1n, 1n],
+    ['return -8 ashr distance;', -8n, -1n],
+    ['let x: int = 1; x <<<= distance; return x;', 1n, -9223372036854775808n],
+    ['let x: int = -1; x >>>= distance; return x;', -1n, 1n],
+    ['let x: int = -8; x ashr= distance; return x;', -8n, -1n],
+  ];
+  let validRuntime = 0;
+  let invalidRuntime = 0;
+  for (const [body, atZero, at63] of runtimeForms) {
+    for (const [distance, expected] of [
+      ['0', atZero], ['63', at63], ['-1', null], ['64', null],
+      ['-9223372036854775808', null], ['9223372036854775807', null],
+    ]) {
+      const index = validRuntime + invalidRuntime;
+      const label = `${body} distance=${distance}`;
+      const program = `fnc shifted(int distance): int { ${body} }\npub fnc main(): int { return shifted(${distance}); }\n`;
+      const browser = compile(program);
+      assert.equal(browser.ok, true, `${label}: ${browser.diagnostic || ''}`);
+      const input = join(tmp, `dynamic-shift-${index}.atto`);
+      const output = join(tmp, `dynamic-shift-${index}.wasm`);
+      await writeFile(input, program);
+      const nativeRun = spawnSync(attoc, [input, '-o', output],
+        { encoding: 'utf8', timeout: 30000 });
+      assert.equal(nativeRun.status, 0, `${label}: ${nativeRun.stderr}`);
+      assert.deepEqual(await readFile(output), Buffer.from(browser.guest),
+        `${label}: native/wasm32 compiler artifact divergence`);
+      const guest = new WebAssembly.Instance(new WebAssembly.Module(browser.guest), { atto: {} });
+      if (expected === null) {
+        assert.throws(() => guest.exports.main(), WebAssembly.RuntimeError, label);
+        assert.equal(guest.exports.panic_code.value, 7, label);
+        invalidRuntime++;
+      } else {
+        assert.equal(guest.exports.main(), expected, label);
+        assert.equal(guest.exports.panic_code.value, 0, label);
+        validRuntime++;
+      }
+    }
+  }
+  assert.equal(validRuntime, 12);
+  assert.equal(invalidRuntime, 24);
+  console.log('PASS', validRuntime, 'dynamic shift boundary guests,',
+    invalidRuntime, 'checked shift fault guests; all 36 native/wasm32 artifacts byte-identical');
+
+
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }
