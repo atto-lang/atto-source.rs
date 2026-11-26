@@ -2371,7 +2371,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
             }
-            Some("throw") => {
+            Some("throw" | "throw!") => {
                 self.advance();
                 // Only the typed Error constructor is admitted by the
                 // checker. A raw string is never silently throwable.
@@ -2379,12 +2379,13 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Throw(error, pos))
             }
-            Some("raise") => {
+            Some("raise" | "raise!") => {
                 self.advance();
                 let error = self.parse_expr()?;
                 self.terminator()?;
                 Ok(Stmt::Raise(error, pos))
             }
+            Some("panic!") => Err(unsupported(pos, "typed panic! and supervisor CONTROL lowering")),
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
@@ -2489,7 +2490,7 @@ impl Parser {
                     pos,
                 }))
             }
-            Some("trap") => {
+            Some("trap" | "trap!") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;
                 self.terminator()?;
@@ -3796,6 +3797,10 @@ impl Parser {
                 // Lifetime binders are type-level. Do not emit guest values.
                 return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
                     "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
+            }
+            Tok::Ident(s) if s == "trap!" => {
+                return Err(Diagnostic::new(pos, "E_TRAP_BANG_RESULT_UNVERIFIED",
+                    "trap! requires checked Result<T,Error>; legacy Option trap is not equivalent"));
             }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
