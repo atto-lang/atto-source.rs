@@ -92,11 +92,12 @@ impl Range {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Refined { unit: Unit, range: Range }
+struct Refined { unit: Unit, range: Range, width:u8 }
 impl Refined {
-    fn scalar() -> Self { Self { unit: Unit::scalar(), range: Range::FULL } }
+    fn scalar() -> Self { Self { unit: Unit::scalar(), range: Range::FULL, width:64 } }
 }
 struct Checked {
+    width:u8,
     unit: Unit,
     range: Range,
     ir: TE,
@@ -106,6 +107,7 @@ struct Signature {
     index: u32,
     params: Vec<Refined>,
     result: Refined,
+    ensures:Vec<Contract>,
 }
 type Locals = BTreeMap<String, (u32, Refined)>;
 type Aliases = BTreeMap<String, Refined>;
@@ -133,7 +135,17 @@ fn annotation(p: &mut Parser<'_>, aliases: &Aliases) -> R<Refined> {
     let pos = p.token().pos;
     let n = p.name()?;
     if n == "int" || n == "i64" { return Ok(Refined::scalar()); }
+    if n=="i32"{return Ok(Refined{unit:Unit::scalar(),range:narrow_range(),width:32});}
     aliases.get(&n).cloned().ok_or_else(|| error(pos, "E_UNIT_NAME", "unknown quantity type alias"))
+}
+fn narrow_range()->Range{Range::new(i32::MIN as i64,i32::MAX as i64)}
+fn checked_width(p:&Parser<'_>,mut v:Checked,width:u8)->R<Checked>{
+    v.width=width;
+    if width==32{
+        let r=narrow_range();if p.strict&&!r.contains(v.range){return Err(p.err("E_VERIFY_UNPROVEN","i32 operation may overflow"));}
+        v.range=v.range.intersect(r).unwrap_or(r);
+        v.ir=int(TExpr::RefinementCheck(Box::new(v.ir),r.lo,r.hi,8));
+    }Ok(v)
 }
 fn boundary(want: &Refined, got: &Checked, pos: Pos, code: &'static str) -> R<()> {
     compatible(&want.unit, &got.unit, pos)?;
@@ -182,27 +194,83 @@ fn cast(p: &Parser<'_>, aliases: &Aliases, mut value: Checked, target: &str, pos
             return Err(error(pos, "E_VERIFY_UNPROVEN", "refinement cast may fail"));
         }
         value.range = value.range.intersect(want.range).unwrap_or(want.range);
-        value.ir = int(TExpr::RefinementCheck(Box::new(value.ir),want.range.lo,want.range.hi));
+        value.ir = int(TExpr::RefinementCheck(Box::new(value.ir),want.range.lo,want.range.hi,7));
+        value.width=want.width;
     } else {
         value.unit = if legacy { p.cast_or_legacy_unit(&value.unit,target,pos)? }
                      else { p.checked_scalar_cast(&value.unit,target,pos)? };
+        if matches!(target,"int"|"i64"){value.width=64;}
     }
     Ok(value)
 }
 
+#[derive(Clone)]
+struct Contract {op:BinOp,param:Option<usize>,bound:Option<i64>}
+fn read_contracts(p:&mut Parser<'_>,params:&mut [Refined],locals:&mut Locals,result:&Refined,public:bool)->R<Vec<Contract>>{
+    let mut checks=Vec::new();let mut count=0;
+    loop{
+        let require=p.word("requires");if !require&&!p.word("ensures"){break;}
+        count+=1;if public||count>16{return Err(p.err("E_REFINEMENT_CONTRACT","contract budget or entrypoint"));}
+        let name=p.name()?;let op=match &p.token().tok{
+            Tok::Lt=>BinOp::Lt,Tok::Le=>BinOp::Le,Tok::Gt=>BinOp::Gt,Tok::Ge=>BinOp::Ge,Tok::EqEq=>BinOp::Eq,
+            Tok::Ident(n) if n=="eq"=>BinOp::Eq,_=>return Err(p.err("E_REFINEMENT_CONTRACT","comparison required"))};
+        p.at+=1;
+        if require{
+            let (slot,want)=locals.get(&name).cloned().ok_or_else(||p.err("E_REFINEMENT_CONTRACT","unknown parameter"))?;
+            let n=contract_bound(p,&want)?;
+            let bound=match op{BinOp::Lt=>n.checked_sub(1).map(|v|Range::new(i64::MIN,v)),BinOp::Gt=>n.checked_add(1).map(|v|Range::new(v,i64::MAX)),BinOp::Le=>Some(Range::new(i64::MIN,n)),BinOp::Ge=>Some(Range::new(n,i64::MAX)),_=>Some(Range::exact(n))};
+            let range=bound.and_then(|b|want.range.intersect(b)).ok_or_else(||p.err("E_REFINEMENT_EMPTY","contradictory requires"))?;
+            params[slot as usize].range=range;locals.get_mut(&name).unwrap().1.range=range;
+        }else{
+            if name!="result"{return Err(p.err("E_REFINEMENT_CONTRACT","ensures must constrain result"));}
+            if let Tok::Ident(n)=&p.token().tok{
+                let (slot,want)=locals.get(n).cloned().ok_or_else(||p.err("E_REFINEMENT_CONTRACT","unknown parameter"))?;
+                compatible(&result.unit,&want.unit,p.token().pos)?;p.at+=1;
+                checks.push(Contract{op,param:Some(slot as usize),bound:None});
+            }else{checks.push(Contract{op,param:None,bound:Some(contract_bound(p,result)?)});}
+        }
+    }Ok(checks)
+}
+fn contract_bound(p:&mut Parser<'_>,want:&Refined)->R<i64>{
+    let n=signed_bound(p)?;let mut unit=Unit::scalar();
+    let dot=p.take(Tok::Dot);
+    if dot||p.token().tok==Tok::Lt{p.expect(Tok::Lt)?;let name=p.name()?;unit=p.lookup(&name)?;p.expect(Tok::Gt)?;}
+    compatible(&want.unit,&unit,p.token().pos)?;Ok(n)
+}
+fn relation(v:&TE,param:usize,nonnegative:bool,body:&[TStmt],funcs:&Functions,depth:usize)->bool{
+    if depth>=64{return false;}
+    let sub=|x:&TE|relation(x,param,nonnegative,body,funcs,depth+1);
+    match &v.e{
+        TExpr::Local(i)=>*i as usize==param||body.iter().any(|s|matches!(s,TStmt::Set(slot,x) if slot==i&&sub(x))),
+        TExpr::RefinementCheck(x,_,_,_)=>sub(x),
+        TExpr::Bin(BinOp::Div,a,b) if nonnegative=>matches!(&b.e,TExpr::I64(n) if *n>=1)&&sub(a),
+        TExpr::Call(i,args)=>funcs.values().find(|f|f.index==*i).is_some_and(|f|f.ensures.iter().any(|c|c.op==BinOp::Le&&c.param.is_some_and(|p|args.get(p).is_some_and(sub)))),
+        _=>false
+    }
+}
+fn prove_contracts(p:&Parser<'_>,checks:&[Contract],v:&Checked,params:&[Refined],body:&[TStmt],funcs:&Functions)->R<()>{
+    for c in checks{
+        let r=v.range;
+        let yes=if let Some(n)=c.bound{match c.op{BinOp::Eq=>r.lo==n&&r.hi==n,BinOp::Lt=>r.hi<n,BinOp::Le=>r.hi<=n,BinOp::Gt=>r.lo>n,BinOp::Ge=>r.lo>=n,_=>false}}
+        else if let Some(i)=c.param{let a=params[i].range;match c.op{BinOp::Le=>r.hi<=a.lo||relation(&v.ir,i,a.lo>=0,body,funcs,0),BinOp::Lt=>r.hi<a.lo,BinOp::Gt=>r.lo>a.hi,BinOp::Ge=>r.lo>=a.hi,BinOp::Eq=>r.lo==r.hi&&a.lo==a.hi&&r.lo==a.lo,_=>false}}
+        else{false};
+        if !yes{return Err(p.err("E_REFINEMENT_POSTCONDITION","unproved ensures"));}
+    }Ok(())
+}
 pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
     let mut aliases = Aliases::new();
     while p.word("type") {
         if aliases.len() >= 128 { return Err(p.err("E_UNIT_LIMIT", "too many quantity aliases")); }
+        if matches!(&p.token().tok,Tok::Ident(n) if matches!(n.as_str(),"int"|"i64"|"i32")){return Err(p.err("E_REFINEMENT_DUPLICATE","reserved carrier"));}
         let name = identifier(p)?;
         if aliases.contains_key(&name) || p.units.contains_key(&name) || p.dimensions.contains(&name) {
             return Err(p.err("E_UNIT_DUPLICATE", "duplicate quantity alias"));
         }
         p.expect(Tok::Assign)?;
-        p.expect_word("int")?;
+        let width=if p.word("i32"){32}else{if !p.word("i64"){p.expect_word("int")?;}64};
         p.expect_word("where")?;
         let mut unit = None;
-        let mut range = Range::FULL;
+        let mut range = if width==32{narrow_range()}else{Range::FULL};
         loop {
             if p.word("units") {
                 if unit.is_some() { return Err(p.err("E_UNIT_DUPLICATE", "duplicate units clause")); }
@@ -216,7 +284,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
             if !p.word("and") { break; }
         }
         p.expect(Tok::Semi)?;
-        aliases.insert(name, Refined { unit: unit.unwrap_or_else(Unit::scalar), range });
+        aliases.insert(name, Refined { unit: unit.unwrap_or_else(Unit::scalar), range, width });
     }
 
     let mut funcs = Vec::new();
@@ -226,6 +294,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         let public = p.word("pub");
         p.expect_word("fnc")?;
         let name = identifier(p)?;
+        if public&&name!="main"{return Err(p.err("E_REFINEMENT_EXPORT","private refinement helper required"));}
         if (name == "main") != public || signatures.contains_key(&name) ||
             aliases.contains_key(&name) || p.units.contains_key(&name) || p.dimensions.contains(&name) {
             return Err(p.err("E_UNIT_NAME", "duplicate name or non-main public quantity function"));
@@ -251,10 +320,12 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         if public && (!params.is_empty() || result != Refined::scalar()) {
             return Err(p.err("E_UNIT_ERASURE", "main must be zero-argument plain int"));
         }
+        let checks=read_contracts(p,&mut params,&mut locals,&result,public)?;
         p.expect(Tok::LBrace)?;
         let mut body = Vec::new();
         let mut slots = Vec::new();
         if p.strict {
+            if !checks.is_empty(){return Err(p.err("E_VERIFY_UNSUPPORTED","strict ensures with control flow require separate proof"));}
             let mut mutable = Aliases::new();
             let (stmts, returns) = strict_block(p, &aliases, &signatures, &result,
                 &mut locals, &mut mutable, &mut slots, params.len(), 0)?;
@@ -284,9 +355,10 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
             p.expect(Tok::Semi)?;
             let slot = (params.len() + slots.len()) as u32;
             slots.push(Type::Int);
-            locals.insert(binding, (slot, Refined { unit: value.unit, range: value.range }));
+            locals.insert(binding, (slot, Refined { unit: value.unit, range: value.range, width:wanted.as_ref().map_or(if value.width==0{64}else{value.width},|w|w.width) }));
             body.push(TStmt::Set(slot, value.ir));
         }
+        if p.word("let"){return Err(p.err("E_REFINEMENT_BODY","mutable binding not admitted"));}
         p.expect_word("return")?;
         let pos = p.token().pos;
         let value = expr(p, &aliases, &locals, &signatures, 0, 0)?;
@@ -294,6 +366,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
             return Err(error(pos, "E_UNIT_ERASURE", "plain main result requires scale-one scalar"));
         }
         boundary(&result, &value, pos, "E_REFINEMENT_RETURN")?;
+        prove_contracts(p,&checks,&value,&params,&body,&signatures)?;
         p.expect(Tok::Semi)?;
         p.expect(Tok::RBrace)?;
         body.push(TStmt::Return(Some(value.ir)));
@@ -306,7 +379,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
                 heap: false, globals: vec![], actors: vec![], strings: false, guest_eh: false,
                 raise_tag: false, catch_depth: false });
         }
-        signatures.insert(name, Signature { index, params, result });
+        signatures.insert(name, Signature { index, params, result, ensures:checks });
     }
 }
 
@@ -433,10 +506,11 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                 p.expect(Tok::Semi)?;
                 let slot = (param_count + slots.len()) as u32;
                 slots.push(Type::Int);
+                let width=wanted.as_ref().map_or(if v.width==0{64}else{v.width},|w|w.width);
                 if is_let {
                     if let Some(want) = wanted { mutable.insert(name.clone(), want); }
                 }
-                locals.insert(name, (slot, Refined { unit: v.unit, range: v.range }));
+                locals.insert(name, (slot, Refined { unit: v.unit, range: v.range, width }));
                 body.push(TStmt::Set(slot, v.ir));
             } else {
                 let name = identifier(p)?;
@@ -449,7 +523,7 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
                 boundary(want, &v, pos, "E_REFINEMENT_BINDING")?;
                 p.expect(Tok::Semi)?;
                 // Replace, never intersect with the old fact.
-                locals.insert(name, (slot, Refined { unit: v.unit, range: v.range }));
+                locals.insert(name, (slot, Refined { unit: v.unit, range: v.range, width:want.width }));
                 body.push(TStmt::Set(slot, v.ir));
             }
         }
@@ -592,7 +666,7 @@ fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
         value = convert(value, p.lookup(&target)?, pos)?;
     }
     let number = value.number.map_err(|_| error(pos, "E_UNIT_RANGE", "literal cannot be represented"))?;
-    Ok(Checked { unit: value.unit, range: Range::exact(number), ir: int(TExpr::I64(number)) })
+    Ok(Checked { width:0, unit: value.unit, range: Range::exact(number), ir: int(TExpr::I64(number)) })
 }
 fn atom(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Functions, depth: usize) -> R<Checked> {
     let pos = p.token().pos;
@@ -629,7 +703,7 @@ fn atom_base(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Fun
             return Err(error(neg_pos, "E_VERIFY_UNPROVEN", "signed negation may overflow"));
         }
         let range = Range::normal_bounds(-(value.range.hi as i128),-(value.range.lo as i128));
-        return Ok(Checked { unit: value.unit, range, ir: int(TExpr::Neg(Box::new(value.ir))) });
+        let width=value.width;return checked_width(p,Checked { width,unit: value.unit, range, ir: int(TExpr::Neg(Box::new(value.ir))) },width);
     }
     if p.take(Tok::LParen) {
         let value = expr(p, aliases, locals, funcs, 0, depth+1)?;
@@ -640,19 +714,20 @@ fn atom_base(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Fun
     let pos = p.token().pos;
     let name = identifier(p)?;
     if p.take(Tok::LParen) {
-        let sig = funcs.get(&name).ok_or_else(|| error(pos,"E_UNIT_NAME","unknown, recursive or forward quantity call"))?;
+        let sig = funcs.get(&name).ok_or_else(|| error(pos,"E_REFINEMENT_CALL","unknown, recursive or forward quantity call"))?;
         let mut args = Vec::new();
         for (i, wanted) in sig.params.iter().enumerate() {
             if i != 0 { p.expect(Tok::Comma)?; }
+            if p.token().tok==Tok::RParen{return Err(error(pos,"E_REFINEMENT_CALL","missing argument"));}
             let arg = expr(p,aliases,locals,funcs,0,depth+1)?;
             boundary(wanted,&arg,pos,"E_REFINEMENT_PRECONDITION")?;
             args.push(arg.ir);
         }
-        p.expect(Tok::RParen)?;
-        return Ok(Checked { unit: sig.result.unit.clone(), range: sig.result.range, ir: int(TExpr::Call(sig.index,args)) });
+        if !p.take(Tok::RParen){return Err(error(pos,"E_REFINEMENT_CALL","arity mismatch"));}
+        return Ok(Checked { width:sig.result.width,unit: sig.result.unit.clone(), range: sig.result.range, ir: int(TExpr::Call(sig.index,args)) });
     }
     let (slot,unit) = locals.get(&name).ok_or_else(|| error(pos,"E_UNIT_NAME","unknown immutable quantity binding"))?;
-    Ok(Checked { unit:unit.unit.clone(), range: unit.range, ir:int(TExpr::Local(*slot)) })
+    Ok(Checked { width:unit.width,unit:unit.unit.clone(), range: unit.range, ir:int(TExpr::Local(*slot)) })
 }
 fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Functions, precedence: u8, depth: usize) -> R<Checked> {
     let mut left = atom(p,aliases,locals,funcs,depth)?;
@@ -669,7 +744,7 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
             BinOp::Add | BinOp::Sub => { compatible(&left.unit,&right.unit,pos)?; left.unit.clone() }
             BinOp::Mul => left.unit.combine(&right.unit,false,pos)?,
             BinOp::Div => {
-                if !p.strict && left.unit == Unit::scalar() && right.unit == Unit::scalar() {
+                if !p.strict && aliases.is_empty() && left.unit == Unit::scalar() && right.unit == Unit::scalar() {
                     return Err(error(pos,"E_UNIT_SCALAR_DIVISION","ordinary int division remains outside quantity profile"));
                 }
                 left.unit.combine(&right.unit,true,pos)?
@@ -680,9 +755,12 @@ fn expr(p: &mut Parser<'_>, aliases: &Aliases, locals: &Locals, funcs: &Function
             return Err(error(pos,"E_VERIFY_UNPROVEN","signed arithmetic may overflow or divide by zero"));
         }
         let range = left.range.binary(right.range,op);
-        left = Checked { unit, range, ir: int(TExpr::Bin(op,Box::new(left.ir),Box::new(right.ir))) };
+        let width=if left.width==64||right.width==64{64}else if left.width==32||right.width==32{32}else{64};
+        if width==32&&((left.width==0&&!narrow_range().contains(left.range))||(right.width==0&&!narrow_range().contains(right.range))){return Err(error(pos,"E_I32_RANGE","literal operand outside i32"));}
+        left=checked_width(p,Checked { width,unit, range, ir: int(TExpr::Bin(op,Box::new(left.ir),Box::new(right.ir))) },width)?;
     }
-    if precedence == 0 && p.word("as") {
+    while precedence == 0 && p.word("as") {
+        if p.take(Tok::Question){return Err(p.err("E_REFINEMENT_CAST","optional refinement cast not admitted"));}
         let pos = p.token().pos;
         let name = p.name()?;
         left = cast(p,aliases,left,&name,pos,true)?;
