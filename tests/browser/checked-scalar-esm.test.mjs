@@ -81,6 +81,48 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
     }
   }
   console.log('DUAL_TARGET_SHIFT_CASES='+shiftCases);
+  // Capture the exact typed host calls, including binary64 signed zero and NaN.
+  async function outputGuest(source,target){
+    const result=compile(source,target);
+    assert.equal(result.status,0,source);
+    const events=[];
+    let exports;
+    const atto={
+      print_i64:x=>events.push(['i64',x]),
+      print_bool:x=>events.push(['bool',x]),
+      print_f64:x=>events.push(['f64',x]),
+      print_str:(offset,length)=>events.push(['str',new TextDecoder().decode(new Uint8Array(exports.memory.buffer,offset,length))]),
+      print_newline:()=>events.push(['newline'])
+    };
+    if(target==='compile_js'){
+      const esm=await import('data:text/javascript;base64,'+Buffer.from(result.bytes).toString('base64'));
+      assert.throws(()=>esm.instantiate(),WebAssembly.LinkError);
+      exports=esm.instantiate(atto).exports;
+    }else{
+      exports=new WebAssembly.Instance(new WebAssembly.Module(result.bytes),{atto}).exports;
+    }
+    const value=exports.main();
+    assert.equal(exports.panic_code.value,0);
+    return {value,events};
+  }
+  for(const [file,expected] of [
+    ['28-stdio-println.atto',0n],
+    ['72-float-arithmetic.atto',0n],
+    ['73-float-compare.atto',3n],
+    ['47-eager-boolean-precedence.atto',42n]
+  ]){
+    const source=readFileSync(new URL('../fixtures/pass/'+file,import.meta.url),'utf8');
+    const js=await outputGuest(source,'compile_js');
+    const wasm=await outputGuest(source,'compile');
+    assert.equal(js.value,expected,file);
+    assert.deepEqual(js,wasm,file);
+    assert.ok(js.events.length>0,file);
+  }
+  const unicode='pub fnc main(): int { stdio.println("⧖ ∂ π"); stdio.println(-0.0); stdio.println(0.0 / 0.0); return 42; }';
+  const actual=await outputGuest(unicode,'compile_js');
+  assert.deepEqual(actual,await outputGuest(unicode,'compile'));
+  assert.deepEqual(actual,{value:42n,events:[['str','⧖ ∂ π'],['newline'],['f64',-0],['newline'],['f64',NaN],['newline']]});
+  console.log('DUAL_TARGET_OUTPUT_FIXTURES=5');
   const overflow=await run('pub fnc main(): int { return 9223372036854775807+1; }');
   assert.throws(()=>overflow.main(),/E_PANIC:1/);
   assert.equal(overflow.panic_code.value,1);
@@ -92,7 +134,7 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
   for(const source of [
     'pub fnc main(): int { return "not an int"; }',
     'pub fnc main(): int { return 1/0; }',
-    'pub fnc main(): int { stdio.println(42); return 42; }'
+    'pub fnc main(): int { val string s = "a"; stdio.println(s); return 42; }'
   ]){
     const denied=compile(source);
     assert.notEqual(denied.status,0,source);
