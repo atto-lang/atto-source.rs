@@ -172,3 +172,24 @@ fn independently_mutated_ast_cannot_bypass_critical_shape_admission() {
         }
     }
 }
+
+#[test]
+fn corrupted_typed_state_region_cannot_emit_guest_bytes() {
+    use atto_compiler::{check::TE, wasm};
+    for variant in 0..5 {
+        let mut program=typed();
+        let method=program.funcs.iter_mut().find(|f| f.name=="Counter.increment").unwrap();
+        let body=method.body.iter_mut().find_map(|s| match s {
+            TStmt::StateCriticalWrite(body)=>Some(body), _=>None
+        }).unwrap();
+        let scalar=TE{e:TExpr::I64(1),ty:Type::Int};
+        match variant {
+            0=>body.insert(0,TStmt::Return(None)),
+            1=>body.insert(0,TStmt::Expr(TE{e:TExpr::Call(0,vec![]),ty:Type::Int})),
+            2=>body.insert(0,TStmt::StateCriticalWrite(vec![])),
+            3=>{let TStmt::StateFieldWrite{obj,..}=&mut body[0] else{panic!("field")};obj.e=TExpr::Local(1);},
+            _=>{let TStmt::StateFieldWrite{value,..}=&mut body[0] else{panic!("field")};*value=TE{e:TExpr::StateWriteValue{body:vec![],result:Box::new(scalar)},ty:Type::Int};}
+        }
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),"forged typed region {variant} emitted");
+    }
+}
