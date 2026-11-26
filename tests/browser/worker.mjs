@@ -54,10 +54,10 @@ self.onmessage=async ({data})=>{
       // runtime failure and cannot contain scoped-span instrumentation.
       // The v2 async guest always exports private memory with these slots.
       const memory=instance.exports.memory;
-      if(!memory)return {spanOpens:0,spanCloses:0};
+      if(!memory)return {spanOpens:0,spanCloses:0,planPending:0};
       const mem=new DataView(memory.buffer);
       if(mem.byteLength<72)throw new Error('guest telemetry memory shorter than root slots');
-      return {spanOpens:Number(mem.getBigInt64(56,true)),spanCloses:Number(mem.getBigInt64(64,true))};
+      return {spanOpens:Number(mem.getBigInt64(56,true)),spanCloses:Number(mem.getBigInt64(64,true)),planPending:mem.byteLength>=80?Number(mem.getBigInt64(72,true)):0};
     };
     let value;
     try{value=instance.exports.main()}
