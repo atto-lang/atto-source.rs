@@ -212,13 +212,13 @@ fn read_contracts(p:&mut Parser<'_>,params:&mut [Refined],locals:&mut Locals,res
         let require=p.word("requires");if !require&&!p.word("ensures"){break;}
         count+=1;if public||count>16{return Err(p.err("E_REFINEMENT_CONTRACT","contract budget or entrypoint"));}
         let name=p.name()?;let op=match &p.token().tok{
-            Tok::Lt=>BinOp::Lt,Tok::Le=>BinOp::Le,Tok::Gt=>BinOp::Gt,Tok::Ge=>BinOp::Ge,Tok::EqEq=>BinOp::Eq,
+            Tok::Lt=>BinOp::Lt,Tok::Le=>BinOp::Le,Tok::Gt=>BinOp::Gt,Tok::Ge=>BinOp::Ge,Tok::EqEq=>BinOp::Eq,Tok::NotEq if require=>BinOp::Ne,
             Tok::Ident(n) if n=="eq"=>BinOp::Eq,_=>return Err(p.err("E_REFINEMENT_CONTRACT","comparison required"))};
         p.at+=1;
         if require{
             let (slot,want)=locals.get(&name).cloned().ok_or_else(||p.err("E_REFINEMENT_CONTRACT","unknown parameter"))?;
             let n=contract_bound(p,&want)?;
-            let bound=match op{BinOp::Lt=>n.checked_sub(1).map(|v|Range::new(i64::MIN,v)),BinOp::Gt=>n.checked_add(1).map(|v|Range::new(v,i64::MAX)),BinOp::Le=>Some(Range::new(i64::MIN,n)),BinOp::Ge=>Some(Range::new(n,i64::MAX)),_=>Some(Range::exact(n))};
+            let bound=match op{BinOp::Ne=>{if !matches!(n,0|-1){return Err(p.err("E_REFINEMENT_CONTRACT","only zero and minus-one exclusions are represented"));}Range::FULL.exclude(n)},BinOp::Lt=>n.checked_sub(1).map(|v|Range::new(i64::MIN,v)),BinOp::Gt=>n.checked_add(1).map(|v|Range::new(v,i64::MAX)),BinOp::Le=>Some(Range::new(i64::MIN,n)),BinOp::Ge=>Some(Range::new(n,i64::MAX)),_=>Some(Range::exact(n))};
             let range=bound.and_then(|b|want.range.intersect(b)).ok_or_else(||p.err("E_REFINEMENT_EMPTY","contradictory requires"))?;
             params[slot as usize].range=range;locals.get_mut(&name).unwrap().1.range=range;
         }else{
@@ -320,15 +320,24 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         if public && (!params.is_empty() || result != Refined::scalar()) {
             return Err(p.err("E_UNIT_ERASURE", "main must be zero-argument plain int"));
         }
+        let before_contracts=p.at;
         let checks=read_contracts(p,&mut params,&mut locals,&result,public)?;
-        p.expect(Tok::LBrace)?;
+        let contracted=p.at!=before_contracts;
+        let end_delimited=if p.take(Tok::LBrace){false}
+            else if p.take(Tok::ColonColon){true}
+            else if p.word("begin"){
+                if contracted && p.tokens[p.at-1].pos.line<=p.tokens[p.at-2].pos.line {
+                    return Err(p.err("E_SYNTAX","contracted begin must start on a later line"));
+                }
+                true
+            }else{return Err(p.err("E_SYNTAX","expected callable body opener"));};
         let mut body = Vec::new();
         let mut slots = Vec::new();
         if p.strict {
             if !checks.is_empty(){return Err(p.err("E_VERIFY_UNSUPPORTED","strict ensures with control flow require separate proof"));}
             let mut mutable = Aliases::new();
             let (stmts, returns) = strict_block(p, &aliases, &signatures, &result,
-                &mut locals, &mut mutable, &mut slots, params.len(), 0, &mut Vec::new())?;
+                &mut locals, &mut mutable, &mut slots, params.len(), 0, &mut Vec::new(), end_delimited)?;
             if !returns { return Err(p.err("E_VERIFY_RETURN", "not every path returns")); }
             body = stmts;
         } else {
@@ -368,7 +377,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         boundary(&result, &value, pos, "E_REFINEMENT_RETURN")?;
         prove_contracts(p,&checks,&value,&params,&body,&signatures)?;
         p.expect(Tok::Semi)?;
-        p.expect(Tok::RBrace)?;
+        if end_delimited {p.expect_word("end")?;}else{p.expect(Tok::RBrace)?;}
         body.push(TStmt::Return(Some(value.ir)));
         }
         let index = funcs.len() as u32;
@@ -418,11 +427,12 @@ fn strict_backedge(p: &Parser<'_>, facts: &Locals, declared: &Aliases) -> R<()> 
 }
 fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
     result: &Refined, locals: &mut Locals, mutable: &mut Aliases,
-    slots: &mut Vec<Type>, param_count: usize, depth: usize, loops: &mut Vec<StrictLoopExit>) -> R<(Vec<TStmt>, bool)> {
+    slots: &mut Vec<Type>, param_count: usize, depth: usize, loops: &mut Vec<StrictLoopExit>, end_delimited: bool) -> R<(Vec<TStmt>, bool)> {
     if depth > 16 { return Err(p.err("E_UNIT_LIMIT", "strict block depth")); }
     let mut body = Vec::new();
     let mut returned = false;
-    while !p.take(Tok::RBrace) {
+    while !(if end_delimited {p.word("end")}else{p.take(Tok::RBrace)}) {
+        if matches!(p.token().tok,Tok::Eof|Tok::RBrace) || matches!(&p.token().tok,Tok::Ident(n) if n=="end") {return Err(p.err("E_SYNTAX","missing or mismatched body closer"));}
         if returned { return Err(p.err("E_VERIFY_UNSUPPORTED", "statement after unconditional return")); }
         if p.budget == 0 { return Err(p.err("E_UNIT_LIMIT", "strict statement budget")); }
         p.budget -= 1;
@@ -475,7 +485,7 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             p.expect(Tok::LBrace)?;
             loops.push(StrictLoopExit { header, declared: mutable.clone(), breaks: None });
             let (loop_body, terminated) = strict_block(p, aliases, funcs, result,
-                &mut yes, &mut mutable.clone(), slots, param_count, depth+1, loops)?;
+                &mut yes, &mut mutable.clone(), slots, param_count, depth+1, loops, false)?;
             let frame=loops.pop().expect("nearest loop context");
             if !terminated { strict_backedge(p,&yes,&frame.declared)?; }
             // A break bypasses the false header guard. Merge only projected
@@ -488,11 +498,11 @@ fn strict_block(p: &mut Parser<'_>, aliases: &Aliases, funcs: &Functions,
             let mut yes = yes;
             let mut no = no;
             let (a, ar) = strict_block(p, aliases, funcs, result, &mut yes,
-                &mut mutable.clone(), slots, param_count, depth+1, loops)?;
+                &mut mutable.clone(), slots, param_count, depth+1, loops, false)?;
             let (b, br) = if p.word("else") {
                 p.expect(Tok::LBrace)?;
                 strict_block(p, aliases, funcs, result, &mut no,
-                    &mut mutable.clone(), slots, param_count, depth+1, loops)?
+                    &mut mutable.clone(), slots, param_count, depth+1, loops, false)?
             } else { (Vec::new(), false) };
             // Only incoming bindings survive lexical exit. Returning arms
             // contribute no continuation; otherwise take the interval hull.
