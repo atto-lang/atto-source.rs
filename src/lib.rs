@@ -39,6 +39,7 @@ pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+mod struct_value_guest;
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
@@ -267,10 +268,24 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
                     if let Some(start) = pending_struct.take() {
                         if matches!(original_tokens.get(i+1).map(|t| &t.tok),
                             Some(lexer::Tok::Ident(w)) if w == "with") {
-                            let parsed = parser::Parser::new(original_tokens[start..].to_vec())
-                                .parse_struct_with_target()?;
-                            return Err(Diagnostic::new(parsed.pos, "E_UNSUPPORTED",
-                                "attached struct parsed; checked value ABI and initialization proof required before emission"));
+                            if start != 0 || !matches!(tokens.first().map(|t| &t.tok),
+                                Some(lexer::Tok::Ident(w)) if w == "type") || logical_path.is_some() {
+                                return Err(Diagnostic::new(original_tokens[start].pos, "E_UNSUPPORTED",
+                                    "attached struct execution is restricted to one standalone file-local declaration"));
+                            }
+                            let program = struct_value_guest::lower(original_tokens.clone())?;
+                            let typed = check::check(&program)?;
+                            actor_stack_bound::verify(&typed)?;
+                            if typed.heap || typed.strings || !typed.actors.is_empty() {
+                                return Err(Diagnostic::new(original_tokens[start].pos, "E_UNSUPPORTED",
+                                    "scalar struct lowering must not allocate a class, heap, string or actor"));
+                            }
+                            let bytes = wasm::emit(&typed);
+                            if bytes.len() > wasm::MAX_OUTPUT {
+                                return Err(Diagnostic::new(original_tokens[start].pos, "E_OUTPUT_LIMIT",
+                                    "generated module exceeds 1 MiB"));
+                            }
+                            return Ok(bytes);
                         }
                     }
                 }
