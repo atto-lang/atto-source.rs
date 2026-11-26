@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/verified_quantities.rs'
+      - 'src/verified_bounds.rs'
       - 'src/verified_quantity_bindings.rs'
       - 'src/bin/attoc.rs'
       - 'scripts/test-verified-refinement-casts.mjs'
@@ -37,6 +38,7 @@ jobs:
         run: |
           cargo +1.85.1 test --locked --lib quantity_scale::tests
           cargo +1.85.1 test --locked --lib verified_quantities::bindings::strict_tests
+          cargo +1.85.1 test --locked --lib verified_bounds::tests
           cargo +1.85.1 test --locked --test units_of_measure --test verified_quantity_guests --test immutable_binding_parity
       - name: Build actual compiler and execute emitted guest
         run: |
