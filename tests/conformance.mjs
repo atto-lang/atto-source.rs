@@ -425,9 +425,9 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Canonical grammar rejects raw % and single infix caret; adjacent ^^ is integer XOR.
+// Require a positioned diagnostic and no generated guest bytes.
+for (const op of ['%', '^', '^ ^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
@@ -436,6 +436,12 @@ for (const op of ['%', '^', '^^']) {
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+
+check('canonical-integer-xor/adjacent', () => {
+  const r = compile('pub fnc main(): int { return 12 ^^ 10; }');
+  assert.equal(r.ok, true, r.message);
+  assert.equal(runGuest(r.wasm).value, 6n);
+});
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
@@ -568,7 +574,7 @@ check('robustness/random-garbage-never-traps-compiler', () => {
   }
 });
 
-check('boolean/short-circuit-vs-eager-builtin-real-guest', () => {
+check('boolean/named-short-circuit-and-eager-xor-real-guest', () => {
   const source = [
     'fnc touched(): bool { stdio.println("RHS"); return true; }',
     'pub fnc main(): int {',
@@ -577,6 +583,10 @@ check('boolean/short-circuit-vs-eager-builtin-real-guest', () => {
     '  stdio.println(true && touched());',
     '  stdio.println(false || touched());',
     '  stdio.println(And(false, touched()));',
+    '  stdio.println(Or(true, touched()));',
+    '  stdio.println(Xor(false, touched()));',
+    '  stdio.println(And(true, touched()));',
+    '  stdio.println(Or(false, touched()));',
     '  return 0;',
     '}',
   ].join('\n');
@@ -584,7 +594,7 @@ check('boolean/short-circuit-vs-eager-builtin-real-guest', () => {
   assert.equal(compiled.ok, true, compiled.message);
   const result = runGuest(compiled.wasm);
   assert.equal(result.value, 0n);
-  assert.equal(result.stdout, 'false\ntrue\nRHS\ntrue\nRHS\ntrue\nRHS\nfalse\n');
+  assert.equal(result.stdout, 'false\ntrue\nRHS\ntrue\nRHS\ntrue\nfalse\ntrue\nRHS\ntrue\nRHS\ntrue\nRHS\ntrue\n');
 });
 check('formal/compiled-guest-trace-nonvacuous', () => {
   assert.ok(tracedActorInstances >= 1, 'no compiled actor guest actually executed');
