@@ -56,6 +56,10 @@ pub mod layout_plan;
 pub mod linked_symbols;
 pub mod linker;
 pub mod package_resolver;
+pub mod units;
+mod verified_quantities;
+pub mod verified_bounds;
+mod quantity_scale;
 /// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
 pub mod registry_namespace;
 #[cfg(target_os = "linux")]
@@ -105,6 +109,22 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     compile_inner(&source, None)
 }
 
+/// Experimental fail-closed strict profile: only file-local immutable
+/// signed-i64 quantities and refinements are supported. No fallback, imports,
+/// proof-dependent check elimination, or whole-language safety certification.
+pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    let pos = Pos { line: 1, col: 1 };
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
+    }
+    let tokens = lexer::lex(source)?;
+    match verified_quantities::lower_mode(source, &tokens, true)? {
+        Some(lowered @ verified_quantities::Lowered::Typed(_)) => compile_quantity(lowered, None),
+        _ => Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED",
+            "strict verification currently supports only typed quantity programs")),
+    }
+}
+
 /// Compile with a caller-supplied logical, package-relative source file path.
 /// Required when the source declares `use default namespace[(N)];`.
 pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
@@ -118,6 +138,11 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    if source.len() > SOURCE_CAP { return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT", "source exceeds input cap")); }
+    let lexical = lexer::lex(source)?;
+    if let Some(lowered) = verified_quantities::lower(source, &lexical)? {
+        return compile_quantity(lowered, Some(logical_path));
+    }
     let source = library::expand_for_file_linker(source)?;
     // Bounded relative-file scalar `import const` can substitute only
     // verified literal values, before the existing checker and guest emitter.
@@ -138,11 +163,45 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    compile_prelexed(lexer::lex(source)?, logical_path)
+    let tokens = lexer::lex(source)?;
+    if let Some(lowered) = verified_quantities::lower(source, &tokens)? {
+        return compile_quantity(lowered, logical_path);
+    }
+    compile_prelexed(tokens, logical_path)
+}
+
+fn compile_quantity(lowered: verified_quantities::Lowered, logical_path: Option<&std::path::Path>)
+    -> Result<Vec<u8>, Diagnostic> {
+    let outcome = match lowered {
+        verified_quantities::Lowered::Closed(outcome) => outcome,
+        verified_quantities::Lowered::Typed(program) => {
+            let bytes = wasm::emit_quantity_program(&program);
+            if bytes.len() > wasm::MAX_OUTPUT {
+                return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+            }
+            return Ok(bytes);
+        }
+    };
+    let (number, failure) = match outcome {
+        Ok(number) => (number, None),
+        Err(failure) => (0, Some(failure)),
+    };
+    let scalar = format!("pub fnc main() -> int {{ return {number}; }}");
+    compile_prelexed_inner(lexer::lex(&scalar)?, logical_path, failure)
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    compile_prelexed_inner(tokens, logical_path, None)
+}
+
+fn compile_prelexed_inner(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>,
+    quantity_failure: Option<verified_quantities::ArithmeticFailure>)
+    -> Result<Vec<u8>, Diagnostic> {
+    if verified_quantities::has_declarations(&tokens) {
+        return Err(Diagnostic::new(tokens[0].pos, "E_UNSUPPORTED",
+            "linked quantity declarations need compiler-resolved nominal identities"));
+    }
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
@@ -370,7 +429,10 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
-    let mut bytes = wasm::emit(&typed);
+    let mut bytes = match quantity_failure {
+        Some(failure) => wasm::emit_quantity_failure(&typed, failure),
+        None => wasm::emit(&typed),
+    };
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
@@ -439,6 +501,16 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_mode(length, false)
+    }
+
+    /// Optional ABI-v2 strict source verification. Never falls back.
+    #[no_mangle]
+    pub extern "C" fn compile_strict_i64(length: i32) -> i32 {
+        compile_mode(length, true)
+    }
+
+    fn compile_mode(length: i32, strict: bool) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -479,7 +551,8 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            let result = if strict { super::compile_verified_strict(source) } else { super::compile(source) };
+            match result {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0
