@@ -197,22 +197,20 @@ impl TagRegistry {
         Ok(entry)
     }
 
-    /// The caller binds the required member descriptor to the same checked
-    /// target declaration used here. Never call the legacy untagged planner
-    /// directly for a named/tagged target. This is non-emitting proof only.
-    pub fn prove(
-        &self, requester: ModuleId, source: &SourceMembers,
-        required: &RequiredMembers, target: TagTarget<'_>,
-    ) -> Result<TaggedMemberWitness, TagError> {
-        if source.tenant_vm_id != self.scope.tenant
-            || required.tenant_vm_id != self.scope.tenant {
-            return Err(TagError::WrongScope);
-        }
-        let actual = self.checked_type(source.shape.source_nominal_id, source.shape.layout_epoch)?;
+    /// Static tag conjunct only; no field, dispatch, ownership, or layout
+    /// access permission is returned. Used by the bounded scalar-call
+    /// adapter before its independent production member checker runs.
+    pub(crate) fn check_static_tags(
+        &self, requester: ModuleId, actual_id: u32, actual_epoch: u64,
+        target: TagTarget<'_>,
+    ) -> Result<Vec<TagId>, TagError> {
+        let actual = self.checked_type(actual_id, actual_epoch)?;
         let required_tags = match target {
             TagTarget::Named { nominal_id, layout_epoch, additional } => {
                 let mut tags = self.checked_type(nominal_id, layout_epoch)?.tags.clone();
-                tags.extend(self.check_set(requester, additional, false)?);
+                for tag in self.check_set(requester, additional, false)? {
+                    if !tags.insert(tag) { return Err(TagError::DuplicateTag); }
+                }
                 tags
             }
             TagTarget::Anonymous { required } => self.check_set(requester, required, false)?,
@@ -226,11 +224,26 @@ impl TagRegistry {
                 });
             }
         }
-        // Independent visibility, layout, effects, ownership and loan proofs.
+        Ok(required_tags.into_iter().collect())
+    }
+
+    /// The caller binds the required member descriptor to the same checked
+    /// target declaration used here. Never call the legacy untagged planner
+    /// directly for a named/tagged target. This is non-emitting proof only.
+    pub fn prove(
+        &self, requester: ModuleId, source: &SourceMembers,
+        required: &RequiredMembers, target: TagTarget<'_>,
+    ) -> Result<TaggedMemberWitness, TagError> {
+        if source.tenant_vm_id != self.scope.tenant
+            || required.tenant_vm_id != self.scope.tenant {
+            return Err(TagError::WrongScope);
+        }
+        let required_tags = self.check_static_tags(
+            requester, source.shape.source_nominal_id, source.shape.layout_epoch, target)?;
         let members = prove_structural_members(source, required).map_err(TagError::Members)?;
         Ok(TaggedMemberWitness {
             scope: self.scope,
-            required_tags: required_tags.into_iter().collect(),
+            required_tags,
             members,
         })
     }
@@ -360,6 +373,16 @@ mod tests {
         r.register_flat_type(1, 12, m, &[a]).unwrap();
         assert_eq!(r.prove(m, &source(1), &required(), TagTarget::Anonymous { required: &[a, a] }),
             Err(TagError::DuplicateTag));
+    }
+
+    #[test]
+    fn duplicate_named_inherited_and_explicit_tag_is_rejected() {
+        let mut r = TagRegistry::new(7, 1).unwrap();
+        let m = module(1, 1);
+        let tag = r.declare(m, 1, TagKind::Brand, Visibility::Public).unwrap();
+        r.register_flat_type(1, 12, m, &[tag]).unwrap();
+        let target = TagTarget::Named { nominal_id: 1, layout_epoch: 12, additional: &[tag] };
+        assert_eq!(r.check_static_tags(m, 1, 12, target), Err(TagError::DuplicateTag));
     }
 
     #[test]
