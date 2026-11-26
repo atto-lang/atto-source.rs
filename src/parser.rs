@@ -2168,10 +2168,10 @@ impl Parser {
                 // the bare call; do not expose ordinary self member access.
                 self.advance();
                 self.advance();
-                self.parse_state_critical_stmt()
+                self.parse_state_critical_stmt(false)
             }
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
-                self.parse_state_critical_stmt(),
+                self.parse_state_critical_stmt(false),
             Some("val" | "const" | "let") => {
                 let s = self.parse_binding()?;
                 self.terminator()?;
@@ -2219,6 +2219,23 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
+                // Recognize only direct write callbacks in method return position.
+                // Read expressions retain their existing expression parser.
+                if self.state_method && self.state_binder.is_none() {
+                    let prefix = if self.word_at(0) == Some("handle_state")
+                        && *self.peek_at(1) == Tok::LParen { Some(0) }
+                    else if self.word_at(0) == Some("self") && *self.peek_at(1) == Tok::Dot
+                        && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen { Some(2) }
+                    else { None };
+                    if let Some(p) = prefix {
+                        if self.word_at(p + 2) == Some("critical")
+                            && (*self.peek_at(p + 3) != Tok::Minus
+                                || self.word_at(p + 4) == Some("write")) {
+                            if p == 2 { self.advance(); self.advance(); }
+                            return self.parse_state_critical_stmt(true);
+                        }
+                    }
+                }
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
                     // return values, including an exhaustive match.
@@ -2537,7 +2554,7 @@ impl Parser {
     /// A lexical, non-suspending state loan. Syntactic admission is deliberately
     /// narrower than arbitrary closures: mutation only, pure scalar RHS, no
     /// early return, IO, allocations, calls, loops or nested state access.
-    fn parse_state_critical_stmt(&mut self) -> R<Stmt> {
+    fn parse_state_critical_stmt(&mut self, return_result: bool) -> R<Stmt> {
         let pos = self.pos();
         if self.state_binder.is_some() {
             return Err(Diagnostic::new(pos, "E_STATE_BORROW",
@@ -2565,14 +2582,20 @@ impl Parser {
         let result = self.parse_block();
         self.state_binder = None;
         let body = result?;
-        for stmt in &body {
+        for (i, stmt) in body.iter().enumerate() {
             match stmt {
                 Stmt::FieldAssign { target, value, .. }
                     if write && matches!(target.kind, ExprKind::SelfRef)
                         && Self::pure_state_value(value) => {}
+                Stmt::Return(Some(value), _) if return_result && i + 1 == body.len()
+                    && Self::pure_state_value(value) => {}
                 _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                    "critical block permits only pure state assignments (no calls, return, await or escapes)")),
+                    "critical block permits pure state assignments and, only in return position, a terminal scalar result")),
             }
+        }
+        if return_result && !matches!(body.last(), Some(Stmt::Return(Some(_), _))) {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "returned critical-write requires a terminal callback result"));
         }
         self.expect(Tok::RParen, "')' after critical scope")?;
         self.terminator()?;

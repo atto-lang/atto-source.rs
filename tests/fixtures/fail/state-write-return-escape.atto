@@ -1,0 +1,6 @@
+// expect-error: E_ESCAPE
+define state container Counter as
+  state { let int count: 0; }
+  pub bad(): int { return handle_state(critical-write |view| -> { return view; }); }
+end
+pub fnc main(): int { return 0; }

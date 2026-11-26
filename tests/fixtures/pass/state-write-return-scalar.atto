@@ -1,0 +1,32 @@
+// expect-exit: 0
+// expect-stdout: 42
+// expect-stdout: true
+// expect-stdout: 42
+// expect-stdout: 0
+define state container Counter as
+  state { let int count: 0; let bool ready: false; }
+  pub increment(int n): int {
+    return self.handle_state(critical-write |current| -> {
+      current.count = current.count + n;
+      return current.count;
+    });
+  }
+  pub mark(): bool {
+    return handle_state(critical |view| -> {
+      view.ready = true;
+      return view.ready;
+    });
+  }
+  pub read_count(): int {
+    return handle_state(critical-read |view| -> { return view.count; });
+  }
+end
+pub fnc main(): int {
+  val first = new Counter();
+  val second = new Counter();
+  stdio.println(first.increment(42));
+  stdio.println(first.mark());
+  stdio.println(first.read_count());
+  stdio.println(second.read_count());
+  return 0;
+}

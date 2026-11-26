@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+define state container Counter as
+  state { let int count: 0; }
+  pub bad(): bool { return handle_state(critical-write |view| -> { return view.count; }); }
+end
+pub fnc main(): int { return 0; }
