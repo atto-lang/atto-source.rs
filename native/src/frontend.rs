@@ -467,6 +467,11 @@ impl Parser {
         Ok(lhs)
     }
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        // Consume a run of identity prefixes iteratively. The existing
+        // token budget bounds work without introducing recursive stack use.
+        while self.peek() == Some(Kind::Plus) {
+            self.expect(Kind::Plus)?;
+        }
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;

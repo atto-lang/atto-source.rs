@@ -1,4 +1,7 @@
-use oreslang_source_rs::actor_arena::{ArenaError, FixedActorArena};
+// Standalone host-model contract, not an exported compiler/runtime feature.
+#[path = "../src/actor_arena.rs"]
+mod actor_arena;
+use actor_arena::{ArenaError, FixedActorArena};
 
 #[derive(Debug, Eq, PartialEq)]
 struct OwnedValue {
@@ -162,7 +165,7 @@ fn rejects_zero_arena_id() {
 
 #[test]
 fn excessive_inline_slot_capacity_is_rejected_before_initialization() {
-    use oreslang_source_rs::actor_arena::{MAX_ARENA_INLINE_BYTES, MAX_ARENA_SLOTS};
+    use actor_arena::{MAX_ARENA_INLINE_BYTES, MAX_ARENA_SLOTS};
     assert_eq!(MAX_ARENA_SLOTS, 4096);
     assert_eq!(MAX_ARENA_INLINE_BYTES, 4 * 1024 * 1024);
     assert!(matches!(

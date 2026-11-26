@@ -50,7 +50,7 @@ The test forks real processes, waits until a SQLite transaction reaches
 the checkpoint boundary, sends `SIGKILL`, reopens from a fresh connection,
 and verifies commit survival or uncommitted rollback. It also covers
 stale actor epochs, sequence CAS, schema mismatch and checksum corruption.
-The test is native C with no Python dependency.
+The test is standalone native C and uses SQLite and the C toolchain.
 
 ## Future integration gates
 
