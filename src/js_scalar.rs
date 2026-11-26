@@ -126,6 +126,8 @@ fn stmts(body: &[TStmt], out: &mut String, void_main: bool, loops: &mut Vec<usiz
                 let label = if matches!(s, TStmt::Break) { "loop" } else { "body" };
                 writeln!(out, "break {label}{id};").unwrap();
             }
+            // Exhaustive match lowering includes a terminal impossible arm.
+            TStmt::Unreachable => out.push_str("throw new WebAssembly.RuntimeError('unreachable');\n"),
             TStmt::Block(body) => {
                 out.push_str("{\n");
                 stmts(body, out, void_main, loops, next)?;
