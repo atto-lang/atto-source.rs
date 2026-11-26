@@ -4096,10 +4096,28 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        // The parser bounds tree height, but a left-associated chain still
+        // consumed a large native checker frame per operator. Walk that spine
+        // iteratively, preserving exact source order, per-node types and
+        // checked overflow. Right subtrees use the existing checker.
+        let mut spine = vec![(op, r, pos)];
+        let mut left = l;
+        while let ExprKind::Binary(op, lhs, rhs) = &left.kind {
+            spine.push((*op, rhs.as_ref(), left.pos));
+            left = lhs.as_ref();
+        }
+        let mut value = self.value(left)?;
+        for (op, rhs, pos) in spine.into_iter().rev() {
+            let right = self.value(rhs)?;
+            value = self.binary_values(op, value, right, pos)?;
+        }
+        Ok(value)
+    }
+
+    #[inline(never)]
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr) {
                 if a.ty != Type::Int || b.ty != Type::Int {
