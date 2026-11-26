@@ -136,7 +136,7 @@ fn lex_inner(source: &str, allow_tag_names: bool) -> Result<Vec<Token>, Diagnost
         if allow_tag_names && c == '#' {
             bump!();
             if !chars.get(i).is_some_and(|ch| ch.is_alphabetic() || *ch == '_') {
-                return Err(Diagnostic::new(pos, "E_TAG_UNSUPPORTED", "expected identifier immediately after '#'"));
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "Symbols are not supported by the browser compiler yet"));
             }
             let mut name = String::from("#");
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
