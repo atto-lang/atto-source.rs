@@ -66,7 +66,8 @@ fn call_graph(module: &Module) -> HashMap<String, Vec<String>> {
 /// Remove private functions unreachable from the executable/public roots.
 ///
 /// Public exports are roots because object files can also be consumed as
-/// libraries. A function named main is always a root when present.
+/// libraries. Package exports are retained without public native linkage.
+/// A function named main is always a root when present.
 pub fn tree_shake(mut module: Module) -> Result<Module, String> {
     let graph = call_graph(&module);
     let mut pending: Vec<String> = module
@@ -75,6 +76,7 @@ pub fn tree_shake(mut module: Module) -> Result<Module, String> {
         .filter(|function| function.exported || function.symbol == "main")
         .map(|function| function.symbol.clone())
         .collect();
+    pending.extend(module.exports.iter().map(|export| export.name.clone()));
     if pending.is_empty() {
         return Err("release tree shaking requires main or at least one exported root".into());
     }
