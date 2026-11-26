@@ -2434,6 +2434,13 @@ impl Parser {
                     }
                 }
                 let e = self.parse_expr()?;
+                if self.directional_binding_follows() {
+                    self.advance();
+                    self.advance();
+                    let binding = self.parse_binding_with_initializer(Some(e))?;
+                    self.terminator()?;
+                    return Ok(binding);
+                }
                 // Compound addition uses the existing checked binary addition.
                 // Restrict it to locals: field/index targets need once-only lvalue lowering.
                 if *self.peek() == Tok::PlusAssign {
@@ -2647,6 +2654,10 @@ impl Parser {
 
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
     fn parse_binding(&mut self) -> R<Stmt> {
+        self.parse_binding_with_initializer(None)
+    }
+
+    fn parse_binding_with_initializer(&mut self, incoming: Option<Expr>) -> R<Stmt> {
         let pos = self.pos();
         let kind = if self.eat_word("val") {
             BindKind::Val
@@ -2695,15 +2706,34 @@ impl Parser {
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
         }
-        if *self.peek() != Tok::Assign {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_UNINITIALIZED",
-                format!("binding '{name}' needs an initializer"),
-            ));
-        }
-        self.advance();
-        let init = self.parse_expr()?;
+        let directional = incoming.is_some() || self.double_angle(&Tok::Lt);
+        let init = if let Some(value) = incoming {
+            value
+        } else if directional {
+            self.advance();
+            self.advance();
+            self.parse_expr()?
+        } else {
+            if *self.peek() != Tok::Assign {
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_UNINITIALIZED",
+                    format!("binding '{name}' needs an initializer"),
+                ));
+            }
+            self.advance();
+            self.parse_expr()?
+        };
+        // Portable subset: ordinary int only. A checked, non-converting
+        // ascription preserves the operand and rejects non-int sources.
+        // Never infer a channel read or silently drop a loan.
+        let init = if directional {
+            if ty.is_some() && ty != Some(Type::Int) {
+                return Err(Diagnostic::new(pos, "E_TYPE",
+                    "directional scalar declaration requires int"));
+            }
+            Expr { kind: ExprKind::Ascribe(Box::new(init), Type::Int, false), pos }
+        } else { init };
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
@@ -3500,6 +3530,7 @@ impl Parser {
         let mut links = 0;
         let mut left = self.parse_shift()?;
         loop {
+            if self.directional_binding_follows() { break; }
             let pos = self.pos();
             let op = match self.peek() {
                 Tok::Lt => BinOp::Lt,
@@ -3530,6 +3561,16 @@ impl Parser {
         let Some(a) = self.toks.get(self.i + offset) else { return false; };
         let Some(b) = self.toks.get(self.i + offset + 1) else { return false; };
         a.pos.line == b.pos.line && a.pos.col.checked_add(1) == Some(b.pos.col)
+    }
+
+    fn double_angle(&self, kind: &Tok) -> bool {
+        self.peek() == kind && self.peek_at(1) == kind
+            && self.joined_at(0) && !self.triple_at(0, kind)
+    }
+
+    fn directional_binding_follows(&self) -> bool {
+        self.double_angle(&Tok::Gt)
+            && matches!(self.word_at(2), Some("val" | "let" | "const"))
     }
 
     fn triple_at(&self, offset: usize, kind: &Tok) -> bool {
