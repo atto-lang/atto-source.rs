@@ -9,6 +9,8 @@
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+/// Bounded static synchronous actor call graphs; not continuation lowering.
+pub mod actor_stack_bound;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
 pub mod collection_layout;
 /// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
@@ -209,6 +211,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
+        actor_stack_bound::verify(&program)?;
         let bytes = wasm::emit(&program);
         if bytes.len() > wasm::MAX_OUTPUT {
             return Err(Diagnostic::new(Pos { line: 1, col: 1 },
@@ -414,6 +417,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
+    actor_stack_bound::verify(&typed)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
