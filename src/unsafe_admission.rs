@@ -219,8 +219,12 @@ pub fn analyze(tokens: &[Token]) -> Result<UnsafeSyntaxTree, Diagnostic> {
         if matches!(token.tok, Tok::Pipe) {
             last_pipe = Some(i);
         }
-        if matches!(token.tok, Tok::Arrow)
-            && last_pipe.is_some_and(|p| i - p <= 16) {
+        // A typed closure header may be arbitrarily long within the
+        // source budget. A fixed token-distance heuristic can miss it and
+        // incorrectly inherit an enclosing unsafe block. Conservatively
+        // treat the next arrow after a pipe as a boundary; false positives
+        // are acceptable in this nonexecuting G1 preview.
+        if matches!(token.tok, Tok::Arrow) && last_pipe.take().is_some() {
             lambda_prefix[i + 1] += 1;
         }
     }
@@ -368,6 +372,16 @@ mod tests {
         assert_eq!(parse(source).unwrap_err().code, "E_UNSAFE_CALL");
         let typed = "pub unsafe fnc trusted(): int { return 42; } pub fnc main(): int { unsafe { val callback = |n|: int -> trusted(); } return 42; }";
         assert_eq!(parse(typed).unwrap_err().code, "E_UNSAFE_CALL");
+    }
+
+    #[test]
+    fn long_typed_lambda_cannot_inherit_outer_unsafe_context() {
+        let source = "pub unsafe fnc trusted(): int { return 42; } \
+            pub fnc main(): int { unsafe { val callback = \
+            |n|: Tuple<int, int, int, int, int, int, int, int, int, int, int, int> \
+            -> trusted(); } return 42; }";
+        assert_eq!(parse(source).unwrap_err().code, "E_UNSAFE_CALL");
+        assert!(compile(source).is_err(), "guest must never publish unsafe code");
     }
 
     #[test]
