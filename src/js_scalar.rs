@@ -39,7 +39,11 @@ fn expr(e: &TE) -> R<String> {
                     let op = match op { BinOp::BitAnd => "&", BinOp::BitOr => "|", _ => "^" };
                     format!("BigInt.asIntN(64,({l}){op}({r}))")
                 }
-                _ => return Err(unsupported()),
+                BinOp::Shl | BinOp::LShr | BinOp::AShr => {
+                    let op = match op { BinOp::Shl => 0, BinOp::LShr => 1, _ => 2 };
+                    format!("shift({l},{r},{op})")
+                }
+                BinOp::Div => return Err(unsupported()),
             }
         }
         TExpr::Ternary(c, a, b) => format!("(({})?({}):({}))", expr(c)?, expr(a)?, expr(b)?),
@@ -53,7 +57,7 @@ fn expr(e: &TE) -> R<String> {
     })
 }
 
-fn stmts(body: &[TStmt], out: &mut String, void_main: bool) -> R<()> {
+fn stmts(body: &[TStmt], out: &mut String, void_main: bool, loops: &mut Vec<usize>, next: &mut usize) -> R<()> {
     use std::fmt::Write;
     for s in body {
         match s {
@@ -67,18 +71,37 @@ fn stmts(body: &[TStmt], out: &mut String, void_main: bool) -> R<()> {
             TStmt::If(arms, other) => {
                 for (i, (cond, body)) in arms.iter().enumerate() {
                     writeln!(out, "{}if({}){{", if i == 0 { "" } else { "else " }, expr(cond)?).unwrap();
-                    stmts(body, out, void_main)?;
+                    stmts(body, out, void_main, loops, next)?;
                     out.push_str("}\n");
                 }
                 if let Some(body) = other {
                     out.push_str("else{\n");
-                    stmts(body, out, void_main)?;
+                    stmts(body, out, void_main, loops, next)?;
                     out.push_str("}\n");
                 }
             }
+            TStmt::Loop { cond, body, update } => {
+                let id = *next;
+                *next += 1;
+                let cond = match cond { Some(c) => expr(c)?, None => "1".into() };
+                writeln!(out, "loop{id}:while({cond}){{body{id}:{{").unwrap();
+                loops.push(id);
+                stmts(body, out, void_main, loops, next)?;
+                loops.pop();
+                out.push_str("}\n");
+                // A source continue leaves the body block and executes the update.
+                // Update expressions cannot acquire a new break/continue target.
+                stmts(update, out, void_main, &mut Vec::new(), next)?;
+                out.push_str("}\n");
+            }
+            TStmt::Break | TStmt::Continue => {
+                let id = loops.last().ok_or_else(unsupported)?;
+                let label = if matches!(s, TStmt::Break) { "loop" } else { "body" };
+                writeln!(out, "break {label}{id};").unwrap();
+            }
             TStmt::Block(body) => {
                 out.push_str("{\n");
-                stmts(body, out, void_main)?;
+                stmts(body, out, void_main, loops, next)?;
                 out.push_str("}\n");
             }
             _ => return Err(unsupported()),
@@ -100,6 +123,7 @@ pub(crate) fn emit(p: &TProgram) -> R<String> {
         return Err(unsupported());
     }
     let mut out = String::from("export function instantiate(atto={}){\nconst panic_code={value:0};\nfunction checked(n){if(n<-(1n<<63n)||n>(1n<<63n)-1n){panic_code.value=1;throw new Error('E_PANIC:1')}return n}\n");
+    out.push_str("function shift(a,n,op){if(n<0n||n>=64n){panic_code.value=8;throw new Error('E_PANIC:8')}return BigInt.asIntN(64,op===0?a<<n:op===1?BigInt.asUintN(64,a)>>n:a>>n)}\n");
     for (i, f) in p.funcs.iter().enumerate() {
         if !scalar(f.ret) || f.params.iter().chain(&f.locals).any(|t| !matches!(t, Type::Int | Type::Bool)) {
             return Err(unsupported());
@@ -110,7 +134,7 @@ pub(crate) fn emit(p: &TProgram) -> R<String> {
         for (j, t) in f.locals.iter().enumerate() {
             writeln!(out, "let l{}={};", j+f.params.len(), if *t == Type::Int { "0n" } else { "0" }).unwrap();
         }
-        stmts(&f.body, &mut out, void_main)?;
+        stmts(&f.body, &mut out, void_main, &mut Vec::new(), &mut 0)?;
         if void_main { out.push_str("return 0n;\n"); }
         out.push_str("}\n");
     }
