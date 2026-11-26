@@ -189,17 +189,21 @@ async function fixtures(kind) {
 
 const java = process.env.ATTO_JAVA;
 const attoc = process.env.ATTOC;
-// The Java runtime sometimes aborts at exit while an actor is still draining
-// ("context is currently executing on another thread"): stdout is then a
-// truncated prefix and the status is 1. That is a runtime shutdown race, not
-// a rejection, so only acceptance and the stdout prefix are compared.
+// A shutdown race, launcher failure, signal, or timeout is not differential
+// evidence. Even fixtures with documented backend differences require a real
+// completed reference execution, never truncated stdout.
 const JAVA_SHUTDOWN_RACE = 'The context is currently executing on another thread';
 function runJava(path) {
   const r = spawnSync(java, [path], { encoding: 'utf8', timeout: 60_000 });
+  assert.ifError(r.error);
+  assert.equal(r.signal, null, 'Java reference terminated by signal');
+  assert.ok(Number.isInteger(r.status), 'Java reference did not report an exit status');
+  assert.equal(typeof r.stdout, 'string', 'Java reference stdout unavailable');
+  assert.equal(typeof r.stderr, 'string', 'Java reference stderr unavailable');
   const all = r.stderr + r.stdout;
-  const race = all.includes(JAVA_SHUTDOWN_RACE);
-  const rejected = all.split('\n').some(l => /oreslang: /.test(l) && !l.includes(JAVA_SHUTDOWN_RACE));
-  return { status: r.status, stdout: r.stdout, rejected, race };
+  assert.ok(!all.includes(JAVA_SHUTDOWN_RACE), 'Java reference shutdown race: incomplete execution');
+  const rejected = all.split('\n').some(l => /oreslang: /.test(l));
+  return { status: r.status, stdout: r.stdout, rejected };
 }
 function nativeBytes(path) {
   const r = spawnSync(attoc, [path], { maxBuffer: 1 << 22 });
@@ -307,17 +311,7 @@ for (const f of await fixtures('pass')) {
         assert.ok(j.rejected, 'Java now accepts this Rust/Wasm-positive fixture: update its parity claim');
       } else {
         assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
-        if (j.race && header(f.source, 'stdout-order')[0] === 'unordered') {
-          // truncated and concurrently interleaved: Java's lines must be a sub-multiset of ours
-          const pool = g.stdout.split('\n');
-          for (const line of j.stdout.split('\n').filter(Boolean)) {
-            const at = pool.indexOf(line);
-            assert.ok(at >= 0, `Java printed a line the browser runtime did not: ${JSON.stringify(line)}`);
-            pool.splice(at, 1);
-          }
-        } else if (j.race) {
-          assert.ok(g.stdout.startsWith(j.stdout), `Java stdout (truncated by its shutdown race) is not a prefix: ${JSON.stringify(j.stdout)}`);
-        } else {
+        {
           assert.equal(j.status, Number(BigInt.asUintN(8, g.value)), 'Java exit status agrees');
           if (header(f.source, 'stdout-order')[0] === 'unordered') {
             // several actors print concurrently: only the multiset of lines is defined
