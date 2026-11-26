@@ -24,6 +24,9 @@ const KEY_DOMAIN: &[u8] = b"atto-incremental-build-key-v2\0";
 const MAX_UNITS: usize = 64;
 pub const DEFAULT_CAPACITY: usize = 64;
 pub const MAX_CAPACITY: usize = 4096;
+/// Limits retained artifact/diagnostic/path payload, not allocator overhead.
+pub const DEFAULT_BYTE_BUDGET: usize = 16 * 1024 * 1024;
+pub const MAX_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 
 fn err(code: &'static str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(Pos::default(), code, message)
@@ -148,7 +151,9 @@ pub struct CacheStats {
 /// Bounded FIFO cache of compiled guest artifacts and diagnostics.
 pub struct IncrementalCompiler {
     capacity: usize,
-    entries: BTreeMap<BuildKey, (Vec<String>, R<Vec<u8>>)>,
+    byte_budget: usize,
+    retained_bytes: usize,
+    entries: BTreeMap<BuildKey, (Vec<String>, R<Vec<u8>>, usize)>,
     order: VecDeque<BuildKey>,
     last_digests: BTreeMap<String, [u8; 32]>,
     stats: CacheStats,
@@ -162,11 +167,20 @@ impl Default for IncrementalCompiler {
 
 impl IncrementalCompiler {
     pub fn with_capacity(capacity: usize) -> R<Self> {
+        Self::with_limits(capacity, DEFAULT_BYTE_BUDGET)
+    }
+
+    pub fn with_limits(capacity: usize, byte_budget: usize) -> R<Self> {
+        if byte_budget == 0 || byte_budget > MAX_BYTE_BUDGET {
+            return Err(err("E_CACHE", "invalid incremental cache byte budget"));
+        }
         if capacity == 0 || capacity > MAX_CAPACITY {
             return Err(err("E_CACHE", "incremental cache capacity must be in [1, 4096]"));
         }
         Ok(IncrementalCompiler {
             capacity,
+            byte_budget,
+            retained_bytes: 0,
             entries: BTreeMap::new(),
             order: VecDeque::new(),
             last_digests: BTreeMap::new(),
@@ -177,6 +191,9 @@ impl IncrementalCompiler {
     pub fn stats(&self) -> CacheStats {
         self.stats
     }
+
+    /// Accounted retained payload, excluding container/allocator overhead.
+    pub fn retained_bytes(&self) -> usize { self.retained_bytes }
 
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -203,7 +220,7 @@ impl IncrementalCompiler {
         }
         let key = build_key(entry, units)?;
         let paths: Vec<String> = units.iter().map(|u| u.path.to_string()).collect();
-        if let Some((prior_order, found)) = self.entries.get(&key) {
+        if let Some((prior_order, found, _)) = self.entries.get(&key) {
             // The linker may report the first invalid supplied input in
             // caller order. Never serve a diagnostic from another ordering.
             if found.is_ok() || prior_order == &paths {
@@ -211,18 +228,28 @@ impl IncrementalCompiler {
                 return found.clone();
             }
         }
-        if self.entries.remove(&key).is_some() {
+        if let Some((_, _, bytes)) = self.entries.remove(&key) {
+            self.retained_bytes -= bytes;
             self.order.retain(|old| old != &key);
         }
         self.stats.misses += 1;
         let result = linker::compile_linked(entry, units);
-        if self.entries.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-                self.stats.evictions += 1;
-            }
+        let payload = match &result {
+            Ok(artifact) => artifact.len(),
+            Err(diagnostic) => diagnostic.message.len().saturating_add(diagnostic.code.len()),
+        };
+        let cost = paths.iter().fold(payload.saturating_add(32), |total, path| total.saturating_add(path.len()));
+        // A valid result larger than the retention budget is still returned;
+        // cache admission must not change cold compiler semantics.
+        if cost > self.byte_budget { return result; }
+        while self.entries.len() >= self.capacity || cost > self.byte_budget - self.retained_bytes {
+            let oldest = self.order.pop_front().expect("cache order is nonempty");
+            let (_, _, bytes) = self.entries.remove(&oldest).expect("cache order invariant");
+            self.retained_bytes -= bytes;
+            self.stats.evictions += 1;
         }
-        self.entries.insert(key, (paths, result.clone()));
+        self.entries.insert(key, (paths, result.clone(), cost));
+        self.retained_bytes += cost;
         self.order.push_back(key);
         result
     }
