@@ -38,7 +38,7 @@ fn immutable_reassignments_have_a_specific_diagnostic() {
         "int x = 7; x = 8; return x;",
         "const x = 7; x = 8; return x;",
         "const int x = 7; x += 1; return x;",
-        "val x = 7; x -= 1; return x;",
+        "val x = 7; x = x - 1; return x;",
         "val x = 7; val y = x + 1; y = 9; return y;",
     ] {
         let e = compile(&source(body)).unwrap_err();
@@ -64,6 +64,10 @@ fn binding_initializers_remain_closed_world_and_ordered() {
 fn explicit_let_is_mutable_but_legacy_bare_mut_is_not_admitted() {
     assert!(compile(&source("let int x = 7; x = 42; return x;")).unwrap().starts_with(HEADER));
     assert!(compile(&source("mut int x = 7; return x;")).is_err());
+    // The browser parser does not yet admit -=. Never count its syntax denial
+    // as proof of the immutable-binding checker; the explicit subtraction above does that.
+    let e = compile(&source("val x = 7; x -= 1; return x;")).unwrap_err();
+    assert_eq!(e.code, "E_SYNTAX");
 }
 
 #[test]
