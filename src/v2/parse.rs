@@ -1063,9 +1063,9 @@ impl Parser {
                 let mode = match s.as_str() {
                     "try" => PlanMode::Try,
                     "nb" => PlanMode::Nb,
-                    _ => PlanMode::Wait,
+                    _ => PlanMode::Future,
                 };
-                if mode != PlanMode::Wait {
+                if mode != PlanMode::Future {
                     self.advance();
                 }
                 self.expect_word("select")?;
