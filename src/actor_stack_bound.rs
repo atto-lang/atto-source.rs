@@ -59,6 +59,7 @@ fn direct_calls(mut work: Vec<Work<'_>>) -> Vec<usize> {
                     calls.push(*idx as usize);
                     work.extend(args.iter().map(Work::Expr));
                 }
+                TExpr::RefinementCheck(v, _, _, _) |
                 TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v) |
                 TExpr::Not(v) | TExpr::AdtPayload(v) | TExpr::FieldGet { obj: v, .. } |
                 TExpr::StateFieldRead { obj: v, .. } |
@@ -201,6 +202,15 @@ mod tests {
     #[test] fn accepts_finite_calls() {
         let p = program(vec![vec![call(1)], vec![call(2)], vec![]], 0);
         assert!(verify(&p).is_ok());
+    }
+    #[test] fn refinement_check_cannot_hide_recursive_call() {
+        let inner = TE { e: TExpr::Call(0, vec![]), ty: Type::Int };
+        let wrapped = TE {
+            e: TExpr::RefinementCheck(Box::new(inner), 0, 42, 0),
+            ty: Type::Int,
+        };
+        let p = program(vec![vec![TStmt::Expr(wrapped)]], 0);
+        assert!(verify(&p).is_err());
     }
     #[test] fn rejects_direct_recursion() {
         let p = program(vec![vec![call(0)]], 0);
