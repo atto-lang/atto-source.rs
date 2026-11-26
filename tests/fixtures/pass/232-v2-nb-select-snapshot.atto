@@ -36,7 +36,29 @@ pub suspends fnc main(): int {
   val Option<SelectResult> deferred = await waiting;
   // Regardless of whether the task ran before the immediate probe,
   // the two committed reads must use different slots and total 42.
-  return got.unwrap().value + live.value - 7
+  val prior = got.unwrap().value + live.value - 7
     + immediate.unwrap().value + deferred.unwrap().value - 42
     + immediate.unwrap().index + deferred.unwrap().index - 1;
+  // Two old-generation waiters must share their retired FAIR cursor.
+  val old_a = Channel<int>.bounded(2);
+  val old_b = Channel<int>.bounded(1);
+  val new_a = Channel<int>.bounded(1);
+  val new_b = Channel<int>.bounded(1);
+  val DynamicSelectPlan<int> retired = DynamicSelectPlan<int>.from_list([
+    SelectCase.read(old_a), SelectCase.read(old_b)
+  ]);
+  val Future<Option<SelectResult>> old_first = nb select fair from retired;
+  val Future<Option<SelectResult>> old_second = nb select fair from retired;
+  retired.put(0, SelectCase.read(new_a));
+  retired.put(1, SelectCase.read(new_b));
+  writech old_a, 20;
+  writech old_a, 99;
+  writech old_b, 22;
+  val Option<SelectResult> x = await old_first;
+  val Option<SelectResult> y = await old_second;
+  writech new_a, 7;
+  writech new_b, 9;
+  val Option<SelectResult> fresh = try select fair from retired;
+  return prior + x.unwrap().value + y.unwrap().value - 42
+    + x.unwrap().index + y.unwrap().index - 1 + fresh.unwrap().value - 7;
 }
