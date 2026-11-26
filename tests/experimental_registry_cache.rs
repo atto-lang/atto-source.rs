@@ -41,17 +41,20 @@ fn locked_registry_application_cold_warm_edit_and_authority_denials(){
     let q=||RegistryDependency{name:"@org/project/other",manifest:OTHER,lockfile:&q_lock,trusted_lock_sha256:&q_pin,sources:&inputs};
     let cold=session.build_registry(Mode::Cold,&pin,MASTER,root(),&[p(),q()]).unwrap();
     assert_eq!(cold.outcome,Outcome::Compiled);assert_eq!(cold.verified_dependencies,2);
-    assert_eq!((cold.rebuilt_provider_views,cold.reused_provider_views),(2,0));execute(&cold.bytes,"42");
+    assert_eq!((cold.rebuilt_provider_views,cold.reused_provider_views),(2,0));
+    assert_eq!((cold.checked_namespaces,cold.reused_namespace_checks),(2,0));execute(&cold.bytes,"42");
     let vp=FrozenRegistry::verify("@org/project/provider",PROVIDER,&p_lock,&p_pin,&inputs).unwrap();
     let vq=FrozenRegistry::verify("@org/project/other",OTHER,&q_lock,&q_pin,&inputs).unwrap();
     assert_eq!(cold.bytes,compile_registry_guest(APP,&[&vp,&vq]).unwrap());
     let warm=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[q(),p()]).unwrap();
     assert_eq!(warm.outcome,Outcome::Reused);assert_eq!(warm.bytes,cold.bytes);
     assert_eq!((warm.rebuilt_provider_views,warm.reused_provider_views),(0,2));
+    assert_eq!((warm.checked_namespaces,warm.reused_namespace_checks),(0,2));
     drop(session);let mut session=open();
     let reopened=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[p(),q()]).unwrap();
     assert_eq!(reopened.outcome,Outcome::Reused);
     assert_eq!((reopened.rebuilt_provider_views,reopened.reused_provider_views),(2,0));
+    assert_eq!((reopened.checked_namespaces,reopened.reused_namespace_checks),(2,0));
     let before=files(&cache);
     let changed=MATH.replace("x+1","x+2");let modified=[SnapshotSource{path:"src/math/main.atto",source:&changed}];
     let stale=RegistryDependency{sources:&modified,..p()};
@@ -77,14 +80,30 @@ fn locked_registry_application_cold_warm_edit_and_authority_denials(){
     let recovered=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[p(),q()]).unwrap();
     assert_eq!(recovered.outcome,Outcome::Reused);
     assert_eq!((recovered.rebuilt_provider_views,recovered.reused_provider_views),(0,2));
+    assert_eq!((recovered.checked_namespaces,recovered.reused_namespace_checks),(0,2));
     let updated_lock=lock(PROVIDER,&modified);let updated_pin=hex_digest(updated_lock.as_bytes());
     let updated=||RegistryDependency{sources:&modified,lockfile:&updated_lock,trusted_lock_sha256:&updated_pin,..p()};
     let next=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[updated(),q()]).unwrap();
     assert_eq!(next.outcome,Outcome::Compiled);
-    assert_eq!((next.rebuilt_provider_views,next.reused_provider_views),(1,1));execute(&next.bytes,"43");
+    assert_eq!((next.rebuilt_provider_views,next.reused_provider_views),(1,1));
+    assert_eq!((next.checked_namespaces,next.reused_namespace_checks),(1,1));
+    assert_eq!((next.unchanged_callable_signatures,next.changed_callable_signatures),(1,0));execute(&next.bytes,"43");
     let verified=FrozenRegistry::verify("@org/project/provider",PROVIDER,&updated_lock,&updated_pin,&modified).unwrap();
     assert_eq!(next.bytes,compile_registry_guest(APP,&[&verified,&vq]).unwrap());
     let hot=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[q(),updated()]).unwrap();
     assert_eq!(hot.outcome,Outcome::Reused);assert_eq!((hot.rebuilt_provider_views,hot.reused_provider_views),(0,2));
+    assert_eq!((hot.checked_namespaces,hot.reused_namespace_checks),(0,2));
+    // Renaming a public parameter changes named-call ABI metadata even
+    // when positional callers and emitted guest behavior are unchanged.
+    let renamed=changed.replace("int x): int { return x+2;","int value): int { return value+2;");
+    let renamed_inputs=[SnapshotSource{path:"src/math/main.atto",source:&renamed}];
+    let renamed_lock=lock(PROVIDER,&renamed_inputs);let renamed_pin=hex_digest(renamed_lock.as_bytes());
+    let renamed_dep=RegistryDependency{sources:&renamed_inputs,lockfile:&renamed_lock,trusted_lock_sha256:&renamed_pin,..p()};
+    let renamed_build=session.build_registry(Mode::Incremental,&pin,MASTER,root(),&[renamed_dep,q()]).unwrap();
+    assert_eq!(renamed_build.outcome,Outcome::Compiled);
+    assert_eq!((renamed_build.checked_namespaces,renamed_build.reused_namespace_checks),(1,1));
+    assert_eq!((renamed_build.unchanged_callable_signatures,renamed_build.changed_callable_signatures),(0,1));
+    execute(&renamed_build.bytes,"43");
+    println!("CACHE_REGISTRY_SEMANTIC|closed-checks=2/0,0/2,1/1|body-signature-equal|named-parameter-signature-changed|failed-edit-rollback|guest=42/43");
     println!("CACHE_REGISTRY_APP|two-providers|cold-warm=42|repinned-edit=43|views=2/0,0/2,1/1|failed-edit-rollback|order-independent|stale-root-provider-private-duplicate-missing-denied");
 }

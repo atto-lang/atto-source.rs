@@ -12,10 +12,12 @@ fn err(code:&'static str,detail:&str)->Diagnostic{Diagnostic::new(Pos::default()
 pub(crate) struct RegistryMemo {
     target:Option<TargetOs>,
     providers:BTreeMap<String,MemoProvider>,
+    checked:crate::registry_check_memo::Memo,
 }
 struct MemoProvider { pin:String, view:Arc<FrozenRegistry> }
 #[derive(Clone,Copy,Default)]
-pub(crate) struct Work {pub(crate) rebuilt:usize,pub(crate) reused:usize}
+pub(crate) struct Work {pub(crate) rebuilt:usize,pub(crate) reused:usize,
+    pub(crate) semantic:crate::registry_check_memo::Work}
 pub(crate) struct Prepared {
     pub(crate) key:[u8;32],
     tokens:Vec<Token>,
@@ -113,7 +115,7 @@ pub(crate) fn prepare(root:Snapshot<'_>,deps:&[RegistryDependency<'_>],target:Ta
                 return Err(err("E_AMBIGUOUS","duplicate or self registry dependency"));
             }
         }
-        let mut memo=RegistryMemo{target:Some(target),providers:BTreeMap::new()};
+        let mut memo=RegistryMemo{target:Some(target),providers:BTreeMap::new(),checked:Default::default()};
         let mut work=Work::default();
         for d in ordered.values(){
             let cached=if previous.target==Some(target){
@@ -132,7 +134,12 @@ pub(crate) fn prepare(root:Snapshot<'_>,deps:&[RegistryDependency<'_>],target:Ta
             memo.providers.insert(d.name.to_owned(),MemoProvider{pin:d.trusted_lock_sha256.to_owned(),view});
         }
         let refs:Vec<_>=memo.providers.values().map(|p|p.view.as_ref()).collect();
-        let tokens=registry_namespace::prepare_registry_guest(source,&refs)?;
+        let empty=crate::registry_check_memo::Memo::default();
+        let prior=if previous.target==Some(target){&previous.checked}else{&empty};
+        let mut pass=crate::registry_check_memo::Pass::new(prior);
+        let tokens=registry_namespace::prepare_registry_guest_memoized(source,&refs,&mut pass)?;
+        let (checked,semantic)=pass.finish();
+        memo.checked=checked;work.semantic=semantic;
         let bindings=token_digest(&tokens)?;
         // All approved dependency locks are included, even if unused.
         // This conservative profile never reuses against a changed provider.

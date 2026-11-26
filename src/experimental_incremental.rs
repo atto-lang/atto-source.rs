@@ -59,6 +59,14 @@ pub struct RegistryBuild {
     /// These are not counts of independently compiled typed IR or Wasm units.
     pub rebuilt_provider_views:usize,
     pub reused_provider_views:usize,
+    /// Actual isolated closed-function namespace checks (not final root checks).
+    pub checked_namespaces:usize,
+    pub reused_namespace_checks:usize,
+    /// Changed checked units with equal/different partial callable signatures.
+    /// Reporting only: never permits skipped checking of a changed unit.
+    pub unchanged_callable_signatures:usize,
+    pub changed_callable_signatures:usize,
+    pub unknown_callable_signatures:usize,
 }
 pub struct HostSession {
     cache:ArtifactStore,
@@ -130,7 +138,10 @@ impl HostSession {
                 let work=prepared.work;
                 self.registry_memo=prepared.memo;
                 return Ok(RegistryBuild{bytes,outcome:Outcome::Reused,verified_dependencies:dependencies.len(),
-                    rebuilt_provider_views:work.rebuilt,reused_provider_views:work.reused});
+                    rebuilt_provider_views:work.rebuilt,reused_provider_views:work.reused,
+                    checked_namespaces:work.semantic.checked,reused_namespace_checks:work.semantic.reused,
+                    unchanged_callable_signatures:work.semantic.same_signature,changed_callable_signatures:work.semantic.changed_signature,
+                    unknown_callable_signatures:work.semantic.unknown_signature});
             }
         }
         let key=prepared.key;
@@ -139,6 +150,9 @@ impl HostSession {
         self.cache.publish(&key,&sealed,&secret).map_err(|_|err("E_CACHE_PUBLISH"))?;
         self.registry_memo=memo;
         Ok(RegistryBuild{bytes,outcome:Outcome::Compiled,verified_dependencies:dependencies.len(),
-            rebuilt_provider_views:work.rebuilt,reused_provider_views:work.reused})
+            rebuilt_provider_views:work.rebuilt,reused_provider_views:work.reused,
+                    checked_namespaces:work.semantic.checked,reused_namespace_checks:work.semantic.reused,
+                    unchanged_callable_signatures:work.semantic.same_signature,changed_callable_signatures:work.semantic.changed_signature,
+                    unknown_callable_signatures:work.semantic.unknown_signature})
     }
 }

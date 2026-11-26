@@ -58,6 +58,7 @@ pub mod linker;
 pub mod package_resolver;
 /// Lock-pinned registry namespaces and bounded offline direct-function guest linking.
 pub mod registry_namespace;
+mod registry_check_memo;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;

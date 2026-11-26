@@ -19,6 +19,8 @@ on:
       - 'src/experimental_incremental.rs'
       - 'src/compiler_cache_registry.rs'
       - 'src/registry_namespace.rs'
+      - 'src/registry_check_memo.rs'
+      - 'src/check.rs'
       - 'tests/experimental_registry_cache.rs'
       - 'tests/experimental_incremental.rs'
       - 'Cargo.toml'

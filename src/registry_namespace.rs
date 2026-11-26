@@ -396,16 +396,21 @@ pub fn compile_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<V
 /// is trusted package-relative metadata for default namespace normalization.
 pub fn compile_contextual_guest(source: &str, current: &FrozenRegistry,
     packages: &[&FrozenRegistry], logical: Option<&Path>) -> R<Vec<u8>> {
-    crate::compile_prelexed(prepare_registry_guest_inner(source, packages, Some(current), logical)?, None)
+    crate::compile_prelexed(prepare_registry_guest_inner(source, packages, Some(current), logical, None)?, None)
 }
 
 /// Resolve the actual current import graph before cache lookup. This is
 /// compiler-private prepared input, not a verified typed program.
 pub(crate) fn prepare_registry_guest(source: &str, packages: &[&FrozenRegistry]) -> R<Vec<crate::lexer::Token>> {
-    prepare_registry_guest_inner(source, packages, None, None)
+    prepare_registry_guest_inner(source, packages, None, None, None)
+}
+pub(crate) fn prepare_registry_guest_memoized(source:&str,packages:&[&FrozenRegistry],
+    pass:&mut crate::registry_check_memo::Pass<'_>)->R<Vec<crate::lexer::Token>> {
+    prepare_registry_guest_inner(source,packages,None,None,Some(pass))
 }
 fn prepare_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry],
-    current: Option<&'a FrozenRegistry>, logical: Option<&Path>) -> R<Vec<crate::lexer::Token>> {
+    current: Option<&'a FrozenRegistry>, logical: Option<&Path>,
+    mut memo:Option<&mut crate::registry_check_memo::Pass<'_>>) -> R<Vec<crate::lexer::Token>> {
     use crate::lexer::{self, Tok, Token};
     use crate::import_v2::{self, Source};
     fn word(t: Option<&Token>, value: &str) -> bool {
@@ -1011,11 +1016,14 @@ fn prepare_registry_guest_inner<'a>(source: &str, packages: &[&'a FrozenRegistry
                     }
                 }
             }
-            let mut isolated=funcs[..funcs.len()-1].to_vec();
-            isolated.extend(lexer::lex("pub fnc main(): int { return 0; }")?);
-            let parsed=crate::parser::Parser::new(isolated).parse_program()?;
-            let checked=crate::check::check(&parsed)?;
-            if !checked.imports.is_empty() { return Err(err("E_UNSUPPORTED","registry dependency cannot request ambient host imports")); }
+            // Reuse only an exact successful closed-unit check in this
+            // process. Current visibility, free-call and binding checks above
+            // still run. Nominal lanes do not consult this memo.
+            if let Some(pass)=memo.as_deref_mut() {
+                pass.admit(&p.name,ns,funcs,&names)?;
+            } else {
+                crate::registry_check_memo::check_closed(funcs)?;
+            }
             let pos=normalized[0].pos;
             linked.extend([id("define",pos),id("module",pos),id(&owner,pos),id("as",pos)]);
             for (j,t) in funcs.iter().enumerate() {
