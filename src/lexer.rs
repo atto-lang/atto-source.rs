@@ -93,7 +93,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if c == '\0' {
             return Err(Diagnostic::new(pos, "E_NUL", "NUL characters are not allowed in source"));
         }
-        if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+        if matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c') {
             bump!();
             continue;
         }
@@ -134,6 +134,25 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
                 s.push(chars[i]);
                 bump!();
+            }
+            // The known bang suffix is contiguous and must be followed by
+            // ASCII whitespace (spec #244). Preserve the existing token
+            // representation; never reinterpret inequality or exact !eq.
+            // We are already outside string and comment bodies.
+            if matches!(s.as_str(), "trap" | "throw" | "raise" | "panic" |
+                "copy" | "take" | "move" | "borrow" | "share" | "pin" |
+                "drop" | "pipe" | "rpipe" | "stop" | "expand") &&
+                chars.get(i) == Some(&'!') && chars.get(i + 1) != Some(&'=') {
+                let eq_operator = chars.get(i + 1) == Some(&'e') &&
+                    chars.get(i + 2) == Some(&'q') &&
+                    !chars.get(i + 3).is_some_and(|c| c.is_alphanumeric() || *c == '_');
+                if !eq_operator {
+                    let end = i + if s == "copy" && chars.get(i + 1) == Some(&'!') { 2 } else { 1 };
+                    if !chars.get(end).is_some_and(|c| matches!(*c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c')) {
+                        return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
+                            "bang keyword requires ASCII whitespace after its complete suffix"));
+                    }
+                }
             }
             // Generator delegation is a single contiguous lexical spelling.
             // Do not consume a separated star: `yield *value` is not `yield*`.
