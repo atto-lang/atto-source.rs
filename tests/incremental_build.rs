@@ -1,6 +1,6 @@
 //! Incremental compilation v1: content-addressed keys, cache hits,
 //! reachability-scoped invalidation and reverse-dependency refresh sets.
-use atto_compiler::incremental::{build_key, ImportGraph, IncrementalCompiler};
+use atto_compiler::incremental::{build_key, ImportGraph, IncrementalCompiler, RefreshPlanner};
 use atto_compiler::linker::{compile_linked, LinkUnit};
 use std::collections::BTreeSet;
 
@@ -255,4 +255,52 @@ fn byte_budget_evicts_even_below_entry_capacity() {
     assert!(c.retained_bytes() <= budget);
     assert_eq!(c.compile("src/main.atto", &v).unwrap(), second);
     assert_eq!(c.stats().hits, 1);
+}
+
+#[test]
+fn refresh_planner_rechecks_missing_provider_and_transitive_users() {
+    let mut p = RefreshPlanner::default();
+    let complete = graph3(MATH);
+    assert_eq!(p.update(&complete).unwrap(), set(&["src/main.atto","lib/orders.atto","lib/math.atto"]));
+    assert!(p.update(&complete).unwrap().is_empty());
+    let missing = &complete[..2];
+    assert_eq!(p.update(missing).unwrap(), set(&["src/main.atto","lib/orders.atto","lib/math.atto"]));
+    assert_eq!(compile_linked("src/main.atto", missing).unwrap_err().code, "E_UNBOUND");
+    assert_eq!(p.update(&complete).unwrap(), set(&["src/main.atto","lib/orders.atto","lib/math.atto"]));
+    assert!(compile_linked("src/main.atto", &complete).is_ok());
+}
+
+#[test]
+fn refresh_planner_rejects_duplicate_without_committing_and_tracks_package_rebind() {
+    let mut p = RefreshPlanner::default();
+    let mut complete = graph3(MATH);
+    p.update(&complete).unwrap();
+    let mut duplicate = graph3(MATH);
+    duplicate[2].path = "lib/orders.atto";
+    assert_eq!(p.update(&duplicate).unwrap_err().code, "E_DUPLICATE");
+    assert!(p.update(&complete).unwrap().is_empty());
+    complete[2].package = "acme@2.0.0";
+    assert_eq!(p.update(&complete).unwrap(), set(&["src/main.atto","lib/orders.atto","lib/math.atto"]));
+    assert!(p.update(&complete).unwrap().is_empty());
+}
+
+#[test]
+fn refresh_planner_reports_removed_edges_and_reordered_inventory() {
+    let mut p = RefreshPlanner::default();
+    let complete = graph3(MATH);
+    p.update(&complete).unwrap();
+    let mut reordered = graph3(MATH);
+    reordered.reverse();
+    assert!(p.update(&reordered).unwrap().is_empty());
+    let new_orders = r#"use namespace sales;
+export pub module Orders;
+define module Orders as
+    pub fnc total(int x): int { return x * 2; }
+end"#;
+    let mut changed = graph3(MATH);
+    changed[1].source = new_orders;
+    changed.pop();
+    assert_eq!(p.update(&changed).unwrap(), set(&["src/main.atto","lib/orders.atto","lib/math.atto"]));
+    assert!(compile_linked("src/main.atto", &changed).is_ok());
+    assert!(p.update(&changed).unwrap().is_empty());
 }
