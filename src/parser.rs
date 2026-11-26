@@ -2554,9 +2554,11 @@ impl Parser {
                 "critical-read is by-value s.field only; block scopes cannot request a write lease"));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
-        let (binder, _) = self.ident("state lease binder")?;
-        if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "this browser profile uses the binder s")); }
+        let (binder, binder_pos) = self.ident("state lease binder")?;
+        if matches!(binder.as_str(), "_" | "self" | "handle_state" | "true" | "false" | "null") {
+            return Err(Diagnostic::new(binder_pos, "E_STATE_BORROW",
+                "state lease requires a named, non-intrinsic binder"));
+        }
         self.expect(Tok::Pipe, "'|' after lease binder")?;
         self.expect(Tok::Arrow, "'->' after lease binder")?;
         self.state_binder = Some(binder);
@@ -2601,16 +2603,32 @@ impl Parser {
                 "critical-read must be immutable"));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
-        let (binder, _) = self.ident("state lease binder")?;
-        if binder != "s" { return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
-            "this browser profile uses the binder s")); }
+        let (binder, binder_pos) = self.ident("state lease binder")?;
+        if matches!(binder.as_str(), "_" | "self" | "handle_state" | "true" | "false" | "null") {
+            return Err(Diagnostic::new(binder_pos, "E_STATE_BORROW",
+                "state lease requires a named, non-intrinsic binder"));
+        }
         self.expect(Tok::Pipe, "'|' after lease binder")?;
         self.expect(Tok::Arrow, "'->' after lease binder")?;
-        let (projector, pos) = self.ident("s.field state projection")?;
-        if projector != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "critical-read requires s.field")); }
-        self.expect(Tok::Dot, "'.' in s.field")?;
+        // Both spellings lower to the same immutable scalar projection.
+        // No general statement AST, write ticket, or extra loan is created.
+        let block = self.eat(&Tok::LBrace);
+        if block && !self.eat_word("return") {
+            return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
+                "critical-read block requires a single returned scalar projection"));
+        }
+        let (projector, pos) = self.ident("state binder field projection")?;
+        if projector != binder { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "critical-read requires a field of its own lease binder")); }
+        self.expect(Tok::Dot, "'.' in state projection")?;
         let (field, _) = self.ident("state field")?;
+        if block {
+            self.eat(&Tok::Semi);
+            if !self.eat(&Tok::RBrace) {
+                return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
+                    "critical-read block permits only a single returned scalar projection"));
+            }
+        }
         self.expect(Tok::RParen, "')' after critical-read")?;
         Ok(ExprKind::StateRead(field))
     }
