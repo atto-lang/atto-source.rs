@@ -68,7 +68,7 @@ impl Parser{
  fn ty(&mut self)->R<&'static str>{
   if self.eat("int"){return Ok("int")}
   if self.eat("Channel"){self.need("<")?;self.need("int")?;self.need(">")?;return Ok("channel")}
-  if self.eat("Future"){self.need("<")?;if self.eat("Array"){self.need("<")?;self.need("int")?;self.need(">")?;self.need(">")?;return Ok("pending")}self.need("int")?;self.need(">")?;return Ok("future")}
+  if self.eat("Future"){if !self.eat("<"){return Ok("inferFuture")}if self.eat("Array"){self.need("<")?;self.need("int")?;self.need(">")?;self.need(">")?;return Ok("pending")}self.need("int")?;self.need(">")?;return Ok("future")}
   if self.eat("Array"){let bracket=self.eat("[");if !bracket{self.need("<")?}self.need("int")?;self.need(if bracket{"]"}else{">"})?;return Ok("array")}
   Err(bad("unsupported lexical type"))
  }
@@ -92,7 +92,7 @@ impl Parser{
   if self.eat("await"){
    if self.pure{return Err(bad("effect in condition"))}
    let legacy=self.eat("nb");
-   if self.eat("select"){let (b,mut code)=self.batch()?;code.extend(self.drive(&b)?);return Ok(Value::Array(b.array,code))}
+   if self.eat("select"){self.select_type()?;if self.peek()=="("{let (b,mut code)=self.batch()?;code.extend(self.drive(&b)?);return Ok(Value::Array(b.array,code))}return Ok(Value::Int(self.default_scalar()?))}
    if legacy{return Err(bad("nb requires select"))}
    let n=self.name()?;let slot=self.slot(&n)?;
    match slot.kind{
@@ -118,7 +118,6 @@ impl Parser{
  }
  fn batch(&mut self)->R<(Batch,Code)>{
   if self.pending.is_some(){return Err(bad("await outstanding batch first"))}
-  if self.eat("<"){self.need("int")?;self.need(">")?}
   self.need("(")?;let begin=self.pos;let count=self.expr(0,Some(("@count",0)))?.int()?;let end=self.pos;self.need(")")?;
   let literal=if end==begin+1{self.tokens[begin].parse::<i64>().ok()}else{None};
   if literal.is_some_and(|n|n>16)||(end==begin+2&&self.tokens[begin]=="-"&&self.tokens[begin+1].parse::<i64>().is_ok()){return Err(bad("SelectCountInvalid"))}
@@ -162,12 +161,22 @@ impl Parser{
   if b.fair{assign(&mut c,start,op(op(get(winner),num(1),0x7c),num(b.arms.len() as i64),0x82));}
   assign(&mut c,round,op(get(round),num(1),0x7c));c.extend([0x0c,0,0x0b,0x0b]);Ok(c)
  }
+ fn select_type(&mut self)->R<()>{
+  if self.pending.is_some(){return Err(bad("await outstanding batch first"))}
+  if self.eat("<"){self.need("int")?;self.need(">")?}Ok(())
+ }
+ fn default_scalar(&mut self)->R<Code>{
+  let over=self.eat("over");if !over{self.need("{")?}self.need("default")?;self.need(":")?;self.need("->")?;self.need("{")?;self.need("return")?;
+  let v=self.expr(0,Some(("$no_binding",0)))?.int()?;self.need(";")?;self.need("}")?;self.need(if over{"end"}else{"}"})?;Ok(v)
+ }
  fn bind(&mut self,mutable:bool,out:&mut Code)->R<()>{
   let ty=self.ty()?;let n=self.name()?;if self.slots.contains_key(&n)||self.slots.len()>=128||(mutable&&ty!="int"){return Err(bad("invalid lexical binding"))}self.need("=")?;
   let kind=match ty{
    "channel"=>{if self.pending.is_some(){return Err(bad("await batch first"))}self.need("Channel")?;self.need(".")?;self.need("new")?;self.need("<")?;self.need("int")?;self.need(">")?;self.need("(")?;let cap=self.small(64)?;self.need(")")?;if cap==0{return Err(bad("zero capacity"))}let ch=Channel{base:self.bytes(cap as u32*8)?,cap,head:self.local()?,len:self.local()?};assign(out,ch.head,num(0));assign(out,ch.len,num(0));Kind::Channel(ch)},
-   "future"=>{if self.pending.is_some(){return Err(bad("await batch first"))}self.need("select")?;self.need("<")?;self.need("int")?;self.need(">")?;let over=self.eat("over");if !over{self.need("{")?}self.need("default")?;self.need(":")?;self.need("->")?;self.need("{")?;self.need("return")?;let v=self.expr(0,Some(("$no_binding",0)))?.int()?;self.need(";")?;self.need("}")?;self.need(if over{"end"}else{"}"})?;Kind::Future(v)},
-   "pending"=>{self.eat("nb");self.need("select")?;let (b,code)=self.batch()?;out.extend(code);self.pending=Some(n.clone());Kind::Pending(b)},
+   "future"|"pending"|"inferFuture"=>{self.eat("nb");self.need("select")?;self.select_type()?;
+    if self.peek()=="("{if ty=="future"{return Err(bad("expected scalar Future"))}let (b,code)=self.batch()?;out.extend(code);self.pending=Some(n.clone());Kind::Pending(b)}
+    else{if ty=="pending"{return Err(bad("expected counted Future"))}Kind::Future(self.default_scalar()?) }
+   },
    "int"=>{let v=self.expr(0,None)?.int()?;let i=self.local()?;assign(out,i,v);Kind::Int(i)},
    "array"=>{if let Value::Array(a,c)=self.expr(0,None)?{out.extend(c);Kind::Array(a)}else{return Err(bad("expected counted array"))}},
    _=>return Err(bad("type")),
@@ -178,7 +187,7 @@ impl Parser{
   let mut out=vec![];let mut statements=0;
   while self.peek()!="return"{
    statements+=1;if statements>256{return Err(bad("statement quota"))}
-   if self.eat("val"){self.bind(false,&mut out)?}
+   if self.eat("val")||self.eat("const"){self.bind(false,&mut out)?}
    else if self.eat("let"){self.bind(true,&mut out)?}
    else if self.eat("writech"){
     if self.pending.is_some(){return Err(bad("await batch first"))}let n=self.name()?;let ch=match self.slot(&n)?.kind{Kind::Channel(c)=>c,_=>return Err(bad("expected Channel"))};self.need(",")?;let v=self.expr(0,None)?.int()?;self.need(";")?;
