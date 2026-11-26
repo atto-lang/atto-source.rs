@@ -72,13 +72,35 @@ strictCases.push(
  ["branch-stale","fnc f(int n) -> int { let int x = n; if x > 0 { x = 0; return 42 / x; } return 0; } "+main("f(1)"),"E_VERIFY_UNPROVEN"],
  ["join-unsafe","fnc f(int n) -> int { let int x = 1; if n > 0 { x = 0; } return 42 / x; } "+main("f(0)"),"E_VERIFY_UNPROVEN"],
  ["join-loses-narrowing","fnc f(int n) -> int { if n > 0 { val v = 42 / n; } return 42 / n; } "+main("f(1)"),"E_VERIFY_UNPROVEN"],
- ["interior-hole","fnc f(int n) -> int { if n != 0 { return 42 / n; } return 0; } "+main("f(1)"),"E_VERIFY_UNPROVEN"],
+ ["interior-hole","fnc f(int n) -> int { if n != 0 { return 42 / n; } return 0; } "+main("f(1)"),42n],
  ["negative-min-guard","fnc f(int n) -> int { if n < 0 { return -n; } return 0; } "+main("f(-42)"),"E_VERIFY_UNPROVEN"],
  ["scope-leak","fnc f(int n) -> int { if n > 0 { val x = 42; } return x; } "+main("f(1)"),"E_UNIT_NAME"],
  ["immutable-rebind","pub fnc main() -> int { val x = 1; x = 2; return x; }","E_VERIFY_UNSUPPORTED"],
  ["refined-rebind","pub fnc main() -> int { let Bounded x = 1; x = 0; return x; }","E_REFINEMENT_BINDING"],
  ["missing-return","fnc f(int n) -> int { if n > 0 { return 42; } } "+main("f(1)"),"E_VERIFY_RETURN"],
  ["condition-unit-mismatch","fnc f(Duration n) -> int { if n > 0 { return 42; } return 0; } "+main("f(1<Second>)"),"E_UNIT_DIMENSION"]
+);
+strictCases.push(
+ ["hole-negative","fnc f(int n) -> int { if n != 0 { return 42 / n; } return 0; } "+main("f(-2)"),-21n],
+ ["hole-zero","fnc f(int n) -> int { if n != 0 { return 42 / n; } return 0; } "+main("f(0)"),0n],
+ ["hole-copy","fnc f(int n) -> int { if n != 0 { val d = n; return 42 / d; } return 0; } "+main("f(1)"),42n],
+ ["hole-join","fnc f(int n) -> int { let int d = 1; if n > 0 { d = -1; } return 42 / d; } "+main("f(1)"),-42n],
+ ["hole-join-lost","fnc f(int n) -> int { let int d = 1; if n > 0 { d = 0; } return 42 / d; } "+main("f(1)"),"E_VERIFY_UNPROVEN"],
+ ["and-guard","fnc f(int n) -> int { if n != 0 && 42 / n > 0 { return 42 / n; } return 0; } "+main("f(1)"),42n],
+ ["and-short-circuit","fnc f(int n) -> int { if n != 0 && 42 / n > 0 { return 42 / n; } return 0; } "+main("f(0)"),0n],
+ ["or-short-circuit","fnc f(int n) -> int { if n == 0 || 42 / n > 0 { return 42; } return 0; } "+main("f(0)"),42n],
+ ["or-false-edge","fnc f(int n) -> int { if n == 0 || n == -1 { return 0; } return -9223372036854775808 / n; } "+main("f(2)"),-4611686018427387904n],
+ ["or-join","fnc f(int n) -> int { if n < 0 || n > 0 { return 42 / n; } return 0; } "+main("f(-1)"),-42n],
+ ["and-two-holes","fnc f(int n) -> int { if n != 0 && n != -1 { return -9223372036854775808 / n; } return 0; } "+main("f(2)"),-4611686018427387904n],
+ ["negated-comparison","fnc f(int n) -> int { if !(n == 0) { return 42 / n; } return 0; } "+main("f(1)"),42n],
+ ["precedence","fnc f(int n) -> int { if n == 0 || n != -1 && 42 / n > 0 { return 42; } return 0; } "+main("f(0)"),42n],
+ ["grouped","fnc f(int n) -> int { if (n != 0 && (n != -1 || n > 0)) { return -9223372036854775808 / n; } return 0; } "+main("f(2)"),-4611686018427387904n],
+ ["min-overflow-remains","fnc f(int n) -> int { if n != 0 { return -9223372036854775808 / n; } return 0; } "+main("f(-1)"),"E_VERIFY_UNPROVEN"],
+ ["wrong-and-edge","fnc f(int n) -> int { if n == 0 && 42 / n > 0 { return 1; } return 0; } "+main("f(0)"),"E_VERIFY_UNPROVEN"],
+ ["wrong-or-edge","fnc f(int n) -> int { if n != 0 || 42 / n > 0 { return 1; } return 0; } "+main("f(0)"),"E_VERIFY_UNPROVEN"],
+ ["reversed-guard","fnc f(int n) -> int { if 42 / n > 0 && n != 0 { return 1; } return 0; } "+main("f(0)"),"E_VERIFY_UNPROVEN"],
+ ["noncontiguous-and","fnc f(int n) -> int { if n != 0 & & n > 0 { return 1; } return 0; } "+main("f(1)"),"E_SYNTAX"],
+ ["no-proof-after-rebind","fnc f(int n) -> int { let int d = n; if d != 0 && d != -1 { d = -1; return -9223372036854775808 / d; } return 0; } "+main("f(2)"),"E_VERIFY_UNPROVEN"]
 );
 for (const [id,body,want] of strictCases) cases.push(["strict-"+id,body,want,true]);
 const dir=mkdtempSync(join(tmpdir(),"atto-refinement-casts-"));
