@@ -59,6 +59,7 @@ fn direct_calls(mut work: Vec<Work<'_>>) -> Vec<usize> {
                     calls.push(*idx as usize);
                     work.extend(args.iter().map(Work::Expr));
                 }
+                TExpr::RefinementCheck(v, ..) |
                 TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v) |
                 TExpr::Not(v) | TExpr::AdtPayload(v) | TExpr::FieldGet { obj: v, .. } |
                 TExpr::StateFieldRead { obj: v, .. } |
@@ -256,6 +257,24 @@ mod tests {
         assert!(verify(&p).is_ok());
         p.actors[0].inits[0].1.e = TExpr::Call(0, vec![]);
         assert!(verify(&p).is_err());
+    }
+    #[test] fn refinement_check_cannot_hide_recursive_call() {
+        let wrapped = TStmt::Expr(TE {
+            e: TExpr::RefinementCheck(Box::new(TE {
+                e: TExpr::Call(0, vec![]), ty: Type::Int,
+            }), 0, 100, 0),
+            ty: Type::Int,
+        });
+        assert!(verify(&program(vec![vec![wrapped]], 0)).is_err());
+    }
+    #[test] fn refinement_check_counts_finite_call() {
+        let wrapped = TStmt::Expr(TE {
+            e: TExpr::RefinementCheck(Box::new(TE {
+                e: TExpr::Call(1, vec![]), ty: Type::Int,
+            }), 0, 100, 0),
+            ty: Type::Int,
+        });
+        assert!(verify(&program(vec![vec![wrapped], vec![]], 0)).is_ok());
     }
     #[test] fn rejects_bad_typed_indices() {
         let p = program(vec![vec![call(999)]], 0);
