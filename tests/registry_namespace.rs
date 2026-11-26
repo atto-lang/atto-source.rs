@@ -863,3 +863,33 @@ fn authenticated_external_enum_matches_nominal_variants_exhaustively() {
         assert_eq!(compile_registry_guest(&source,&[&p]).unwrap_err().code,code,"{source}");
     }
 }
+
+
+#[test]
+fn unnamespaced_pinned_siblings_do_not_join_directory_namespace() {
+    use atto_compiler::registry_namespace::compile_registry_guest;
+    let mut input=INPUTS.to_vec();
+    input.push(SnapshotSource{path:"src/http/local0.atto",source:"pub fnc get(int x): int { return x+900; } pub fnc local(): int { return 7; }"});
+    input.push(SnapshotSource{path:"src/http/local1.atto",source:"pub fnc local(): int { return 8; }"});
+    let p=verify(MANIFEST,&input).unwrap();
+    let mut scope=Scope::new();
+    p.bind_namespace(&mut scope,"@org/project/package","http","h",true).unwrap();
+    let target=scope.resolve_export("h.get",p.view()).unwrap();
+    assert_eq!(p.declaration_source(&target).unwrap(),"src/http/main.atto");
+    assert_eq!(scope.resolve_export("h.local",p.view()).unwrap_err().code,"E_UNBOUND");
+    let app="import namespace http as h from pkg '@org/project/package'; pub fnc main(): int { return h.get(41); }";
+    let baseline=verify(MANIFEST,&INPUTS).unwrap();
+    let bytes=compile_registry_guest(app,&[&p]).unwrap();
+    assert_eq!(bytes,compile_registry_guest(app,&[&baseline]).unwrap());
+    let denied=app.replace("h.get(41)","h.local()");
+    assert!(compile_registry_guest(&denied,&[&p]).is_err());
+    let lock=lock(MANIFEST,&input);let pin=hex_digest(lock.as_bytes());
+    input[3].source="pub fnc local(): int { return 9; }";
+    assert_eq!(error(FrozenRegistry::verify("@org/project/package",MANIFEST,&lock,&pin,&input)),"E_LOCK_HASH");
+    input[3].source="use namespace foreign; pub fnc local(): int { return 9; }";
+    assert_eq!(error(verify(MANIFEST,&input)),"E_MANIFEST");
+    input[3].source="pub fnc local(): int { return 9; }";
+    input[0].source="pub fnc get(int x): int { return x+1; }";
+    assert_eq!(error(verify(MANIFEST,&input)),"E_MANIFEST");
+    println!("REGISTRY_EXPLICIT_MEMBERSHIP|locked-local-siblings|no-implicit-export|foreign-header-denied|stale-pin-denied|clean-byte-equivalent");
+}

@@ -138,40 +138,58 @@ impl FrozenRegistry {
             use crate::lexer::{self,Tok};
             // BTreeMap iteration fixes ordering by pinned logical path;
             // no filesystem listing or caller input order is consulted.
-            let matching:Vec<_>=sources.iter().filter(|(path,_)|path.starts_with(dir.as_str())).collect();
-            if matching.is_empty(){return Err(err("E_MANIFEST","namespace directory has no pinned source"));}
-            if matching.len()>16 || matching.iter().any(|(path,_)|path[dir.len()..].contains('/')){
+            let candidates:Vec<_>=sources.iter().filter(|(path,_)|path.starts_with(dir.as_str())).collect();
+            if candidates.is_empty(){return Err(err("E_MANIFEST","namespace directory has no pinned source"));}
+            if candidates.len()>16 || candidates.iter().any(|(path,_)|path[dir.len()..].contains('/')){
                 return Err(err("E_UNSUPPORTED","namespace requires at most 16 direct pinned files"));
             }
             let header=lexer::lex(&format!("use namespace {ns};"))?;
             let end=header.len()-1;
             let mut files=Vec::new();
+            let mut matching=Vec::new();
             let mut owners=BTreeMap::new();
             let mut total=0usize;
-            for (&file,&source) in matching.iter().copied(){
+            for (&file,&source) in candidates.iter().copied(){
                 let normalized=crate::namespace::normalize(&lexer::lex(source)?,Some(Path::new(file)))?;
                 if normalized.iter().any(|t|matches!(&t.tok,Tok::Ident(s) if s.starts_with("__atto_"))){
                     return Err(err("E_RESERVED","compiler-generated identifier in registry source"));
                 }
+                total=total.saturating_add(normalized.len());
+                if total>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","namespace aggregate token budget exceeded"));}
+                let word=|i:usize,w:&str|matches!(normalized.get(i).map(|t|&t.tok),Some(Tok::Ident(s)) if s==w);
+                if !(word(0,"use")&&word(1,"namespace")){
+                    // Package membership is authenticated by the full lock,
+                    // not by namespace inference from a directory. A valid
+                    // unnamespaced file remains an independent source root
+                    // and contributes no exports to this registry view.
+                    // Do not silently ignore an unsupported/malformed header.
+                    if word(0,"namespace")||word(0,"use"){
+                        return Err(err("E_MANIFEST","unsupported registry namespace header"));
+                    }
+                    crate::parser::Parser::new(normalized).parse_program()?;
+                    continue;
+                }
                 if normalized.len()<=end || normalized[..end].iter().map(|t|&t.tok).ne(header[..end].iter().map(|t|&t.tok)){
                     return Err(err("E_MANIFEST","source namespace differs from manifest key"));
                 }
-                total=total.saturating_add(normalized.len());
-                if total>lexer::MAX_TOKENS {return Err(err("E_SOURCE_LIMIT","namespace aggregate token budget exceeded"));}
-                if matching.len()>1 {
-                    for (name,public) in crate::const_import_link::registry_file_inventory(&normalized)? {
-                        if owners.insert(name,(file,public)).is_some(){
+                matching.push((file,source));
+                files.push(normalized);
+            }
+            if matching.is_empty(){return Err(err("E_MANIFEST","namespace has no explicitly declared pinned source"));}
+            if matching.len()>1 {
+                for ((file,_),normalized) in matching.iter().zip(&files) {
+                    for (name,public) in crate::const_import_link::registry_file_inventory(normalized)? {
+                        if owners.insert(name,(*file,public)).is_some(){
                             return Err(err("E_DUPLICATE","duplicate declaration across namespace files"));
                         }
                     }
                 }
-                files.push(normalized);
             }
             // Conservative multi-file lane: public declarations may be
             // referenced across files. Private declarations remain usable
             // only in their own pinned file; no namespace-header spoof can
             // confer private authority on a different source unit.
-            for ((&file,_),tokens) in matching.iter().copied().zip(&files){
+            for ((file,_),tokens) in matching.iter().copied().zip(&files){
                 for t in &tokens[end..] {
                     if let Tok::Ident(name)=&t.tok {
                         if owners.get(name).is_some_and(|(owner,public)|*owner!=file && !*public){
@@ -180,7 +198,7 @@ impl FrozenRegistry {
                     }
                 }
             }
-            let (&file,&source)=matching[0];
+            let (file,source)=matching[0];
             let source_for = |name: &str| owners.get(name).map_or(file, |(path,_)| *path);
             let normalized=if files.len()==1 {files.pop().unwrap()}else{
                 let mut combined=header[..end].to_vec();
