@@ -64,11 +64,11 @@ fn copy_deep_disallows_mut_qualifier_and_missing_operand() {
 
 #[test]
 fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
-    // A shallow class copy without verified Copyable witness must still
-    // fail. The deep path is independently admitted for this flat class.
+    // Flat storage has a distinct compiler-derived shallow witness.
+    // Deep admission still independently requires nominal consent.
     let prefix = "define class Parcel implements DeepCopyable<Parcel> as pub let int value = 1; end pub fnc main(): int { val p = new Parcel(); ";
-    let shallow = format!("{prefix}val q = copy! p; return 0; }}");
-    assert_eq!(compile(&shallow).unwrap_err().code, "E_COPY");
+    let shallow = format!("{prefix}val q = copy! p; return q.value; }}");
+    wasm(&shallow);
     let deep = format!("{prefix}val q = copy!! p; return q.value; }}");
     wasm(&deep);
 }
@@ -91,4 +91,19 @@ fn marker_cannot_be_forged_or_name_a_different_class() {
         let error = compile(source).expect_err("reserved core marker");
         assert!(matches!(error.code, "E_RESERVED_TYPE" | "E_COPY_OPT_IN_REQUIRED"), "{error}");
     }
+}
+
+#[test]
+fn shallow_flat_without_deep_consent_executes_distinct_root() {
+    let source = include_str!("fixtures/pass/998-copy-shallow-flat-no-opt-in.atto");
+    wasm(source);
+    assert_eq!(compile(&source.replace("copy! original", "copy!! original")).unwrap_err().code, "E_COPY_OPT_IN_REQUIRED");
+}
+
+#[test]
+fn shallow_nested_class_and_exclusive_loan_remain_denied() {
+    let nested = include_str!("fixtures/fail/153-copy-noncopy-class.atto");
+    assert_eq!(compile(nested).unwrap_err().code, "E_COPY");
+    let exclusive = include_str!("fixtures/fail/996-copy-doublebang-exclusive-loan.atto").replace("copy!! original", "copy! original");
+    assert_eq!(compile(&exclusive).unwrap_err().code, "E_BORROW");
 }
