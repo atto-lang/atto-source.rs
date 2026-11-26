@@ -17,7 +17,9 @@ define pub module aligned as
        !valid_alignment(alignment); do
       return -1;
     fi
-    val int residue = address % alignment;
+    // Both inputs are checked nonnegative and alignment is strictly positive.
+    // Quotient times alignment cannot exceed address, so no overflow.
+    val int residue = address - (address / alignment) * alignment;
     if residue == 0; do
       return 0;
     fi
