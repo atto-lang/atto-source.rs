@@ -3266,12 +3266,20 @@ impl Parser {
                 // written inside an explicitly parenthesized subexpression.
                 let old = self.ascription_colon;
                 self.ascription_colon = false;
-                let a = self.parse_expr();
+                let a = if *self.peek() == Tok::LBrace {
+                    self.parse_single_result_ternary_block()
+                } else {
+                    self.parse_expr()
+                };
                 self.ascription_colon = old;
                 let a = a?;
                 self.expect(Tok::Colon, "':'")?;
                 self.enter()?;
-                let b = self.parse_ternary();
+                let b = if *self.peek() == Tok::LBrace {
+                    self.parse_single_result_ternary_block()
+                } else {
+                    self.parse_ternary()
+                };
                 self.leave();
                 return Ok(Expr {
                     kind: ExprKind::Ternary(Box::new(c), Box::new(a), Box::new(b?)),
@@ -3281,6 +3289,28 @@ impl Parser {
             _ => {}
         }
         Ok(c)
+    }
+
+    // Direct braces commit to an executable arm, not a record literal.
+    // A single explicit result needs no new scope or synthesized closure.
+    // Multi-statement arms require checked lexical cleanup lowering.
+    fn parse_single_result_ternary_block(&mut self) -> R<Expr> {
+        self.expect(Tok::LBrace, "'{'")?;
+        if !self.eat_word("return") && !self.eat(&Tok::Caret) {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "ternary block requires explicit return or ^; statement prefixes are not lowered"));
+        }
+        let old = self.ascription_colon;
+        self.ascription_colon = true;
+        let value = self.parse_expr();
+        self.ascription_colon = old;
+        let value = value?;
+        self.eat(&Tok::Semi);
+        if !self.eat(&Tok::RBrace) {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "single-result ternary block requires closing '}'"));
+        }
+        Ok(value)
     }
 
     /// Short-circuit logical operators are distinct from comma/pipe condition
