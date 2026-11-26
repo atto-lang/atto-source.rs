@@ -611,3 +611,56 @@ fn methods_and_generators_fail_closed() {
         fnc *gen g(): Generator<int> { try { yield 1; } finally { stdio.println("x"); } }
         pub fnc main(): int { return 0; }"#);
 }
+
+#[test]
+fn cleanup_factory_pipeline_compiles_to_existing_registration_ir() {
+    pass(r#"
+        fnc seed(): int { return 5; }
+        fnc f(): int {
+            defer seed() |> (|int x| -> || -> { stdio.println(x); });
+            defer (2, "bound") |> (|int x, string msg| -> _ -> {
+                stdio.println(x); stdio.println(msg);
+            });
+            recover 42 |> (|int fallback| -> |ErrorView err, RecoveryCursor cursor| -> {
+                stdio.println(err.message); return fallback;
+            });
+            raise Error("original");
+        }
+        pub fnc main(): int { return f(); }
+    "#);
+    pass(r#"pub fnc main(): int {
+        defer (|int x| -> || -> { stdio.println(x); })(5);
+        return 0;
+    }"#);
+}
+
+#[test]
+fn cleanup_factory_pipeline_rejects_invalid_callbacks_and_captures() {
+    for (code, s) in [
+        ("E_TYPE", r#"pub fnc main(): int {
+            defer "wrong" |> (|int x| -> || -> { stdio.println(x); });
+            return 0; }"#),
+        ("E_ARITY", r#"pub fnc main(): int {
+            defer (1, 2) |> (|int x| -> || -> { stdio.println(x); });
+            return 0; }"#),
+        ("E_DUPLICATE", r#"pub fnc main(): int {
+            recover 5 |> (|int x| -> |x, cursor| -> { return 1; });
+            raise Error("original"); }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            recover 5 |> (|int x| -> |err, cursor| -> { return cursor; });
+            raise Error("original"); }"#),
+        ("E_UNWIND_EFFECT", r#"fnc fail(): int { raise Error("cleanup"); }
+            pub fnc main(): int {
+                defer 5 |> (|int x| -> || -> { stdio.println(fail()); });
+                return 0; }"#),
+    ] {
+        reject(code, s);
+    }
+    for s in [
+        r#"pub fnc main(): int { defer 5 |> (|int x| -> |int y| -> { stdio.println(y); }); return 0; }"#,
+        r#"pub fnc main(): int { 5 |> defer (|int x| -> || -> {}); return 0; }"#,
+        r#"pub fnc main(): int { recover 5 |> (|int x| -> || -> {}); return 0; }"#,
+    ] {
+        assert!(compile(s).is_err(), "invalid registration syntax emitted guest Wasm: {s}");
+    }
+}
