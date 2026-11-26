@@ -797,8 +797,14 @@ impl Parser {
             let method_public = self.eat_word("pub");
             // Method markers are contextual and mutually exclusive.
             // A bare method literally named mtd() or method() must remain valid.
+            if self.is_word("method")
+                && matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::LParen | Tok::Lt)
+            {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "obsolete method introducer; use mtd"));
+            }
             let explicit_marker = self.is_word("fnc")
-                || (matches!(self.word_at(0), Some("method" | "mtd"))
+                || (self.is_word("mtd")
                     && matches!(self.peek_at(1), Tok::Ident(_))
                     && *self.peek_at(2) == Tok::LParen);
             if explicit_marker {
@@ -1050,9 +1056,15 @@ impl Parser {
             } else { FieldVisibility::Private };
             let public = visibility == FieldVisibility::Public;
             let word = self.word_at(0).map(str::to_owned);
+            if word.as_deref() == Some("method")
+                && matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::LParen | Tok::Lt)
+            {
+                return Err(Diagnostic::new(mpos, "E_SYNTAX", "obsolete method introducer; use mtd"));
+            }
             if visibility == FieldVisibility::Package
                 && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "receive"))
-                    || (matches!(word.as_deref(), Some("method" | "mtd"))
+                    || (matches!(word.as_deref(), Some("mtd"))
                         && matches!(self.peek_at(1), Tok::Ident(_))
                         && matches!(self.peek_at(2), Tok::LParen | Tok::Lt))
                     || *self.peek_at(1) == Tok::LParen)
@@ -1154,7 +1166,7 @@ impl Parser {
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
                 }
-                Some("method" | "mtd")
+                Some("mtd")
                     if matches!(self.peek_at(1), Tok::Ident(_))
                         && matches!(self.peek_at(2), Tok::LParen | Tok::Lt) =>
                 {
