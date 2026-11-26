@@ -18,7 +18,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     let first = l.func(l.gen_first_func);
     let mut out = Vec::with_capacity(4);
 
-    let make = |locals: &[Type]| Emit {
+    let make = |params: u32, locals: &[Type]| Emit {
         l,
         code: locals_decl(locals),
         frames: Vec::new(),
@@ -26,6 +26,8 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         active_iterators: Vec::new(),
         // Generator functions never receive protected-state authority.
         state_ticket_slot: None,
+        shift_slot: params + locals.len() as u32,
+        shift_used: false,
         state_write_depth: 0,
         uw: None,
         in_recover: false,
@@ -35,7 +37,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
 
     // new(type_id: i32, arg: i64) -> i64 generation-fenced handle.
     // Local 2=frame pointer, local 3=generation.
-    let mut e = make(&[Type::Bool, Type::Bool]);
+    let mut e = make(2, &[Type::Bool, Type::Bool]);
     e.global_get(free);
     e.op(0x45); // free list empty
     e.open(0x04, 0x40, Frame::Other);
@@ -107,7 +109,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     out.push((Sig(vec![I32, I64], vec![I64]), e.code));
 
     // checked_ptr(handle: i64) -> i32.
-    let mut e = make(&[Type::Bool, Type::Bool]);
+    let mut e = make(1, &[Type::Bool, Type::Bool]);
     e.get(0); e.op(0xA7); e.set(1); // i32.wrap_i64
     e.get(1); e.i32c(8); e.op(0x49); // ptr < 8
     e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
@@ -141,7 +143,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     ];
     next_locals.extend(std::iter::repeat(Type::Int).take(FRAME_LIVE_SLOTS));
     next_locals.push(Type::Bool); // dispatch fuel i32
-    let mut e = make(&next_locals);
+    let mut e = make(1, &next_locals);
     e.get(0); e.call(first + 1); e.set(1);
     e.get(1); e.load_i32(8); e.i32c(3); e.op(0x46);
     e.open(0x04, 0x40, Frame::Other);
@@ -305,12 +307,15 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     // post-loop path must also be explicitly unreachable.
     e.invalid_gen();
     e.op(0x0B);
+    // Source yield expressions and conditions may use checked shifts. The
+    // temporary belongs after the dispatch fuel, never in a live frame slot.
+    e.finish_shift_local(&mut next_locals);
     out.push((Sig(vec![I64], vec![I32]), e.code));
 
     // close(handle: i64) -> (): duplicate close is idempotent until frame
     // reuse; stale handles fail generation checks. A temporary child handle
     // local lets close detach the child before its recursive cleanup.
-    let mut e = make(&[Type::Bool, Type::GeneratorInt]);
+    let mut e = make(1, &[Type::Bool, Type::GeneratorInt]);
     e.get(0); e.call(first + 1); e.set(1);
     e.get(1); e.load_i32(8); e.i32c(5); e.op(0x46);
     e.open(0x04, 0x40, Frame::Other);
