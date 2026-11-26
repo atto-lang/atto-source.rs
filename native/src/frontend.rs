@@ -6,7 +6,27 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     pub functions: Vec<Function>,
+    pub exports: Vec<Export>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportScope {
+    Public,
+    Package,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportKind {
+    Function,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Export {
+    pub name: String,
+    pub scope: ExportScope,
+    pub kind: ExportKind,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
     pub name: String,
@@ -51,6 +71,12 @@ impl std::error::Error for ParseError {}
 enum Kind {
     #[token("pub")]
     Pub,
+    #[token("export")]
+    Export,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token("define")]
     Define,
     #[token("static")]
@@ -286,8 +312,13 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         infix_operators: 0,
     };
     let mut functions = Vec::new();
+    let mut directives = Vec::new();
     while parser.peek().is_some() {
-        functions.push(parser.function()?);
+        if parser.peek() == Some(Kind::Export) {
+            directives.push(parser.export_directive()?);
+        } else {
+            functions.push(parser.function()?);
+        }
     }
     if functions.is_empty() {
         return Err(ParseError {
@@ -296,7 +327,33 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "expected a function declaration".into(),
         });
     }
-    Ok(Program { functions })
+    // Resolve against the complete file, including trailing declarations.
+    // A package export is a tree-shaker root, never a public object symbol.
+    let mut exports = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (export, offset) in directives {
+        let err = |class, message: &str| ParseError {
+            offset,
+            class,
+            message: message.into(),
+        };
+        if !seen.insert(export.name.clone()) {
+            return Err(err("duplicate_export", "duplicate export name"));
+        }
+        let mut matches = functions.iter_mut().filter(|f| f.name == export.name);
+        let function = matches.next().ok_or_else(|| err("export_unresolved", "export must name a local function"))?;
+        if matches.next().is_some() {
+            return Err(err("duplicate_declaration", "ambiguous local function export"));
+        }
+        if export.scope == ExportScope::Package && (function.exported || function.name == "main") {
+            return Err(err("export_visibility_conflict", "package export cannot name a public function or native entry point"));
+        }
+        if export.scope == ExportScope::Public {
+            function.exported = true;
+        }
+        exports.push(export);
+    }
+    Ok(Program { functions, exports })
 }
 struct Parser {
     tokens: Vec<Token>,
@@ -326,6 +383,40 @@ impl Parser {
         self.cursor += 1;
         Ok(token)
     }
+    fn export_directive(&mut self) -> Result<(Export, usize), ParseError> {
+        let offset = self.expect(Kind::Export)?.start;
+        self.expect(Kind::Pub)?;
+        let scope = if self.peek() == Some(Kind::LBracket) {
+            self.expect(Kind::LBracket)?;
+            let scope = self.expect(Kind::Identifier)?;
+            if scope.text != "pkg" {
+                return Err(ParseError {
+                    offset: scope.start,
+                    class: "export_visibility_conflict",
+                    message: "expected package visibility 'pkg'".into(),
+                });
+            }
+            self.expect(Kind::RBracket)?;
+            ExportScope::Package
+        } else {
+            ExportScope::Public
+        };
+        if self.peek() == Some(Kind::Fnc) {
+            self.expect(Kind::Fnc)?;
+        } else if self.tokens.get(self.cursor).is_some_and(|t|
+            t.kind == Kind::Identifier && matches!(t.text.as_str(), "class" | "actor" | "enum" | "module" | "struct"))
+        {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "export_kind_mismatch",
+                message: "native scalar compiler only admits function exports".into(),
+            });
+        }
+        let name = self.expect(Kind::Identifier)?.text;
+        self.expect(Kind::Semicolon)?;
+        Ok((Export { name, scope, kind: ExportKind::Function }, offset))
+    }
+
     fn function(&mut self) -> Result<Function, ParseError> {
         // Canonical AttoLang permits both "define pub fnc" and
         // "pub define fnc"; the declaration still must be a scalar fnc.
