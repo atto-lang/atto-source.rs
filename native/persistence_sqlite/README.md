@@ -50,7 +50,7 @@ The test forks real processes, waits until a SQLite transaction reaches
 the checkpoint boundary, sends `SIGKILL`, reopens from a fresh connection,
 and verifies commit survival or uncommitted rollback. It also covers
 stale actor epochs, sequence CAS, schema mismatch and checksum corruption.
-The test is native C with no Python dependency.
+The test is standalone native C and uses SQLite and the C toolchain.
 
 ## Future integration gates
 
@@ -71,3 +71,47 @@ actor simulation: it admits and checkpoints 100 increments, kills the process,
 opens a new SQLite connection, obtains a new incarnation epoch, verifies the
 counter revives at 100, and commits increment 101. This tests the native
 storage integration boundary, **not** an actual AttoLang-compiled actor.
+
+## Atomic revival and fenced read
+
+Runtime integrations should use `atto_actor_activate_and_load` rather than
+separate epoch rotation and unfenced inspection. The new API acquires a
+SQLite writer reservation, rotates the epoch, reads and validates the prior
+snapshot, and commits before returning owned bytes. A confirmed absent row
+returns ABSENT with a committed new epoch and zero sequence; corruption or
+schema mismatch returns no snapshot and rolls back the attempted activation.
+An I/O failure is not evidence of absence or a definite commit outcome.
+Use `atto_actor_load_fenced` for subsequent recovery reads: it validates the
+exact epoch and reads under one transaction. The legacy load remains an
+inspection primitive only. A normal checkpoint cannot migrate or overwrite
+corrupt durable history.
+
+One privileged worker owns each connection and serializes entire API calls;
+SQLite FULLMUTEX alone does not enforce this multi-statement ownership rule.
+Separate connections coordinate through SQLite. The supervisor must still
+fence old execution, replies and external side effects; a successful read
+is not an indefinite lease. This remains a scalar checkpoint component,
+not a generated guest codec or durable mailbox. The initialization marker below distinguishes a missing snapshot from a
+never-checkpointed actor; trusted storage integrity remains required.
+
+## Durable initialization marker and legacy upgrade
+
+An actor epoch now carries a persisted `checkpoint_initialized` value.
+Fresh identities are 0, the first successful checkpoint changes it to 1
+in the same transaction, and subsequent epoch rotations preserve it. A
+marked actor without its snapshot is corrupt, never an empty actor. A
+snapshot without a committed marker is also rejected. Normal writes cannot
+reinitialize a marked actor at sequence zero. The marker does not claim
+that initialization code or external effects ran exactly once before the
+first checkpoint; those require the durable turn protocol.
+
+The schema upgrade is serialized by a writer reservation, rolls back as a
+unit, and is idempotent. Existing epochs with a stored snapshot become 1;
+legacy epoch-only rows become 2 (ambiguous history), fail closed and require
+explicit operator recovery rather than inferred fresh state. New identities
+remain usable. Do not run older snapshot writers against an upgraded store:
+they do not update this marker. The provider requires trusted filesystem and
+database integrity, and cannot detect an administrator deleting both the
+identity and snapshot or restoring an entire old database image. An external
+rollback-resistant authority and authenticated schema registry are distinct
+requirements.

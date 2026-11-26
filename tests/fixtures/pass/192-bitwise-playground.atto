@@ -1,3 +1,4 @@
+// expect-exit: 188
 // PREVIEW ONLY: illustrative proposal, not pinned-compiler support — masks, shifts, and flags.
 pub fnc main(): int {
   val flags: int = 0b101100;

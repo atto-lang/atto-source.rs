@@ -1,0 +1,3 @@
+// expect-exit: 42
+define class Parcel as pub let int value = 42; end
+pub fnc main(): int { let parcel = new Parcel(); val moved = move! parcel; return moved.value; }

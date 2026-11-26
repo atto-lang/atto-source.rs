@@ -1,0 +1,33 @@
+// core/result (atto-source.rs): helpers over the prelude Result<int,int>.
+define module result as
+  pub fnc is_ok(Result<int, int> subject): bool {
+    match subject over
+      on Ok(v) -> { return true; }
+      on Err(e) -> { return false; }
+    end
+  }
+  pub fnc is_err(Result<int, int> subject): bool {
+    match subject over
+      on Ok(v) -> { return false; }
+      on Err(e) -> { return true; }
+    end
+  }
+  pub fnc unwrap_or(Result<int, int> subject, int fallback): int {
+    match subject over
+      on Ok(v) -> { return v; }
+      on Err(e) -> { return fallback; }
+    end
+  }
+  pub fnc ok(Result<int, int> subject): Option<int> {
+    match subject over
+      on Ok(v) -> { return Some(v); }
+      on Err(e) -> { return None; }
+    end
+  }
+  pub fnc or(Result<int, int> left, Result<int, int> right): Result<int, int> {
+    match left over
+      on Ok(v) -> { return Ok(v); }
+      on Err(e) -> { return right; }
+    end
+  }
+end

@@ -186,16 +186,17 @@ fn tuple_items(t: &[Token]) -> Option<Vec<&[Token]>> {
     if t.first()?.tok != Tok::LParen || t.last()?.tok != Tok::RParen { return None; }
     let mut start = 1usize;
     let mut items = Vec::new();
-    let mut depth = 0usize;
+    let mut closers = Vec::new();
     let mut saw_comma = false;
     for i in 1..t.len()-1 {
         match t[i].tok {
-            Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+            Tok::LParen => closers.push(Tok::RParen),
+            Tok::LBracket => closers.push(Tok::RBracket),
+            Tok::LBrace => closers.push(Tok::RBrace),
             Tok::RParen | Tok::RBracket | Tok::RBrace => {
-                if depth == 0 { return None; }
-                depth -= 1;
+                if closers.pop().as_ref() != Some(&t[i].tok) { return None; }
             }
-            Tok::Comma if depth == 0 => {
+            Tok::Comma if closers.is_empty() => {
                 saw_comma = true;
                 if i == start { return None; }
                 items.push(&t[start..i]);
@@ -204,9 +205,16 @@ fn tuple_items(t: &[Token]) -> Option<Vec<&[Token]>> {
             _ => {}
         }
     }
-    if depth != 0 { return None; }
+    if !closers.is_empty() { return None; }
     if start < t.len()-1 { items.push(&t[start..t.len()-1]); }
     if !saw_comma && !items.is_empty() { return None; }
+    // Identifier-equals is a Record field, not a positional tuple item.
+    // Leave records and mixed items to the production parser's admission gate.
+    // Equality (==) and nested calls are deliberately not field markers.
+    if items.iter().any(|item| {
+        matches!(item.first().map(|x| &x.tok), Some(Tok::Ident(_)))
+            && item.get(1).is_some_and(|x| x.tok == Tok::Assign)
+    }) { return None; }
     if items.len() > LIMIT { return None; }
     Some(items)
 }
@@ -221,75 +229,22 @@ fn scalar_literal(item: &[Token]) -> Option<&'static str> {
         _ => None,
     }
 }
+// Preserve the old finite-float admission invariant independently of token
+// reconstruction. Keeping source tokens must not widen accepted literals.
+fn validate_expression_tokens(tokens: &[Token]) -> R<()> {
+    for t in tokens {
+        if let Tok::Float(bits) = t.tok {
+            if !f64::from_bits(bits).is_finite() {
+                return Err(error(t.pos, "E_FLOAT_LITERAL",
+                    "non-finite scalar tuple literal is not admitted"));
+            }
+        }
+    }
+    Ok(())
+}
 fn constant_tuple(rhs: &[Token]) -> bool {
     tuple_items(rhs).is_some_and(|items| items.iter().all(|x| scalar_literal(x).is_some()))
 }
-/// Quote tokenized string values with exactly the escapes Atto's lexer
-/// implements. Rust Debug uses \0 for U+0000, but Atto deliberately treats
-/// unknown \0 as literal '0'; using Debug would silently corrupt data.
-fn quote_string(value: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in value.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-fn as_code(tokens: &[Token]) -> R<String> {
-    let mut out = String::new();
-    for t in tokens {
-        let s = match &t.tok {
-            Tok::Ident(s) => s.clone(),
-            Tok::Int(Some(v)) => v.to_string(),
-            Tok::Int(None) => "9223372036854775808".to_string(),
-            Tok::Float(bits) => {
-                let value = f64::from_bits(*bits);
-                if !value.is_finite() {
-                    return Err(error(t.pos, "E_FLOAT_LITERAL",
-                        "non-finite scalar tuple literal cannot be round-tripped safely"));
-                }
-                let mut n = value.to_string();
-                if !n.contains('.') && !n.contains('e') && !n.contains('E') { n.push_str(".0"); }
-                n
-            },
-            Tok::Str(s) => quote_string(s),
-            Tok::LParen => "(".to_string(), Tok::RParen => ")".to_string(),
-            Tok::LBrace => "{".to_string(), Tok::RBrace => "}".to_string(),
-            Tok::LBracket => "[".to_string(), Tok::RBracket => "]".to_string(),
-            Tok::Comma => ",".to_string(), Tok::Colon => ":".to_string(),
-            Tok::Semi => ";".to_string(), Tok::Assign => "=".to_string(),
-            Tok::Dot => ".".to_string(), Tok::Plus => "+".to_string(),
-            Tok::Minus => "-".to_string(), Tok::Star => "*".to_string(),
-            Tok::Slash => "/".to_string(), Tok::Lt => "<".to_string(), Tok::Gt => ">".to_string(),
-            Tok::EqEq => "==".to_string(), Tok::NotEq => "!=".to_string(),
-            Tok::Le => "<=".to_string(), Tok::Ge => ">=".to_string(),
-            Tok::PlusPlus => "++".to_string(), Tok::MinusMinus => "--".to_string(),
-            Tok::PlusAssign => "+=".to_string(), Tok::ColonColon => "::".to_string(),
-            Tok::Arrow => "->".to_string(), Tok::LeftArrow => "<-".to_string(),
-            Tok::FatArrow => "=>".to_string(),
-            Tok::Pipe => "|".to_string(), Tok::PipeGt => "|>".to_string(),
-            Tok::PipeLt => "<|".to_string(),
-            Tok::Amp => "&".to_string(), Tok::Caret => "^".to_string(),
-            Tok::Tilde => "~".to_string(), Tok::Bang => "!".to_string(),
-            Tok::Question => "?".to_string(), Tok::At => "@".to_string(),
-            Tok::Ellipsis => "...".to_string(), Tok::YieldStar => "yield*".to_string(),
-            Tok::Eof => return Err(error(t.pos, "E_SYNTAX", "unexpected EOF in tuple expression")),
-        };
-        out.push_str(&s);
-        out.push(' ');
-    }
-    Ok(out)
-}
-
 /// Gather explicit top-level scalar tuple-return signatures, so a tuple
 /// binder consuming `fixtures()` cannot accidentally project an arbitrary
 /// class merely because it has similarly named fields.
@@ -373,6 +328,7 @@ fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<(String, usize),
         }
         let rhs = &tokens[b.rhs_start_index..end];
         checked_rhs(rhs, functions, b.pos)?;
+        validate_expression_tokens(rhs)?;
         let actual_arity = if let Some(items) = tuple_items(rhs) {
             items.len()
         } else {
@@ -400,30 +356,35 @@ fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<(String, usize),
         let owned = format!("{PREFIX}owner_{i}");
         let alias = b.alias.as_ref().map_or(owned.as_str(), |a| a.name.as_str());
         let root_mutable = b.alias.as_ref().is_some_and(|a| a.mode == BindingMode::Let);
-        let mut generated = format!("{} {alias} = {} ;\n",
-            if root_mutable { "let" } else { "val" }, as_code(rhs)?);
+        // Keep original RHS tokens and positions. The expression parser uses
+        // source adjacency to distinguish contiguous shifts and ownership
+        // operators; printing and re-lexing with spaces destroys that information.
+        let mut generated = synthetic(
+            &format!("{} {alias} =", if root_mutable { "let" } else { "val" }), b.pos)?;
+        generated.extend_from_slice(rhs);
+        generated.push(Token { tok: Tok::Semi, pos: b.pos });
         for (k, member) in b.members.iter().enumerate() {
             if let Some(name) = &member.name {
                 let ty = member.annotation.as_ref()
                     .map_or(String::new(), |t| format!(": {t}"));
-                let (kind, init) = match member.mode {
-                    BindingMode::Let => ("let", format!("{alias}.e{k}")),
-                    BindingMode::Val => ("val", format!("{alias}.e{k}")),
-                    // A const element is a true constexpr local: preserve
-                    // the checked source literal, not a field read from
-                    // the runtime materialized tuple root.
+                match member.mode {
+                    BindingMode::Let | BindingMode::Val => {
+                        let kind = if member.mode == BindingMode::Let { "let" } else { "val" };
+                        generated.extend(synthetic(&format!("{kind} {name}{ty} = {alias}.e{k};"), b.pos)?);
+                    }
                     BindingMode::Const => {
                         let part = constant_elements.as_ref()
                             .and_then(|items| items.get(k))
                             .ok_or_else(|| error(b.pos, "E_CONST",
                                 "tuple const element requires a constexpr literal"))?;
-                        ("const", as_code(part)?)
+                        generated.extend(synthetic(&format!("const {name}{ty} ="), b.pos)?);
+                        generated.extend_from_slice(part);
+                        generated.push(Token { tok: Tok::Semi, pos: b.pos });
                     }
-                };
-                generated.push_str(&format!("{kind} {name}{ty} = {init};\n"));
+                }
             }
         }
-        tokens.splice(b.start_index..=end, synthetic(&generated, b.pos)?);
+        tokens.splice(b.start_index..=end, generated);
     }
     Ok(())
 }
@@ -444,6 +405,7 @@ fn rewrite_literal_tuples(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R
             i += 1;
             continue;
         };
+        validate_expression_tokens(&tokens[i..=close])?;
         let detected: Option<Vec<String>> = items.iter().map(|x| scalar_literal(x).map(str::to_owned)).collect();
         let shape_name = if let Some(parts) = detected {
             shape_for(parts, shapes, tokens[i].pos)?
@@ -456,21 +418,205 @@ fn rewrite_literal_tuples(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R
             }
             ctor_name(candidates[0])
         };
-        // A source tuple permits '(x,)' and '(x,y,)', but the
-        // production class constructor parser requires exactly N arguments.
-        // Reconstruct from the checked item slices, omitting trailing
-        // tuple-only separators while retaining nested call delimiters.
-        let inner = items.iter()
-            .map(|item| as_code(item))
-            .collect::<R<Vec<_>>>()?
-            .join(", ");
-        let expression = format!("new {shape_name}({inner})");
-        let replacement = synthetic(&expression, tokens[i].pos)?;
+        // Preserve expression tokens, decoded literal values and original
+        // positions. Only the tuple delimiters and constructor prefix change.
+        let pos = tokens[i].pos;
+        let mut replacement = synthetic(&format!("new {shape_name}("), pos)?;
+        for (index, item) in items.iter().enumerate() {
+            if index != 0 { replacement.push(Token { tok: Tok::Comma, pos }); }
+            replacement.extend_from_slice(item);
+        }
+        replacement.push(Token { tok: Tok::RParen, pos: tokens[close].pos });
         let next = i + replacement.len();
         tokens.splice(i..=close, replacement);
         i = next;
     }
     Ok(())
+}
+
+
+// This lane lowers a closed, flat scalar tuple pattern to a private typed
+// function. Call arguments are evaluated by the real checker/emitter in
+// source order, including discards. No expression substitution or evaluation
+// by this pass; no allocation, runtime lambda or general aggregate ABI.
+struct PatternLower<'a> {
+    tokens: &'a [Token],
+    close: Vec<Option<usize>>,
+    helpers: Vec<Token>,
+    count: usize,
+}
+impl PatternLower<'_> {
+    fn tok(&self, i: usize) -> Option<&Tok> { self.tokens.get(i).map(|t| &t.tok) }
+    fn candidate(&self, i: usize) -> bool {
+        self.tok(i) == Some(&Tok::LParen) &&
+            self.close.get(i).copied().flatten().is_some_and(|j|
+                self.tok(j+1) == Some(&Tok::PipeGt) &&
+                self.tok(j+2) == Some(&Tok::Pipe) &&
+                self.tok(j+3) == Some(&Tok::LParen))
+    }
+    fn diag(&self, i: usize, message: &str) -> Diagnostic {
+        error(self.tokens.get(i).map_or(Pos::default(), |t| t.pos),
+            "E_TUPLE_PATTERN", message)
+    }
+    fn scalar(&mut self, i: &mut usize, bp: u8, depth: usize,
+        scope: Option<&std::collections::BTreeSet<String>>) -> R<Vec<Token>> {
+        if depth > 48 { return Err(self.diag(*i, "scalar pattern depth exceeds 48")); }
+        let at = *i;
+        let mut out = if self.candidate(at) {
+            self.pattern(i, depth+1, scope)?
+        } else {
+            match self.tok(at).cloned() {
+                Some(Tok::Int(_)) => { *i += 1; vec![self.tokens[at].clone()] }
+                Some(Tok::Ident(name)) if name != "_" &&
+                    !matches!(name.as_str(), "true" | "false" | "self" | "arguments") &&
+                    scope.is_none_or(|s| s.contains(&name)) => {
+                    *i += 1; vec![self.tokens[at].clone()]
+                }
+                Some(Tok::Minus) => {
+                    *i += 1;
+                    let mut v=vec![self.tokens[at].clone()];
+                    v.extend(self.scalar(i, 3, depth+1, scope)?);
+                    v
+                }
+                Some(Tok::LParen) => {
+                    *i += 1;
+                    let mut v=vec![self.tokens[at].clone()];
+                    v.extend(self.scalar(i, 0, depth+1, scope)?);
+                    if self.tok(*i)!=Some(&Tok::RParen) {
+                        return Err(self.diag(*i,"expected scalar group close"));
+                    }
+                    v.push(self.tokens[*i].clone()); *i+=1; v
+                }
+                _ => return Err(self.diag(at,"expected closed int arithmetic over bound leaves")),
+            }
+        };
+        loop {
+            let power=match self.tok(*i) {
+                Some(Tok::Plus | Tok::Minus) => 1,
+                Some(Tok::Star) => 2,
+                _ => break,
+            };
+            if power < bp { break; }
+            out.push(self.tokens[*i].clone()); *i+=1;
+            out.extend(self.scalar(i,power+1,depth+1,scope)?);
+            if out.len()>crate::lexer::MAX_TOKENS {
+                return Err(self.diag(*i,"pattern token budget exceeded"));
+            }
+        }
+        Ok(out)
+    }
+    fn pattern(&mut self, i: &mut usize, depth: usize,
+        outer: Option<&std::collections::BTreeSet<String>>) -> R<Vec<Token>> {
+        if depth > 48 { return Err(self.diag(*i,"pattern depth exceeds 48")); }
+        let start=*i;
+        let pos=self.tokens[start].pos;
+        let close=self.close[start].ok_or_else(||self.diag(start,"unclosed tuple root"))?;
+        // Preserve one-element tuple vs grouping, and reject record syntax.
+        let items=tuple_items(&self.tokens[start..=close])
+            .ok_or_else(||self.diag(start,"expected flat literal tuple root"))?;
+        let arity=items.len();
+        if arity>8 { return Err(self.diag(start,"maximum tuple pattern arity is 8")); }
+        *i+=1;
+        let mut args=Vec::new();
+        while *i<close {
+            args.push(self.scalar(i,0,depth+1,outer)?);
+            if *i==close { break; }
+            if self.tok(*i)!=Some(&Tok::Comma) {
+                return Err(self.diag(*i,"expected tuple element separator"));
+            }
+            *i+=1;
+        }
+        if *i!=close || args.len()!=arity { return Err(self.diag(*i,"invalid tuple root")); }
+        *i=close+4;
+        let pattern_start=close+3;
+        let end=self.close[pattern_start].ok_or_else(||self.diag(pattern_start,"unclosed pattern"))?;
+        let mut names=Vec::new();
+        let mut scope=std::collections::BTreeSet::new();
+        while *i<end {
+            let Some(Tok::Ident(name))=self.tok(*i).cloned() else {
+                return Err(self.diag(*i,"expected flat binder"));
+            };
+            if matches!(name.as_str(),"self"|"arguments"|"true"|"false") ||
+                (name!="_" && !scope.insert(name.clone())) {
+                return Err(self.diag(*i,"duplicate or reserved binder"));
+            }
+            *i+=1;
+            if self.tok(*i)==Some(&Tok::Colon) {
+                *i+=1;
+                if name=="_" || self.tokens.get(*i).is_none_or(|t| !word(t,"int")) {
+                    return Err(self.diag(*i,"only int leaf annotations; discard cannot be typed"));
+                }
+                *i+=1;
+            }
+            names.push(name);
+            if names.len()>8 { return Err(self.diag(*i,"maximum tuple pattern arity is 8")); }
+            if *i==end {
+                if names.len()==1 {return Err(self.diag(*i,"singleton pattern needs trailing comma"));}
+                break;
+            }
+            if self.tok(*i)!=Some(&Tok::Comma) {return Err(self.diag(*i,"expected binder separator"));}
+            *i+=1;
+        }
+        if *i!=end || names.len()!=arity {return Err(self.diag(*i,"pattern arity mismatch"));}
+        if self.tok(end+1)!=Some(&Tok::Pipe) || self.tok(end+2)!=Some(&Tok::Arrow) {
+            return Err(self.diag(end,"expected '| ->' after unary pattern"));
+        }
+        *i=end+3;
+        let body=self.scalar(i,0,depth+1,Some(&scope))?;
+        // Do not silently truncate unsupported body syntax into outer syntax.
+        if !matches!(self.tok(*i),Some(Tok::RParen|Tok::Comma|Tok::Semi|Tok::RBrace|Tok::PipeGt|Tok::Eof)) {
+            return Err(self.diag(*i,"unsupported pattern body continuation"));
+        }
+        if self.count>=128 {return Err(self.diag(start,"maximum 128 pattern helpers"));}
+        let name=format!("{PREFIX}pattern_{}",self.count);
+        self.count+=1;
+        let mut parameters=Vec::new();
+        for (n,binder) in names.iter().enumerate() {
+            let binder=if binder=="_" {format!("{PREFIX}discard_{n}")} else {binder.clone()};
+            parameters.push(format!("int {binder}"));
+        }
+        self.helpers.extend(synthetic(&format!("fnc {name}({}): int {{ return",parameters.join(",")),pos)?);
+        self.helpers.extend(body);
+        self.helpers.extend(synthetic("; }",pos)?);
+        let mut out=synthetic(&format!("{name}("),pos)?;
+        for (n,arg) in args.into_iter().enumerate() {
+            if n>0 {out.push(Token{tok:Tok::Comma,pos});}
+            out.extend(arg);
+        }
+        out.push(Token{tok:Tok::RParen,pos});
+        Ok(out)
+    }
+}
+fn lower_callable_patterns(tokens: Vec<Token>) -> R<Vec<Token>> {
+    if !tokens.windows(3).any(|w| w[0].tok==Tok::PipeGt && w[1].tok==Tok::Pipe && w[2].tok==Tok::LParen) {
+        return Ok(tokens);
+    }
+    // Linear matching table, bounded by the existing input token cap.
+    let mut close=vec![None;tokens.len()];
+    let mut stack=Vec::new();
+    for (i,t) in tokens.iter().enumerate() {
+        if t.tok==Tok::LParen {stack.push(i);}
+        else if t.tok==Tok::RParen {if let Some(j)=stack.pop(){close[j]=Some(i);}}
+    }
+    let mut pass=PatternLower{tokens:&tokens,close,helpers:Vec::new(),count:0};
+    let mut out=Vec::new();let mut i=0;
+    while i<tokens.len() {
+        if pass.candidate(i) {
+            out.extend(pass.pattern(&mut i,0,None)?);
+        } else {
+            out.push(tokens[i].clone());i+=1;
+        }
+    }
+    if pass.count==0 {return Ok(tokens);}
+    // Existing parser/typechecker must still accept the entire rewritten unit.
+    // Helpers are private; source cannot name their reserved prefix.
+    let eof=out.pop().ok_or_else(||pass.diag(0,"missing EOF"))?;
+    if eof.tok!=Tok::Eof {return Err(pass.diag(0,"missing EOF"));}
+    out.extend(pass.helpers);out.push(eof);
+    if out.len()>crate::lexer::MAX_TOKENS {
+        return Err(error(tokens[0].pos,"E_SOURCE_LIMIT","tuple pattern lowering exceeds token budget"));
+    }
+    Ok(out)
 }
 
 /// Return a fully ordinary compiler token stream for provably Copy-scalar
@@ -481,6 +627,7 @@ pub fn lower(mut tokens: Vec<Token>) -> R<Vec<Token>> {
         return Err(error(tokens.first().map_or(Pos::default(), |t| t.pos),
             "E_RESERVED", "internal tuple storage names are reserved"));
     }
+    tokens = lower_callable_patterns(tokens)?;
     let mut shapes = Vec::new();
     rewrite_types(&mut tokens, &mut shapes)?;
     let functions = tuple_functions(&tokens, &shapes);
@@ -501,19 +648,69 @@ pub fn lower(mut tokens: Vec<Token>) -> R<Vec<Token>> {
 }
 
 #[cfg(test)]
-mod return_first_token_regression {
-    use super::as_code;
+mod parenthesis_boundary_regression {
+    use super::{eofless, tuple_items};
     use crate::lexer::lex;
 
+    fn arity(source: &str) -> Option<usize> {
+        let tokens = eofless(lex(source).expect("lex fixture"));
+        tuple_items(&tokens).map(|items| items.len())
+    }
+
     #[test]
-    fn tuple_expression_roundtrip_preserves_left_arrow_as_single_token() {
-        // Tuple-source reconstruction must preserve the new declaration
-        // delimiter rather than splitting it into '<' and '-'.
-        let tokens = lex("int <- calculate(int x)").expect("valid return-first tokens");
-        let body = &tokens[..tokens.len() - 1];
-        let reconstructed = as_code(body).expect("complete Tok match");
-        let again = lex(&reconstructed).expect("roundtrip must lex");
-        assert!(again.iter().any(|t| matches!(t.tok, crate::lexer::Tok::LeftArrow)));
-        assert!(!reconstructed.contains("< -"), "left arrow was split");
+    fn grouping_and_tuple_commas_are_depth_sensitive() {
+        for (source, expected) in [
+            ("()", Some(0)),
+            ("(5)", None),
+            ("((5))", None),
+            ("(5,)", Some(1)),
+            ("(5,6,true)", Some(3)),
+            ("((5,6),true)", Some(2)),
+            ("(f(1,2),3,)", Some(2)),
+            ("(\"a,b\",5)", Some(2)),
+            ("(a==5,6)", Some(2)),
+        ] {
+            assert_eq!(arity(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn records_and_malformed_delimiters_never_enter_tuple_lowering() {
+        for source in [
+            "(a=5)", "(a=5,b=6)", "(a=5,6)", "(5,b=6)",
+            "(,5)", "(5,,6)", "(f([1),2],3)", "(f({1),2},3)",
+        ] {
+            assert_eq!(arity(source), None, "{source}");
+        }
+        assert_eq!(arity("((a=5),6)"), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod preserved_expression_tokens {
+    use super::lower;
+    use crate::lexer::{lex, Tok};
+
+    #[test]
+    fn lowering_keeps_original_shift_adjacency_and_positions() {
+        let source = "fnc fixtures(): Tuple<int,int> { return ((1 <<< 3), 34); } fnc main(): int { let (a,b) = fixtures(); return a+b; }";
+        let input = lex(source).unwrap();
+        let original: Vec<_> = input.iter().filter(|t| t.tok == Tok::Lt)
+            .skip(1).map(|t| (t.pos.line, t.pos.col)).collect();
+        assert_eq!(original.len(), 3);
+        let result = lower(input).unwrap();
+        let actual: Vec<_> = result.iter().filter(|t| t.tok == Tok::Lt)
+            .map(|t| (t.pos.line, t.pos.col)).collect();
+        assert_eq!(actual, original);
+    }
+
+    #[test]
+    fn destructuring_keeps_string_and_float_tokens_exact() {
+        let source = r#"fnc main(): int { let (a,b) = ("a,b", -0.0); return 42; }"#;
+        let input = lex(source).unwrap();
+        let original = input.iter().find(|t| matches!(&t.tok, Tok::Str(v) if v == "a,b")).unwrap().clone();
+        let result = lower(input).unwrap();
+        assert!(result.iter().any(|t| t.tok == original.tok &&
+            t.pos.line == original.pos.line && t.pos.col == original.pos.col));
     }
 }

@@ -1,0 +1,12 @@
+// flags: --target-os=windows
+// expect-exit: 92
+// expect-stdout-json: "C:\\Users"
+import module path from "atto.std/path";
+import module io from "atto.std/io";
+pub fnc main(): int {
+  io.write_str(path.join("C:", "Users"));
+  if !path.is_windows() || path.list_separator_code() != 59 || !path.is_separator_code(47) then
+    return 1;
+  fi
+  return path.separator_code();
+}

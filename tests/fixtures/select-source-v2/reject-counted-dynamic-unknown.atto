@@ -1,0 +1,1 @@
+suspends fnc main(): int { val Channel<int> incoming = Channel.new<int>(1); val Array[int] values = await select<int>(missing) { when readch incoming: int value -> { return value; } }; return 0; }

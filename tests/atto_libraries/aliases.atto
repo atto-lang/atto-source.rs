@@ -1,0 +1,7 @@
+// expect-exit: 32
+// The <layer>/<unit> shorthand and a .atto suffix name the same unit identity.
+import module num from "core/num";
+import module cmp from "atto.core/cmp.atto";
+pub fnc main(): int {
+  return num.max(1, 2) + cmp.max3(10, 20, 30);
+}

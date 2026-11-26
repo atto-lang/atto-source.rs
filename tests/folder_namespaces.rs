@@ -81,8 +81,9 @@ fn does_not_recognize_namespace_text_in_strings_or_comments() {
 fn compiler_without_path_rejects_derived_header_before_emission() {
     let source = "use default namespace;\npub fnc main(): int { return 42; }";
     assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_NAMESPACE_PATH");
-    // Path-aware target syntax is recognized, but external namespace linking
-    // is still not implemented, so emitting a fake namespace-free guest is forbidden.
-    assert_eq!(atto_compiler::compile_with_path(source,
-        Path::new("src/storefront/main.atto")).unwrap_err().code, "E_UNSUPPORTED");
+    // With a logical path the derived namespace is plain file identity: a
+    // standalone file compiles to a real guest (no import authority granted).
+    let wasm = atto_compiler::compile_with_path(source, Path::new("src/storefront/main.atto"))
+        .expect("derived namespace is file identity only");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }

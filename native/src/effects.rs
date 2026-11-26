@@ -136,6 +136,7 @@ mod tests {
             expression = Expr::Negate(Box::new(expression));
         }
         let module = Module {
+            exports: vec![],
             managed_refs: crate::ref_layout::ManagedRefLayout::default(),
             functions: vec![crate::mir::Function {
                 symbol: "x".into(),
@@ -163,16 +164,24 @@ mod tests {
         let source = include_str!("../tests/fixtures/forward.ores");
         let expected: Value =
             serde_json::from_str(include_str!("../tests/fixtures/forward.effects.json")).unwrap();
-        for layout in [crate::ref_layout::ManagedRefLayout::default(),
-                       crate::ref_layout::ManagedRefLayout::native()] {
-            let module = crate::mir::lower_with_ref_layout(
-                crate::frontend::parse(source).unwrap(), layout).unwrap();
+        for layout in [
+            crate::ref_layout::ManagedRefLayout::default(),
+            crate::ref_layout::ManagedRefLayout::native(),
+        ] {
+            let module =
+                crate::mir::lower_with_ref_layout(crate::frontend::parse(source).unwrap(), layout)
+                    .unwrap();
             let envelope = export_effect_ir_with_layout_checked(&module).unwrap();
             assert_eq!(envelope["effect_ir"], expected);
-            assert_eq!(envelope["target"]["managed_reference_mode"], layout.mode_name());
-            assert_eq!(envelope["target"]["managed_reference_storage_bits"], layout.storage_bits());
+            assert_eq!(
+                envelope["target"]["managed_reference_mode"],
+                layout.mode_name()
+            );
+            assert_eq!(
+                envelope["target"]["managed_reference_storage_bits"],
+                layout.storage_bits()
+            );
             assert_eq!(export_effect_ir_checked(&module).unwrap(), expected);
         }
     }
-
 }

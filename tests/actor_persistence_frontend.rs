@@ -238,3 +238,24 @@ end"#
         vec![StateScalar::Int(100), StateScalar::Bool(true)]
     );
 }
+
+#[test]
+fn suspension_aliases_preserve_persistence_gate_and_reject_unlowered_functions() {
+    for spelling in ["suspends", "susp", "⧖", "∂"] {
+        let source = format!(r#"
+define persistent actor Cart as
+    state count: int = 0;
+    {spelling} fnc load_state(ctx: PersistenceContext):
+      Result<Option<ActorStateSnapshot<Cart>>, PersistenceError> {{ return None; }}
+    {spelling} fnc save_state(ctx: PersistenceContext, snapshot: ActorStateSnapshot<Cart>):
+      Result<CheckpointReceipt, PersistenceError> {{ return 1; }}
+end
+pub fnc main(): int {{ return 0; }}
+"#);
+        let p = parse(&source).unwrap();
+        assert_eq!(p.actors[0].persistence_hooks.len(), 2);
+        assert_eq!(atto_compiler::check::check(&p).unwrap_err().code, "E_PERSIST_RUNTIME_UNAVAILABLE");
+        let unsupported = format!("{spelling} fnc main(): int {{ return 42; }}");
+        assert!(compile(&unsupported).is_err(), "{spelling}");
+    }
+}

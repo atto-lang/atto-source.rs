@@ -1,0 +1,17 @@
+// Current static actor-call admission rejects recursive synchronous call cycles.
+// The recursive actor source is preserved as a compiler denial witness.
+// expect-error: E_ACTOR_STACK_RECURSION
+define actor W as
+    dive(int n): int { return self.dive(n + 1) + 1; }
+    receive(ActorMail<int> mail): void {
+        stdio.println(mail.value);
+        stdio.println(self.dive(mail.value));
+        return;
+    }
+end
+
+pub fnc main(): int {
+    val a = spawn W();
+    a.send(3);
+    return 0;
+}

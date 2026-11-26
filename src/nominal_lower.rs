@@ -127,10 +127,10 @@ fn members(t: &[Token], kind: Kind, owner: &str, has_parent: bool) -> R<(BTreeMa
         }
         // Explicit mtd is a contextual prefix, not a reserved method name.
         // Keep mtd() and type-first fields intact; consume only mtd name(.
-        let marked_mtd = is(t, i, "mtd")
+        let marked_mtd = (is(t, i, "mtd") || is(t, i, "method"))
             && matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::Ident(_)))
             && t.get(i + 2).map(|x| &x.tok) == Some(&Tok::LParen);
-        if is(t, i, "fnc") || is(t, i, "method") || marked_mtd { i += 1; }
+        if is(t, i, "fnc") || marked_mtd { i += 1; }
         let is_ctor = is(t, i, "constructor");
         let method = matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::LParen));
         if !method && !is_ctor {

@@ -127,10 +127,10 @@ fn scan_methods(t: &[Token], kind: Kind) -> R<BTreeMap<String, Method>> {
             else { matches!(kind, Kind::Trait | Kind::Interface) };
         // Explicit mtd is a contextual prefix, not a reserved method name.
         // Keep mtd() and type-first fields intact; consume only mtd name(.
-        let marked_mtd = is(t, i, "mtd")
+        let marked_mtd = (is(t, i, "mtd") || is(t, i, "method"))
             && matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::Ident(_)))
             && t.get(i + 2).map(|x| &x.tok) == Some(&Tok::LParen);
-        if is(t, i, "fnc") || is(t, i, "method") || marked_mtd { i += 1; }
+        if is(t, i, "fnc") || marked_mtd { i += 1; }
         // A receive/constructor is not an ordinary method. Skip its entire
         // body; a nested call such as self.ping(...) cannot manufacture a
         // second method slot in the surrounding actor's declaration.
