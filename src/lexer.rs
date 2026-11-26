@@ -80,24 +80,33 @@ pub(crate) fn reject_unsafe_guest_tokens(tokens: &[Token]) -> Result<(), Diagnos
     }
     fn native_path(path: &str) -> bool {
         let unix = path.replace('\\', "/");
-        let rooted = unix.starts_with("std/") || unix.starts_with("atto.std/") ||
-            unix.starts_with("ores.std/");
+        fn reserved(value: &str) -> bool {
+            let mut segments = value.split(['/', '.', ':']).filter(|p| !p.is_empty());
+            let first = segments.next();
+            let root = if matches!(first, Some("atto" | "ores")) { segments.next() } else { first };
+            root == Some("std") && segments.next() == Some("unsafe")
+        }
+        if reserved(&unix) { return true; }
+        let mut slash = unix.split('/');
+        let head: Vec<_> = slash.next().unwrap_or("").split(['.', ':'])
+            .filter(|p| !p.is_empty()).collect();
+        let root_depth = match head.as_slice() {
+            ["std"] | ["atto" | "ores", "std"] => 1,
+            ["atto" | "ores"] if slash.next() == Some("std") => 2,
+            _ => 0,
+        };
         let mut parts = Vec::new();
         for part in unix.split('/') {
             match part {
                 "" | "." => {},
                 ".." => {
-                    if rooted && parts.len() <= 1 { return true; }
+                    if root_depth != 0 && parts.len() <= root_depth { return true; }
                     parts.pop();
                 }
                 _ => parts.push(part),
             }
         }
-        let canonical = parts.join("/");
-        let mut segments = canonical.split(['/', '.', ':']).filter(|p| !p.is_empty());
-        let first = segments.next();
-        let root = if matches!(first, Some("atto" | "ores")) { segments.next() } else { first };
-        root == Some("std") && segments.next() == Some("unsafe")
+        reserved(&parts.join("/"))
     }
 
     let mut import = false;
