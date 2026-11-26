@@ -93,7 +93,7 @@ pub(crate) fn parse_if_tagged(tokens: &[Token]) -> R<Option<Program>> {
         i = k + 3;
     }
     if declared.is_empty() {
-        return Err(unsupported(start, "Symbols are not supported; tag declarations must precede classes"));
+        return Err(Diagnostic::new(start, "E_UNSUPPORTED", "Symbols are not supported; tag declarations must precede classes"));
     }
     // Only remove well-formed attachment clauses in top-level class headers.
     // Preserve the original position-bearing tokens for the production parser.
