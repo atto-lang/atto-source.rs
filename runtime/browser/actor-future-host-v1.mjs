@@ -60,6 +60,9 @@ export function createActorFutureHostV1({
     if(!I32(actorId)||!I32(incarnation)||
        !controlPort||typeof controlPort.postMessage!=='function')
       throw new TypeError('E_ACTOR_FUTURE_ACTOR_IDENTITY');
+    // This manifest admits exactly one producer identity. Do not retain
+    // unbounded historical IDs for actors this guest cannot request.
+    if(actorId!==awaits[0].actorId)throw Error('E_ACTOR_FUTURE_UNDECLARED_ACTOR');
     if(actors.has(actorId))throw Error('E_ACTOR_FUTURE_ACTOR_ALREADY_REGISTERED');
     if(incarnation<=(lastIncarnation.get(actorId)||0))
       throw Error('E_ACTOR_FUTURE_STALE_INCARNATION');
@@ -145,8 +148,11 @@ export function createActorFutureHostV1({
     // panic to the faulting actor for interception. The host must wire this
     // callback to its supervisor, not to untrusted Worker message handling.
     notices++;
-    try{onSupervisorNotice(Object.freeze({actorId,incarnation,kind,reason}));}
-    catch{ /* a failing notice sink must not undo revocation */ }
+    try{
+      const observed=onSupervisorNotice(Object.freeze({actorId,incarnation,kind,reason}));
+      if(observed&&typeof observed.then==='function')
+        Promise.resolve(observed).catch(()=>{});
+    }catch{ /* a failing notice sink must not undo revocation */ }
     return true;
   }
   function close() {
