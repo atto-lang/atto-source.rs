@@ -21,6 +21,32 @@ pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
 
+// Revalidate the restricted callback shape independently of parser admission.
+// A public AST or a future lowering pass must not forge an early method
+// return, call, allocation, suspension, or another lease inside this region.
+fn state_scalar_shape(value: &Expr, depth: usize) -> bool {
+    if depth > 128 { return false; }
+    match &value.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Var(_) => true,
+        ExprKind::Member(base, _) => matches!(base.kind, ExprKind::SelfRef),
+        ExprKind::Unary(_, v) => state_scalar_shape(v, depth+1),
+        ExprKind::Binary(_, a, b) =>
+            state_scalar_shape(a, depth+1) && state_scalar_shape(b, depth+1),
+        _ => false,
+    }
+}
+fn validate_state_write_shape(body: &[Stmt], terminal: Option<&Expr>, pos: Pos) -> R<()> {
+    if body.iter().all(|stmt| matches!(stmt,
+        Stmt::FieldAssign { target, value, .. }
+        if matches!(target.kind, ExprKind::SelfRef) && state_scalar_shape(value, 0)))
+        && terminal.is_none_or(|v| state_scalar_shape(v, 0)) {
+        Ok(())
+    } else {
+        Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "protected write IR requires only scalar self-field assignments and an optional detached scalar result"))
+    }
+}
+
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
@@ -374,6 +400,45 @@ pub struct TProgram {
     /// A guest-global active-catch counter exists because some `recover`
     /// must defer to an outer caller's catch or trap (two-phase dispatch).
     pub catch_depth: bool,
+}
+
+/// Defense-in-depth for the bounded scalar lease region, independent of
+/// source parsing. This is not a general verifier for arbitrary typed IR.
+pub(crate) fn state_receiver(obj: &TE) -> bool {
+    matches!(obj.e, TExpr::Local(0)) && matches!(obj.ty, Type::Class(_))
+}
+pub(crate) fn state_offset(offset: u32) -> bool {
+    offset % FIELD_BYTES == 0 && offset < 128 * FIELD_BYTES
+}
+fn state_ir_scalar(v: &TE, depth: usize) -> bool {
+    if depth > 256 || !matches!(v.ty, Type::Int | Type::Bool | Type::Float) { return false; }
+    let sub = |e: &TE| state_ir_scalar(e, depth+1);
+    match &v.e {
+        TExpr::I64(_) => v.ty == Type::Int,
+        TExpr::Bool(_) => v.ty == Type::Bool,
+        TExpr::F64(_) => v.ty == Type::Float,
+        TExpr::Local(slot) => *slot != 0,
+        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => sub(a),
+        TExpr::Bin(_, a, b) => sub(a) && sub(b),
+        TExpr::Ternary(c, a, b) => sub(c) && sub(a) && sub(b),
+        TExpr::StateFieldRead { obj, offset } =>
+            matches!(v.ty, Type::Int | Type::Bool) && state_receiver(obj) && state_offset(*offset),
+        _ => false,
+    }
+}
+pub(crate) fn state_ir_region(body: &[TStmt], result: Option<&TE>, allow_tail_store: bool) -> bool {
+    let detached = |v: &TE| matches!(v.ty, Type::Int | Type::Bool) && state_ir_scalar(v, 0);
+    body.iter().enumerate().all(|(i, s)| match s {
+        TStmt::StateFieldWrite { obj, offset, ty, value } =>
+            state_receiver(obj) && state_offset(*offset) && *ty == value.ty && detached(value),
+        TStmt::Set(slot, value) =>
+            allow_tail_store && i+1 == body.len() && *slot != 0 && detached(value),
+        _ => false,
+    }) && result.is_none_or(detached)
+}
+fn require_state_ir(body: &[TStmt], result: Option<&TE>, allow_tail_store: bool, pos: Pos) -> R<()> {
+    if state_ir_region(body, result, allow_tail_store) { Ok(()) }
+    else { Err(Diagnostic::new(pos, "E_STATE_BORROW", "invalid typed scalar state region")) }
 }
 
 /// Size in bytes of every field slot in a class instance.
@@ -2832,7 +2897,7 @@ impl<'a> FnCx<'a> {
                 let allowed = matches!(self.owner,
                     Owner::Class { c, ctor: false, is_static: false }
                     if self.g.classes[c as usize].state_container);
-                if !allowed || self.state_write_scope {
+                if !allowed || self.state_read_scope || self.state_write_scope {
                     return Err(Diagnostic::new(*pos, "E_STATE_BORROW",
                         "critical-write requires a non-nested protected state container method"));
                 }
@@ -2841,6 +2906,7 @@ impl<'a> FnCx<'a> {
                 // Snapshot into an anonymous typed local, emit the ordinary
                 // balanced write region, and return only after state_leave.
                 if let Some(Stmt::Return(Some(result), result_pos)) = body.last() {
+                    validate_state_write_shape(&body[..body.len()-1], Some(result), *pos)?;
                     if self.cleanup_depth > 0 && self.recover_cursor.is_none() {
                         return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
                             "cleanup cannot replace the pending outcome"));
@@ -2864,15 +2930,19 @@ impl<'a> FnCx<'a> {
                     let (mut statements, value) = checked?;
                     let slot = self.temp(expected, *result_pos)?;
                     statements.push(TStmt::Set(slot, value));
+                    require_state_ir(&statements, None, true, *pos)?;
                     TStmt::Block(vec![
                         TStmt::StateCriticalWrite(statements),
                         TStmt::Return(Some(TE { e: TExpr::Local(slot), ty: expected })),
                     ])
                 } else {
+                    validate_state_write_shape(body, None, *pos)?;
                     self.state_write_scope = true;
                     let checked = self.scoped(body);
                     self.state_write_scope = false;
-                    TStmt::StateCriticalWrite(checked?)
+                    let statements = checked?;
+                    require_state_ir(&statements, None, false, *pos)?;
+                    TStmt::StateCriticalWrite(statements)
                 }
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
@@ -4422,6 +4492,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_STATE_BORROW",
                         "write callback requires a non-nested protected instance method"));
                 }
+                validate_state_write_shape(body, Some(result), pos)?;
                 self.state_write_scope = true;
                 let checked = (|| -> R<(Vec<TStmt>, TE)> {
                     let statements = self.scoped(body)?;
@@ -4433,6 +4504,7 @@ impl<'a> FnCx<'a> {
                 })();
                 self.state_write_scope = false;
                 let (body, value) = checked?;
+                require_state_ir(&body, Some(&value), false, pos)?;
                 let ty = value.ty;
                 TE { e: TExpr::StateWriteValue { body, result: Box::new(value) }, ty }
             }

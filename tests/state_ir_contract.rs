@@ -143,3 +143,53 @@ pub fnc main(): int {
         assert!(baseline == candidate, "alias changed compiled output: {write} / {read}");
     }
 }
+
+#[test]
+fn independently_mutated_ast_cannot_bypass_critical_shape_admission() {
+    use atto_compiler::ast::{Expr, ExprKind, Stmt};
+    let source = fs::read_to_string("tests/fixtures/pass/180-standalone-state-critical.atto").unwrap();
+    let parsed = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
+    for variant in 0..4 {
+        let mut corrupt = parsed.clone();
+        let method = corrupt.classes.iter_mut().find(|c| c.name=="Counter").unwrap()
+            .methods.iter_mut().find(|m| m.name=="increment").unwrap();
+        let (body,pos) = method.body.iter_mut().find_map(|s| match s {
+            Stmt::StateWrite {body,pos} => Some((body,*pos)), _=>None
+        }).unwrap();
+        let scalar = Expr {kind:ExprKind::Int(Some(1)),pos};
+        match variant {
+            0=>body.insert(0,Stmt::Return(None,pos)),
+            1=>body.insert(0,Stmt::Expr(Expr {kind:ExprKind::Call("stdio.println".into(),vec![scalar]),pos})),
+            2=>body.insert(0,Stmt::StateWrite{body:vec![],pos}),
+            _=>{
+                let Stmt::FieldAssign{value,..}=&mut body[0] else {panic!("expected field assignment")};
+                *value=Expr{kind:ExprKind::StateWriteValue(vec![],Box::new(scalar)),pos};
+            }
+        }
+        match check::check(&corrupt) {
+            Err(diagnostic)=>assert_eq!(diagnostic.code,"E_STATE_BORROW","variant {variant}: {diagnostic}"),
+            Ok(_)=>panic!("forged AST variant {variant} bypassed callback shape validation"),
+        }
+    }
+}
+
+#[test]
+fn corrupted_typed_state_region_cannot_emit_guest_bytes() {
+    use atto_compiler::{check::TE, wasm};
+    for variant in 0..5 {
+        let mut program=typed();
+        let method=program.funcs.iter_mut().find(|f| f.name=="Counter.increment").unwrap();
+        let body=method.body.iter_mut().find_map(|s| match s {
+            TStmt::StateCriticalWrite(body)=>Some(body), _=>None
+        }).unwrap();
+        let scalar=TE{e:TExpr::I64(1),ty:Type::Int};
+        match variant {
+            0=>body.insert(0,TStmt::Return(None)),
+            1=>body.insert(0,TStmt::Expr(TE{e:TExpr::Call(0,vec![]),ty:Type::Int})),
+            2=>body.insert(0,TStmt::StateCriticalWrite(vec![])),
+            3=>{let TStmt::StateFieldWrite{obj,..}=&mut body[0] else{panic!("field")};obj.e=TExpr::Local(1);},
+            _=>{let TStmt::StateFieldWrite{value,..}=&mut body[0] else{panic!("field")};*value=TE{e:TExpr::StateWriteValue{body:vec![],result:Box::new(scalar)},ty:Type::Int};}
+        }
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),"forged typed region {variant} emitted");
+    }
+}

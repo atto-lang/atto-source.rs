@@ -24,4 +24,19 @@ try {
     Array.from({length:3},()=>['enter','leave'].map(kind=>({kind,containerId:1,mode:1}))).flat());
   assert.equal(runtime.snapshot().active,0);
   console.log('STATE_WRITE_EXPRESSION_OK: three balanced writes, short-circuit did not acquire, scalar results published after release');
+  execFileSync(resolve(process.env.ATTOC ?? 'target/release/attoc'),
+    ['tests/fixtures/pass/state-return-write-composition.atto', '-o', output]);
+  const trace=[], values=[];
+  const other=createStateRuntime({onEvent:e=>trace.push(e)});
+  const guest=(await WebAssembly.instantiate(readFileSync(output),{atto:{
+    ...other.imports,
+    print_i64:v=>{assert.equal(other.snapshot().active,0);values.push(v);},
+    print_newline:()=>{}
+  }})).instance;
+  try{assert.equal(guest.exports.main(),0n);other.complete();}
+  catch(error){other.abort();throw error;}
+  assert.deepEqual(values,[42n,44n,43n]);
+  assert.deepEqual(trace.filter(e=>e.kind==='enter'||e.kind==='leave'),
+    [1,1,0].flatMap(mode=>['enter','leave'].map(kind=>({kind,containerId:1,mode}))));
+  console.log('STATE_RETURN_COMPOSITION_OK: suffix arithmetic and parenthesized write results after release');
 } finally { rmSync(dir,{recursive:true,force:true}); }
