@@ -23,6 +23,13 @@ fn negated_conditional_heads_are_reserved_and_have_all_three_legal_forms() {
         "do if true then if false { return 7; } fi return 42;",
         "do if true then unless false { return 42; } fi return 9;",
         "if false { return 7; } fi return 42;",
+        "if true do return 42; fi return 9;",
+        "if false do return 9; else return 42; fi",
+        "ifnot false do return 42; fi return 9;",
+        "ifnot true do return 9; fi return 42;",
+        "unless false do return 42; else return 9; fi",
+        "unless true do return 9; elif true do return 42; else return 7; fi",
+        "if true do unless true { return 9; } fi return 42;",
     ] {
         let src = format!("pub fnc main(): int {{ {body} }}");
         Parser::new(lex(&src).unwrap()).parse_program().unwrap();

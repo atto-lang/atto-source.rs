@@ -2691,8 +2691,8 @@ impl Parser {
     fn parse_if(&mut self, procedural: bool) -> R<Stmt> {
         let pos = self.pos();
         let negated = matches!(self.word_at(0), Some("ifnot" | "unless"));
-        // The imperative do-form is explicit for newly introduced keywords.
-        // Legacy bare keyword-delimited 'if' remains supported for migration.
+        // Canonical statements use suffix do; the prefix do and positive
+        // statement-position then remain supported for source migration.
         if !matches!(self.word_at(0), Some("if" | "ifnot" | "unless")) {
             return Err(self.expected("'if', 'ifnot' or 'unless'"));
         }
@@ -2707,10 +2707,6 @@ impl Parser {
         if braced && procedural {
             return Err(Diagnostic::new(pos, "E_SYNTAX",
                 "'do' conditionals use 'then ... fi'; remove 'do' to use braces"));
-        }
-        if !braced && negated && !procedural {
-            return Err(Diagnostic::new(pos, "E_SYNTAX",
-                "imperative negated conditions require 'do ifnot/unless ... then ... fi' or braces"));
         }
         let mut arms = Vec::new();
         let mut otherwise = None;
@@ -2737,8 +2733,17 @@ impl Parser {
             }
         } else {
             self.eat(&Tok::Semi);
+            // Suffix do is the canonical imperative delimiter for all heads.
+            // Preserve the existing legacy prefix-do and positive then forms.
+            if negated && !procedural && !self.is_word("do") {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_SYNTAX",
+                    "imperative negated conditions require 'ifnot/unless ... do ... fi' or braces",
+                ));
+            }
             if !(self.eat_word("then") || self.eat_word("do")) {
-                return Err(self.expected("'then'"));
+                return Err(self.expected("'do' (or legacy 'then')"));
             }
             let stops = ["elif", "elseif", "else", "fi"];
             arms.push((cond, self.parse_if_stmts_until(&stops)?));
