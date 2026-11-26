@@ -1,5 +1,13 @@
-//! Real Rust scalar frontend admission, not singleton guest implementation.
-use oreslang_source_rs::frontend::parse;
+//! Real canonical Rust browser frontend admission, not singleton guest implementation.
+use atto_compiler::{compile, compile_verified_strict, compile_with_path, lexer::lex, parser::Parser};
+use std::path::Path;
+
+fn reject_at(source: &str) -> atto_compiler::diag::Diagnostic {
+    match Parser::new(lex(source).expect("lex source")).parse_program() {
+        Ok(_) => panic!("singleton declaration admitted: {source}"),
+        Err(error) => error,
+    }
+}
 
 #[test]
 fn singleton_declarations_have_stable_fail_closed_diagnostic() {
@@ -12,13 +20,17 @@ fn singleton_declarations_have_stable_fail_closed_diagnostic() {
         "define module M as define singleton S as end end",
         "pub fnc main(): int { return 7; } define singleton S as end",
         "define singleton S as state { let n: int = 0 } end",
+        "// comment\ndefine singleton S as end",
     ] {
-        let err = parse(declaration).expect_err(declaration);
-        assert_eq!(err.class, "singleton_unsupported", "{declaration}: {err}");
+        let err = reject_at(declaration);
+        assert_eq!(err.code, "E_SINGLETON_UNSUPPORTED", "{declaration}: {err}");
         assert!(err.message.contains("ORES-SINGLETON-UNSUPPORTED"));
-        assert_eq!(err.offset, declaration.find("singleton").unwrap(), "{declaration}");
+        let prefix = &declaration[..declaration.find("singleton").unwrap()];
+        assert_eq!(err.pos.line, prefix.lines().count().max(1) as u32);
+        assert_eq!(err.pos.col, prefix.rsplit('\n').next().unwrap().chars().count() as u32 + 1);
     }
 }
+
 #[test]
 fn singleton_is_contextual_and_comment_text_is_inert() {
     for source in [
@@ -29,17 +41,24 @@ fn singleton_is_contextual_and_comment_text_is_inert() {
         "/* define pub singleton Fake as end */ fnc main(): int { return 7; }",
         "fnc main(): int { return 7; } // define singleton Fake",
     ] {
-        parse(source).unwrap_or_else(|e| panic!("ordinary source denied {source}: {e}"));
+        Parser::new(lex(source).unwrap()).parse_program()
+            .unwrap_or_else(|e| panic!("ordinary source denied {source}: {e}"));
     }
+    let bytes = compile("pub fnc main(): int { return singleton(); } fnc singleton(): int { return 7; }").unwrap();
+    assert!(bytes.starts_with(b"\0asm"));
 }
+
 #[test]
-fn unsupported_singleton_cannot_enter_native_code_generation() {
+fn unsupported_singleton_cannot_enter_canonical_code_generation() {
     let src = "pub fnc main(): int { return 7; }\ndefine singleton S as end";
     for result in [
-        oreslang_source_rs::compile(src),
-        oreslang_source_rs::compile_checked_i64(src),
-        oreslang_source_rs::compile_with_effect_ir(src).map(|(bytes, _)| bytes),
+        compile(src),
+        compile_verified_strict(src),
+        compile_with_path(src, Path::new("main.atto")),
     ] {
-        assert!(result.unwrap_err().contains("ORES-SINGLETON-UNSUPPORTED"));
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_SINGLETON_UNSUPPORTED");
+        assert!(err.message.contains("ORES-SINGLETON-UNSUPPORTED"));
+        assert_eq!((err.pos.line, err.pos.col), (2, 8));
     }
 }

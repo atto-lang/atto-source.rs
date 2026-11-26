@@ -1,4 +1,4 @@
-use oreslang_source_rs::actor_arena::{ArenaError, FixedActorArena};
+use atto_compiler::actor_arena::{ArenaError, FixedActorArena};
 
 #[derive(Debug, Eq, PartialEq)]
 struct OwnedValue {
@@ -162,7 +162,7 @@ fn rejects_zero_arena_id() {
 
 #[test]
 fn excessive_inline_slot_capacity_is_rejected_before_initialization() {
-    use oreslang_source_rs::actor_arena::{MAX_ARENA_INLINE_BYTES, MAX_ARENA_SLOTS};
+    use atto_compiler::actor_arena::{MAX_ARENA_INLINE_BYTES, MAX_ARENA_SLOTS};
     assert_eq!(MAX_ARENA_SLOTS, 4096);
     assert_eq!(MAX_ARENA_INLINE_BYTES, 4 * 1024 * 1024);
     assert!(matches!(

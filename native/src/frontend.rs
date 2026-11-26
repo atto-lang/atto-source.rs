@@ -6,6 +6,17 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     pub functions: Vec<Function>,
+    /// Explicit file-level export metadata, including package-only names.
+    pub exports: Vec<ExportDecl>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportScope { Public, Package }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportDecl {
+    pub name: String,
+    pub scope: ExportScope,
+    pub kind: Option<String>,
+    pub offset: usize,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
@@ -51,6 +62,10 @@ impl std::error::Error for ParseError {}
 enum Kind {
     #[token("pub")]
     Pub,
+    #[token("export")]
+    Export,
+    #[token("class")]
+    Class,
     #[token("define")]
     Define,
     #[token("static")]
@@ -77,6 +92,10 @@ enum Kind {
     RParen,
     #[token("{")]
     LBrace,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token("}")]
     RBrace,
     #[token(";")]
@@ -93,6 +112,12 @@ enum Kind {
     Minus,
     #[token("*")]
     Star,
+    #[token("%")]
+    RemovedModulo,
+    #[token("^^")]
+    RemovedDoubleCaret,
+    #[token("^")]
+    RemovedCaret,
     #[regex(r"[0-9][0-9_]*")]
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
@@ -180,6 +205,8 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+pub const MAX_PRIMARY_DEPTH: usize = 64;
+pub const MAX_INFIX_OPERATORS: usize = 64;
 
 /// Execution-domain words reserved by every Oreslang backend (Java and LLVM
 /// reject them as identifiers too).
@@ -253,6 +280,13 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             });
         }
         match kind {
+            Kind::RemovedModulo | Kind::RemovedCaret | Kind::RemovedDoubleCaret => {
+                return Err(ParseError {
+                    offset: range.start,
+                    class: "removed_operator",
+                    message: "operator is reserved; use named arithmetic functions".into(),
+                });
+            }
             Kind::LParen => {
                 paren_depth += 1;
                 if paren_depth > MAX_PAREN_NESTING {
@@ -279,10 +313,40 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         tokens,
         cursor: 0,
         source_len: source.len(),
+        primary_depth: 0,
     };
     let mut functions = Vec::new();
+    let mut exports = Vec::new();
     while parser.peek().is_some() {
-        functions.push(parser.function()?);
+        if parser.peek() == Some(Kind::Export) {
+            exports.push(parser.export_decl()?);
+        } else {
+            functions.push(parser.function()?);
+        }
+    }
+    // Collect all symbols before resolving exports. A forward export and an
+    // identical bottom-of-file export have the same meaning.
+    let mut seen = std::collections::HashSet::new();
+    for e in &exports {
+        if !seen.insert(e.name.clone()) {
+            return Err(ParseError { offset: e.offset, class: "duplicate_export",
+                message: format!("duplicate export '{}'", e.name) });
+        }
+        if let Some(kind) = &e.kind {
+            if kind != "fnc" {
+                return Err(ParseError { offset: e.offset, class: "export_kind_mismatch",
+                    message: format!("'{}' is not an admitted scalar fnc", e.name) });
+            }
+        }
+        let Some(target) = functions.iter_mut().find(|f| f.name == e.name) else {
+            return Err(ParseError { offset: e.offset, class: "export_unresolved",
+                message: format!("unknown export '{}'", e.name) });
+        };
+        if e.scope == ExportScope::Package && target.exported {
+            return Err(ParseError { offset: e.offset, class: "export_visibility_conflict",
+                message: format!("'{}' is already public and cannot be package-only", e.name) });
+        }
+        if e.scope == ExportScope::Public { target.exported = true; }
     }
     if functions.is_empty() {
         return Err(ParseError {
@@ -291,12 +355,13 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "expected a function declaration".into(),
         });
     }
-    Ok(Program { functions })
+    Ok(Program { functions, exports })
 }
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
+    primary_depth: usize,
 }
 impl Parser {
     fn peek(&self) -> Option<Kind> {
@@ -318,6 +383,26 @@ impl Parser {
         let token = self.tokens[self.cursor].clone();
         self.cursor += 1;
         Ok(token)
+    }
+    fn export_decl(&mut self) -> Result<ExportDecl, ParseError> {
+        let offset = self.expect(Kind::Export)?.start;
+        self.expect(Kind::Pub)?;
+        let scope = if self.peek() == Some(Kind::LBracket) {
+            self.expect(Kind::LBracket)?;
+            let marker = self.expect(Kind::Identifier)?;
+            if marker.text != "pkg" {
+                return Err(ParseError { offset: marker.start, class: "export_visibility",
+                    message: "only pub[pkg] is supported".into() });
+            }
+            self.expect(Kind::RBracket)?;
+            ExportScope::Package
+        } else { ExportScope::Public };
+        let kind = if self.peek() == Some(Kind::Fnc) { self.expect(Kind::Fnc)?; Some("fnc".into()) }
+            else if self.peek() == Some(Kind::Class) { self.expect(Kind::Class)?; Some("class".into()) }
+            else { None };
+        let name = self.expect(Kind::Identifier)?.text;
+        self.expect(Kind::Semicolon)?;
+        Ok(ExportDecl { name, scope, kind, offset })
     }
     fn function(&mut self) -> Result<Function, ParseError> {
         // Canonical AttoLang permits both "define pub fnc" and
@@ -342,8 +427,17 @@ impl Parser {
         let mut params = Vec::new();
         if self.peek() != Some(Kind::RParen) {
             loop {
-                self.expect(Kind::Int)?;
-                params.push(self.expect(Kind::Identifier)?.text);
+                // Both canonical scalar parameter spellings lower identically.
+                let name = if self.peek() == Some(Kind::Int) {
+                    self.expect(Kind::Int)?;
+                    self.expect(Kind::Identifier)?.text
+                } else {
+                    let name = self.expect(Kind::Identifier)?.text;
+                    self.expect(Kind::Colon)?;
+                    self.expect(Kind::Int)?;
+                    name
+                };
+                params.push(name);
                 if self.peek() == Some(Kind::Comma) {
                     self.expect(Kind::Comma)?;
                 } else {
@@ -443,7 +537,18 @@ impl Parser {
     }
     fn expression(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.product()?;
+        let mut infix_count = 0_usize;
         loop {
+            if matches!(self.peek(), Some(Kind::Plus | Kind::Minus)) {
+                if infix_count >= MAX_INFIX_OPERATORS {
+                    return Err(ParseError {
+                        offset: self.pos(),
+                        class: "resource_limit",
+                        message: "additive expression exceeds scalar depth budget".into(),
+                    });
+                }
+                infix_count += 1;
+            }
             lhs = match self.peek() {
                 Some(Kind::Plus) => {
                     self.expect(Kind::Plus)?;
@@ -460,13 +565,38 @@ impl Parser {
     }
     fn product(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.primary()?;
+        let mut infix_count = 0_usize;
         while self.peek() == Some(Kind::Star) {
+            if infix_count >= MAX_INFIX_OPERATORS {
+                return Err(ParseError {
+                    offset: self.pos(),
+                    class: "resource_limit",
+                    message: "multiplicative expression exceeds scalar depth budget".into(),
+                });
+            }
+            infix_count += 1;
             self.expect(Kind::Star)?;
             lhs = Expr::Multiply(Box::new(lhs), Box::new(self.primary()?));
         }
         Ok(lhs)
     }
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        // Unary chains recurse without parentheses and previously evaded the
+        // lexer parenthesis-depth cap. Fail closed before stack exhaustion.
+        if self.primary_depth >= MAX_PRIMARY_DEPTH {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "resource_limit",
+                message: "unary/call expression exceeds recursive parser budget".into(),
+            });
+        }
+        self.primary_depth += 1;
+        let parsed = self.primary_impl();
+        self.primary_depth -= 1;
+        parsed
+    }
+
+    fn primary_impl(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
