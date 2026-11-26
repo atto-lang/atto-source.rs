@@ -57,6 +57,29 @@ const strictCases = [
  ["unreachable-private-helper", "fnc f(int x) -> int { return x + 1; } "+main("42"),"E_VERIFY_UNPROVEN"],
  ["bad-argument", "fnc f(Bounded x) -> int { return x; } "+main("f(43)"),"E_REFINEMENT_PRECONDITION"]
 ];
+strictCases.push(
+ ["guard-positive","fnc f(int x) -> int { if x > 0 { return 42 / x; } return 0; } "+main("f(1)"),42n],
+ ["guard-false","fnc f(int x) -> int { if x > 0 { return 42 / x; } return 0; } "+main("f(0)"),0n],
+ ["early-return","fnc f(int x) -> int { if x <= 0 { return 0; } return 42 / x; } "+main("f(1)"),42n],
+ ["both-return","fnc f(int x) -> int { if x > 0 { return 42 / x; } else { return 7; } } "+main("f(0)"),7n],
+ ["nested-min-guard","fnc f(int x) -> int { if x < 0 { if x > -9223372036854775808 { return -x; } } return 0; } "+main("f(-42)"),42n],
+ ["quantity-guard","fnc f(Duration x) -> int { if x > 0<Second> { return 42<Second> / x; } return 0; } "+main("f(1<Second>)"),42n],
+ ["branch-local","fnc f(int x) -> int { if x > 0 { val n = 42 / x; return n; } return 0; } "+main("f(1)"),42n],
+ ["assignment-replaces","pub fnc main() -> int { let int x = 0; x = 1; return 42 / x; }",42n],
+ ["join-safe","fnc f(int n) -> int { let int x = 0; if n > 0 { x = 1; } else { x = 2; } return 42 / x; } "+main("f(0)"),21n],
+ ["join-safe-true","fnc f(int n) -> int { let int x = 0; if n > 0 { x = 1; } else { x = 2; } return 42 / x; } "+main("f(1)"),42n],
+ ["assignment-stale","pub fnc main() -> int { let int x = 1; x = 0; return 42 / x; }","E_VERIFY_UNPROVEN"],
+ ["branch-stale","fnc f(int n) -> int { let int x = n; if x > 0 { x = 0; return 42 / x; } return 0; } "+main("f(1)"),"E_VERIFY_UNPROVEN"],
+ ["join-unsafe","fnc f(int n) -> int { let int x = 1; if n > 0 { x = 0; } return 42 / x; } "+main("f(0)"),"E_VERIFY_UNPROVEN"],
+ ["join-loses-narrowing","fnc f(int n) -> int { if n > 0 { val v = 42 / n; } return 42 / n; } "+main("f(1)"),"E_VERIFY_UNPROVEN"],
+ ["interior-hole","fnc f(int n) -> int { if n != 0 { return 42 / n; } return 0; } "+main("f(1)"),"E_VERIFY_UNPROVEN"],
+ ["negative-min-guard","fnc f(int n) -> int { if n < 0 { return -n; } return 0; } "+main("f(-42)"),"E_VERIFY_UNPROVEN"],
+ ["scope-leak","fnc f(int n) -> int { if n > 0 { val x = 42; } return x; } "+main("f(1)"),"E_UNIT_NAME"],
+ ["immutable-rebind","pub fnc main() -> int { val x = 1; x = 2; return x; }","E_VERIFY_UNSUPPORTED"],
+ ["refined-rebind","pub fnc main() -> int { let Bounded x = 1; x = 0; return x; }","E_REFINEMENT_BINDING"],
+ ["missing-return","fnc f(int n) -> int { if n > 0 { return 42; } } "+main("f(1)"),"E_VERIFY_RETURN"],
+ ["condition-unit-mismatch","fnc f(Duration n) -> int { if n > 0 { return 42; } return 0; } "+main("f(1<Second>)"),"E_UNIT_DIMENSION"]
+);
 for (const [id,body,want] of strictCases) cases.push(["strict-"+id,body,want,true]);
 const dir=mkdtempSync(join(tmpdir(),"atto-refinement-casts-"));
 try{
