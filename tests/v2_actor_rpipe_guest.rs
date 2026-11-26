@@ -22,12 +22,21 @@ fn legacy_actor_pipe_and_rpipe_compile_to_guest_wasm_not_host_simulation() {
 #[test]
 fn reverse_pipe_mixes_and_untyped_sources_fail_before_wasm_emission() {
     for (name, source, code) in [
-        ("mixed", include_str!("fixtures/fail/208-v2-actor-rpipe-direction-mix.atto"),
-            "E_PIPE_DIRECTION"),
-        ("no emit", include_str!("fixtures/fail/209-v2-actor-pipe-missing-source.atto"),
-            "E_TYPE"),
-        ("type mismatch", include_str!("fixtures/fail/210-v2-actor-rpipe-type-mismatch.atto"),
-            "E_TYPE"),
+        (
+            "mixed",
+            include_str!("fixtures/fail/208-v2-actor-rpipe-direction-mix.atto"),
+            "E_PIPE_DIRECTION",
+        ),
+        (
+            "no emit",
+            include_str!("fixtures/fail/209-v2-actor-pipe-missing-source.atto"),
+            "E_TYPE",
+        ),
+        (
+            "type mismatch",
+            include_str!("fixtures/fail/210-v2-actor-rpipe-type-mismatch.atto"),
+            "E_TYPE",
+        ),
     ] {
         let e = compile_v2(source).expect_err("invalid continuous graph must not emit Wasm");
         assert_eq!(e.code, code, "{name}: {e}");

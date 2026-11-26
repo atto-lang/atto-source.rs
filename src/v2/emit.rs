@@ -307,8 +307,15 @@ enum Term {
     Open,
     Goto(usize),
     Cond(Ir, usize, usize),
-    SCall { dst: Option<u32>, f: u32, args: Vec<Ir>, next: usize },
-    Suspend { next: usize },
+    SCall {
+        dst: Option<u32>,
+        f: u32,
+        args: Vec<Ir>,
+        next: usize,
+    },
+    Suspend {
+        next: usize,
+    },
 }
 
 struct Block {
@@ -341,7 +348,10 @@ fn has_escape(s: &IrStmt) -> bool {
 
 impl Cfg {
     fn new_block(&mut self) -> usize {
-        self.blocks.push(Block { stmts: Vec::new(), term: Term::Open });
+        self.blocks.push(Block {
+            stmts: Vec::new(),
+            term: Term::Open,
+        });
         self.blocks.len() - 1
     }
     fn goto(&mut self, to: usize) {
@@ -362,7 +372,12 @@ impl Cfg {
                     let call = self.new_block();
                     let next = self.new_block();
                     self.goto(call);
-                    self.blocks[call].term = Term::SCall { dst: *dst, f: *f, args: args.clone(), next };
+                    self.blocks[call].term = Term::SCall {
+                        dst: *dst,
+                        f: *f,
+                        args: args.clone(),
+                        next,
+                    };
                     self.cur = next;
                 }
                 IrStmt::Suspend => {
@@ -413,7 +428,10 @@ impl Cfg {
 }
 
 fn state_machine(l: &Layout, f: &IrFn) -> Vec<u8> {
-    let mut cfg = Cfg { blocks: Vec::new(), cur: 0 };
+    let mut cfg = Cfg {
+        blocks: Vec::new(),
+        cur: 0,
+    };
     cfg.new_block();
     cfg.flat(&f.body, &mut Vec::new());
     let n = cfg.blocks.len();
@@ -427,7 +445,11 @@ fn state_machine(l: &Layout, f: &IrFn) -> Vec<u8> {
     code.push(I64);
     uleb(&mut code, 1);
     code.push(I32);
-    let mut e = Emit { l, code, labels: Vec::new() };
+    let mut e = Emit {
+        l,
+        code,
+        labels: Vec::new(),
+    };
 
     // rewinding: pop this function's frame
     e.idx(0x23, G_STATE);
@@ -483,7 +505,12 @@ fn state_machine(l: &Layout, f: &IrFn) -> Vec<u8> {
                 e.close();
                 jump(&mut e, *bb);
             }
-            Term::SCall { dst, f: callee, args, next } => {
+            Term::SCall {
+                dst,
+                f: callee,
+                args,
+                next,
+            } => {
                 for a in args {
                     debug_assert!(matches!(a, Ir::Local(_) | Ir::Const(_)));
                     e.expr(a);
@@ -555,7 +582,11 @@ fn plain(l: &Layout, f: &IrFn) -> Vec<u8> {
     } else {
         uleb(&mut code, 0);
     }
-    let mut e = Emit { l, code, labels: Vec::new() };
+    let mut e = Emit {
+        l,
+        code,
+        labels: Vec::new(),
+    };
     e.stmts(&f.body);
     e.i64c(0);
     e.op(0x0B);
@@ -616,9 +647,15 @@ pub fn emit(m: &Module) -> Vec<u8> {
     counted.extend(import_sec);
 
     let max_arity = m.fns.iter().map(|f| f.params as usize).max().unwrap_or(0).max(8) + 1;
-    let arity_types: Vec<u32> =
-        (0..=max_arity).map(|k| type_idx(&mut types, Sig(vec![I64; k], vec![I64]))).collect();
-    let layout = Layout { imports, first_helper: n_imports, first_fn: n_imports + HELPERS, arity_types };
+    let arity_types: Vec<u32> = (0..=max_arity)
+        .map(|k| type_idx(&mut types, Sig(vec![I64; k], vec![I64])))
+        .collect();
+    let layout = Layout {
+        imports,
+        first_helper: n_imports,
+        first_fn: n_imports + HELPERS,
+        arity_types,
+    };
 
     let mut func_types = Vec::new();
     let mut bodies = Vec::new();

@@ -18,7 +18,9 @@ const PRELUDE: &str = include_str!("prelude.atto");
 pub fn compile(toks: Vec<Token>) -> Result<Vec<u8>, Diagnostic> {
     let program = parse::Parser::new(toks).parse_program()?;
     let prelude_toks = crate::lexer::lex(PRELUDE).expect("the runtime prelude lexes");
-    let prelude = parse::Parser::new(prelude_toks).parse_program().expect("the runtime prelude parses");
+    let prelude = parse::Parser::new(prelude_toks)
+        .parse_program()
+        .expect("the runtime prelude parses");
     let module = check::check(&program, &prelude)?;
     Ok(emit::emit(&module))
 }

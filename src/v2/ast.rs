@@ -66,7 +66,11 @@ pub enum ReadMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlanMode { Future, Try, Nb }
+pub enum PlanMode {
+    Future,
+    Try,
+    Nb,
+}
 
 #[derive(Clone, Debug)]
 pub struct Arg {
@@ -122,16 +126,32 @@ pub enum Ex {
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `name(args)` or `name<T>(args)`
-    Call { name: String, targs: Vec<TyEx>, args: Vec<Arg> },
+    Call {
+        name: String,
+        targs: Vec<TyEx>,
+        args: Vec<Arg>,
+    },
     /// `base.name(args)`
-    Method { base: Box<Expr>, name: String, args: Vec<Arg> },
+    Method {
+        base: Box<Expr>,
+        name: String,
+        args: Vec<Arg>,
+    },
     /// `base.name`
     Member(Box<Expr>, String),
     /// `Type<T>.name(args)`, e.g. `Channel<int>.bounded(2)`
-    TypeStatic { ty: TyEx, name: String, args: Vec<Arg> },
+    TypeStatic {
+        ty: TyEx,
+        name: String,
+        args: Vec<Arg>,
+    },
     Tuple(Vec<Expr>),
     List(Vec<Expr>),
-    Lambda { params: Vec<LambdaParam>, ret: Option<TyEx>, body: Vec<Stmt> },
+    Lambda {
+        params: Vec<LambdaParam>,
+        ret: Option<TyEx>,
+        body: Vec<Stmt>,
+    },
     Await(Box<Expr>),
     /// `task { ... }`: start a task, yield its `Future<T>`
     Task(Vec<Stmt>),
@@ -139,7 +159,11 @@ pub enum Ex {
     ReadCh(ReadMode, Box<Expr>),
     /// A checked, atomic, one-winner channel selection from a reusable plan.
     /// The FAIR cursor advances only when a case commits; Nb snapshots cases.
-    PlanSelect { mode: PlanMode, fair: bool, plan: Box<Expr> },
+    PlanSelect {
+        mode: PlanMode,
+        fair: bool,
+        plan: Box<Expr>,
+    },
     Match(Box<Expr>, Vec<Arm>),
     /// `value is T`
     Is(Box<Expr>, TyEx),
@@ -167,30 +191,81 @@ pub enum BindTarget {
 
 #[derive(Clone, Debug)]
 pub enum Stmt {
-    Bind { kind: BindKind, target: BindTarget, ty: Option<TyEx>, init: Expr, pos: Pos },
-    Assign { name: String, value: Expr, pos: Pos },
-    FieldAssign { target: Expr, field: String, value: Expr, pos: Pos },
+    Bind {
+        kind: BindKind,
+        target: BindTarget,
+        ty: Option<TyEx>,
+        init: Expr,
+        pos: Pos,
+    },
+    Assign {
+        name: String,
+        value: Expr,
+        pos: Pos,
+    },
+    FieldAssign {
+        target: Expr,
+        field: String,
+        value: Expr,
+        pos: Pos,
+    },
     Expr(Expr),
     Return(Option<Expr>, Pos),
-    If { arms: Vec<(Expr, Vec<Stmt>)>, otherwise: Option<Vec<Stmt>>, pos: Pos },
-    While { cond: Expr, body: Vec<Stmt>, pos: Pos },
-    Loop { body: Vec<Stmt>, pos: Pos },
-    For { init: Option<Box<Stmt>>, cond: Option<Expr>, update: Option<Box<Stmt>>, body: Vec<Stmt>, pos: Pos },
+    If {
+        arms: Vec<(Expr, Vec<Stmt>)>,
+        otherwise: Option<Vec<Stmt>>,
+        pos: Pos,
+    },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
+    Loop {
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
+    For {
+        init: Option<Box<Stmt>>,
+        cond: Option<Expr>,
+        update: Option<Box<Stmt>>,
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
     /// `for x in source` / `for await x in source`
-    ForIn { name: String, source: Expr, body: Vec<Stmt>, is_await: bool, pos: Pos },
+    ForIn {
+        name: String,
+        source: Expr,
+        body: Vec<Stmt>,
+        is_await: bool,
+        pos: Pos,
+    },
     Break(Pos),
     Continue(Pos),
     Block(Vec<Stmt>),
     Yield(Expr, Pos),
     YieldFrom(Expr, Pos),
     /// `writech ch, value`
-    WriteCh { ch: Expr, value: Expr, pos: Pos },
+    WriteCh {
+        ch: Expr,
+        value: Expr,
+        pos: Pos,
+    },
     /// `do task { ... }`: detached task, no Future
     DoTask(Vec<Stmt>, Pos),
     /// `using resource [as name] { ... }`
-    Using { resource: Expr, name: Option<String>, body: Vec<Stmt>, pos: Pos },
+    Using {
+        resource: Expr,
+        name: Option<String>,
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
     /// `with scope { ... }`
-    With { scope: Expr, body: Vec<Stmt>, pos: Pos },
+    With {
+        scope: Expr,
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
 }
 
 #[derive(Clone, Debug)]
