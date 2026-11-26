@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+define state container Counter as
+  state { let int count = 0; }
+  pub bad(): int { val bool a = state_w(|s| -> { return s.count; }); return 0; }
+end
+pub fnc main(): int { return 0; }
