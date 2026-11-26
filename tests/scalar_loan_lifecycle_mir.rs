@@ -124,3 +124,31 @@ fn actual_unsafe_program_is_rejected_before_diagnostic_manifest() {
     let unsafe_source = include_str!("fixtures/fail/ownership-borrow-nll-live-after-mutation.atto");
     assert_eq!(compile(unsafe_source).unwrap_err().code, "E_BORROW");
 }
+
+#[test]
+fn exclusive_write_witness_cannot_be_discarded_without_matching_set() {
+    let mut p = typed(exclusive_source());
+    let body = &mut p.funcs[0].body;
+    let marker = body.iter().position(|s| matches!(s, TStmt::ScalarLoanUse { write: true, .. })).unwrap();
+    assert!(matches!(&body[marker + 1], TStmt::Set(_, _)));
+    body.remove(marker + 1);
+    let e = audit_scalar_loan_lifecycle(&p).unwrap_err();
+    assert_eq!(e.code, "E_TYPED_MIR_CENSUS_INCOMPLETE");
+}
+
+#[test]
+fn exclusive_write_witness_cannot_authorize_an_unrelated_slot() {
+    let mut p = typed(exclusive_source());
+    let body = &mut p.funcs[0].body;
+    let marker = body.iter().position(|s| matches!(s, TStmt::ScalarLoanUse { write: true, .. })).unwrap();
+    let owner = match &body[marker] {
+        TStmt::ScalarLoanUse { owner_slot, .. } => *owner_slot,
+        _ => unreachable!(),
+    };
+    if let TStmt::Set(slot, _) = &mut body[marker + 1] {
+        *slot = owner + 1;
+    } else {
+        panic!("compiler write witness must precede the owner-slot set");
+    }
+    assert_eq!(audit_scalar_loan_lifecycle(&p).unwrap_err().code, "E_TYPED_MIR_CENSUS_INCOMPLETE");
+}
