@@ -1778,6 +1778,40 @@ impl Parser {
         Ok(params)
     }
 
+    /// Parse a direct factory pipeline input. A parenthesized argument list
+    /// supplies multiple factory arguments in source order; a single scalar
+    /// is one argument. Do not send the closure-producing stage through the
+    /// ordinary named-function-only pipeline parser.
+    fn parse_cleanup_pipeline_args(&mut self) -> R<Vec<Expr>> {
+        if *self.peek() == Tok::LParen {
+            let mut trial = self.clone();
+            if let Ok(args) = trial.parse_args() {
+                if trial.eat(&Tok::PipeGt) {
+                    *self = trial;
+                    return Ok(args);
+                }
+            }
+        }
+        self.enter()?;
+        let saved = self.cond;
+        self.cond = 0;
+        let argument = self.parse_logical_or();
+        self.cond = saved;
+        self.leave();
+        let argument = argument?;
+        self.expect(Tok::PipeGt, "'|>' before the cleanup factory")?;
+        Ok(vec![argument])
+    }
+
+    fn parse_nullary_cleanup_body(&mut self) -> R<Vec<Stmt>> {
+        if !self.eat_word("_") {
+            self.expect(Tok::Pipe, "'_' or '||' for the zero-argument deferred cleanup")?;
+            self.expect(Tok::Pipe, "empty '||' for the deferred cleanup")?;
+        }
+        self.expect(Tok::Arrow, "'->' before the deferred cleanup body")?;
+        self.parse_block()
+    }
+
     /// A deferred cleanup can be a block, a zero-argument lambda, or a
     /// factory with explicit, single-evaluation captures.
     fn parse_defer(&mut self, pos: Pos) -> R<Stmt> {
@@ -1791,19 +1825,22 @@ impl Parser {
             self.expect(Tok::Pipe, "empty '||' lambda after 'defer'")?;
             self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
             (Vec::new(), self.parse_block()?, Vec::new())
-        } else if self.eat(&Tok::LParen) {
+        } else if *self.peek() == Tok::LParen && *self.peek_at(1) == Tok::Pipe {
+            self.advance();
             let params = self.parse_cleanup_factory_params()?;
             self.expect(Tok::Arrow, "'->' after the defer factory parameters")?;
-            if !self.eat_word("_") {
-                return Err(self.expected("'_' for the zero-argument deferred cleanup"));
-            }
-            self.expect(Tok::Arrow, "'->' before the deferred cleanup body")?;
-            let body = self.parse_block()?;
+            let body = self.parse_nullary_cleanup_body()?;
             self.expect(Tok::RParen, "')' after the defer factory")?;
             let args = self.parse_args()?;
             (params, body, args)
         } else {
-            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+            let args = self.parse_cleanup_pipeline_args()?;
+            self.expect(Tok::LParen, "'(' before the deferred cleanup factory")?;
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the defer factory parameters")?;
+            let body = self.parse_nullary_cleanup_body()?;
+            self.expect(Tok::RParen, "')' after the defer factory")?;
+            (params, body, args)
         };
         self.terminator()?;
         Ok(Stmt::Defer { params, body, args, pos })
@@ -1840,16 +1877,25 @@ impl Parser {
     /// \`recover (|T v| -> |err, cursor| -> { ... })(value);\`.
     fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
         self.advance();
-        let (params, err, cursor, body, args) = if self.eat(&Tok::LParen) {
+        let (params, err, cursor, body, args) = if *self.peek() == Tok::LParen && *self.peek_at(1) == Tok::Pipe {
+            self.advance();
             let params = self.parse_cleanup_factory_params()?;
             self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
             let (err, cursor, body) = self.parse_recovery_handler(&params)?;
             self.expect(Tok::RParen, "')' to close the recovery factory")?;
             let args = self.parse_args()?;
             (params, err, cursor, body, args)
-        } else {
+        } else if *self.peek() == Tok::Pipe {
             let (err, cursor, body) = self.parse_recovery_handler(&[])?;
             (Vec::new(), err, cursor, body, Vec::new())
+        } else {
+            let args = self.parse_cleanup_pipeline_args()?;
+            self.expect(Tok::LParen, "'(' before the recovery factory")?;
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
+            let (err, cursor, body) = self.parse_recovery_handler(&params)?;
+            self.expect(Tok::RParen, "')' to close the recovery factory")?;
+            (params, err, cursor, body, args)
         };
         self.terminator()?;
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
