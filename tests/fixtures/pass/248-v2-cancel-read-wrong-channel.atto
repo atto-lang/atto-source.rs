@@ -1,0 +1,21 @@
+// expect-exit: 42
+// expect-stdout: 42
+// A Future from channel A must not be cancelled through channel B.
+pub suspends fnc main(): int {
+  val a = Channel<int>.bounded(0);
+  val b = Channel<int>.bounded(0);
+  val future = nb readch a;
+  if b.cancel_read(future) then return 90; fi
+  val writer = task {
+    a.send(42);
+    return 0;
+  };
+  val value = await future;
+  val number: int = match value over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  await writer;
+  stdio.println(number);
+  return number;
+}

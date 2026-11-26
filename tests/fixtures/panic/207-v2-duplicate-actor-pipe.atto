@@ -1,0 +1,21 @@
+// expect-panic: 10
+// Browser-v2 LEGACY runtime regression: two identical actor pipe attempts
+// must not create a Consumer -> Consumer cycle. This is NOT the final
+// declared-emits / checked PipeHandle contract; see atto-spec #45.
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void { emit(mail.value); }
+end
+
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void { }
+end
+
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val first = producer pipe consumer;
+  // A second same-direction attachment was previously added at the tail,
+  // turning Consumer.next into Consumer and causing unbounded traversal.
+  val duplicate = producer pipe consumer;
+  return 0;
+}

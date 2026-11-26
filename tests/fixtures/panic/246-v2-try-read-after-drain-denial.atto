@@ -1,0 +1,17 @@
+// expect-panic: 9
+// expect-stdout: 42
+// Once the last committed value is read, the next immediate read
+// must report Closed rather than returning the open/empty None.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  ch.send(42);
+  ch.close();
+  val first = try readch ch;
+  val int value = match first over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  stdio.println(value);
+  val second = try readch ch;
+  return value;
+}

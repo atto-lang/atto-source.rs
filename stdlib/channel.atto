@@ -1,0 +1,335 @@
+// ---------------------------------------------------------------- channels
+// Channel (72 bytes): 0 capacity (-1 unbounded), 8 count, 16 head, 24 tail,
+// 32 closed, 40/48 queue of pending `nb readch` futures.
+// 56 unique pipeline producer actor, 64 unique pipeline consumer actor.
+// 72/80 pending write Future queue (each Future retains its copy-safe value).
+// Actor DATA attachment must refuse *both* public registration queues.
+
+// Only the internal unbounded constructor may use capacity -1. Other
+// negative values are invalid; never silently turn them into unbounded queues.
+fnc __chan_new(int cap): int {
+  if cap < -1 then
+    __panic(14);
+  fi
+  val c = __alloc(88);
+  __store(c, 0, cap);
+  return c;
+}
+
+// Public bounded admission must reject -1 as well: it is the separate
+// private unbounded sentinel, not a valid bounded capacity.
+fnc __chan_new_bounded(int cap): int {
+  if cap < 0 then
+    __panic(14);
+  fi
+  return __chan_new(cap);
+}
+
+// 1 when accepted. The private helper is used to admit the oldest
+// registered writer; public senders cannot bypass queued predecessors.
+fnc __chan_offer_ready(int c, int v): int {
+  if __load(c, 32) != 0 then __panic(8); fi
+  if __load(c, 40) != 0 then
+    __fut_done(__q_pop(c + 40), __some(v));
+    return 1;
+  fi
+  val cap = __load(c, 0);
+  if cap >= 0 then
+    if __load(c, 8) >= cap then return 0; fi
+  fi
+  __q_push(c + 16, v);
+  __store(c, 8, __load(c, 8) + 1);
+  __set_rt(4, 1);
+  return 1;
+}
+
+// Drain registered writers in FIFO order, never overtaking a queued
+// writer with a new public send. No suspension occurs during commit.
+fnc __chan_drain_writers(int c): void {
+  if __load(c, 32) != 0 then return; fi
+  while __load(c, 72) != 0 do
+    val f = __load(__load(c, 72), 0);
+    if __load(f, 0) != 0 then __panic(15); fi
+    if __chan_offer_ready(c, __load(f, 8)) == 0 then return; fi
+    val admitted = __q_pop(c + 72);
+    __fut_done(admitted, 0);
+  done
+}
+
+fnc __chan_offer(int c, int v): int {
+  if __load(c, 32) != 0 then __panic(8); fi
+  if __load(c, 72) != 0 then return 0; fi
+  return __chan_offer_ready(c, v);
+}
+
+// Pending write futures retain their value until admission. A completed
+// write Future<Option<T>> resolves to None; a cancellation/close permits
+// exactly one recovery via cancel_write(). For now only int/bool payloads
+// may enter this API: generic affine ownership must be proven separately.
+fnc __chan_send_pending(int c, int v): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  val f = __fut_new();
+  __store(f, 8, v);
+  if __load(c, 32) != 0 then
+    __store(f, 0, 3);
+    __q_push(c + 72, f);
+    __set_rt(4, 1);
+    return f;
+  fi
+  if __load(c, 72) == 0 then
+    if __chan_offer_ready(c, v) != 0 then
+      __fut_done(f, 0);
+      return f;
+    fi
+  fi
+  __q_push(c + 72, f);
+  return f;
+}
+
+// Cancel a still-pending write, or reclaim a closed, rejected write.
+// A matched Future belongs to this queue; a different channel cannot
+// release its value. A second recovery returns None, never the same T.
+fnc __chan_cancel_write(int c, int f): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  let prev = 0;
+  let node = __load(c, 72);
+  while node != 0 do
+    val next = __load(node, 8);
+    if __load(node, 0) == f then
+      val state = __load(f, 0);
+      if state != 0 then
+        if state != 3 then __panic(15); fi
+      fi
+      val payload = __load(f, 8);
+      if prev == 0 then
+        __store(c, 72, next);
+      else
+        __store(prev, 8, next);
+      fi
+      if __load(c, 80) == node then
+        __store(c, 80, prev);
+      fi
+      __store(node, 8, 0);
+      __store(f, 8, 0);
+      if state == 3 then
+        __store(f, 0, 4);
+      else
+        __store(f, 0, 2);
+      fi
+      __set_rt(4, 1);
+      return __some(payload);
+    fi
+    prev = node;
+    node = next;
+  done
+  return 0;
+}
+
+suspends fnc __chan_send(int c, int v): void {
+  // Recheck on EVERY retry. A caller may have suspended on backpressure
+  // while a different task atomically admitted the channel to a graph.
+  loop do
+    if __load(c, 56) != 0 then __panic(10); fi
+    if __load(c, 64) != 0 then __panic(10); fi
+    if __chan_offer(c, v) != 0 then return; fi
+    __suspend();
+  done
+}
+
+// Compiler-runtime-only DATA producer path; never exposed to guest source.
+// Validate the owning actor, not merely the channel pointer.
+suspends fnc __chan_send_pipe(int actor, int c, int v): void {
+  loop do
+    if __load(c, 56) != actor then __panic(10); fi
+    if __load(actor, 8) != c then __panic(10); fi
+    if __load(actor, 24) != 1 then __panic(10); fi
+    if __chan_offer(c, v) != 0 then return; fi
+    __suspend();
+  done
+}
+
+fnc __chan_take(int c): int {
+  __store(c, 8, __load(c, 8) - 1);
+  val value = __q_pop(c + 16);
+  __chan_drain_writers(c);
+  __set_rt(4, 1);
+  return value;
+}
+
+suspends fnc __chan_recv(int c): int {
+  loop do
+    // A blocked public reader must not consume DATA after pipeline
+    // admission merely because it started before the ownership change.
+    if __load(c, 56) != 0 then __panic(10); fi
+    if __load(c, 64) != 0 then __panic(10); fi
+    if __load(c, 8) > 0 then
+      return __chan_take(c);
+    fi
+    if __load(c, 32) != 0 then
+      __panic(9);
+    fi
+    // A capacity-zero channel cannot buffer. A polling reader never
+    // advertises a rendezvous partner to __chan_offer, so both tasks would
+    // suspend forever. Register exactly one pending read, then await its
+    // completion. A close resolves that future as None.
+    if __load(c, 0) == 0 then
+      val pending = __chan_nb(c);
+      val ready = await __await(pending);
+      // A DATA graph must never turn an old suspended public read into a
+      // backdoor after claiming this channel.
+      if __load(c, 56) != 0 then __panic(10); fi
+      if __load(c, 64) != 0 then __panic(10); fi
+      if ready == 0 then __panic(9); fi
+      return __load(ready, 0);
+    fi
+    __suspend();
+  done
+}
+
+// Public Channel<T> iterator read. A caller may have suspended before
+// the channel's owner changed; recheck BOTH DATA ports on every retry.
+// Only internal actor/bridge code may use __chan_recv_opt below.
+suspends fnc __chan_recv_user_opt(int c): int {
+  loop do
+    if __load(c, 56) != 0 then __panic(10); fi
+    if __load(c, 64) != 0 then __panic(10); fi
+    if __load(c, 8) > 0 then
+      return __some(__chan_take(c));
+    fi
+    if __load(c, 32) != 0 then
+      return 0;
+    fi
+    // for-await readers on rendezvous channels also need to register,
+    // rather than spin without a partner for a suspended producer.
+    if __load(c, 0) == 0 then
+      val pending = __chan_nb(c);
+      val ready = await __await(pending);
+      if __load(c, 56) != 0 then __panic(10); fi
+      if __load(c, 64) != 0 then __panic(10); fi
+      return ready;
+    fi
+    __suspend();
+  done
+}
+
+// Some(item), or None once the channel is closed and drained.
+suspends fnc __chan_recv_opt(int c): int {
+  loop do
+    if __load(c, 8) > 0 then
+      return __some(__chan_take(c));
+    fi
+    if __load(c, 32) != 0 then
+      return 0;
+    fi
+    __suspend();
+  done
+}
+
+fnc __chan_try(int c): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  if __load(c, 8) > 0 then
+    return __some(__chan_take(c));
+  fi
+  // A non-registering rendezvous read can commit the oldest pending
+  // writer directly without creating a reader Future or buffering DATA.
+  if __load(c, 32) == 0 then
+    if __load(c, 0) == 0 then
+      if __load(c, 72) != 0 then
+        val writer = __q_pop(c + 72);
+        val value = __load(writer, 8);
+        __fut_done(writer, 0);
+        return __some(value);
+      fi
+    fi
+  fi
+  // None means EMPTY and still open, not terminal EOF. Otherwise a
+  // caller cannot distinguish an unavailable message from a drained,
+  // closed capability. Buffered items must be delivered before this trap.
+  if __load(c, 32) != 0 then __panic(9); fi
+  return 0;
+}
+
+fnc __chan_nb(int c): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  val f = __fut_new();
+  if __load(c, 8) > 0 then
+    __fut_done(f, __some(__chan_take(c)));
+    return f;
+  fi
+  if __load(c, 32) != 0 then
+    __fut_done(f, 0);
+    return f;
+  fi
+  __q_push(c + 40, f);
+  __chan_drain_writers(c);
+  return f;
+}
+
+// Explicit cancellation of a registered *public* nb readch Future.
+// This is a single-tenant cooperative scheduler: there is no yield between
+// the membership check, queue unlink, and terminal state publication.
+// Return 1 only when this exact Future was still queued on this channel.
+// A future already handed a value or settled on close returns 0 unchanged.
+// We never cancel a reader on another channel or an actor DATA channel.
+// Future state 2 means CANCELLED; awaiting it must trap, not fake EOF.
+fnc __chan_cancel_read(int c, int f): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  let prev = 0;
+  let node = __load(c, 40);
+  while node != 0 do
+    val next = __load(node, 8);
+    if __load(node, 0) == f then
+      // The registration must still be pending. A stale or already
+      // completed Future may not be cancelled a second time.
+      if __load(f, 0) != 0 then __panic(15); fi
+      if prev == 0 then
+        __store(c, 40, next);
+      else
+        __store(prev, 8, next);
+      fi
+      if __load(c, 48) == node then
+        __store(c, 48, prev);
+      fi
+      __store(node, 8, 0);
+      __store(f, 0, 2);
+      __set_rt(4, 1);
+      return 1;
+    fi
+    prev = node;
+    node = next;
+  done
+  return 0;
+}
+
+// Internal EOF propagation is allowed for the current graph owner only.
+fnc __chan_close_internal(int c): void {
+  if __load(c, 32) != 0 then
+    return;
+  fi
+  __store(c, 32, 1);
+  while __load(c, 40) != 0 do
+    __fut_done(__q_pop(c + 40), 0);
+  done
+  // Pending write Futures must retain their rejected value after close.
+  // State 3 is CLOSED: awaiting fails with panic 8; cancel_write may
+  // still recover its payload exactly once even after idempotent close.
+  let node = __load(c, 72);
+  while node != 0 do
+    val f = __load(node, 0);
+    if __load(f, 0) != 0 then __panic(15); fi
+    __store(f, 0, 3);
+    node = __load(node, 8);
+  done
+  __set_rt(4, 1);
+}
+
+fnc __chan_close(int c): void {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  __chan_close_internal(c);
+}

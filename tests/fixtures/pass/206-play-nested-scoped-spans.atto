@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout: both spans alive
+import span from pkg "core.telemetry";
+import sleep from pkg "std.time";
+
+pub suspends fnc main(): int {
+  using span("outer") as outer {
+    with timeout(3000) {
+      using span("inner") as inner {
+        with timeout(2000) {
+          await sleep(1);
+          inner.set_attribute("stage", "resumed");
+          outer.set_attribute("stage", "resumed");
+          stdio.println("both spans alive");
+        }
+      }
+    }
+  }
+  return 0;
+}

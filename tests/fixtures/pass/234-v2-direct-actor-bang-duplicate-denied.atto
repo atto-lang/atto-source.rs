@@ -1,0 +1,31 @@
+// A duplicate forward/reverse alias must return Err, never connect twice.
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void { emit(mail.value); }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void { stdio.println(mail.value); }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val Result<PipeHandle, PipeSetupError> original = producer pipe! consumer;
+  val int first_ok = match original over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if first_ok != 1 then return 90; fi
+  val Result<PipeHandle, PipeSetupError> duplicate = consumer rpipe! producer;
+  val int was_rejected = match duplicate over
+    on Ok(_) -> 0,
+    on Err(_) -> 1,
+  end;
+  if was_rejected != 1 then return 91; fi
+  producer.send(40);
+  producer.send(2);
+  stop! producer;
+  await producer.get_done();
+  await consumer.get_done();
+  return 42;
+}

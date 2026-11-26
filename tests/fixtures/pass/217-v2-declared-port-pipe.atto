@@ -1,0 +1,28 @@
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+// Canonical declared actor ports, compiled with the experimental v2 Rust guest.
+// This subset does not yet implement a checked PipeHandle or cross-TenantVM routing.
+define actor Producer receives int emits int as
+  susp receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+
+define actor Consumer receives int as
+  susp receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+
+pub susp fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val ch = Channel<int>.bounded(1);
+  val graph = producer pipe ch pipe consumer;
+  producer.send(40);
+  producer.send(2);
+  producer.stop();
+  await producer.get_done();
+  await consumer.get_done();
+  return 42;
+}

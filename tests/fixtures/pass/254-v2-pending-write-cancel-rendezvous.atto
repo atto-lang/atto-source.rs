@@ -1,0 +1,21 @@
+// expect-exit: 42
+// expect-stdout: 42
+// No reader accepted the payload: cancellation recovers it exactly once.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val ticket = ch.send_pending(42);
+  val rejected = ch.cancel_write(ticket);
+  val second = ch.cancel_write(ticket);
+  val int once = match rejected over
+    on Some(v) -> v,
+    on None -> 0,
+  end;
+  val int again = match second over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if again != 1 then return 91; fi
+  ch.close();
+  stdio.println(once);
+  return once;
+}

@@ -1,0 +1,18 @@
+// expect-exit: 60
+// expect-stdout: 60
+// Playground showcase: asynchronously yielded values cross task boundaries.
+suspends fnc measurements(): AsyncGenerator<int> {
+  yield 10;
+  await task { return 0; };
+  yield 20;
+  yield 30;
+}
+
+pub suspends fnc main(): int {
+  let total = 0;
+  for await value in measurements() do
+    total += value;
+  done
+  stdio.println(total);
+  return total;
+}

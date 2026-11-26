@@ -1,0 +1,14 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Playground showcase: quota-limited unbounded channel; buffered receives.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.unbounded();
+  writech ch, 20;
+  writech ch, 22;
+  val a = readch ch;
+  val b = readch ch;
+  ch.close();
+  val answer = a + b;
+  stdio.println(answer);
+  return answer;
+}

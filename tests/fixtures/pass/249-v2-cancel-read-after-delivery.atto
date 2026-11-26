@@ -1,0 +1,20 @@
+// expect-exit: 42
+// expect-stdout: 42
+// A committed send makes the pending Future terminal and no longer cancellable.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val future = nb readch ch;
+  val writer = task {
+    ch.send(42);
+    return 0;
+  };
+  val value = await future;
+  if ch.cancel_read(future) then return 90; fi
+  val number: int = match value over
+    on Some(n) -> n,
+    on None -> 0,
+  end;
+  await writer;
+  stdio.println(number);
+  return number;
+}

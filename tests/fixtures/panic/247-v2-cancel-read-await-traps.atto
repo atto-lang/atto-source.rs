@@ -1,0 +1,10 @@
+// expect-panic: 15
+// Explicit cancellation does not masquerade as a closed-channel EOF.
+// Awaiting the revoked Future traps with dedicated cancellation code 15.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val pending = nb readch ch;
+  if !ch.cancel_read(pending) then return 90; fi
+  val result = await pending;
+  return 0;
+}

@@ -1,0 +1,9 @@
+// expect-error: E_TYPE
+// A bool write future must not reclaim an int channel's payload.
+pub suspends fnc main(): int {
+  val a = Channel<int>.bounded(0);
+  val b = Channel<bool>.bounded(0);
+  val ticket = b.send_pending(true);
+  val recovered = a.cancel_write(ticket);
+  return 0;
+}

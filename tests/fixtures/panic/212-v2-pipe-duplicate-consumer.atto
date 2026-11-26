@@ -1,0 +1,17 @@
+// expect-panic: 10
+// No implicit fan-in: the second independent bounded channel cannot acquire
+// an already owned Consumer incoming DATA port.
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+
+pub suspends fnc main(): int {
+  val consumer = spawn Consumer();
+  val first = Channel<int>.bounded(1);
+  val second = Channel<int>.bounded(1);
+  val a = first pipe consumer;
+  val b = second pipe consumer;
+  return 0;
+}

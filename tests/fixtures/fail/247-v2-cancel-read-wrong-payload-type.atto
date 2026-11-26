@@ -1,0 +1,9 @@
+// expect-error: E_TYPE
+// A Future<Option<bool>> cannot cancel a Channel<int> reader.
+pub suspends fnc main(): int {
+  val a = Channel<int>.bounded(0);
+  val b = Channel<bool>.bounded(0);
+  val wrong = nb readch b;
+  a.cancel_read(wrong);
+  return 0;
+}

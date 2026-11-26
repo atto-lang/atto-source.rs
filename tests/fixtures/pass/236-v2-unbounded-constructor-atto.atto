@@ -1,0 +1,12 @@
+// expect-exit: 42
+// expect-stdout: 42
+// The explicit unbounded API retains its historical guest-only sentinel.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.unbounded();
+  ch.send(21);
+  ch.send(21);
+  ch.close();
+  val total = (await ch.receive()) + (await ch.receive());
+  stdio.println(total);
+  return total;
+}

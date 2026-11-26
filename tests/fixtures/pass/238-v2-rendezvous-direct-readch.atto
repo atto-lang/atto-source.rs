@@ -1,0 +1,19 @@
+// expect-exit: 42
+// expect-stdout: 42
+// A zero-capacity channel needs a registered reader to complete writech.
+// The producer cannot buffer the value or poll its way through capacity zero.
+suspends fnc produce(Channel<int> ch): void {
+  writech ch, 42;
+  ch.close();
+}
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val producer = task {
+    await produce(ch);
+    return 0;
+  };
+  val value = readch ch;
+  await producer;
+  stdio.println(value);
+  return value;
+}

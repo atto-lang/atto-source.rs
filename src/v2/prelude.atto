@@ -1,0 +1,740 @@
+// AttoLang guest runtime of the v2 pipeline, compiled into each module that
+// needs it (only the functions a program reaches are emitted).
+//
+// Everything here is ordinary guest code running in the module's own linear
+// memory: there are no extra host imports. Names starting with `__` are
+// reserved for this file. Values are raw 64-bit words; `__load`/`__store`
+// address the bump heap.
+//
+// Runtime root slots (`__rt`): 1 current task, 2 first task, 3 last task,
+// 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes.
+//
+// Task record (80 bytes): 0 done, 8 value, 16 status (0 new, 1 suspended,
+// 2 finished), 24 entry closure, 32 frame-stack base, 40 saved frame-stack
+// top, 48 next task, 56 wake time, 64 deadline, 72 active span guard stack. A task is also a Future:
+// the first two words are the Future layout.
+
+fnc __box(int tag, int v): int {
+  val b = __alloc(16);
+  __store(b, 0, tag);
+  __store(b, 8, v);
+  return b;
+}
+
+fnc __some(int v): int {
+  val b = __alloc(8);
+  __store(b, 0, v);
+  return b;
+}
+
+fnc __str_eq(int a, int b): int {
+  val n = __and(a, 4294967295);
+  if n != __and(b, 4294967295) then
+    return 0;
+  fi
+  val pa = __shr(a, 32);
+  val pb = __shr(b, 32);
+  let i = 0;
+  while i < n do
+    if __load8(pa + i) != __load8(pb + i) then
+      return 0;
+    fi
+    i = i + 1;
+  done
+  return 1;
+}
+
+// kind 0: all true, 1: any true, 2: odd number true
+fnc __gate(int list, int kind): int {
+  let acc = 0;
+  if kind == 0 then
+    acc = 1;
+  fi
+  val n = __load(list, 0);
+  let i = 0;
+  while i < n do
+    val v = __load(list, 8 + 8 * i);
+    if kind == 0 then
+      if v == 0 then acc = 0; fi
+    fi
+    if kind == 1 then
+      if v != 0 then acc = 1; fi
+    fi
+    if kind == 2 then
+      if v != 0 then acc = 1 - acc; fi
+    fi
+    i = i + 1;
+  done
+  return acc;
+}
+
+// ------------------------------------------------------------------ queues
+// A queue is a [head, tail] pair of singly linked 16-byte nodes.
+
+fnc __q_push(int q, int v): void {
+  val n = __alloc(16);
+  __store(n, 0, v);
+  if __load(q, 0) == 0 then
+    __store(q, 0, n);
+  else
+    __store(__load(q, 8), 8, n);
+  fi
+  __store(q, 8, n);
+}
+
+fnc __q_pop(int q): int {
+  val n = __load(q, 0);
+  __store(q, 0, __load(n, 8));
+  return __load(n, 0);
+}
+
+// ----------------------------------------------------------------- futures
+
+fnc __fut_new(): int {
+  return __alloc(16);
+}
+
+fnc __fut_done(int f, int v): void {
+  __store(f, 8, v);
+  __store(f, 0, 1);
+  __set_rt(4, 1);
+}
+
+suspends fnc __await(int f): int {
+  while __load(f, 0) == 0 do
+    __suspend();
+  done
+  // A cancelled pending channel read is not the same as a normal
+  // completed Future<Option<T>> whose value is None on channel EOF.
+  // State 2 is exclusively the cancelled terminal state. Never expose
+  // cancelled registrations as false EOF or a stale delivered payload.
+  if __load(f, 0) == 2 then __panic(15); fi
+  // Pending write Futures retain their payload after close (state 3).
+  // The consumer may recover it exactly once via cancel_write().
+  if __load(f, 0) == 3 then __panic(8); fi
+  if __load(f, 0) == 4 then __panic(15); fi
+  __set_rt(4, 1);
+  return __load(f, 8);
+}
+
+// ------------------------------------------------------------------- tasks
+
+fnc __task_spawn(int clo): int {
+  val t = __alloc(80);
+  __store(t, 24, clo);
+  __store(t, 32, __alloc(4096));
+  if __rt(2) == 0 then
+    __set_rt(2, t);
+  else
+    __store(__rt(3), 48, t);
+  fi
+  __set_rt(3, t);
+  __set_rt(4, 1);
+  return t;
+}
+
+// Run one task until it finishes or suspends.
+fnc __resume(int t): void {
+  __set_rt(1, t);
+  val base = __load(t, 32);
+  __set_fend(base + 4096);
+  if __load(t, 16) == 0 then
+    __set_state(0);
+    __set_fsp(base);
+  else
+    __set_state(2);
+    __set_fsp(__load(t, 40));
+  fi
+  val r = __call0(__load(t, 24));
+  if __state() == 1 then
+    __set_state(0);
+    __store(t, 40, __fsp());
+    __store(t, 16, 1);
+  else
+    __store(t, 16, 2);
+    __store(t, 8, r);
+    __store(t, 0, 1);
+    __set_rt(4, 1);
+  fi
+}
+
+// Cooperative round-robin scheduler. Each round resumes every unfinished,
+// non-sleeping task once. When a whole round changes nothing, the virtual
+// clock jumps to the earliest sleeper; with no sleeper the program is
+// quiescent. A blocked main task at quiescence is a deadlock (panic 6); a
+// task still blocked when its `with timeout` deadline passes is panic 7.
+fnc __sched(int main): int {
+  loop do
+    __set_rt(4, 0);
+    let t = __rt(2);
+    while t != 0 do
+      if __load(t, 16) != 2 then
+        if __load(t, 56) <= __rt(5) then
+          __resume(t);
+        fi
+      fi
+      t = __load(t, 48);
+    done
+    if __rt(4) == 0 then
+      let wake = 0;
+      let limit = 0;
+      t = __rt(2);
+      while t != 0 do
+        if __load(t, 16) != 2 then
+          val w = __load(t, 56);
+          val d = __load(t, 64);
+          if w > __rt(5) then
+            if wake == 0 then
+              wake = w;
+            fi
+            if w < wake then
+              wake = w;
+            fi
+          fi
+          if d != 0 then
+            // blocked without a wake time, or sleeping past its deadline
+            if w <= __rt(5) then
+              if limit == 0 then limit = d; fi
+              if d < limit then limit = d; fi
+            fi
+            if w > d then
+              if limit == 0 then limit = d; fi
+              if d < limit then limit = d; fi
+            fi
+          fi
+        fi
+        t = __load(t, 48);
+      done
+      if limit != 0 then
+        if wake == 0 then
+          __span_cancel_all();
+          __panic(7);
+        fi
+        if limit <= wake then
+          __span_cancel_all();
+          __panic(7);
+        fi
+      fi
+      if wake == 0 then
+        break;
+      fi
+      __set_rt(5, wake);
+    fi
+  done
+  if __load(main, 0) == 0 then
+    __panic(6);
+  fi
+  return __load(main, 8);
+}
+
+fnc __main(int clo): int {
+  return __sched(__task_spawn(clo));
+}
+
+suspends fnc __sleep(int ms): void {
+  if ms < 0 then
+    __span_cancel_all();
+    __panic(7);
+  fi
+  __store(__rt(1), 56, __rt(5) + ms);
+  __suspend();
+  __store(__rt(1), 56, 0);
+  __set_rt(4, 1);
+}
+
+fnc __deadline_push(int ms): int {
+  // 0 is the unset deadline sentinel. Reject a zero or negative scope
+  // before changing task state, closing any previously acquired guards.
+  if ms <= 0 then
+    __span_cancel_all();
+    __panic(7);
+  fi
+  val t = __rt(1);
+  val old = __load(t, 64);
+  let limit = __rt(5) + ms;
+  if old != 0 then
+    if old < limit then
+      limit = old;
+    fi
+  fi
+  __store(t, 64, limit);
+  return old;
+}
+
+fnc __deadline_pop(int old): void {
+  __store(__rt(1), 64, old);
+}
+
+// @atto-stdlib-channel-source
+
+// ------------------------------------------------------------------ actors
+// Actor instance (56-byte prefix): 0 mailbox channel, 8 downstream target,
+// 16 next sequence, 24 downstream kind (0 actor, 1 bounded channel),
+// 32/40 completion Future flag/value, 48 unique incoming pipe owner,
+// 56/64 independent READY Future flag/value, then the actor's state fields.
+// READY is published only after all fields, mailbox, and the cooperative
+// actor receive task have been initialized and registered.
+// This is a SINGLE guest-memory domain; no cross-TenantVM bridge exists.
+
+fnc __mail_send(int a, int v): void {
+  // Legacy synchronous mailbox admission: bounded, no silent loss.
+  // Full/closed mailbox traps; checked Result and async actor admission are
+  // still required before this can be called a production send contract.
+  if __chan_offer(__load(a, 0), v) == 0 then
+    __panic(8);
+  fi
+}
+
+suspends fnc __mail_send_wait(int a, int v): void {
+  await __chan_send(__load(a, 0), v);
+}
+
+// Provisional guest actor-only chain; not a structured PipeHandle.
+// Check both chains BEFORE publishing a link. Reattaching a node (including
+// spelling the same edge with 'pipe' and 'rpipe') must not make an actor
+// point to itself or another member of its own pipeline. The browser
+// prototype has a strict 16-actor budget; production needs checked Result
+// admission, bounded cooperative mailboxes and tenant capability fencing.
+fnc __actor_link(int a, int b): int {
+  if a == 0 then __panic(10); fi
+  if b == 0 then __panic(10); fi
+  if __load(b, 48) != 0 then __panic(10); fi
+  // An actor that has stopped/closed its mailbox cannot become a DATA port.
+  // Check before any link publication, including the candidate downstream.
+  if __load(__load(b, 0), 32) != 0 then __panic(10); fi
+  let t = a;
+  let count = 0;
+  loop do
+    if count >= 16 then __panic(10); fi
+    if __load(t, 24) != 0 then __panic(10); fi
+    if __load(__load(t, 0), 32) != 0 then __panic(10); fi
+    let q = b;
+    let tail_size = 0;
+    loop do
+      if tail_size >= 16 then __panic(10); fi
+      if __load(q, 24) != 0 then __panic(10); fi
+      if __load(__load(q, 0), 32) != 0 then __panic(10); fi
+      if t == q then __panic(10); fi
+      tail_size = tail_size + 1;
+      val next_b = __load(q, 8);
+      if next_b == 0 then break; fi
+      q = next_b;
+    done
+    count = count + 1;
+    val next_a = __load(t, 8);
+    if next_a == 0 then
+      if count + tail_size > 16 then __panic(10); fi
+      // Single publication point; all validation above has succeeded.
+      __store(b, 48, t);
+      __store(t, 8, b);
+      return a;
+    fi
+    t = next_a;
+  done
+  return a;
+}
+
+// Checked two-actor DATA connection: only a fresh unicast pair of declared
+// actor ports may connect in this guest-memory prototype. No queue, port or
+// graph edge is mutated on Err. Handle + Result allocation happen BEFORE the
+// single publication of both endpoint owner slots. There is no scheduler
+// yield between preflight and commitment; bridge delivery uses the actor's
+// existing cooperative bounded mailbox and never a host blocking thread.
+// This is NOT an inter-TenantVM channel, nor a production capability token.
+// Err: 1 invalid alias, 3 closed, 4 source occupied, 5 sink occupied,
+// 7 sink already has output.
+fnc __actor_link_try(int src, int dst): int {
+  if src == 0 then return __box(1, 1); fi
+  if dst == 0 then return __box(1, 1); fi
+  if src == dst then return __box(1, 1); fi
+  if __load(__load(src, 0), 32) != 0 then return __box(1, 3); fi
+  if __load(__load(dst, 0), 32) != 0 then return __box(1, 3); fi
+  if __load(src, 8) != 0 then return __box(1, 4); fi
+  if __load(src, 48) != 0 then return __box(1, 4); fi
+  if __load(dst, 48) != 0 then return __box(1, 5); fi
+  if __load(dst, 8) != 0 then return __box(1, 7); fi
+  val handle = __alloc(32);
+  __store(handle, 0, src);
+  __store(handle, 8, 0); // no middle channel
+  __store(handle, 16, dst);
+  __store(handle, 24, 0); // no bridge task needed
+  val accepted = __box(0, handle);
+  // All potentially failing operations are complete. Publish in this
+  // uninterrupted guest turn only; no provisional edge on Err.
+  __store(dst, 48, src);
+  __store(src, 8, dst);
+  return accepted;
+}
+
+// Atomic preflight for the canonical 3-stage actor-Channel-actor DATA graph.
+// The compiler evaluates each lexical stage once and supplies source, channel,
+// sink in DATA order for both pipe and rpipe. No actor/channel route is
+// published until ALL stages have passed admission checks. This is still a
+// provisional single-guest-memory trap path; checked PipeHandle setup,
+// cancellation leases, TenantVM generations and true rendezvous come later.
+// Experimental single-domain checked setup. Tags use the ordinary Result
+// layout: tag 0 -> owned PipeHandle, tag 1 -> PipeSetupError code.
+// This is *not* yet a production lifecycle-capability implementation: no
+// task-cancellation guarantees or TenantVM generations exist in v2.
+// Error codes: 1 invalid/null alias, 2 invalid capacity, 3 closed port,
+// 4 source occupied, 5 sink occupied, 6 channel occupied, 7 sink has output,
+// 8 pending queued DATA or waiting readers (channel not quiescent).
+// All failure branches are BEFORE any DATA edge publication or bridge spawn.
+fnc __actor_channel_actor_try(int src, int ch, int dst): int {
+  if src == 0 then return __box(1, 1); fi
+  if ch == 0 then return __box(1, 1); fi
+  if dst == 0 then return __box(1, 1); fi
+  if src == dst then return __box(1, 1); fi
+  if src == ch then return __box(1, 1); fi
+  if ch == dst then return __box(1, 1); fi
+  val cap = __load(ch, 0);
+  if cap < 1 then return __box(1, 2); fi
+  if cap > 16 then return __box(1, 2); fi
+  if __load(ch, 32) != 0 then return __box(1, 3); fi
+  if __load(__load(src, 0), 32) != 0 then return __box(1, 3); fi
+  if __load(__load(dst, 0), 32) != 0 then return __box(1, 3); fi
+  if __load(src, 8) != 0 then return __box(1, 4); fi
+  if __load(dst, 48) != 0 then return __box(1, 5); fi
+  if __load(ch, 56) != 0 then return __box(1, 6); fi
+  if __load(ch, 64) != 0 then return __box(1, 6); fi
+  if __load(dst, 8) != 0 then return __box(1, 7); fi
+  // A channel with queued pre-attachment DATA or pending nb-read futures
+  // has already admitted other parties. Do not silently redirect existing
+  // messages or race waiting readers into a newly owned pipeline. Neither
+  // condition claims the producer/channel/consumer on rejection.
+  if __load(ch, 8) != 0 then return __box(1, 8); fi
+  if __load(ch, 40) != 0 then return __box(1, 8); fi
+  // Registered writers also own pending public DATA; no actor graph may
+  // race an outstanding value or silently steal its recovery right.
+  if __load(ch, 72) != 0 then return __box(1, 8); fi
+
+  // Reserve owner state and construct a non-forgeable handle before the
+  // scheduler is permitted to run the bridge. Each handle is a guest
+  // capability created only by successful typed compiler lowering.
+  // Layout (32 bytes): 0 producer actor, 8 bounded channel,
+  // 16 consumer actor, 24 bridge task (not yet cancellable).
+  val handle = __alloc(32);
+  __store(handle, 0, src);
+  __store(handle, 8, ch);
+  __store(handle, 16, dst);
+  // Allocate the Result box and queue the bridge *before* publication.
+  // No spawned task can execute until this cooperative continuation yields.
+  // Hence resource/allocation failure cannot leave a partially published
+  // graph. No allocation or suspending instruction follows publication.
+  val accepted = __box(0, handle);
+  val bridge = task {
+    loop do
+      val item = await __chan_recv_opt(ch);
+      if item == 0 then
+        __actor_stop(dst);
+        return 0;
+      fi
+      await __mail_send_wait(dst, __load(item, 0));
+    done
+  };
+  __store(handle, 24, bridge);
+  // Single commitment point for all three explicitly typed DATA endpoints.
+  __store(ch, 56, src);
+  __store(src, 8, ch);
+  __store(src, 24, 1);
+  __store(ch, 64, dst);
+  __store(dst, 48, ch);
+  return accepted;
+}
+
+// Preserve the legacy unannotated pipe-expression behavior for existing
+// fixtures. It unwraps the SAME checked admission, trapping only at the
+// compatibility boundary. Typed Result<PipeHandle,PipeSetupError> callers
+// receive errors without guest panics or partially published graphs.
+fnc __actor_channel_actor_atomic(int src, int ch, int dst): int {
+  val r = __actor_channel_actor_try(src, ch, dst);
+  if __load(r, 0) != 0 then __panic(10); fi
+  return __load(__load(r, 8), 8);
+}
+
+// Checked single-producer/single-consumer attachment for a *bounded* channel.
+// No suspension takes place between validation and publication. Each channel
+// belongs to one actor pipe; ambient userland channel sharing is NOT a bridge.
+fnc __actor_pipe_channel(int a, int ch): int {
+  val cap = __load(ch, 0);
+  if cap < 1 then __panic(10); fi
+  if cap > 16 then __panic(10); fi
+  if __load(ch, 32) != 0 then __panic(10); fi
+  if __load(__load(a, 0), 32) != 0 then __panic(10); fi
+  if __load(a, 8) != 0 then __panic(10); fi
+  if __load(ch, 56) != 0 then __panic(10); fi
+  // Legacy two-part setup is still an ownership admission. Never claim a
+  // channel with preexisting DATA or a waiting public nb/readch receiver.
+  // The checked three-part PipeHandle path enforces the same condition.
+  if __load(ch, 8) != 0 then __panic(10); fi
+  if __load(ch, 40) != 0 then __panic(10); fi
+  if __load(ch, 72) != 0 then __panic(10); fi
+  __store(ch, 56, a);
+  __store(a, 8, ch);
+  __store(a, 24, 1);
+  return ch;
+}
+
+fnc __channel_pipe_actor(int ch, int a): int {
+  val cap = __load(ch, 0);
+  if cap < 1 then __panic(10); fi
+  if cap > 16 then __panic(10); fi
+  if __load(ch, 32) != 0 then __panic(10); fi
+  if __load(__load(a, 0), 32) != 0 then __panic(10); fi
+  if __load(ch, 64) != 0 then __panic(10); fi
+  if __load(a, 48) != 0 then __panic(10); fi
+  // Attaching an actor sink must not redirect prior public writes or a
+  // pending public nb reader into the DATA graph.
+  if __load(ch, 8) != 0 then __panic(10); fi
+  if __load(ch, 40) != 0 then __panic(10); fi
+  if __load(ch, 72) != 0 then __panic(10); fi
+  __store(ch, 64, a);
+  __store(a, 48, ch);
+  // The bridge is a guest task and borrows no host thread. It suspends on
+  // both bounded source and mailbox pressure, and drains through EOF.
+  val bridge = task {
+    loop do
+      val item = await __chan_recv_opt(ch);
+      if item == 0 then
+        __actor_stop(a);
+        return 0;
+      fi
+      await __mail_send_wait(a, __load(item, 0));
+    done
+  };
+  return ch;
+}
+
+suspends fnc __actor_emit(int a, int v): void {
+  val n = __load(a, 8);
+  if n == 0 then __panic(10); fi
+  if __load(a, 24) == 1 then
+    await __chan_send_pipe(a, n, v);
+  else
+    await __mail_send_wait(n, v);
+  fi
+}
+
+fnc __actor_stop(int a): void {
+  __chan_close_internal(__load(a, 0));
+}
+
+fnc __actor_ready(int a): int {
+  // The same independent Future is returned on every observation. A plain
+  // spawn registers the actor before returning; neither this observer nor
+  // terminal READY drains DATA or implies DONE.
+  return a + 56;
+}
+
+fnc __actor_done(int a): int {
+  return a + 32;
+}
+
+fnc __actor_exit(int a): void {
+  // After the actor has drained all admitted messages, propagate EOF. The
+  // pipeline bridge then stops its consumer after forwarding every item.
+  val n = __load(a, 8);
+  if n != 0 then
+    if __load(a, 24) == 1 then
+      __chan_close_internal(n);
+    else
+      __actor_stop(n);
+    fi
+  fi
+  __fut_done(a + 32, 0);
+}
+
+// --------------------------------------------------------------- telemetry
+// Span (24 bytes): 0 name, 8 attribute count, 16 closed.
+// Guard (24 bytes): 0 span handle (cleared on release), 8 next, 16 owning task.
+// Root slots 7 and 8 are observable via the guest's exported linear memory,
+// allowing an actual browser test to assert cleanup counts, including traps.
+
+fnc __span_new(int name): int {
+  val s = __alloc(24);
+  __store(s, 0, name);
+  __set_rt(7, __rt(7) + 1);
+  return s;
+}
+
+fnc __span_enter(int s): int {
+  if __load(s, 16) != 0 then __panic(12); fi
+  val guard = __alloc(24);
+  __store(guard, 0, s);
+  val t = __rt(1);
+  __store(guard, 16, t);
+  if t != 0 then
+    __store(guard, 8, __load(t, 72));
+    __store(t, 72, guard);
+  fi
+  return guard;
+}
+
+fnc __span_exit(int guard): void {
+  val span = __load(guard, 0);
+  if span == 0 then __panic(12); fi
+  val t = __load(guard, 16);
+  if t != 0 then
+    if __load(t, 72) != guard then __panic(12); fi
+    __store(t, 72, __load(guard, 8));
+  fi
+  __store(guard, 0, 0);
+  __span_close(span);
+}
+
+fnc __span_cancel_all(): void {
+  let t = __rt(2);
+  while t != 0 do
+    let g = __load(t, 72);
+    while g != 0 do
+      val next = __load(g, 8);
+      val span = __load(g, 0);
+      if span != 0 then
+        __store(g, 0, 0);
+        __span_close(span);
+      fi
+      g = next;
+    done
+    __store(t, 72, 0);
+    t = __load(t, 48);
+  done
+}
+
+fnc __span_attr(int s, int key, int value): void {
+  if __load(s, 16) != 0 then
+    __panic(12);
+  fi
+  __store(s, 8, __load(s, 8) + 1);
+}
+
+fnc __span_close(int s): void {
+  if __load(s, 16) != 0 then __panic(12); fi
+  __store(s, 16, 1);
+  __set_rt(8, __rt(8) + 1);
+}
+
+// ---------------------------------------------------------------------- rx
+// Observable node (32 bytes): 0 kind, 8 upstream, 16 a, 24 b.
+// kinds: 0 from_iter (a list, b index), 1 map (a closure), 2 filter
+// (a closure), 3 take (b remaining), 4 from_channel (a channel).
+// Pull protocol: 0 pending, 1 item ready in root slot 6, 2 complete.
+
+fnc __rx_node(int kind, int up, int a, int b): int {
+  val o = __alloc(32);
+  __store(o, 0, kind);
+  __store(o, 8, up);
+  __store(o, 16, a);
+  __store(o, 24, b);
+  return o;
+}
+
+fnc __rx_poll(int o): int {
+  val kind = __load(o, 0);
+  val up = __load(o, 8);
+  if kind == 0 then
+    val list = __load(o, 16);
+    val i = __load(o, 24);
+    if i >= __load(list, 0) then
+      return 2;
+    fi
+    __store(o, 24, i + 1);
+    __set_rt(6, __load(list, 8 + 8 * i));
+    return 1;
+  fi
+  if kind == 1 then
+    val r = __rx_poll(up);
+    if r != 1 then
+      return r;
+    fi
+    __set_rt(6, __call1(__load(o, 16), __rt(6)));
+    return 1;
+  fi
+  if kind == 2 then
+    loop do
+      val r = __rx_poll(up);
+      if r != 1 then
+        return r;
+      fi
+      if __call1(__load(o, 16), __rt(6)) != 0 then
+        return 1;
+      fi
+    done
+  fi
+  if kind == 3 then
+    val left = __load(o, 24);
+    if left <= 0 then
+      return 2;
+    fi
+    val r = __rx_poll(up);
+    if r == 1 then
+      __store(o, 24, left - 1);
+    fi
+    return r;
+  fi
+  val c = __load(o, 16);
+  // Observable.from_channel cannot bypass compiler DATA ownership even if
+  // the Observable was created before the pipeline attached its channel.
+  // This guard executes on EVERY poll, including after suspension.
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  if __load(c, 8) > 0 then
+    __set_rt(6, __chan_take(c));
+    return 1;
+  fi
+  if __load(c, 32) != 0 then
+    return 2;
+  fi
+  return 0;
+}
+
+// Subscription (16 bytes): 0 completion future, 8 disposed.
+suspends fnc __rx_run(int o, int observer, int sub): int {
+  loop do
+    if __load(sub, 8) != 0 then
+      break;
+    fi
+    val r = __rx_poll(o);
+    if r == 2 then
+      break;
+    fi
+    if r == 1 then
+      __call1(observer, __rt(6));
+    else
+      __suspend();
+    fi
+  done
+  __fut_done(__load(sub, 0), 0);
+  return 0;
+}
+
+fnc __rx_subscribe(int o, int observer): int {
+  val sub = __alloc(16);
+  __store(sub, 0, __fut_new());
+  do task {
+    await __rx_run(o, observer, sub);
+  };
+  return sub;
+}
+
+suspends fnc __rx_first(int o): int {
+  loop do
+    val r = __rx_poll(o);
+    if r == 2 then
+      return 0;
+    fi
+    if r == 1 then
+      return __some(__rt(6));
+    fi
+    __suspend();
+  done
+}
+
+fnc __rx_first_task(int o): int {
+  return task {
+    return await __rx_first(o);
+  };
+}
+
+fnc __sub_dispose(int sub): void {
+  __store(sub, 8, 1);
+}

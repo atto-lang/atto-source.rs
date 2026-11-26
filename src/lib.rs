@@ -37,6 +37,7 @@ pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+pub mod v2;
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
@@ -102,6 +103,21 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Opt in to the experimental async backend only for explicit effect-marked
+/// callables. A blanket fallback on *any* legacy error made formerly invalid
+/// programs executable (including invalid ADTs, actor access and bindings).
+/// A token pattern, not a source substring, ignores comments and string literals.
+fn has_explicit_async_frontend(toks: &[lexer::Token]) -> bool {
+    toks.windows(2).any(|pair| {
+        matches!(
+            (&pair[0].tok, &pair[1].tok),
+            (lexer::Tok::Ident(effect), lexer::Tok::Ident(kind))
+                if (effect == "suspends" || effect == "susp")
+                    && (kind == "fnc" || kind == "routine")
+        )
+    })
+}
+
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let source = library::expand(source)?;
@@ -149,8 +165,13 @@ where F: FnMut(&std::path::Path) -> std::io::Result<String> {
     if let Some(tokens) = const_import_link::lower(&source, logical_path, &mut load)? {
         return compile_prelexed(tokens, Some(logical_path));
     }
-    let tokens = import_link::lower(&source, logical_path, load)?;
-    compile_prelexed(tokens, Some(logical_path))
+    // Same v2 decision as the in-browser path: the source tokens (not the
+    // import-linked tokens) decide opt-in, and v2 compiles the source alone,
+    // so native and wasm32 hosts emit identical bytes for the same source.
+    let source_tokens = lexer::lex(&source)?;
+    let primary = import_link::lower(&source, logical_path, load)
+        .and_then(|tokens| compile_prelexed(tokens, Some(logical_path)));
+    with_v2_fallback(source_tokens, primary)
 }
 
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
@@ -162,7 +183,33 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    compile_prelexed(lexer::lex(source)?, logical_path)
+    let tokens = lexer::lex(source)?;
+    let primary = compile_prelexed(tokens.clone(), logical_path);
+    with_v2_fallback(tokens, primary)
+}
+
+/// Only programs that declare a suspending callable may enter the provisional
+/// v2 backend, and only after the main compiler rejects them. Every other
+/// rejection, and its exact diagnostic, stays authoritative. On a v2 failure,
+/// report whichever diagnostic points further into the source.
+fn with_v2_fallback(source_tokens: Vec<lexer::Token>, primary: Result<Vec<u8>, Diagnostic>)
+    -> Result<Vec<u8>, Diagnostic> {
+    let first = match primary {
+        Ok(bytes) => return Ok(bytes),
+        Err(first) => first,
+    };
+    if !has_explicit_async_frontend(&source_tokens) {
+        return Err(first);
+    }
+    match v2::compile(source_tokens) {
+        Ok(bytes) if bytes.len() <= wasm::MAX_OUTPUT => Ok(bytes),
+        Ok(_) => Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB")),
+        Err(second) => {
+            let later = (second.pos.line, second.pos.col) > (first.pos.line, first.pos.col);
+            Err(if later { second } else { first })
+        }
+    }
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)

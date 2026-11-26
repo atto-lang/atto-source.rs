@@ -1,0 +1,45 @@
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+// EXPERIMENTAL GUEST: checked second graph rejects an already reserved
+// producer DATA output without corrupting the first live graph.
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val other = spawn Consumer();
+  val first_channel = Channel<int>.bounded(1);
+  val other_channel = Channel<int>.bounded(1);
+  val Result<PipeHandle, PipeSetupError> first =
+      producer pipe first_channel pipe consumer;
+  val int is_first_ok = match first over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if is_first_ok != 1 then return 91; fi
+  val Result<PipeHandle, PipeSetupError> second =
+      producer pipe other_channel pipe other;
+  val int error_code = match second over
+    on Err(error) -> error.code(),
+    on Ok(_) -> 0,
+  end;
+  // 4 = occupied source output. The first graph stays active.
+  if error_code != 4 then return 92; fi
+  other.stop();
+  producer.send(40);
+  producer.send(2);
+  producer.stop();
+  await producer.get_done();
+  await consumer.get_done();
+  await other.get_done();
+  return 42;
+}

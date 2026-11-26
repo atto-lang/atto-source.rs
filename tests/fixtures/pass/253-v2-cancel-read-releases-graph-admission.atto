@@ -1,0 +1,35 @@
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+// A cancelled public nb reader must no longer block a checked DATA graph.
+// An abandoned waiter must not steal the actor's subsequent messages.
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val channel = Channel<int>.bounded(1);
+  val pending = nb readch channel;
+  if !channel.cancel_read(pending) then return 91; fi
+  val Result<PipeHandle, PipeSetupError> connection =
+      producer pipe channel pipe consumer;
+  val int valid = match connection over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if valid != 1 then return 92; fi
+  producer.send(40);
+  producer.send(2);
+  producer.stop();
+  await producer.get_done();
+  await consumer.get_done();
+  return 42;
+}

@@ -1,0 +1,58 @@
+// EXPERIMENTAL single-guest-memory checked DATA admission: port-ownership
+// errors must not publish either prospective edge or consume the free channel.
+// A passing Rust compiler gate is NOT an executed Node/Chromium guest proof.
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+pub suspends fnc main(): int {
+  val first_producer = spawn Producer();
+  val second_producer = spawn Producer();
+  val first_consumer = spawn Consumer();
+  val second_consumer = spawn Consumer();
+  val first_channel = Channel<int>.bounded(1);
+  val second_channel = Channel<int>.bounded(1);
+
+  val Result<PipeHandle, PipeSetupError> first =
+      first_producer pipe first_channel pipe first_consumer;
+  val int accepted_first = match first over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if accepted_first != 1 then return 90; fi
+  // Source is already claimed, but prospective channel and sink are FREE.
+  val Result<PipeHandle, PipeSetupError> rejected =
+      first_producer pipe second_channel pipe second_consumer;
+  val int rejected_code = match rejected over
+    on Err(error) -> error.code(),
+    on Ok(_) -> 0,
+  end;
+  if rejected_code != 4 then return 91; fi
+  // New source can claim both after the failed setup.
+  val Result<PipeHandle, PipeSetupError> second =
+      second_producer pipe second_channel pipe second_consumer;
+  val int accepted_second = match second over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if accepted_second != 1 then return 92; fi
+
+  // No messages travel on the first graph. It must still shut down cleanly.
+  first_producer.stop();
+  await first_producer.get_done();
+  await first_consumer.get_done();
+  second_producer.send(40);
+  second_producer.send(2);
+  second_producer.stop();
+  await second_producer.get_done();
+  await second_consumer.get_done();
+  return 42;
+}

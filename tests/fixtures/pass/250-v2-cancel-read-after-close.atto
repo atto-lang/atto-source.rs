@@ -1,0 +1,17 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Close must settle a registered reader as normal EOF; later cancellation
+// cannot reclassify that completion or leave a pending registration.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val future = nb readch ch;
+  ch.close();
+  if ch.cancel_read(future) then return 90; fi
+  val result = await future;
+  val eof: int = match result over
+    on None -> 42,
+    on Some(_) -> 0,
+  end;
+  stdio.println(eof);
+  return eof;
+}

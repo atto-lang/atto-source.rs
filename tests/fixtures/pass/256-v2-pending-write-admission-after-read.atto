@@ -1,0 +1,26 @@
+// expect-exit: 42
+// expect-stdout: 42
+// A drained buffered slot commits the oldest pending writer exactly once.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  ch.send(20);
+  val ticket = ch.send_pending(22);
+  val first = await ch.receive();
+  val delivered = await ticket;
+  val int committed = match delivered over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if committed != 1 then return 91; fi
+  val second = await ch.receive();
+  val after_admission = ch.cancel_write(ticket);
+  val int remains = match after_admission over
+    on None -> 1,
+    on Some(_) -> 0,
+  end;
+  if remains != 1 then return 92; fi
+  ch.close();
+  val total = first + second;
+  stdio.println(total);
+  return total;
+}

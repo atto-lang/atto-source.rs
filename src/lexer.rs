@@ -57,6 +57,11 @@ pub enum Tok {
     /// Right-associative functional application: f <| value.
     PipeLt,
     Amp,
+    /// Fused `&&` / `||` / `^^` tokens. The shared lexer never emits these;
+    /// only `v2::fuse_operators` creates them for the experimental async backend.
+    AmpAmp,
+    PipePipe,
+    CaretCaret,
     Caret,
     Tilde,
     At,

@@ -118,7 +118,9 @@ export function validateGuestImportABI(bytes, module = null) {
 
 self.onmessage=async ({data})=>{
   try{
-    const bytes=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
+    const compilerResponse=await fetch('/atto_compiler.wasm');
+    if(!compilerResponse.ok)throw new Error('compiler Wasm HTTP '+compilerResponse.status);
+    const bytes=await compilerResponse.arrayBuffer();
     if(!WebAssembly.validate(bytes))throw new Error('invalid compiler wasm');
     const compiler=new WebAssembly.Module(bytes);
     if(WebAssembly.Module.imports(compiler).length)throw new Error('unexpected compiler imports');
@@ -149,6 +151,19 @@ self.onmessage=async ({data})=>{
       ...state.imports,
     };
     instance=new WebAssembly.Instance(guest,{atto});
+    // Root slots 7/8 are internal v2 guest instrumentation, not host-side
+    // lifecycle simulation. They remain zero for legacy guests.
+    const spanCounts=()=>{
+      // The *legacy scalar* guest emitter intentionally omits its memory
+      // export when there are no heap, strings or actors. That is not a
+      // runtime failure and cannot contain scoped-span instrumentation.
+      // The v2 async guest always exports private memory with these slots.
+      const memory=instance.exports.memory;
+      if(!memory)return {spanOpens:0,spanCloses:0};
+      const mem=new DataView(memory.buffer);
+      if(mem.byteLength<72)throw new Error('guest telemetry memory shorter than root slots');
+      return {spanOpens:Number(mem.getBigInt64(56,true)),spanCloses:Number(mem.getBigInt64(64,true))};
+    };
     let value;
     try{value=instance.exports.main()}
     catch(e){
@@ -157,9 +172,9 @@ self.onmessage=async ({data})=>{
       state.abort();
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':code===6?'stack overflow (logical call-depth quota)':'trap: '+e.message;
-      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
+      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind,panicCode:code,...spanCounts()});return;
     }
     state.complete(); // rejects any scope that failed to release its lease
-    self.postMessage({ok:true,value:String(value),stdout});
+    self.postMessage({ok:true,value:String(value),stdout,...spanCounts()});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
 };

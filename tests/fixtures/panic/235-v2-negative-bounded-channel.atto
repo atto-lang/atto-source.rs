@@ -1,0 +1,7 @@
+// expect-panic: 14
+// A bounded request of -1 must NEVER become an unbounded guest queue.
+pub suspends fnc main(): int {
+  val invalid = Channel<int>.bounded(-1);
+  invalid.send(42);
+  return 42;
+}

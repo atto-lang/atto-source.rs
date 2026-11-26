@@ -1,0 +1,19 @@
+// expect-panic: 10
+// Do not let a legacy two-stage actor pipe steal a public pending read.
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val channel = Channel<int>.bounded(1);
+  channel.send(99);
+  val connection = producer pipe channel;
+  return 0;
+}

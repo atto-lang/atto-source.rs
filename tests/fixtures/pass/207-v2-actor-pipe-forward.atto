@@ -1,0 +1,22 @@
+// Browser-v2 canonical declared actor-only ports; PipeHandle still provisional.
+// expect-exit: 42
+// expect-stdout: 42
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value + 2);
+    return;
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+    return;
+  }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val link = producer pipe consumer;
+  producer.send(40);
+  return 42;
+}

@@ -1,0 +1,8 @@
+// expect-panic: 9
+// A terminal, drained channel is not equivalent to an open empty channel.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(1);
+  ch.close();
+  val status = try readch ch;
+  return 0;
+}

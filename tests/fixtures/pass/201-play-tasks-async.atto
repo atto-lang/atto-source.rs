@@ -1,0 +1,17 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Playground showcase: structured task result and detached side effect.
+suspends fnc twice(int n): int {
+  val future: Future<int> = task {
+    return n * 2;
+  };
+  return await future;
+}
+
+pub suspends fnc main(): int {
+  val result = await twice(21);
+  do task {
+    stdio.println(result);
+  };
+  return result;
+}

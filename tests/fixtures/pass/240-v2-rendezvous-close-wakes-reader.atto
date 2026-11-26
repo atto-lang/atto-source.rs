@@ -1,0 +1,18 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Closure must resolve a previously registered zero-capacity reader to EOF.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(0);
+  val closer = task {
+    ch.close();
+    return 0;
+  };
+  let count = 0;
+  for await item in ch do
+    count += 1;
+  done
+  await closer;
+  if count != 0 then return 90; fi
+  stdio.println(42);
+  return 42;
+}

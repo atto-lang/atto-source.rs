@@ -1,0 +1,24 @@
+// expect-panic: 10
+// EXPERIMENTAL v2 GUEST ONLY: actor ports now require explicit receives/emits declarations; 
+// the independent checked PipeHandle contract is not implemented.
+// Main waits for both actor completion futures; no timer or sleep proof.
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val channel = Channel<int>.bounded(1);
+  val first = producer pipe channel pipe consumer;
+  val second = consumer rpipe channel rpipe producer;
+  return 0;
+}

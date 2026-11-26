@@ -1,0 +1,14 @@
+// expect-exit: 42
+// expect-stdout: 42
+// This guest must compile using stdlib/channel.atto, not an inlined host queue.
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(2);
+  ch.send(20);
+  ch.send(22);
+  ch.close();
+  val first = await ch.receive();
+  val second = await ch.receive();
+  val total = first + second;
+  stdio.println(total);
+  return total;
+}

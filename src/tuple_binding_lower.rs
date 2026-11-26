@@ -280,6 +280,9 @@ fn as_code(tokens: &[Token]) -> R<String> {
             Tok::PipeLt => "<|".to_string(),
             Tok::Amp => "&".to_string(), Tok::Caret => "^".to_string(),
             Tok::Tilde => "~".to_string(), Tok::Bang => "!".to_string(),
+            // v2-only fused tokens; the shared lexer never emits them.
+            Tok::AmpAmp => "&&".to_string(), Tok::PipePipe => "||".to_string(),
+            Tok::CaretCaret => "^^".to_string(),
             Tok::Question => "?".to_string(), Tok::At => "@".to_string(),
             Tok::Ellipsis => "...".to_string(), Tok::YieldStar => "yield*".to_string(),
             Tok::Eof => return Err(error(t.pos, "E_SYNTAX", "unexpected EOF in tuple expression")),

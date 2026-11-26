@@ -1,0 +1,29 @@
+// Experimental v2 guest ownership denial. Once a channel is claimed by a
+// continuous graph, ordinary public channel I/O must not bypass the actor's
+// declared emits/receives or the graph's single-producer/sink admission.
+// expect-panic: 10
+
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val channel = Channel<int>.bounded(1);
+  val Result<PipeHandle, PipeSetupError> connection =
+      producer pipe channel pipe consumer;
+  val int accepted = match connection over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if accepted != 1 then return 90; fi
+  channel.send(55);
+  return 42;
+}

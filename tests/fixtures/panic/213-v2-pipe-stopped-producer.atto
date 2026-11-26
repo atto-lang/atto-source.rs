@@ -1,0 +1,12 @@
+// expect-panic: 10
+// A stopped actor cannot publish a new outbound DATA edge.
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void { emit(mail.value); return; }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val channel = Channel<int>.bounded(1);
+  producer.stop();
+  val invalid = producer pipe channel;
+  return 0;
+}
