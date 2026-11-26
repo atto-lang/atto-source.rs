@@ -51,27 +51,66 @@ fn member_expr(e: &Expr, params: &Slots, fields: &Slots) -> R<Expr> {
 struct MethodEntry {
     function: String,
     arity: usize,
+    parameter_types: Vec<Type>,
+    result: Type,
 }
 struct LocalValue {
     fields: Vec<String>,
 }
 struct MainLower<'a> {
     decl: &'a StructWithTarget,
-    methods: &'a BTreeMap<(String, usize), MethodEntry>,
+    methods: &'a BTreeMap<(String, usize), Vec<MethodEntry>>,
     type_names: &'a [(String, Pos)],
     names: BTreeSet<String>,
-    scalars: BTreeSet<String>,
+    scalars: BTreeMap<String, Type>,
     values: BTreeMap<String, LocalValue>,
     next: usize,
 }
 
 impl MainLower<'_> {
+    // Resolve overloads by exact static scalar types; this is not a
+    // coercion or evaluation pass. The ordinary typed compiler still
+    // independently validates every emitted expression and argument.
+    fn scalar_type(&self, e: &Expr) -> R<Type> {
+        let invalid = || Diagnostic::new(e.pos, "E_TYPE", "expected a well-typed scalar argument");
+        match &e.kind {
+            ExprKind::Int(_) => Ok(Type::Int),
+            ExprKind::Bool(_) => Ok(Type::Bool),
+            ExprKind::Var(n) => self.scalars.get(n).copied().ok_or_else(invalid),
+            ExprKind::Unary(op, a) => match (op, self.scalar_type(a)?) {
+                (UnOp::Neg | UnOp::Plus | UnOp::BitNot, Type::Int) => Ok(Type::Int),
+                (UnOp::Not, Type::Bool) => Ok(Type::Bool),
+                _ => Err(invalid()),
+            },
+            ExprKind::Binary(op, a, b) => {
+                let (a, b) = (self.scalar_type(a)?, self.scalar_type(b)?);
+                match (op, a, b) {
+                    (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
+                     BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                     BinOp::Shl | BinOp::LShr | BinOp::AShr, Type::Int, Type::Int) => Ok(Type::Int),
+                    (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, Type::Int, Type::Int) => Ok(Type::Bool),
+                    (BinOp::Eq | BinOp::Ne, Type::Int, Type::Int) |
+                    (BinOp::Eq | BinOp::Ne | BinOp::And | BinOp::Or, Type::Bool, Type::Bool) => Ok(Type::Bool),
+                    _ => Err(invalid()),
+                }
+            }
+            ExprKind::Ternary(cond, yes, no) => {
+                let (c, y, n) = (self.scalar_type(cond)?, self.scalar_type(yes)?, self.scalar_type(no)?);
+                if c == Type::Bool && y == n { Ok(y) } else { Err(invalid()) }
+            }
+            ExprKind::Call(name, _) => self.methods.values().flatten()
+                .find(|entry| &entry.function == name).map(|entry| entry.result)
+                .ok_or_else(invalid),
+            _ => Err(invalid()),
+        }
+    }
+
     fn expr(&self, e: &Expr) -> R<Expr> {
         let pos = e.pos;
         let kind = match &e.kind {
             ExprKind::Int(n) => ExprKind::Int(*n),
             ExprKind::Bool(b) => ExprKind::Bool(*b),
-            ExprKind::Var(n) if self.scalars.contains(n) => ExprKind::Var(n.clone()),
+            ExprKind::Var(n) if self.scalars.contains_key(n) => ExprKind::Var(n.clone()),
             ExprKind::Unary(op, a) => ExprKind::Unary(*op, Box::new(self.expr(a)?)),
             ExprKind::Binary(op, a, b) => ExprKind::Binary(*op, Box::new(self.expr(a)?),
                 Box::new(self.expr(b)?)),
@@ -83,13 +122,18 @@ impl MainLower<'_> {
                 };
                 let value = self.values.get(owner).ok_or_else(||
                     denied(pos, "method receiver is not a local value of the declared nominal struct"))?;
-                let method = self.methods.get(&(name.clone(), args.len())).ok_or_else(||
-                    Diagnostic::new(pos, "E_ARITY", "no matching attached struct method"))?;
-                if value.fields.len() + args.len() != method.arity {
-                    return Err(denied(pos, "invalid flattened method arity"));
+                let methods = self.methods.get(&(name.clone(), args.len())).ok_or_else(||
+                    Diagnostic::new(pos, "E_ARITY", "no matching attached struct method arity"))?;
+                let lowered = args.iter().map(|arg| self.expr(arg)).collect::<R<Vec<_>>>()?;
+                let types = lowered.iter().map(|arg| self.scalar_type(arg)).collect::<R<Vec<_>>>()?;
+                let mut candidates = methods.iter().filter(|m| m.parameter_types == types);
+                let method = candidates.next().ok_or_else(||
+                    Diagnostic::new(pos, "E_TYPE", "no matching attached struct method parameter types"))?;
+                if candidates.next().is_some() || value.fields.len() + args.len() != method.arity {
+                    return Err(denied(pos, "ambiguous or invalid flattened method signature"));
                 }
                 let mut actual: Vec<_> = value.fields.iter().map(|s| variable(s, pos)).collect();
-                for arg in args { actual.push(self.expr(arg)?); }
+                actual.extend(lowered);
                 ExprKind::Call(method.function.clone(), actual)
             }
             _ => return Err(denied(pos, "scalar struct profile does not admit this expression or value escape")),
@@ -98,13 +142,17 @@ impl MainLower<'_> {
     }
 
     fn construct(&mut self, name: &str, args: &[Expr], pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
-        // This profile deliberately rejects same-arity overloads even when a
-        // future full nominal type resolver could distinguish their types.
-        let mut candidates = self.decl.constructors.iter().filter(|(_, c)| c.params.len() == args.len());
-        let (_, ctor) = candidates.next().ok_or_else(||
-            Diagnostic::new(pos, "E_ARITY", "no matching attached struct constructor"))?;
+        let lowered = args.iter().map(|arg| self.expr(arg)).collect::<R<Vec<_>>>()?;
+        let types = lowered.iter().map(|arg| self.scalar_type(arg)).collect::<R<Vec<_>>>()?;
+        let mut candidates = self.decl.constructors.iter().filter(|(_, c)|
+            c.params.iter().map(|p| p.ty).eq(types.iter().copied()));
+        let (_, ctor) = candidates.next().ok_or_else(|| {
+            let same_arity = self.decl.constructors.iter().any(|(_, c)| c.params.len() == args.len());
+            Diagnostic::new(pos, if same_arity { "E_TYPE" } else { "E_ARITY" },
+                "no matching attached struct constructor signature")
+        })?;
         if candidates.next().is_some() {
-            return Err(denied(pos, "same-arity constructor overload requires nominal overload resolution"));
+            return Err(denied(pos, "ambiguous attached struct constructor signature"));
         }
         if ctor.params.iter().any(|p| p.mutable) {
             return Err(denied(pos, "mutable constructor parameter outside scalar profile"));
@@ -116,9 +164,10 @@ impl MainLower<'_> {
         // Every argument is evaluated exactly once, in source order, before
         // any constructor field initializer. Ordinary typed checker checks
         // all conversions and the checked arithmetic/trap semantics.
-        for (i, (param, arg)) in ctor.params.iter().zip(args).enumerate() {
+        for (i, (param, arg)) in ctor.params.iter().zip(lowered).enumerate() {
             let local = internal("arg", id, i);
-            out.push(binding(local.clone(), param.ty, self.expr(arg)?, arg.pos));
+            let at = arg.pos;
+            out.push(binding(local.clone(), param.ty, arg, at));
             params.insert(param.name.clone(), local);
         }
         for stmt in &ctor.body {
@@ -209,8 +258,12 @@ impl MainLower<'_> {
                         return Err(denied(*pos, "non-scalar local type"));
                     }
                     let init = self.expr(init)?;
+                    let inferred = self.scalar_type(&init)?;
+                    if ty.is_some_and(|t| t != inferred) {
+                        return Err(Diagnostic::new(*pos, "E_TYPE", "scalar binding annotation mismatch"));
+                    }
                     out.push(Stmt::Bind { kind: *kind, name: name.clone(), ty: *ty, init, pos: *pos });
-                    self.scalars.insert(name.clone());
+                    self.scalars.insert(name.clone(), inferred);
                 }
                 Stmt::Expr(Expr { kind: ExprKind::Call(name, args), pos })
                     if name == "stdio.println" && args.len() == 1 && !self.names.contains("stdio") => {
@@ -269,16 +322,19 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
             flat.push(Param { name: local, ty: p.ty, mutable: false, pos: p.pos });
         }
         let function = internal("method", i, 0);
-        let entry = MethodEntry { function: function.clone(), arity: flat.len() };
-        if methods.insert((m.name.clone(), m.params.len()), entry).is_some() {
-            return Err(denied(m.pos, "same-arity method overload requires nominal overload resolution"));
+        let entry = MethodEntry { function: function.clone(), arity: flat.len(),
+            parameter_types: m.params.iter().map(|p| p.ty).collect(), result: m.ret };
+        let overloads = methods.entry((m.name.clone(), m.params.len())).or_insert_with(Vec::new);
+        if overloads.iter().any(|prior: &MethodEntry| prior.parameter_types == entry.parameter_types) {
+            return Err(denied(m.pos, "duplicate exact attached method parameter signature"));
         }
+        overloads.push(entry);
         lowered.push(Func { name: function, pos: m.pos, is_generator: false, is_pure: false,
             declared_effects: None, params: flat, ret: m.ret,
             body: vec![Stmt::Return(Some(member_expr(e, &params, &fields)?), *ret_pos)] });
     }
     let mut lower = MainLower { decl: &decl, methods: &methods, type_names: &program.type_names, names: BTreeSet::new(),
-        scalars: BTreeSet::new(), values: BTreeMap::new(), next: 0 };
+        scalars: BTreeMap::new(), values: BTreeMap::new(), next: 0 };
     program.funcs[0].body = lower.body(&program.funcs[0].body)?;
     program.funcs.extend(lowered);
     Ok(program)
