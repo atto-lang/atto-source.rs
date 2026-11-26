@@ -38,11 +38,11 @@ const cases = [
   ['x*0', lo, 0n],
 ];
 
-function compile(source) {
+function compile(source, flags=['--single-source']) {
   const input = join(dir, 'main.atto'), output = join(dir, 'guest.wasm');
   writeFileSync(input, source);
   rmSync(output, {force:true});
-  const result = spawnSync(compiler, ['main.atto', '-o', output], {
+  const result = spawnSync(compiler, [...flags, 'main.atto', '-o', output], {
     cwd:dir, encoding:'utf8', timeout:30000,
   });
   assert.ifError(result.error);
@@ -104,5 +104,21 @@ try {
   assert.equal(new WebAssembly.Instance(verifyMemoryless(recovered),{}).exports.main(),42n);
   assert.equal(denied.result.status,1,denied.result.stderr);
   assert.ok(!existsSync(denied.output),'denial emitted an artifact');
+  // Default linked CLI must still reject annotations before any provider load.
+  const linked=compile('@noalloc\npub fnc main():int { return 42; }',[]);
+  assert.equal(linked.result.status,1,linked.result.stderr);
+  assert.match(linked.result.stderr,/E_ANNOTATION_LINK_UNVERIFIED/);
+  assert.ok(!existsSync(linked.output));
+  writeFileSync(join(dir,'config.atto'),'define pub const int x = 42;');
+  const relative='import const x from "./config.atto"; pub fnc main():int { return x; }';
+  const standalone=compile(relative);
+  assert.equal(standalone.result.status,1,standalone.result.stderr);
+  assert.ok(!existsSync(standalone.output),'standalone mode must not link filesystem provider');
+  const normal=compile(relative,[]);
+  assert.equal(normal.result.status,0,normal.result.stderr);
+  assert.equal(new WebAssembly.Instance(new WebAssembly.Module(readFileSync(normal.output)),{}).exports.main(),42n);
+  const conflict=compile('@noalloc\npub fnc main():int { return 42; }',['--single-source','--verify=strict']);
+  assert.equal(conflict.result.status,2);
+  assert.ok(!existsSync(conflict.output));
   console.log('MEMORYLESS_CHECKED_ARITHMETIC_GUEST_PASS '+cases.length+' byte-identical guests + 1 dual denial + recovery');
 } finally { rmSync(dir,{recursive:true,force:true}); }
