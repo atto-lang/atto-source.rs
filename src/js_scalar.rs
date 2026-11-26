@@ -1,15 +1,15 @@
-//! Bounded checked scalar ESM target. No heap, actors, arbitrary foreign imports,
+//! Bounded checked scalar ESM target. Only string allocations are admitted; no actors, arbitrary foreign imports,
 //! exception handling, or continuation operations may escape this profile.
 use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, TExpr, TProgram, TStmt, TE};
+use crate::check::{Builtin, Import, StrOp, TExpr, TProgram, TStmt, TE};
 use crate::{Diagnostic, Pos};
 
 pub(crate) fn unsupported() -> Diagnostic {
     Diagnostic::new(Pos { line: 1, col: 1 }, "E_JS_UNSUPPORTED",
-        "ESM target currently admits only checked scalar int/bool/float/void IR and standard output")
+        "ESM target currently admits only checked scalar and bounded string IR and standard output")
 }
 type R<T> = Result<T, Diagnostic>;
-fn scalar(t: Type) -> bool { matches!(t, Type::Int | Type::Bool | Type::Float | Type::Void) }
+fn scalar(t: Type) -> bool { matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) }
 fn expr(e: &TE) -> R<String> {
     if !scalar(e.ty) { return Err(unsupported()); }
     Ok(match &e.e {
@@ -18,6 +18,20 @@ fn expr(e: &TE) -> R<String> {
         TExpr::IntToFloat(a) => format!("Number({})", expr(a)?),
         TExpr::FNeg(a) => format!("(-({}))", expr(a)?),
         TExpr::Bool(b) => if *b { "1".into() } else { "0".into() },
+        TExpr::StrConst(offset, len) => format!("pack({offset},{len})"),
+        TExpr::Str(op, a, arg) => {
+            let name = match op {
+                StrOp::Eq => "str_eq", StrOp::StartsWith => "str_starts",
+                StrOp::EndsWith => "str_ends", StrOp::Contains => "str_contains",
+                StrOp::Trim => "str_trim", StrOp::Concat => "str_concat", StrOp::Cmp => "str_cmp",
+            };
+            let lhs = expr(a)?;
+            match arg { Some(b) => format!("{name}({lhs},{})", expr(b)?), None => format!("{name}({lhs})") }
+        }
+        TExpr::PrintStrVal { value, newline, .. } => {
+            let call = format!("print_value({})", expr(value)?);
+            if *newline { format!("({call},host_print_newline())") } else { call }
+        }
         TExpr::Local(i) => format!("l{i}"),
         TExpr::Neg(a) => format!("checked(-({}))", expr(a)?),
         TExpr::Not(a) => format!("Number(!({}))", expr(a)?),
@@ -126,7 +140,7 @@ fn stmts(body: &[TStmt], out: &mut String, void_main: bool, loops: &mut Vec<usiz
 
 pub(crate) fn emit(p: &TProgram) -> R<String> {
     use std::fmt::Write;
-    if p.heap || p.strings || p.guest_eh || p.raise_tag || p.catch_depth ||
+    if p.guest_eh || p.raise_tag || p.catch_depth ||
         !p.actors.is_empty() || !p.generators.is_empty() || !p.globals.is_empty() ||
         p.imports.iter().any(|i| !matches!(i, Import::PrintI64 | Import::PrintBool | Import::PrintF64 | Import::PrintStr | Import::PrintNewline)) || p.data.len() > 65536 {
         return Err(unsupported());
@@ -141,20 +155,40 @@ pub(crate) fn emit(p: &TProgram) -> R<String> {
         let name = import.name();
         writeln!(out, "const host_{name}=atto.{name};if(typeof host_{name}!=='function')throw new WebAssembly.LinkError('missing import atto.{name}');").unwrap();
     }
-    let has_memory = !p.data.is_empty() || p.imports.contains(&Import::PrintStr);
+    let has_memory = p.heap || p.strings || !p.data.is_empty() || p.imports.contains(&Import::PrintStr);
     if has_memory {
-        out.push_str("const memory=new WebAssembly.Memory({initial:1,maximum:1});\n");
+        let pages = if p.heap { crate::wasm::HEAP_PAGES } else { 1 };
+        writeln!(out, "const memory=new WebAssembly.Memory({{initial:{pages},maximum:{pages}}});const mem=new Uint8Array(memory.buffer);").unwrap();
         writeln!(out, "new Uint8Array(memory.buffer).set([{}]);", p.data.iter().map(u8::to_string).collect::<Vec<_>>().join(",")).unwrap();
     }
+    if p.strings {
+        out.push_str(r#"function pack(p,n){return (BigInt(p)<<32n)|BigInt(n)}
+function ptr(s){return Number(s>>32n)}
+function len(s){return Number(s&0xffffffffn)}
+function bytes_eq(p,q,n){for(let i=0;i<n;i++)if(mem[p+i]!==mem[q+i])return 0;return 1}
+function str_eq(a,b){return len(a)===len(b)?bytes_eq(ptr(a),ptr(b),len(a)):0}
+function str_starts(a,b){return len(a)>=len(b)?bytes_eq(ptr(a),ptr(b),len(b)):0}
+function str_ends(a,b){return len(a)>=len(b)?bytes_eq(ptr(a)+len(a)-len(b),ptr(b),len(b)):0}
+function str_contains(a,b){let n=len(b),p=ptr(a),q=ptr(b);for(let i=0;i<=len(a)-n;i++)if(bytes_eq(p+i,q,n))return 1;return 0}
+function str_trim(a){let p=ptr(a),q=p+len(a);while(p<q&&mem[p]<=32)p++;while(q>p&&mem[q-1]<=32)q--;return pack(p,q-p)}
+function str_cmp(a,b){let p=ptr(a),q=ptr(b),n=Math.min(len(a),len(b)),i=0;while(i<n&&mem[p+i]===mem[q+i])i++;if(i===n)return len(a)<len(b)?-1n:len(a)>len(b)?1n:0n;let k=i;while(k>0&&(mem[p+k]&192)===128)k--;let x=mem[p+k],y=mem[q+k],flip=(x>=240&&y>=238&&y<240)||(y>=240&&x>=238&&x<240);return (mem[p+i]<mem[q+i])!==flip?-1n:1n}
+function print_value(a){host_print_str(ptr(a),len(a))}
+"#);
+        if p.heap {
+            writeln!(out, "let heap={};", (p.data.len()+7)&!7).unwrap();
+            out.push_str(r#"function str_concat(a,b){let n=len(a),m=len(b),size=(n+m+7)&~7;if(size>mem.length-heap){panic_code.value=3;throw new Error('E_PANIC:3')}let p=heap;heap+=size;for(let i=0;i<n;i++)mem[p+i]=mem[ptr(a)+i];for(let i=0;i<m;i++)mem[p+n+i]=mem[ptr(b)+i];return pack(p,n+m)}
+"#);
+        }
+    }
     for (i, f) in p.funcs.iter().enumerate() {
-        if !scalar(f.ret) || f.params.iter().chain(&f.locals).any(|t| !matches!(t, Type::Int | Type::Bool | Type::Float)) {
+        if !scalar(f.ret) || f.params.iter().chain(&f.locals).any(|t| !matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str)) {
             return Err(unsupported());
         }
         let void_main = i == p.main as usize && f.ret == Type::Void;
         let args = (0..f.params.len()).map(|j| format!("l{j}")).collect::<Vec<_>>().join(",");
         writeln!(out, "function f{i}({args}){{").unwrap();
         for (j, t) in f.locals.iter().enumerate() {
-            writeln!(out, "let l{}={};", j+f.params.len(), if *t == Type::Int { "0n" } else { "0" }).unwrap();
+            writeln!(out, "let l{}={};", j+f.params.len(), if matches!(t, Type::Int | Type::Str) { "0n" } else { "0" }).unwrap();
         }
         stmts(&f.body, &mut out, void_main, &mut Vec::new(), &mut 0)?;
         if void_main { out.push_str("return 0n;\n"); }
