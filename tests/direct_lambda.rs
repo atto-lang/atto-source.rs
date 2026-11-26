@@ -186,9 +186,9 @@ fn nested_block_lambda_call_is_rejected_before_wasm_lowering() {
         fnc later(int n): int { return n * 100; }
         pub fnc main(): int {
             val first = |n| : int -> {
-                if n > 0 {
+                if n > 0 then
                     return later(n);
-                }
+                fi
                 return 0;
             };
             val later = |n| : int -> n + 1;

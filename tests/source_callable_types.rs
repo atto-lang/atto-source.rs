@@ -219,5 +219,5 @@ fn nominal_call_method_remains_ordinary_dispatch() {
     // Force the lexical lambda to infer its argument type at a literal call
     // before supplying a nominal call as a subsequent argument.
     let src = src.replace("return f(c.call(41));", "val initial = f(0); return f(c.call(41))+initial;");
-    assert!(atto_compiler::compile(&src).is_ok(), "{src}");
+    atto_compiler::compile(&src).unwrap_or_else(|err| panic!("{src}: {err}"));
 }
