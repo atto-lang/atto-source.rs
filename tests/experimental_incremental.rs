@@ -36,5 +36,21 @@ fn explicit_host_api_compiles_and_reuses_from_a_separate_library_client(){
     let mut child=Command::new("node").args(["-e","const a=require('node:assert/strict'),b=require('node:fs').readFileSync(0);a.ok(WebAssembly.validate(b));const m=new WebAssembly.Module(b);a.deepEqual(WebAssembly.Module.imports(m),[]);const i=new WebAssembly.Instance(m,{});a.equal(i.exports.main(),42n);a.equal(i.exports.panic_code.value,0);"]).stdin(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(&warm.bytes).unwrap();assert!(child.wait().unwrap().success());
     assert_eq!(reopened.build(Mode::Incremental,&[0;32],MASTER,snapshot()).unwrap_err().code,"E_CACHE_LEDGER");
+    let changed="pub fnc main(): int { return 43; }";
+    let changed_sources=[SnapshotSource{path:"main.atto",source:changed}];
+    let changed_lock=lock(changed);let changed_pin=hex_digest(changed_lock.as_bytes());
+    let edit=reopened.build(Mode::Incremental,&pin,MASTER,Snapshot{entry:"main.atto",manifest:MANIFEST,lockfile:&changed_lock,trusted_lock_sha256:&changed_pin,sources:&changed_sources}).unwrap();
+    assert_eq!(edit.outcome,Outcome::Compiled);
+    assert_eq!(edit.bytes,compile_locked_snapshot("main.atto",MANIFEST,&changed_lock,&changed_pin,&changed_sources).unwrap());
+    assert_ne!(edit.bytes,cold.bytes);
+    // Optional cross-repository runtime consumer gate. CI supplies a freshly
+    // created host-owned output directory; no artifact or key is read from it.
+    if let Some(dir)=std::env::var_os("ATTO_INCREMENTAL_CONSUMER_DIR"){
+        let dir=PathBuf::from(dir);
+        for (name,bytes) in [("cold.wasm",&cold.bytes),("warm.wasm",&warm.bytes),("edit.wasm",&edit.bytes)]{
+            std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(name)).unwrap().write_all(bytes).unwrap();
+        }
+        println!("CACHE_CONSUMER_FIXTURE|cold-warm-identical|edit-recompiled|three-real-artifacts");
+    }
     println!("CACHE_EXPERIMENTAL_HOST_API|feature-enabled|real-guest=42|explicit-cold-warm|reopened|stale-pin-denied");
 }
