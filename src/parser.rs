@@ -3636,7 +3636,6 @@ impl Parser {
             Tok::Ident(s) if s == "await" => {
                 self.advance();
                 let inner = self.parse_unary()?;
-                self.grow(1)?;
                 return Ok(Expr { kind: ExprKind::Ascribe(Box::new(inner), Type::Int, false), pos });
             },
             // Ownership is a prefix unary expression, like trap. Its operand
