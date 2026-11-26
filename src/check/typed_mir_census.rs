@@ -433,6 +433,14 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
             if terminal {
                 return Err(incomplete("typed scalar loan event after terminal return"));
             }
+            // A write marker is a witness for the immediately following
+            // typed owner-slot write, not a generic permission that can be
+            // silently discarded at another marker, return or unrelated set.
+            if let Some((_, owner)) = pending_exclusive_write {
+                if !matches!(stmt, TStmt::Set(slot, _) if *slot == owner) {
+                    return Err(incomplete("exclusive loan write lacks matching next owner-slot set"));
+                }
+            }
             let instruction_ordinal = ordinal as u32 + 1;
             let mk = |loan_id, kind| ScalarLoanEvent {
                 function_index: function_index as u32,
