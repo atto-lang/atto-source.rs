@@ -1,0 +1,4 @@
+// expect-exit: 42
+pub fnc main(): int {
+  return (7 / 2) * 14 + (-7 / 3) + (7 / -3) + (-7 / -3) + 2;
+}
