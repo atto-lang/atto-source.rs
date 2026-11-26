@@ -301,17 +301,67 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 /// evidence cannot stand in for a guaranteed enclosing-function exit.
 /// Later checker stages may admit richer terminal constructs only after
 /// proving they cannot fall through.
+fn lazy_guard_predicate(expr: Expr) -> Expr {
+    let pos = expr.pos;
+    match expr.kind {
+        ExprKind::Binary(BinOp::And, left, right) => Expr {
+            kind: ExprKind::Ternary(
+                Box::new(lazy_guard_predicate(*left)),
+                Box::new(lazy_guard_predicate(*right)),
+                Box::new(Expr { kind: ExprKind::Bool(false), pos })),
+            pos,
+        },
+        ExprKind::Binary(BinOp::Or, left, right) => Expr {
+            kind: ExprKind::Ternary(
+                Box::new(lazy_guard_predicate(*left)),
+                Box::new(Expr { kind: ExprKind::Bool(true), pos }),
+                Box::new(lazy_guard_predicate(*right))),
+            pos,
+        },
+        kind => Expr { kind, pos },
+    }
+}
+
+/// Conservative guard proof: every failure path must explicitly return
+/// from the enclosing callable. An exceptional exit does not satisfy this
+/// mandatory-return contract. The typed checker checks the return's type.
 fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
-        Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
-        Some(Stmt::Block(inner) | Stmt::UsingTelemetry { body: inner, .. }) =>
-            guard_failure_exits(inner),
+        Some(Stmt::Return(..)) => true,
+        Some(Stmt::Block(inner)) => guard_failure_exits(inner),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
                 && guard_failure_exits(other),
         _ => false,
     }
+}
+
+/// A throw/raise or loop escape cannot be hidden by a trailing return,
+/// including from nested arms. Guard lowering must fail closed.
+fn guard_has_nonreturn_exit(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Throw(..) | Stmt::Raise(..) | Stmt::Break(..) | Stmt::Continue(..) => true,
+        Stmt::Block(body) | Stmt::StateWrite { body, .. } | Stmt::UsingTelemetry { body, .. }
+        | Stmt::While { body, .. } | Stmt::Loop { body, .. }
+        | Stmt::ForIn { body, .. } | Stmt::Defer { body, .. }
+        | Stmt::Recover { body, .. } =>
+            guard_has_nonreturn_exit(body),
+        Stmt::For { init, update, body, .. } =>
+            guard_has_nonreturn_exit(body)
+                || init.as_ref().is_some_and(|s| guard_has_nonreturn_exit(std::slice::from_ref(s.as_ref())))
+                || update.as_ref().is_some_and(|s| guard_has_nonreturn_exit(std::slice::from_ref(s.as_ref()))),
+        Stmt::Try { body, catch, finally, .. } =>
+            guard_has_nonreturn_exit(body)
+                || catch.as_ref().is_some_and(|(_, b)| guard_has_nonreturn_exit(b))
+                || finally.as_ref().is_some_and(|b| guard_has_nonreturn_exit(b)),
+        Stmt::If { arms, otherwise, .. } =>
+            arms.iter().any(|(_, b)| guard_has_nonreturn_exit(b))
+                || otherwise.as_ref().is_some_and(|b| guard_has_nonreturn_exit(b)),
+        Stmt::Match { arms, .. } =>
+            arms.iter().any(|arm| guard_has_nonreturn_exit(&arm.body)),
+        _ => false,
+    })
 }
 
 impl Parser {
@@ -2739,15 +2789,20 @@ impl Parser {
     fn parse_guard(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("guard")?;
-        let predicate = self.parse_cond_head()?;
-        if *self.peek() != Tok::LBrace {
+        let predicate = lazy_guard_predicate(self.parse_cond_head()?);
+        let failure = if *self.peek() == Tok::LBrace {
+            self.parse_block()?
+        } else if self.eat_word("else") {
+            let failure = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            failure
+        } else {
             return Err(Diagnostic::new(self.pos(), "E_GUARD",
-                "guard requires a braced failure branch"));
-        }
-        let failure = self.parse_block()?;
-        if !guard_failure_exits(&failure) {
+                "guard needs '{ ... }' or 'else ... end' failure branch"));
+        };
+        if guard_has_nonreturn_exit(&failure) || !guard_failure_exits(&failure) {
             return Err(Diagnostic::new(pos, "E_GUARD",
-                "guard failure branch must exit the enclosing function on every path"));
+                "guard failure branch must explicitly return from the enclosing function on every path"));
         }
         Ok(Stmt::If {
             arms: vec![(
