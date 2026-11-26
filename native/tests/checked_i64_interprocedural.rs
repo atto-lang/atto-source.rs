@@ -109,7 +109,7 @@ fn full_width_safe_parameters_and_matched_boundaries_still_execute() {
 
 #[test]
 fn atto_xo_checked_debit_shared_guests() {
-    let corpus = include_str!("../contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let corpus = include_str!("../../contracts/atto-xo-checked-debit-v1/cases.tsv");
     let mut ids = std::collections::HashSet::new();
     let mut value_count = 0;
     let mut overflow_count = 0;

@@ -55,6 +55,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/io_shorthand_guest.mjs
+      - name: Execute grouping and tuple-boundary guests and reject malformed sources
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/parentheses_guest.mjs
       - name: Execute immediate await receiver guests and fail-closed diagnostics
         env:
           ATTOC: target/release/attoc

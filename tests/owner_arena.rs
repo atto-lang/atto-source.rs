@@ -1,4 +1,4 @@
-use oreslang_source_rs::owner_arena::{
+use atto_compiler::owner_arena::{
     ArenaError, OwnerArena, MAX_ARENA_BYTES, MAX_OFFSET_ALIGNMENT,
 };
 
