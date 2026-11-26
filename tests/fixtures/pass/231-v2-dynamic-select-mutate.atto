@@ -2,16 +2,28 @@
 // expect-exit: 42
 // expect-stdout: 2\n
 pub suspends fnc main(): int {
-  val first = Channel<int>.bounded(1);
+  val first_channel = Channel<int>.bounded(1);
   val second = Channel<int>.bounded(1);
   writech second, 22;
   val DynamicSelectPlan<int> plan = DynamicSelectPlan<int>.from_list([
-    SelectCase.read(first), SelectCase.read(second)
+    SelectCase.read(first_channel), SelectCase.read(second)
   ]);
   val bool removed = plan.remove(0);
-  plan.put(0, SelectCase.read(first));
+  plan.put(0, SelectCase.read(first_channel));
   val Option<SelectResult> got = try select first from plan;
   val SelectResult selected = got.unwrap();
   stdio.println(plan.size());
+  // More sequential invocations than the live-snapshot quota: completed
+  // selections must return their slots, rather than exhaust admission.
+  let round = 0;
+  while round < 300 do
+    plan.put(0, SelectCase.read(first_channel));
+    writech first_channel, 42;
+    val SelectResult next = select fair from plan;
+    if next.index != 0 then return 1; fi
+    if next.value != 42 then return 2; fi
+    round = round + 1;
+  done
+  if plan.version() != 302 then return 3; fi
   return selected.value + 20;
 }
