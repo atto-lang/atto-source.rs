@@ -412,8 +412,10 @@ fnc __chan_close(int c): void {
 // compiled into the guest's own Wasm memory, not simulated by JavaScript.
 // Plan layout: slots, live, reserved, version, dynamic, generation FAIR cell (48 bytes),
 // followed by up to 256 stable, zero-based read-case channel pointers.
-// Live root only: 2096 free snapshots, 2104 free FAIR cells, 2112 active snapshots.
-// FAIR cell: cursor, reference count (root + snapshots), free-list next.
+// Live root only: 2096 free snapshots, 2104 free FAIR cells, 2112 active
+// invocations, 2120 current generation's cached immutable descriptors.
+// Snapshot offset 32: reference count (cache + invocations), not dynamic flag.
+// FAIR cell: cursor, reference count (root + descriptor blocks), free-list next.
 
 // A SelectCase must never grant an implicit read capability for a channel
 // claimed as an actor DATA port. Check at construction, mutation, and on
@@ -439,7 +441,7 @@ fnc __plan_from_list(int cases, int dynamic): int {
   val n = __load(cases, 0);
   if n <= 0 then __panic(10); fi
   if n > 256 then __panic(10); fi
-  val p = __alloc(2120);
+  val p = __alloc(2128);
   __store(p, 0, n);
   __store(p, 8, n);
   __store(p, 32, dynamic);
@@ -543,6 +545,28 @@ fnc __plan_new_fair_cell(int p): int {
   return cell;
 }
 
+// Drop a descriptor reference. Its generation cell is retained once per
+// descriptor block, not once per invocation.
+fnc __plan_release_descriptors(int p, int snapshot): void {
+  val refs = __load(snapshot, 32);
+  if refs <= 0 then __panic(10); fi
+  __store(snapshot, 32, refs - 1);
+  if refs == 1 then
+    __plan_release_fair_cell(p, __load(snapshot, 40));
+    __store(snapshot, 40, 0);
+    __store(snapshot, 0, __load(p, 2096));
+    __store(p, 2096, snapshot);
+  fi
+}
+
+fnc __plan_invalidate_cache(int p): void {
+  val cached = __load(p, 2120);
+  if cached != 0 then
+    __store(p, 2120, 0);
+    __plan_release_descriptors(p, cached);
+  fi
+}
+
 fnc __plan_next_version(int p): int {
   val version = __load(p, 24);
   if version == 9223372036854775807 then __panic(10); fi
@@ -555,6 +579,7 @@ fnc __plan_remove(int p, int key): int {
   if key >= __load(p, 0) then __panic(10); fi
   if __load(p, 48 + 8 * key) == 0 then return 0; fi
   val version = __plan_next_version(p);
+  __plan_invalidate_cache(p);
   val cell = __plan_new_fair_cell(p);
   __store(p, 48 + 8 * key, 0);
   __store(p, 8, __load(p, 8) - 1);
@@ -569,6 +594,7 @@ fnc __plan_put(int p, int key, int ch): void {
   if key >= __load(p, 0) then __panic(10); fi
   __plan_check_case(ch);
   val version = __plan_next_version(p);
+  __plan_invalidate_cache(p);
   val cell = __plan_new_fair_cell(p);
   if __load(p, 48 + 8 * key) == 0 then
     __store(p, 8, __load(p, 8) + 1);
@@ -587,6 +613,12 @@ fnc __plan_snapshot(int p): int {
   if active >= 256 then __panic(10); fi
   if __load(p, 8) == 0 then __panic(10); fi
   __plan_preflight(p);
+  val cached = __load(p, 2120);
+  if cached != 0 then
+    __store(cached, 32, __load(cached, 32) + 1);
+    __store(p, 2112, active + 1);
+    return cached;
+  fi
   let copy = __load(p, 2096);
   if copy == 0 then
     copy = __alloc(2096);
@@ -606,7 +638,9 @@ fnc __plan_snapshot(int p): int {
     __store(copy, 48 + 8 * i, __load(p, 48 + 8 * i));
     i = i + 1;
   done
-  __store(copy, 32, 0);
+  // Root cache plus the newly admitted invocation.
+  __store(copy, 32, 2);
+  __store(p, 2120, copy);
   return copy;
 }
 
@@ -616,10 +650,7 @@ fnc __plan_snapshot(int p): int {
 fnc __plan_retire_snapshot(int p, int snapshot): void {
   val active = __load(p, 2112);
   if active <= 0 then __panic(10); fi
-  __plan_release_fair_cell(p, __load(snapshot, 40));
-  __store(snapshot, 40, 0);
-  __store(snapshot, 0, __load(p, 2096));
-  __store(p, 2096, snapshot);
+  __plan_release_descriptors(p, snapshot);
   __store(p, 2112, active - 1);
 }
 
