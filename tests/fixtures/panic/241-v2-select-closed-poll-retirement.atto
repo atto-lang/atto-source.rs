@@ -1,13 +1,13 @@
 // expect-panic: 9
 // expect-plan-pending: 0
 pub suspends fnc main(): int {
-  val first = Channel<int>.bounded(1);
-  val second = Channel<int>.bounded(1);
-  val plan = SelectPlan.from_list([SelectCase.read(first)]);
-  val other = SelectPlan.from_list([SelectCase.read(second)]);
+  val closedCh = Channel<int>.bounded(1);
+  val otherCh = Channel<int>.bounded(1);
+  val plan = SelectPlan.from_list([SelectCase.read(closedCh)]);
+  val other = SelectPlan.from_list([SelectCase.read(otherCh)]);
   val Future<SelectResult> sibling = select fair from other;
   val Future<SelectResult> pending = select fair from plan;
-  first.close();
+  closedCh.close();
   val SelectResult result = await pending;
   return result.value;
 }
