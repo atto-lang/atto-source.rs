@@ -13,6 +13,48 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
   {
+    name: 'direct defer pipeline captures once at registration and executes LIFO',
+    src: `fnc seed(): int { stdio.println("seed"); return 5; }
+      pub fnc main(): int {
+        let int current = 7;
+        defer seed() |> (|int x| -> || -> { stdio.println(x); });
+        defer (current, "tuple") |> (|int x, string msg| -> _ -> {
+          stdio.println(msg); stdio.println(x);
+        });
+        current = 9;
+        stdio.println("body");
+        return current;
+      }`,
+    stdout: 'seed\nbody\ntuple\n7\n5\n', value: 9n,
+  },
+  {
+    name: 'recover pipeline binds fallback now and runs only on unwind',
+    src: `fnc seed(): int { stdio.println("seed"); return 42; }
+      pub fnc main(): int {
+        recover seed() |> (|int fallback| -> |ErrorView err, RecoveryCursor cursor| -> {
+          stdio.println(err.message); return fallback;
+        });
+        defer 5 |> (|int x| -> || -> { stdio.println(x); });
+        stdio.println("body");
+        raise Error("original");
+      }`,
+    stdout: 'seed\nbody\n5\noriginal\n', value: 42n,
+  },
+  {
+    name: 'pipeline capture failure cannot install a partial registration',
+    src: `fnc fail_capture(): int { raise Error("capture failed"); }
+      pub fnc main(): int {
+        recover 61 |> (|int fallback| -> |err, cursor| -> {
+          stdio.println(err.message); return fallback;
+        });
+        defer { stdio.println("prior cleanup"); };
+        defer fail_capture() |> (|int x| -> || -> { stdio.println("UNEXPECTED"); });
+        return 99;
+      }`,
+    stdout: 'prior cleanup\ncapture failed\n', value: 61n,
+  },
+
+  {
     name: 'annotated caught throw is safe in defer and preserves normal result',
     src: `fnc fail(): int throws(Error) { throw Error("inner"); }
       fnc safe(): int raises(Error) {
