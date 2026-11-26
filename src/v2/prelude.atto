@@ -9,7 +9,8 @@
 // Runtime root slots (`__rt`): 1 current task, 2 first task, 3 last task,
 // 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes,
 // 9 admitted live plan invocations (guest-wide, including unawaited Futures),
-// 10 free frame-stack blocks (each 4096 bytes), 11 free task records.
+// 10 free frame-stack blocks (each 4096 bytes), 11 free task records,
+// 12 free queue nodes.
 //
 // Task record (80 bytes): 0 stable Future pointer, 8 reserved, 16 status
 // (0 new, 1 suspended, 2 finished), 24 entry closure, 32 frame-stack base,
@@ -75,8 +76,14 @@ fnc __gate(int list, int kind): int {
 // A queue is a [head, tail] pair of singly linked 16-byte nodes.
 
 fnc __q_push(int q, int v): void {
-  val n = __alloc(16);
+  let n = __rt(12);
+  if n == 0 then
+    n = __alloc(16);
+  else
+    __set_rt(12, __load(n, 8));
+  fi
   __store(n, 0, v);
+  __store(n, 8, 0);
   if __load(q, 0) == 0 then
     __store(q, 0, n);
   else
@@ -87,8 +94,16 @@ fnc __q_push(int q, int v): void {
 
 fnc __q_pop(int q): int {
   val n = __load(q, 0);
-  __store(q, 0, __load(n, 8));
-  return __load(n, 0);
+  if n == 0 then __panic(10); fi
+  val v = __load(n, 0);
+  val next_node = __load(n, 8);
+  __store(q, 0, next_node);
+  // The empty queue must not retain a pointer to a recycled tail.
+  if next_node == 0 then __store(q, 8, 0); fi
+  __store(n, 0, 0);
+  __store(n, 8, __rt(12));
+  __set_rt(12, n);
+  return v;
 }
 
 // ----------------------------------------------------------------- futures
