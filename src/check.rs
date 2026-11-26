@@ -2822,10 +2822,44 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_STATE_BORROW",
                         "critical-write requires a non-nested protected state container method"));
                 }
-                self.state_write_scope = true;
-                let checked = self.scoped(body);
-                self.state_write_scope = false;
-                TStmt::StateCriticalWrite(checked?)
+                // A terminal callback result in a return-position write
+                // is not an enclosing-method return while the lease is live.
+                // Snapshot into an anonymous typed local, emit the ordinary
+                // balanced write region, and return only after state_leave.
+                if let Some(Stmt::Return(Some(result), result_pos)) = body.last() {
+                    if self.cleanup_depth > 0 && self.recover_cursor.is_none() {
+                        return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                            "cleanup cannot replace the pending outcome"));
+                    }
+                    if !matches!(self.ret, Type::Int | Type::Bool) {
+                        return Err(type_err(*result_pos,
+                            "returned critical-write requires an owned int/bool method result"));
+                    }
+                    let expected = self.ret;
+                    self.state_write_scope = true;
+                    let checked = (|| -> R<(Vec<TStmt>, TE)> {
+                        let statements = self.scoped(&body[..body.len()-1])?;
+                        let value = self.expr(result)?;
+                        if value.ty != expected {
+                            return Err(type_err(*result_pos,
+                                "critical-write callback result does not match method return type"));
+                        }
+                        Ok((statements, value))
+                    })();
+                    self.state_write_scope = false;
+                    let (mut statements, value) = checked?;
+                    let slot = self.temp(expected, *result_pos)?;
+                    statements.push(TStmt::Set(slot, value));
+                    TStmt::Block(vec![
+                        TStmt::StateCriticalWrite(statements),
+                        TStmt::Return(Some(TE { e: TExpr::Local(slot), ty: expected })),
+                    ])
+                } else {
+                    self.state_write_scope = true;
+                    let checked = self.scoped(body);
+                    self.state_write_scope = false;
+                    TStmt::StateCriticalWrite(checked?)
+                }
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, method, args), pos })
