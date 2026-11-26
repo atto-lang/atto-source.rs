@@ -156,24 +156,46 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
     }
     let mut exports: Vec<Export> = Vec::new();
     let mut foreign = BTreeSet::new();
+    let mut internal = BTreeSet::new();
+    let mut directive_count = 0usize;
     let mut out = Vec::new();
     let mut i = 0;
     while i < t.len() {
         let pos = t[i].pos;
         if word(&t, i, "export") {
-            if exports.len() >= 128 {
+            if directive_count >= 128 {
                 return Err(error(pos, "E_SOURCE_LIMIT", "export budget exceeded"));
             }
+            directive_count += 1;
             let (export, next) = parse_export_directive(&t, i)?;
-            if exports.iter().any(|e| e.name == export.name) {
-                return Err(error(pos, "E_DUPLICATE",
-                    format!("duplicate exported name '{}'", export.name)));
+            if let Some(previous) = exports.iter_mut().find(|e| e.name == export.name) {
+                if previous.visibility != export.visibility {
+                    return Err(error(pos, "E_DUPLICATE",
+                        format!("conflicting export visibility for '{}'", export.name)));
+                }
+                if !previous.kind.is_empty() && !export.kind.is_empty()
+                    && previous.kind != export.kind {
+                    return Err(error(pos, "E_TYPE", "conflicting export kinds"));
+                }
+                // Preserve the explicit kind constraint irrespective of order.
+                // Final resolution still requires a unique real local declaration.
+                if previous.kind.is_empty() {
+                    previous.kind = export.kind;
+                }
+            } else {
+                exports.push(export);
             }
-            exports.push(export);
             i = next;
             continue;
         }
+        let preceding_public = (i >= 1 && word(&t, i - 1, "pub"))
+            || (i >= 4 && word(&t, i - 4, "pub")
+                && t[i - 3].tok == Tok::LBracket && word(&t, i - 2, "pkg")
+                && t[i - 1].tok == Tok::RBracket);
         if word(&t, i, "external") {
+            if preceding_public {
+                return Err(error(pos, "E_VISIBILITY", "external prototype cannot be public"));
+            }
             let (next, foreign_name) = external_prototype(&t, i)?;
             if !foreign.insert(foreign_name) {
                 return Err(error(pos, "E_DUPLICATE", "duplicate external prototype"));
@@ -182,9 +204,13 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
             continue;
         }
         if word(&t, i, "internal") {
+            if preceding_public || word(&t, i + 1, "pub") {
+                return Err(error(pos, "E_VISIBILITY", "internal declaration cannot be public"));
+            }
             if !word(&t, i + 1, "fnc") {
                 return Err(error(pos, "E_UNSUPPORTED", "only source-file local internal fnc is admitted"));
             }
+            internal.insert(name(&t, i + 2)?);
             i += 1;
             continue;
         }
@@ -215,6 +241,12 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
                 return Err(error(x.pos, "E_UNSUPPORTED",
                     format!("foreign prototype '{n}' cannot be referenced without a validated ABI")));
             }
+        }
+    }
+    for export in &exports {
+        if internal.contains(&export.name) {
+            return Err(error(export.pos, "E_VISIBILITY",
+                format!("internal declaration '{}' cannot be exported", export.name)));
         }
     }
     // Export-name resolution is deferred to resolve_exports after parsing.
