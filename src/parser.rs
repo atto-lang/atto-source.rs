@@ -258,6 +258,8 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    // Delimited statement if owns its closing fi. Braced children must not steal it.
+    active_keyword_if: u32,
 }
 
 struct TypeFirstField {
@@ -329,6 +331,7 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            active_keyword_if: 0,
         }
     }
 
@@ -2091,6 +2094,17 @@ impl Parser {
         parsed
     }
 
+    // Forward-port the delimiter ownership guard from #479, independently
+    // of the broader value conditional / negated conditional extensions.
+    fn parse_if_stmts_until(&mut self, stops: &[&str]) -> R<Vec<Stmt>> {
+        let prior = self.active_keyword_if;
+        self.active_keyword_if = prior.checked_add(1).ok_or_else(|| Diagnostic::new(
+            self.pos(), "E_NESTING", "keyword-delimited conditional nesting overflow"))?;
+        let parsed = self.parse_stmts_until(stops);
+        self.active_keyword_if = prior;
+        parsed
+    }
+
     fn parse_loop_body(&mut self) -> R<Vec<Stmt>> {
         if *self.peek() == Tok::LBrace {
             self.parse_block()
@@ -2678,7 +2692,8 @@ impl Parser {
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        let braced = *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
                 if self.eat_word("elif")
@@ -2705,7 +2720,7 @@ impl Parser {
                 return Err(self.expected("'then'"));
             }
             let stops = ["elif", "elseif", "else", "fi"];
-            arms.push((cond, self.parse_stmts_until(&stops)?));
+            arms.push((cond, self.parse_if_stmts_until(&stops)?));
             loop {
                 let is_elif = self.eat_word("elif")
                     || self.eat_word("elseif")
@@ -2721,16 +2736,16 @@ impl Parser {
                     if !(self.eat_word("then") || self.eat_word("do")) {
                         return Err(self.expected("'then'"));
                     }
-                    arms.push((c, self.parse_stmts_until(&stops)?));
+                    arms.push((c, self.parse_if_stmts_until(&stops)?));
                 } else if self.eat_word("else") {
-                    otherwise = Some(self.parse_stmts_until(&["fi"])?);
+                    otherwise = Some(self.parse_if_stmts_until(&["fi"])?);
                     break;
                 } else {
                     break;
                 }
             }
         }
-        if !self.eat_word("fi") {
+        if !braced && !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
@@ -2741,6 +2756,12 @@ impl Parser {
                     describe(self.peek())
                 ),
             ));
+        }
+        // Historical trailing fi is admitted only where no enclosing
+        // keyword-delimited conditional owns it. Canonical braced statements
+        // require only matching braces; preserve legacy top-level spelling.
+        if braced && self.active_keyword_if == 0 {
+            self.eat_word("fi");
         }
         // each elif arm nests one level deeper in the lowered if/else chain
         self.height -= arms.len() as u32 - 1;
