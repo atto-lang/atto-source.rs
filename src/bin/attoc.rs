@@ -10,6 +10,7 @@
 use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
+mod attoc_publish;
 
 enum Input {
     Single(String),
@@ -203,8 +204,8 @@ fn main() -> ExitCode {
         Ok(bytes) => {
             if check_only { return ExitCode::SUCCESS; }
             if let Some(output) = output {
-                if std::fs::write(&output, &bytes).is_err() {
-                    eprintln!("{output}: cannot write Wasm output");
+                if let Err(error) = attoc_publish::publish_artifact(&output, &bytes) {
+                    eprintln!("{output}: E_ARTIFACT_PUBLICATION: {error}");
                     return ExitCode::from(2);
                 }
             } else {
