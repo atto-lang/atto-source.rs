@@ -462,7 +462,7 @@ fnc __plan_from_list(int cases, int dynamic): int {
 // Return Option<SelectResult>. Each SelectResult occupies [index, value].
 // The case-to-read handoff is atomic within this cooperative guest runtime.
 // FAIR only advances when a read commits; first is stable lexical priority.
-fnc __plan_try(int p, int fair): int {
+fnc __plan_try(int p, int fairMode): int {
   val n = __load(p, 0);
   // A live plan may have all its dynamic slots removed; never spin forever.
   if n == 0 then __panic(10); fi
@@ -474,7 +474,7 @@ fnc __plan_try(int p, int fair): int {
   let viable = 0;
   while k < n do
     let i = k;
-    if fair != 0 then
+    if fairMode != 0 then
       i = __load(__load(p, 40), 0) + k;
       if i >= n then i = i - n; fi
     fi
@@ -488,7 +488,7 @@ fnc __plan_try(int p, int fair): int {
           val winner = __alloc(16);
           __store(winner, 0, i);
           __store(winner, 8, __load(option, 0));
-          if fair != 0 then
+          if fairMode != 0 then
             let next = i + 1;
             if next >= n then next = 0; fi
             __store(__load(p, 40), 0, next);
@@ -657,9 +657,9 @@ fnc __plan_retire_snapshot(int p, int snapshot): void {
 // Each invocation pins descriptors plus the shared generation FAIR cell.
 // Both current and retired generations arbitrate from their own last commit;
 // no suspended invocation ever publishes cursor credit into a different cell.
-suspends fnc __plan_wait_opt(int snapshot, int fair): int {
+suspends fnc __plan_wait_opt(int snapshot, int fairMode): int {
   loop do
-    val got = __plan_try(snapshot, fair);
+    val got = __plan_try(snapshot, fairMode);
     if got != 0 then return got; fi
     __suspend();
   done
@@ -667,17 +667,17 @@ suspends fnc __plan_wait_opt(int snapshot, int fair): int {
 
 // Blocking selection captures the descriptors BEFORE it suspends. Mutations
 // after this point cannot retarget a registered waiter to a replacement slot.
-suspends fnc __plan_wait(int p, int fair): int {
+suspends fnc __plan_wait(int p, int fairMode): int {
   val snapshot = __plan_snapshot(p);
-  val result = await __plan_wait_opt(snapshot, fair);
+  val result = await __plan_wait_opt(snapshot, fairMode);
   __plan_retire_snapshot(p, snapshot);
   return __load(result, 0);
 }
 
-fnc __plan_nb(int p, int fair): int {
+fnc __plan_nb(int p, int fairMode): int {
   val snapshot = __plan_snapshot(p);
   return task {
-    val answer = await __plan_wait_opt(snapshot, fair);
+    val answer = await __plan_wait_opt(snapshot, fairMode);
     __plan_retire_snapshot(p, snapshot);
     return answer;
   };
