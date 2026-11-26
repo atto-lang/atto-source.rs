@@ -69,10 +69,10 @@ test('bounded instances and forged pointer fail closed', () => {
 
 
 test('throwing observers cannot orphan tickets or interrupt retirement', () => {
-  const events=[];
+  const events=[], frozen=[];
   const runtime=createStateRuntime({onEvent:e=>{
     events.push(e.kind);
-    assert.equal(Object.isFrozen(e),true);
+    frozen.push(Object.isFrozen(e));
     throw new Error('observer failed');
   }});
   const {state_register,state_enter,state_leave}=runtime.imports;
@@ -87,32 +87,36 @@ test('throwing observers cannot orphan tickets or interrupt retirement', () => {
   runtime.complete();
   assert.equal(runtime.snapshot().quiescent,true);
   assert.deepEqual(events,['register','enter','retire','leave','complete']);
+  assert.deepEqual(frozen,[true,true,true,true,true]);
   assert.equal(runtime.observerFailureCount(),5);
 });
 
 test('observer cannot reenter any mutating admission operation', () => {
-  let runtime, ticket;
+  let runtime, existingTicket;
   let probes=0;
   runtime=createStateRuntime({onEvent:e=>{
-    if (e.kind!=='enter') return;
+    if (e.kind!=='enter' || !existingTicket) return;
     const {state_register,state_enter,state_leave}=runtime.imports;
     for (const action of [
-      ()=>state_register(8), ()=>state_enter(0,0),
-      ()=>state_leave(ticket), ()=>runtime.beginRetire(0),
+      ()=>state_register(16), ()=>state_enter(8,0),
+      ()=>state_leave(existingTicket), ()=>runtime.beginRetire(0),
       ()=>runtime.complete(), ()=>runtime.abort(),
     ]) {
       assert.throws(action,/observer cannot mutate admission/);
       probes++;
     }
-    assert.equal(runtime.snapshot().active,1);
+    assert.equal(runtime.snapshot().active,2);
   }});
   runtime.imports.state_register(0);
-  ticket=runtime.imports.state_enter(0,1);
+  runtime.imports.state_register(8);
+  existingTicket=runtime.imports.state_enter(8,1);
+  const ticket=runtime.imports.state_enter(0,1);
   assert.equal(probes,6);
   assert.equal(runtime.observerFailureCount(),0);
-  assert.equal(runtime.snapshot().containers,1);
+  assert.equal(runtime.snapshot().containers,2);
   assert.equal(runtime.snapshot().retired,false);
   runtime.imports.state_leave(ticket);
+  runtime.imports.state_leave(existingTicket);
   runtime.complete();
 });
 
