@@ -94,7 +94,9 @@ fn byte_over_limit_is_rejected_before_object_or_facts_publication() {
             "oversized source unexpectedly passed {arguments:?}"
         );
         assert!(
-            String::from_utf8_lossy(&result.stderr).contains("source too large"),
+            String::from_utf8_lossy(&result.stderr).contains("source too large")
+                || String::from_utf8_lossy(&result.stderr).contains(
+                    &format!("resource_limit at byte {MAX_SOURCE_BYTES}: Oreslang source exceeds 256 KiB prototype limit")),
             "wrong rejection for {arguments:?}: {}",
             String::from_utf8_lossy(&result.stderr)
         );
