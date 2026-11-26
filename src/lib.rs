@@ -67,6 +67,8 @@ pub mod compiler_cache_key;
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
 pub mod shape_lower;
+/// Bounded named immutable scalar aggregate type binding lowering.
+mod named_aggregate_lower;
 /// Identity-free value classes cannot be compiled as identity-bearing browser classes.
 pub mod value_class_admission;
 /// Checked source-local trait and class composition.
@@ -147,6 +149,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
     core_future_ownership::preflight(&original_tokens)?;
+    let original_tokens = named_aggregate_lower::lower(original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
