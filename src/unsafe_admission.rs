@@ -419,6 +419,20 @@ mod tests {
     }
 
     #[test]
+    fn package_graph_preflight_rejects_unsafe_before_import_rewrite() {
+        for source in [
+            "pub fnc main(): int { unsafe { } return 42; }",
+            r#"import module innocent from "std/unsafe/ffi"; pub fnc main(): int { return 42; }"#,
+        ] {
+            let err = crate::linker::import_paths(source, "main.atto").unwrap_err();
+            assert_eq!(err.code, "E_UNSAFE_DOMAIN");
+        }
+        assert!(crate::linker::import_paths(
+            r#"import module innocent from "./safe.atto"; pub fnc main(): int { return 42; }"#,
+            "main.atto").is_ok());
+    }
+
+    #[test]
     fn imported_and_prelexed_unsafe_cannot_bypass_guest_gate() {
         let toks = lexer::lex("pub fnc main(): int { unsafe { } return 42; }").unwrap();
         assert_eq!(reject_unlowered(&toks).unwrap_err().code, "E_UNSAFE_DOMAIN");
