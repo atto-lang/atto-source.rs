@@ -71,8 +71,14 @@ impl BufferedStdio {
             || !(1..=64).contains(&max_waiters) || !(1..=1_048_576).contains(&max_pending) {
             return Err(Error::Quota);
         }
-        let descriptor = NEXT_DESCRIPTOR.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
-            |last| last.checked_add(1)).map_err(|_| Error::Exhausted)? + 1;
+        let mut last = NEXT_DESCRIPTOR.load(Ordering::Relaxed);
+        let descriptor = loop {
+            let next = last.checked_add(1).ok_or(Error::Exhausted)?;
+            match NEXT_DESCRIPTOR.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break next,
+                Err(observed) => last = observed,
+            }
+        };
         Ok(Self {
             records: VecDeque::new(), pending: VecDeque::new(), ready: VecDeque::new(),
             active: None, accepted_bytes: 0, pending_bytes: 0,
