@@ -1,5 +1,5 @@
 //! Bounded executable attached-struct profile: one file-local nominal owner,
-//! scalar fields and parameters, read-only single-return methods and
+//! scalar fields and parameters, readonly returns and bounded mutable methods,
 //! straight-line main. Values live in independent typed scalar locals.
 //! Never use the identity-bearing class ABI or an interpreter.
 use crate::{ast::*, parser::{Parser, StructWithTarget, MAX_PARAMS}, lexer::Token, Diagnostic, Pos};
@@ -7,6 +7,47 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type R<T> = Result<T, Diagnostic>;
 type Slots = BTreeMap<String, String>;
+
+// Bound compiler-generated AST growth before cloning constructor/mutator
+// bodies at call sites. A small source must not amplify into unbounded
+// compiler memory or work. The existing checker/emitter limits remain in force.
+const MAX_STRUCT_EXPANSION_NODES: usize = 65_536;
+
+fn expression_cost(e: &Expr) -> usize {
+    let children = match &e.kind {
+        ExprKind::Unary(_, a) => expression_cost(a),
+        ExprKind::Binary(_, a, b) => expression_cost(a).saturating_add(expression_cost(b)),
+        ExprKind::Ternary(a, b, c) => expression_cost(a).saturating_add(expression_cost(b))
+            .saturating_add(expression_cost(c)),
+        ExprKind::Member(base, _) => expression_cost(base),
+        _ => 0,
+    };
+    1usize.saturating_add(children)
+}
+
+fn body_cost(body: &[Stmt]) -> usize {
+    body.iter().fold(0usize, |sum, stmt| {
+        let children = match stmt {
+            Stmt::FieldAssign { target, value, .. } =>
+                expression_cost(target).saturating_add(expression_cost(value)),
+            Stmt::If { arms, otherwise, .. } => arms.iter().fold(
+                otherwise.as_ref().map_or(0, |b| body_cost(b)), |n, (cond, b)|
+                n.saturating_add(expression_cost(cond)).saturating_add(body_cost(b))),
+            Stmt::Return(Some(e), _) => expression_cost(e),
+            _ => 0,
+        };
+        sum.saturating_add(1).saturating_add(children)
+    })
+}
+
+fn charge_expansion(used: &mut usize, extra: usize, pos: Pos) -> R<()> {
+    let next = used.saturating_add(extra);
+    if next > MAX_STRUCT_EXPANSION_NODES {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "attached struct expansion node budget exceeded"));
+    }
+    *used = next;
+    Ok(())
+}
 
 fn denied(pos: Pos, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(pos, "E_UNSUPPORTED", message)
@@ -140,6 +181,7 @@ struct MainLower<'a> {
     scalars: BTreeMap<String, Type>,
     values: BTreeMap<String, LocalValue>,
     next: usize,
+    expansion_nodes: usize,
 }
 
 impl MainLower<'_> {
@@ -233,6 +275,8 @@ impl MainLower<'_> {
         if candidates.next().is_some() {
             return Err(denied(pos, "ambiguous attached struct constructor signature"));
         }
+        charge_expansion(&mut self.expansion_nodes, body_cost(&ctor.body)
+            .saturating_add(4 * (self.decl.fields.len() + args.len())), pos)?;
         if ctor.params.iter().any(|p| p.mutable) {
             return Err(denied(pos, "mutable constructor parameter outside scalar profile"));
         }
@@ -321,6 +365,7 @@ impl MainLower<'_> {
     fn copy_value(&mut self, name: &str, source: &str, pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
         let writable = self.writable_bindings.contains(&pos);
         let value = self.values.get(source).ok_or_else(|| denied(pos, "copy requires a local scalar struct"))?;
+        charge_expansion(&mut self.expansion_nodes, 4 * self.decl.fields.len(), pos)?;
         if value.fields.len() != self.decl.fields.len() {
             return Err(denied(pos, "invalid struct field plan"));
         }
@@ -361,6 +406,8 @@ impl MainLower<'_> {
         }
         let index = entry.mutable_index.ok_or_else(|| denied(pos, "readonly value method is not a mutable statement"))?;
         let m = &self.decl.methods[index];
+        charge_expansion(&mut self.expansion_nodes, body_cost(&m.body)
+            .saturating_add(4 * args.len()), pos)?;
         let id = self.next;
         self.next += 1;
         let mut params = Slots::new();
@@ -432,6 +479,7 @@ impl MainLower<'_> {
 }
 
 pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
+    let source_nodes = tokens.len();
     let mut parser = Parser::new(tokens);
     let decl = parser.parse_struct_with_target()?;
     let (mut program, writable_bindings) = parser.parse_struct_value_program()?;
@@ -504,7 +552,7 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
         }
     }
     let mut lower = MainLower { decl: &decl, methods: &methods, type_names: &program.type_names, writable_bindings: &writable_bindings, names: BTreeSet::new(),
-        scalars: BTreeMap::new(), values: BTreeMap::new(), next: 0 };
+        scalars: BTreeMap::new(), values: BTreeMap::new(), next: 0, expansion_nodes: source_nodes };
     program.funcs[0].body = lower.body(&program.funcs[0].body)?;
     program.funcs.extend(lowered);
     // The proof functions allow the real typed checker to validate all
