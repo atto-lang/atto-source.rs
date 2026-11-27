@@ -597,9 +597,10 @@ impl Parser {
                 self.expect(Tok::Gt, "'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
+                    Type::Str => Type::OptionStr,
                     Type::ResultIntStr => Type::OptionResultIntStr,
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
+                        "browser ADT admits only Option<int>, Option<string> and Option<Result<int,string>>")),
                 }
             }
             "Generator" => {
@@ -668,6 +669,7 @@ impl Parser {
         let ty = if !self.default_pair() && self.eat(&Tok::Question) {
             match ty {
                 Type::Int => Type::OptionInt,
+                Type::Str => Type::OptionStr,
                 Type::ResultIntStr => Type::OptionResultIntStr,
                 _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                     "type suffix '?' requires a supported Option payload in this backend")),
@@ -2241,11 +2243,19 @@ impl Parser {
 
     fn default_literal(&mut self, ty: Type) -> R<DefaultLiteral> {
         let pos = self.pos();
-        if ty == Type::OptionInt && self.eat_word("None") {
+        if matches!(ty, Type::OptionInt | Type::OptionStr) && self.eat_word("None") {
             return Ok(DefaultLiteral::None);
         }
-        let wrapped = ty == Type::OptionInt && self.eat_word("Some");
+        let wrapped = matches!(ty, Type::OptionInt | Type::OptionStr) && self.eat_word("Some");
         if wrapped { self.expect(Tok::LParen, "'(' after Some")?; }
+        if ty == Type::OptionStr {
+            let Tok::Str(text) = self.peek().clone() else {
+                return Err(Diagnostic::new(pos, "E_DEFAULT_LITERAL", "expected string literal default"));
+            };
+            self.advance();
+            if wrapped { self.expect(Tok::RParen, "')' after Some payload")?; }
+            return Ok(DefaultLiteral::Str(text));
+        }
         let negative = self.eat(&Tok::Minus);
         let n = match self.peek() {
             Tok::Int(Some(n)) if *n <= i64::MAX as u64 => {
@@ -2289,13 +2299,13 @@ impl Parser {
                 omission
             };
             if !allow_omittable || mutable || (omission && (!omittable || omission_default.is_some()))
-                || (!omission && (ty != Type::OptionInt || none_default.is_some() || omission_default.is_some())) {
+                || (!omission && (!matches!(ty, Type::OptionInt | Type::OptionStr) || none_default.is_some() || omission_default.is_some())) {
                 return Err(Diagnostic::new(p, "E_DEFAULT_CLAUSE", "invalid, duplicate or out-of-order default clause"));
             }
             let value = self.default_literal(ty)?;
             if omission { omission_default = Some(value); } else { none_default = Some(value); }
         }
-        if omittable && (!allow_omittable || mutable || (!matches!(ty, Type::OptionInt | Type::OptionResultIntStr)
+        if omittable && (!allow_omittable || mutable || (!matches!(ty, Type::OptionInt | Type::OptionStr | Type::OptionResultIntStr)
             && !(ty == Type::Int && omission_default.is_some()))) {
             return Err(Diagnostic::new(pos, "E_OMITTABLE_DEFAULT",
                 "omittable scalar requires a supported explicit default"));
