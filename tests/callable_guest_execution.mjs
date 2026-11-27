@@ -1,7 +1,7 @@
 // Runs native-compiler-generated Wasm guests for all currently implemented callable forms.
 // In particular, this checks *execution* rather than just compiler acceptance.
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,6 +58,99 @@ try {
     assert.equal(actual, BigInt(want), name + ': wrong guest return value');
     assert.equal(guest.exports.panic_code.value, 0, name + ': unexpected panic');
     console.log('PASS guest execution', name, String(actual));
+  }
+  // Separately compile and execute each current-main intrinsic spelling.
+  for (const [index,sig,lambda,args,tuple] of [
+    [0,'fnc(int,int)->int','|a,b| : int -> a+b','20,22','(20,22)'],
+    [1,'fnc(int,bool)->int','|a,b| : int -> a+2','40,true','(40,true)'],
+    [2,'fnc(int)->int','|a| : int -> a+2','40','(40,)'],
+    [3,'fnc()->int','|| : int -> 42','','()'],
+  ]) {
+    for (const binding of ['val','const']) {
+      let baseline;
+      for (const [form,expression] of [
+        ['direct','f('+args+')'],
+        ['call','f.call('+args+')'],
+        ['apply','f.apply('+tuple+')'],
+      ]) {
+        const source = join(work,'intrinsic-'+index+'-'+binding+'-'+form+'.atto');
+        const out = source+'.wasm';
+        await writeFile(source,'pub fnc main():int { '+binding+' f: '+sig+' = '+lambda+'; return '+expression+'; }');
+        const built = run(source,out);
+        assert.equal(built.status,0,source+': '+built.stderr);
+        const bytes = await readFile(out);
+        assert.ok(WebAssembly.validate(bytes),source);
+        if (baseline) assert.deepEqual(bytes,baseline,source+': byte drift');
+        else baseline=bytes;
+        const module = new WebAssembly.Module(bytes);
+        for (const imp of WebAssembly.Module.imports(module)) {
+          assert.equal(imp.module,'atto');
+          assert.ok(allowed.has(imp.name));
+        }
+        const guest = new WebAssembly.Instance(module,imports);
+        assert.equal(guest.exports.main(),42n,source);
+        assert.equal(guest.exports.panic_code.value,0,source);
+        console.log('PASS callable guest',index,binding,form);
+      }
+    }
+  }
+  for (const [index,expression,diagnostic] of [
+    [0,'f.call(20)','E_ARITY'],
+    [1,'f.apply((20,true))','E_TYPE'],
+    [2,'f.apply((20,))','E_ARITY'],
+    [3,'f.apply([20,22])','E_UNSUPPORTED'],
+    [4,'f.bind(20)','E_UNSUPPORTED'],
+  ]) {
+    const source = join(work,'intrinsic-negative-'+index+'.atto');
+    const out = source+'.wasm';
+    await writeFile(source,'pub fnc main():int { val f: fnc(int,int)->int = |a,b| : int -> a+b; return '+expression+'; }');
+    const built = run(source,out);
+    assert.equal(built.status,1,source+': '+built.stderr);
+    assert.ok(built.stderr.includes(diagnostic),source+': '+built.stderr);
+    await assert.rejects(stat(out),{code:'ENOENT'});
+  }
+  // Sibling closures share no environment storage. Test the identical
+  // compiler output with each intrinsic independently and in combination.
+  const siblings = 'pub fnc main():int { val offset = 2; val plus = |n| : int -> n+offset; val double: fnc(int)->int = |n| : int -> n*2; val seven: fnc()->int = || : int -> 7; return ';
+  let siblingBaseline;
+  for (const [form,expression] of [
+    ['direct','plus(3)+double(15)+seven()'],
+    ['call','plus.call(3)+double.call(15)+seven.call()'],
+    ['apply','plus(3)+double.apply((15,))+seven.apply(())'],
+    ['mixed','plus.call(3)+double.apply((15,))+seven.call()'],
+  ]) {
+    const source = join(work,'sibling-'+form+'.atto');
+    const out = source+'.wasm';
+    await writeFile(source,siblings+expression+'; }');
+    const built = run(source,out);
+    assert.equal(built.status,0,source+': '+built.stderr);
+    const bytes = await readFile(out);
+    assert.ok(WebAssembly.validate(bytes),source);
+    if (siblingBaseline) assert.deepEqual(bytes,siblingBaseline,source+': byte drift');
+    else siblingBaseline = bytes;
+    const module = new WebAssembly.Module(bytes);
+    for (const imp of WebAssembly.Module.imports(module)) {
+      assert.equal(imp.module,'atto');
+      assert.ok(allowed.has(imp.name));
+    }
+    const guest = new WebAssembly.Instance(module,imports);
+    assert.equal(guest.exports.main(),42n,source);
+    assert.equal(guest.exports.panic_code.value,0,source);
+    console.log('PASS sibling callable guest',form);
+  }
+  for (const [index,expression] of [
+    [0,'later(1)'],
+    [1,'later.call(1)'],
+    [2,'later.apply((1,))'],
+    [3,'later'],
+  ]) {
+    const source = join(work,'sibling-negative-'+index+'.atto');
+    const out = source+'.wasm';
+    await writeFile(source,'fnc later(int n):int { return n*100; } pub fnc main():int { val first = |n| : int -> '+expression+'; val later = |n| : int -> n+1; return first(1)+later(1); }');
+    const built = run(source,out);
+    assert.equal(built.status,1,source+': '+built.stderr);
+    assert.ok(built.stderr.includes('E_UNSUPPORTED'),source+': '+built.stderr);
+    await assert.rejects(stat(out),{code:'ENOENT'});
   }
   for (const name of negative) {
     const path = fileURLToPath(new URL('./fixtures/fail/' + name, import.meta.url));

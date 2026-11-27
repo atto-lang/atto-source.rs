@@ -155,3 +155,68 @@ fn valid_annotated_lambda_binding_is_type_checked_but_not_yet_executable() {
     assert_eq!(d.code, "E_UNSUPPORTED");
     assert!(d.message.contains("indirect dispatch"), "{d}");
 }
+
+#[test]
+fn closed_local_invocation_intrinsics_share_direct_wasm_bytes() {
+    // Use current-main canonical callable type syntax; typed lambda aliases
+    // and type-first parameter syntax are tracked in the older stacked PRs.
+    for (sig, lambda, args, tuple) in [
+        ("fnc(int,int)->int", "|a,b| : int -> a+b", "20,22", "(20,22)"),
+        ("fnc(int,bool)->int", "|a,b| : int -> a+2", "40,true", "(40,true)"),
+        ("fnc(int)->int", "|a| : int -> a+2", "40", "(40,)"),
+        ("fnc()->int", "|| : int -> 42", "", "()"),
+    ] {
+        for binding in ["val", "const"] {
+            let prefix = format!("pub fnc main():int {{ {binding} f: {sig} = {lambda}; return ");
+            let ordinary = format!("{prefix}f({args}); }}");
+            let expected = atto_compiler::compile(&ordinary)
+                .unwrap_or_else(|e| panic!("{ordinary}: {e}"));
+            for expr in [format!("f.call({args})"), format!("f.apply({tuple})")] {
+                let src = format!("{prefix}{expr}; }}");
+                assert_eq!(expected, atto_compiler::compile(&src)
+                    .unwrap_or_else(|e| panic!("{src}: {e}")), "{src}");
+            }
+        }
+    }
+}
+
+#[test]
+fn intrinsic_uses_existing_checked_capture_snapshot_for_call_only() {
+    let prefix = "pub fnc main():int { val x = 2; val f = |n| : int -> n+x; return ";
+    let direct = atto_compiler::compile(&format!("{prefix}f(40); }}")).unwrap();
+    assert_eq!(direct, atto_compiler::compile(&format!("{prefix}f.call(40); }}")).unwrap());
+    assert_eq!(err(&format!("{prefix}f.apply((40,)); }}")).code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn intrinsic_denials_do_not_materialize_callable_or_tuple_values() {
+    let prefix = "pub fnc main():int { val f: fnc(int,int)->int = |a,b| : int -> a+b; return ";
+    for (expr, code) in [
+        ("f.call(20)", "E_ARITY"),
+        ("f.call(0,20,22)", "E_ARITY"),
+        ("f.call(20,true)", "E_TYPE"),
+        ("f.apply((20,))", "E_ARITY"),
+        ("f.apply((20,22,0))", "E_ARITY"),
+        ("f.apply((20,true))", "E_TYPE"),
+        ("f.apply(20,22)", "E_ARITY"),
+        ("f.apply((20))", "E_UNSUPPORTED"),
+        ("f.apply([20,22])", "E_UNSUPPORTED"),
+        ("f.apply((20+0,22))", "E_UNSUPPORTED"),
+        ("f.apply(tuple(20,22))", "E_UNSUPPORTED"),
+        ("f.bind(20)", "E_UNSUPPORTED"),
+    ] {
+        let src = format!("{prefix}{expr}; }}");
+        assert_eq!(err(&src).code, code, "{src}");
+    }
+    // Same spelling as an ordinary user function must not expand its result.
+    let src = "fnc tuple(int a,int b): int { return a+b; } pub fnc main():int { val f: fnc(int)->int = |n| : int -> n; return f.apply(tuple(20,22)); }";
+    assert_eq!(err(src).code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn nominal_call_method_remains_ordinary_dispatch() {
+    // Use the already executable receiver-first nominal method grammar.
+    // The local callable and nominal member share the same call spelling.
+    let src = "define class Calculator as int bias: 1; end pub mtd (self: Calculator) call(int n) -> int :: self.bias+n end pub fnc main():int { val c = new Calculator(); val f: fnc(int)->int = |n| : int -> n; val v = f.call(41); return c.call(v); }";
+    atto_compiler::compile(src).unwrap_or_else(|err| panic!("{src}: {err}"));
+}
