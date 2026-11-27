@@ -1005,7 +1005,7 @@ impl Parser {
 
     /// Restricted, non-emitting grammar probe for an actor-local flat machine.
     /// No state schema, runtime dispatch, effect or ownership authority is created.
-    fn parse_flat_actor_machine(&mut self) -> R<Members> {
+    fn parse_flat_actor_machine(&mut self) -> R<()> {
         use std::collections::{BTreeMap, BTreeSet};
         let pos = self.pos();
         self.expect_word("state")?;
@@ -1073,16 +1073,14 @@ impl Parser {
         if seen.len() != nodes.len() {
             return Err(Diagnostic::new(pos, "E_MACHINE_GRAPH", "unreachable behavioral state"));
         }
-        // A validated graph is not executable: do not erase it from the AST
-        // or reinterpret the machine as mutable fields.
-        Err(Diagnostic::new(pos, "E_MACHINE_LOWERING_UNSUPPORTED",
-            "flat actor state machine parsed; typed ownership/effect lowering is not implemented"))
+        Ok(())
     }
 
     /// Class or actor members up to and including `close` (`end` or `}`).
     fn parse_members(&mut self, owner: &str, actor: bool, close: &str) -> R<Members> {
         let kind = if actor { "actor" } else { "class" };
         let mut m = Members::default();
+        let mut machine_pos = None;
         let mut count = 0usize;
         loop {
             if self.at_close(close) {
@@ -1104,6 +1102,7 @@ impl Parser {
                 return Err(unsupported(self.pos(), "annotations"));
             }
             let mpos = self.pos();
+            let explicit_visibility = self.is_word("pub") || self.is_word("private");
             let visibility = if self.eat_word("pub") {
                 if self.eat(&Tok::LBracket) {
                     if !self.eat_word("pkg") || !self.eat(&Tok::RBracket) {
@@ -1164,7 +1163,13 @@ impl Parser {
                 }
                 Some("state") if actor && self.word_at(1) == Some("machine")
                     && self.word_at(2) == Some("as") => {
-                    return self.parse_flat_actor_machine();
+                    if explicit_visibility {
+                        return Err(Diagnostic::new(mpos, "E_SYNTAX", "state machine cannot have visibility modifiers"));
+                    }
+                    if machine_pos.replace(mpos).is_some() {
+                        return Err(Diagnostic::new(mpos, "E_MACHINE_GRAPH", "duplicate state machine"));
+                    }
+                    self.parse_flat_actor_machine()?;
                 }
                 Some("state") if actor => {
                     self.advance();
@@ -1297,6 +1302,10 @@ impl Parser {
                     }))
                 }
             }
+        }
+        if let Some(pos) = machine_pos {
+            return Err(Diagnostic::new(pos, "E_MACHINE_LOWERING_UNSUPPORTED",
+                "flat actor state machine parsed; typed ownership/effect lowering is not implemented"));
         }
         Ok(m)
     }
