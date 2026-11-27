@@ -2645,12 +2645,28 @@ impl<'a> FnCx<'a> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        self.declare_local(name, ty, mutable, pos, false)
+    }
+
+    fn declare_local(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos,
+                     allow_scalar_let_shadow: bool) -> R<u32> {
         if self.telemetry_aliases.iter().any(|alias| alias == name) {
             return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
                 format!("opaque span alias '{name}' cannot be shadowed")));
         }
-        if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
-            return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+        if let Some(previous) = self.scopes.last().unwrap().iter().rev().find(|l| l.name == name) {
+            // Bounded scalar slice: a repeated ordinary let gets a new slot.
+            // No permission to hide parameters, capabilities, borrowed
+            // storage or owned aggregates until their lifetime rules are checked.
+            let can_shadow = allow_scalar_let_shadow && mutable && previous.mutable
+                && previous.slot >= self.nparams && previous.mail.is_none()
+                && matches!(ty, Type::Int | Type::Bool)
+                && matches!(previous.ty, Type::Int | Type::Bool)
+                && !self.borrowed_slots.contains(&previous.slot)
+                && !self.loans.values().any(|loan| loan.owner == previous.slot);
+            if !can_shadow {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+            }
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
@@ -2819,7 +2835,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
-                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                let slot = self.declare_local(name, v.ty, *kind == BindKind::Let, *pos, true)?;
                 if matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_)) {
                     self.fresh_class_roots.insert(slot);
                 }
