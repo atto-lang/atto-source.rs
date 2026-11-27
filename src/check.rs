@@ -416,6 +416,22 @@ pub struct TProgram {
 }
 
 impl TProgram {
+    /// Separate verified collection-layout profile has no protected regions.
+    /// Keep nominal state authority private rather than exposing mutable
+    /// metadata to an alternate lowerer merely to construct its scalar main.
+    pub(crate) fn collection_layout_main(body: Vec<TStmt>) -> Self {
+        Self {
+            state_methods: BTreeMap::new(),
+            state_constructors: BTreeMap::new(),
+            state_tuple_ctors: BTreeMap::new(),
+            funcs: vec![TFunc { name: "main".to_owned(), params: vec![], ret: Type::Int,
+                locals: vec![Type::Array(0)], body }],
+            generators: vec![], main: 0, imports: vec![], data: vec![],
+            heap: true, globals: vec![], actors: vec![],
+            strings: false, guest_eh: false, raise_tag: false, catch_depth: false,
+        }
+    }
+
     pub(crate) fn is_protected_class(&self, ty: Type) -> bool {
         matches!(ty, Type::Class(c) if self.state_constructors.contains_key(&c))
     }
