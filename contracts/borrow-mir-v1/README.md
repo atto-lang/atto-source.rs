@@ -54,3 +54,28 @@ Run `node --test tests/borrow-mir-v1-contract.test.mjs` for a *source-free contr
 Related canonical Rust [PR #5](https://github.com/ores-truffle-oreslang/atto-borrow-checker.rs/pull/5), Java [PR #2752](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2752), and [borrow-checker consolidation issue #3](https://github.com/ores-truffle-oreslang/atto-borrow-checker.rs/issues/3).
 
 **Security:** private Git trees must not be exported across organizations without the protected private CI destination+snapshot authorization. Keeping identical contract blobs inside the original private source organization does not authorize alternate-org mirroring.
+
+
+## Protocol stdlib loan lifecycle additions (C23–C24)
+
+The shared ownership-event corpus now includes a protocol-resource descriptor
+lifecycle used by the WebSocket/QUIC/compute source integration guests:
+
+- **C23 (accept):** initialize one non-Copy owner; acquire two simultaneous
+  shared loans; read through the owner while only shared loans exist; end both
+  loans; acquire one exclusive loan; write through that exact LoanId; end it;
+  move the owner into a new identity; read the moved identity; return with no
+  live loans.
+- **C24 (reject):** acquire two shared loans and then attempt an exclusive
+  loan while both are live; require `E_BORROW_CONFLICT`.
+
+These are core ownership semantics. Protocol library functions neither
+create nor validate loans. Backends must translate their own source constructs
+into authenticated typed ownership events before code emission. The source
+candidate `tests/stdlib/protocol_borrow_core.atto` additionally invokes
+backend-owned WebSocket backpressure, QUIC range and compute-buffer helpers
+between those ownership events.
+
+The corpus now contains 24 cases. The source-free model test validates C23/C24
+but continues to report `verified:false`; it is not compiler execution.
+All nine native backend evidence entries remain `NOT_EXECUTED`.
