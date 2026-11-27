@@ -57,21 +57,38 @@ function executeGuest(bytes) {
 }
 
 const fixtures = [
-  ['delimited', 'pub fnc main(): int { return seq(1, 42); }', 42],
+  ['warned_return', 'pub fnc main(): int { return ^ 42; }', 42],
+  ['warned_sequence_return', 'pub fnc main(): int { return ^ seq! (1, 42); }', 42],
+  ['ordinary_seq_call', 'fnc seq(int a, int b): int { return a-b; } pub fnc main(): int { return seq(50,8); }', 42],
+  ['ordinary_seq_call_spaced', 'fnc seq(int a, int b): int { return a-b; } pub fnc main(): int { return seq (50,8); }', 42],
+  ['bang_is_not_call', 'fnc seq(int a, int b): int { return a-b; } pub fnc main(): int { return seq! (50,42); }', 42],
+  ['bang_bare_return', 'pub fnc main(): int { return seq! 1,42; }', 42],
+  ['bang_bare_caret', 'pub fnc main(): int { ^ seq! 1,42; }', 42],
+  ['delimited', 'pub fnc main(): int { return seq! (1, 42); }', 42],
   ['bare_call', 'fnc calculate(int v): int { return v; } pub fnc main(): int { return calculate(seq 1, 2, 42); }', 42],
   ['multiline_call', 'fnc calculate(int v): int { return v; } pub fnc main(): int { return calculate(\n seq\n 1,\n 2,\n 42\n); }', 42],
-  ['multi_argument', 'fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(seq(1, 2), 40); }', 42],
+  ['multi_argument', 'fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(seq! (1, 2), 40); }', 42],
   ['bare_final_argument', 'fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(40, seq 1, 2); }', 42],
   ['mutable_bare_argument', 'fnc foo(int v): int { return v * 2; } pub fnc main(): int { let int z = 10; const int x = 5; return foo(seq z += x, z); }', 30],
-  ['mutable_delimited_argument', 'fnc foo(int v): int { return v * 2; } pub fnc main(): int { let int z = 10; const int x = 5; return foo(seq(z += x, z)); }', 30],
-  ['ordered_assignment', 'pub fnc main(): int { let int z = 0; const int a = seq(z += 1, z); const int b = seq(z += 1, z); return z * 10 + a + b; }', 23],
+  ['mutable_delimited_argument', 'fnc foo(int v): int { return v * 2; } pub fnc main(): int { let int z = 10; const int x = 5; return foo(seq! (z += x, z)); }', 30],
+  ['ordered_assignment', 'pub fnc main(): int { let int z = 0; const int a = seq! (z += 1, z); const int b = seq! (z += 1, z); return z * 10 + a + b; }', 23],
   ['shorthand_mutation', 'pub fnc main(): int { let int z = 3; return (> z += 4, z * 6); }', 42],
-  ['nested_seq_scope', 'pub fnc main(): int { const int n = seq(let int x = 10, seq(let int y = 2, x * y)); return n + 22; }', 42],
-  ['multiple_mutations', 'pub fnc main(): int { let int z = 0; return seq(z += 1, z += 2, z * 14); }', 42],
-  ['argument_order', 'fnc sub(int a,int b): int { return b-a; } pub fnc main(): int { let int z = 1; return sub(seq(z += 1, z), z * 10); }', 18],
+  ['nested_seq_scope', 'pub fnc main(): int { const int n = seq! (let int x = 10, seq! (let int y = 2, x * y)); return n + 22; }', 42],
+  ['multiple_mutations', 'pub fnc main(): int { let int z = 0; return seq! (z += 1, z += 2, z * 14); }', 42],
+  ['argument_order', 'fnc sub(int a,int b): int { return b-a; } pub fnc main(): int { let int z = 1; return sub(seq! (z += 1, z), z * 10); }', 18],
   ['nested_bare_call', 'fnc add(int a,int b): int { return a+b; } fnc id(int v): int { return v; } pub fnc main(): int { return id(seq 1, add(2, 40)); }', 42],
-  ['mutation_stdout_order', 'pub fnc main(): int { let int z = 0; return seq(stdio.println(11), z += 20, stdio.println(z), z + 22); }', 42, ['11', 'newline', '20', 'newline']],
-  ['once_only_print', 'pub fnc main(): int { return seq(stdio.println(10), stdio.println(20), 42); }', 42, ['10', 'newline', '20', 'newline']],
+  ['mutation_stdout_order', 'pub fnc main(): int { let int z = 0; return seq! (stdio.println(11), z += 20, stdio.println(z), z + 22); }', 42, ['11', 'newline', '20', 'newline']],
+  ['once_only_print', 'pub fnc main(): int { return seq! (stdio.println(10), stdio.println(20), 42); }', 42, ['10', 'newline', '20', 'newline']],
+  ['singleton', 'pub fnc main(): int { return seq! (42); }', 42],
+  ['expression_precedence', 'pub fnc main(): int { return seq! (1, 2) + 40; }', 42],
+  ['nested_tail', 'pub fnc main(): int { return seq! (1, seq! (2, 42)); }', 42],
+  ['shadowing', 'pub fnc main(): int { let int n = 9; return seq! (let int n = 41, n + 1); }', 42],
+  ['string_comma_lexing', 'pub fnc main(): int { return seq! ("a,b", 42); }', 42],
+  ['comments_delimiters', 'pub fnc main(): int { return seq! (/* before */ 1 /* after */, 42); }', 42],
+  ['nested_mutation', 'pub fnc main(): int { let int x = 0; return seq! (x += 1, seq! (x += 1, x * 21)); }', 42],
+  ['independent_scopes', 'pub fnc main(): int { const int a = seq! (let int x = 20, x + 1); const int b = seq! (let int x = 19, x + 2); return a + b; }', 42],
+  ['stmt_discards_without_return', 'pub fnc main(): int { seq 10, 11; return 42; }', 42],
+  ['nested_effect_order', 'pub fnc main(): int { return seq! (stdio.println(7), seq! (stdio.println(8), 42)); }', 42, ['7', 'newline', '8', 'newline']],
 ];
 const work = await mkdtemp(join(tmpdir(), 'atto-seq-guest-'));
 let passed = 0;
@@ -84,6 +101,15 @@ try {
     assert.equal(native.status, 0, `native compiler failed ${id}: ${native.stderr || native.error}`);
     const nativeBytes = await readFile(output);
     const wasmBytes = compileWasmHost(source);
+    const warned = id.startsWith('warned_');
+    assert.equal(compiler.warning_count(), warned ? 1 : 0, id);
+    assert.equal(compiler.warning_code(0), warned ? 1 : 0, id);
+    assert.equal(compiler.warning_code(999999), 0, id);
+    if (warned) {
+      assert.match(native.stderr, /W_REDUNDANT_RETURN/);
+      assert.equal(compiler.warning_line_number(0), 1);
+      assert.ok(compiler.warning_column_number(0) > 0);
+    } else assert.doesNotMatch(native.stderr, /W_REDUNDANT_RETURN/);
     assert.deepEqual(nativeBytes, wasmBytes, `native/wasm32 guest bytes diverged: ${id}`);
     const {result, events} = executeGuest(nativeBytes);
     assert.equal(result, BigInt(expected), `incorrect executed guest result: ${id}`);

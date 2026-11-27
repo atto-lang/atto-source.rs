@@ -56,8 +56,8 @@ const cases = [
   {id:'v2-statement', version:2, src:'fnc f() -> int const n: int = 40; ^ n + 2; end pub fnc main(): int { return f(); }', return:42},
   {id:'legacy-nested-call-comma', version:1, src:'fnc add(int a,int b): int { return a+b; } fnc f() -> int add(20,22) end pub fnc main(): int { return f(); }', return:42},
   {id:'v2-nested-call-not-return', version:2, src:'fnc add(int a,int b): int { return a+b; } fnc f() -> int add(20,22) end pub fnc main(): int { return f(); }', reject:true},
-  {id:'v1-seq-mutates', version:1, src:'pub fnc main(): int { let int z = 2; return seq(z += 5, z * 6); }', return:42},
-  {id:'v2-seq-mutates', version:2, src:'pub fnc main(): int { let int z = 2; return seq(z += 5, z * 6); }', return:42},
+  {id:'v1-seq-mutates', version:1, src:'pub fnc main(): int { let int z = 2; return seq! (z += 5, z * 6); }', return:42},
+  {id:'v2-seq-mutates', version:2, src:'pub fnc main(): int { let int z = 2; return seq! (z += 5, z * 6); }', return:42},
   {id:'v2-explicit-class', version:2, src:'define class Foo as pub value() -> int :: const n: int = 40, n + 2 end end pub fnc main(): int { const f = new Foo(); return f.value(); }', return:42},
   {id:'v1-implicit-class', version:1, src:'define class Foo as pub value() -> int const n: int = 40, n + 2 end end pub fnc main(): int { const f = new Foo(); return f.value(); }', return:42},
   {id:'v1-unmarked-out-of-line-mtd', version:1, src:'define class C as final int seed: 40; end pub mtd (C self) value() -> int let int x = self.seed, x + 2 end pub fnc main(): int { val c = new C(); return c.value(); }', return:42},
@@ -65,8 +65,8 @@ const cases = [
   {id:'v2-marked-out-of-line-mtd', version:2, src:'define class C as final int seed: 40; end pub mtd (C self) value() -> int :: let int x = self.seed, x + 2 end pub fnc main(): int { val c = new C(); return c.value(); }', return:42},
   {id:'v1-explicit-return-comma',version:1,src:'fnc f() -> int return 1, 42; end pub fnc main(): int { return f(); }',return:42},
   {id:'v2-explicit-return-comma',version:2,src:'fnc f() -> int return 1, 42; end pub fnc main(): int { return f(); }',return:42},
-  {id:'v1-seq-initializer',version:1,src:'fnc f() -> int const int n = seq(1, 42); return n; end pub fnc main(): int { return f(); }',return:42},
-  {id:'v2-seq-initializer',version:2,src:'fnc f() -> int const int n = seq(1, 42); return n; end pub fnc main(): int { return f(); }',return:42},
+  {id:'v1-seq-initializer',version:1,src:'fnc f() -> int const int n = seq! (1, 42); return n; end pub fnc main(): int { return f(); }',return:42},
+  {id:'v2-seq-initializer',version:2,src:'fnc f() -> int const int n = seq! (1, 42); return n; end pub fnc main(): int { return f(); }',return:42},
   {id:'v2-mtd-return-comma',version:2,src:'define class C as final int seed: 40; end pub mtd (C self) value() -> int return 1, self.seed + 2; end pub fnc main(): int { val c = new C(); return c.value(); }',return:42},
 ];
 

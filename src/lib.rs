@@ -55,6 +55,16 @@ pub fn compile_with_version(
     source: &str,
     version: parser::LanguageVersion,
 ) -> Result<Vec<u8>, Diagnostic> {
+    compile_with_diagnostics(source, version).map(|(bytes, _)| bytes)
+}
+
+/// Compile with successful-compilation warnings, retaining the old bytes-only
+/// entrypoints. Warnings are source-positioned and never change guest bytes.
+/// Failed compilation returns its fatal diagnostic and no artifact.
+pub fn compile_with_diagnostics(
+    source: &str,
+    version: parser::LanguageVersion,
+) -> Result<(Vec<u8>, Vec<Diagnostic>), Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -63,6 +73,16 @@ pub fn compile_with_version(
         ));
     }
     let source_tokens = lexer::lex(source)?;
+    // The lexer excludes comments and strings from token-pair matching.
+    // A warning is exposed only after the parser and checker accept the
+    // complete program. This avoids side effects in speculative parses.
+    let warnings = source_tokens.windows(2).filter_map(|pair| {
+        if matches!(&pair[0].tok, lexer::Tok::Ident(word) if word == "return")
+            && pair[1].tok == lexer::Tok::Caret {
+            Some(Diagnostic::new(pair[1].pos, "W_REDUNDANT_RETURN",
+                "redundant caret after return; use return alone (parenthesized comma operands are tuples, not sequences)"))
+        } else { None }
+    }).collect::<Vec<_>>();
     // Do not silently erase the 'value' modifier and emit identity-bearing objects.
     value_class_admission::preflight(&source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
@@ -146,7 +166,7 @@ pub fn compile_with_version(
             "generated module exceeds 1 MiB",
         ));
     }
-    Ok(bytes)
+    Ok((bytes, warnings))
 }
 
 /// Browser host ABI (`atto-playground` compiler contract v2). One instance is
@@ -160,13 +180,14 @@ mod abi {
 
     struct State {
         bytes: Vec<u8>,
+        warnings: Vec<Diagnostic>,
         error: [u8; ERROR_CAP],
         line: u32,
         col: u32,
     }
 
     thread_local! {
-        static STATE: RefCell<State> = const { RefCell::new(State { bytes: Vec::new(), error: [0; ERROR_CAP], line: 0, col: 0 }) };
+        static STATE: RefCell<State> = const { RefCell::new(State { bytes: Vec::new(), warnings: Vec::new(), error: [0; ERROR_CAP], line: 0, col: 0 }) };
     }
     static mut INPUT: [u8; SOURCE_CAP] = [0; SOURCE_CAP];
 
@@ -203,6 +224,26 @@ mod abi {
         STATE.with(|s| s.borrow().col)
     }
 
+    // Additive ABI v2 warning accessors: code 1 = W_REDUNDANT_RETURN,
+    // code/position 0 = out of range. Valid until the next compile.
+    #[no_mangle]
+    pub extern "C" fn warning_count() -> u32 {
+        STATE.with(|s| s.borrow().warnings.len() as u32)
+    }
+    #[no_mangle]
+    pub extern "C" fn warning_code(index: u32) -> u32 {
+        STATE.with(|s| s.borrow().warnings.get(index as usize)
+            .map_or(0, |w| if w.code == "W_REDUNDANT_RETURN" { 1 } else { 0 }))
+    }
+    #[no_mangle]
+    pub extern "C" fn warning_line_number(index: u32) -> u32 {
+        STATE.with(|s| s.borrow().warnings.get(index as usize).map_or(0, |w| w.pos.line))
+    }
+    #[no_mangle]
+    pub extern "C" fn warning_column_number(index: u32) -> u32 {
+        STATE.with(|s| s.borrow().warnings.get(index as usize).map_or(0, |w| w.pos.col))
+    }
+
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
@@ -220,6 +261,7 @@ mod abi {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
+            st.warnings.clear();
             st.error = [0; ERROR_CAP];
             st.line = 0;
             st.col = 0;
@@ -262,9 +304,10 @@ mod abi {
                     )
                 }
             };
-            match super::compile_with_version(source, version) {
-                Ok(bytes) => {
+            match super::compile_with_diagnostics(source, version) {
+                Ok((bytes, warnings)) => {
                     st.bytes = bytes;
+                    st.warnings = warnings;
                     0
                 }
                 Err(d) => fail(&mut st, d),

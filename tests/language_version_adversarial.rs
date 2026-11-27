@@ -22,7 +22,7 @@ fn comma_return_sequence_is_not_outer_body_mode() {
         "fnc f() -> int ^ 1, 42; end",
         "fnc f() -> int return seq 1, 42; end",
         "fnc f() -> int ^ seq 1, 42; end",
-        "fnc f() -> int return seq(1, 42); end",
+        "fnc f() -> int return seq! (1, 42); end",
     ] {
         compile_both(&format!("{f} pub fnc main(): int {{ return f(); }}"));
     }
@@ -30,7 +30,7 @@ fn comma_return_sequence_is_not_outer_body_mode() {
 
 #[test]
 fn parenthesized_seq_commas_in_statement_initializers_are_not_outer_body_mode() {
-    compile_both("fnc f() -> int const int n = seq(1, 42); return n; end pub fnc main(): int { return f(); }");
+    compile_both("fnc f() -> int const int n = seq! (1, 42); return n; end pub fnc main(): int { return f(); }");
 }
 
 #[test]
@@ -58,15 +58,15 @@ fn target_mtd_explicit_return_commas_stay_inside_the_return() {
 
 #[test]
 fn target_mtd_parenthesized_seq_initializer_commas_stay_inside_the_expression() {
-    let f="define class C as final int seed: 40; end pub mtd (C self) get() -> int const int n = seq(1, 42); return n; end pub fnc main(): int { val c = new C(); return c.get(); }";
+    let f="define class C as final int seed: 40; end pub mtd (C self) get() -> int const int n = seq! (1, 42); return n; end pub fnc main(): int { val c = new C(); return c.get(); }";
     compile_both(f);
 }
 
 #[test]
 fn version_diagnostic_is_not_used_to_launder_malformed_nested_sequences() {
     for src in [
-        "fnc f() -> int return seq(1,,42); end pub fnc main(): int { return f(); }",
-        "fnc f() -> int return seq(1;42); end pub fnc main(): int { return f(); }",
+        "fnc f() -> int return seq! (1,,42); end pub fnc main(): int { return f(); }",
+        "fnc f() -> int return seq! (1;42); end pub fnc main(): int { return f(); }",
         "fnc f() -> int ^ 1,,42; end pub fnc main(): int { return f(); }",
     ] {
         let err=compile_with_version(src,LanguageVersion::Explicit).unwrap_err();

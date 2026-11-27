@@ -52,8 +52,11 @@ fn run() -> Result<(), CliError> {
     let input = input.ok_or("missing input.atto file")?;
     let source = std::fs::read(&input).map_err(|_| format!("{input}: cannot read UTF-8 source"))?;
     let source = String::from_utf8(source).map_err(|_| format!("{input}: cannot read UTF-8 source"))?;
-    let bytes = atto_compiler::compile_with_version(&source, version)
+    let (bytes, warnings) = atto_compiler::compile_with_diagnostics(&source, version)
         .map_err(|d| CliError::Compile(format!("{input}:{d}")))?;
+    for warning in warnings {
+        eprintln!("{input}:{warning}");
+    }
     if let Some(path) = output {
         std::fs::write(&path, &bytes).map_err(|_| format!("{path}: cannot write"))?;
     } else {

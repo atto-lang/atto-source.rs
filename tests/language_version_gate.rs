@@ -86,10 +86,10 @@ fn implicit_tail_is_lexically_owned_by_version_not_inferred_from_checker() {
 
 #[test]
 fn nested_sequences_and_comma_return_positions_are_orthogonal() {
-    let source = "fnc f() -> int :: const n: int = seq(1, 42), n end pub fnc main(): int { return 1, f(); }";
+    let source = "fnc f() -> int :: const n: int = seq! (1, 42), n end pub fnc main(): int { return 1, f(); }";
     good(source, LanguageVersion::Legacy);
     good(source, LanguageVersion::Explicit);
-    let source = "pub fnc main(): int { let int z = 0; return seq(z += 2, z * 21); }";
+    let source = "pub fnc main(): int { let int z = 0; return seq! (z += 2, z * 21); }";
     assert_eq!(good(source, LanguageVersion::Legacy), good(source, LanguageVersion::Explicit));
 }
 
