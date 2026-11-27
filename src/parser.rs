@@ -3557,12 +3557,12 @@ impl Parser {
         let mut names = std::collections::BTreeSet::new();
         if *self.peek() != Tok::RParen {
             loop {
-                if *self.peek() == Tok::Dot {
+                if matches!(self.peek(), Tok::Dot | Tok::Ellipsis) {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
-                if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+                if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Colon | Tok::Assign) {
                     let (name, pos) = self.ident("a named argument")?;
-                    self.advance(); // ':'
+                    self.advance(); // ':' or '='
                     if !names.insert(name.clone()) {
                         return Err(Diagnostic::new(pos, "E_DUPLICATE",
                             format!("duplicate named argument '{name}'")));
