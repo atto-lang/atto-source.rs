@@ -33,6 +33,23 @@ fn scalar_lit(t: &Tok) -> Option<&'static str> {
         _ => None,
     }
 }
+
+// A leading '-' is a unary operator token, not part of the numeric token.
+// Admit only signed numeric literals here, never general computed expressions.
+// Tok::Int(None) represents 2^63 and is valid only with this leading '-'.
+fn scalar_literal_initializer(t: &[Token], at: usize) -> Option<(&'static str, usize)> {
+    if matches!(t.get(at).map(|x| &x.tok), Some(Tok::Minus)) {
+        return match t.get(at + 1).map(|x| &x.tok) {
+            Some(Tok::Int(_)) => Some(("int", at + 2)),
+            Some(Tok::Float(_)) => Some(("float", at + 2)),
+            _ => None,
+        };
+    }
+    t.get(at)
+        .and_then(|x| scalar_lit(&x.tok))
+        .map(|ty| (ty, at + 1))
+}
+
 fn scalar_type(s: &str) -> Option<&'static str> {
     match s {
         "int" => Some("int"),
@@ -191,15 +208,15 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
     let mut original_any_local_binder: Option<usize> = None;
     for i in 0..t.len() {
         if !word(&t, i, "Any") { continue; }
-        // Exact, immutable, literal-evaluable binding: val x: Any = 42;
+        // Exact, immutable, literal-evaluable binding, including -42 and i64::MIN.
         if i >= 3 && word(&t, i - 3, "val") &&
             matches!(t[i - 2].tok, Tok::Ident(_)) &&
             t[i - 1].tok == Tok::Colon && t.get(i + 1).is_some_and(|x| x.tok == Tok::Assign)
         {
-            let type_name = t.get(i + 2).and_then(|x| scalar_lit(&x.tok))
+            let (type_name, end) = scalar_literal_initializer(&t, i + 2)
                 .ok_or_else(|| fail(t[i].pos, "E_UNSUPPORTED_TYPE",
                     "Any literal specialization requires a direct immutable scalar initializer"))?;
-            if t.get(i + 3).is_none_or(|x| x.tok != Tok::Semi) {
+            if t.get(end).is_none_or(|x| x.tok != Tok::Semi) {
                 return Err(fail(t[i].pos, "E_UNSUPPORTED_TYPE",
                     "Any literal specialization does not accept computed or escaped values"));
             }

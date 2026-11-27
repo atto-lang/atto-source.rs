@@ -9,7 +9,66 @@ import {join} from 'node:path';
 const attoc = process.env.ATTOC || 'target/release/attoc';
 const program = body => 'fnc f(Any v): int { ' + body +
   ' } pub fnc main(): int { val value: Any = 41; return f(value); }';
+// The `Any` proof is static, but the signed value and guard outcome must be
+// checked by executing the *compiled* guest, not merely by compiling source.
+const signedInt = literal => `
+  fnc classify(Any value): int {
+    match value over
+      on is int when value > 0 -> { return 0; }
+      on is int -> { return 42; }
+      on _ -> { return 0; }
+    end
+  }
+  pub fnc main(): int {
+    val value: Any = ${literal};
+    if value is int && value eq ${literal} then
+      return classify(value);
+    fi
+    return 0;
+  }`;
+const signedFloat = `
+  fnc classify(Any value): int {
+    match value over
+      on is float when value < 0 -> { return 42; }
+      on is float -> { return 0; }
+      on _ -> { return 0; }
+    end
+  }
+  pub fnc main(): int {
+    val value: Any = -3.5;
+    if value is float && value eq -3.5 then
+      return classify(value);
+    fi
+    return 0;
+  }`;
+const signedMismatch = `
+  fnc classify(Any value): int {
+    match value over
+      on is int when value > 0 -> { return 0; }
+      on is int -> { return 42; }
+      on _ -> { return 0; }
+    end
+  }
+  pub fnc main(): int {
+    val value: Any = -42;
+    if value is int && value eq 42 then
+      return 0;
+    fi
+    return classify(value);
+  }`;
+const invalidSigned = expr =>
+  'fnc classify(Any value): int { return 42; } ' +
+  'pub fnc main(): int { val value: Any = ' + expr + '; return classify(value); }';
+
 const pass = [
+  ['signed-negative-int', signedInt('-42')],
+  ['signed-spaced-unary-minus', signedInt('- 42')],
+  ['signed-comment-separated-minus', signedInt('-/* comment */42')],
+  ['signed-not-equal-positive-42', signedMismatch],
+  ['signed-negative-zero', signedInt('-0')],
+  ['signed-i64-min', signedInt('-9223372036854775808')],
+  ['signed-negative-binary', signedInt('-0b101010')],
+  ['signed-negative-float', signedFloat],
   ['capture-when', program('match v over on is int as val n when n > 40 -> { return n + 1; } on is int -> { return 0; } on _ -> { return -1; } end')],
   ['negated-capture', program('match v over on is !string as val n when n > 40 -> { return n + 1; } on _ -> { return 0; } end')],
   ['negated-is-expression', program('if v is !string && v == 41 then return v + 1; fi return 0;')],
@@ -23,6 +82,13 @@ const pass = [
   ['guarded-wildcard-fallthrough', program('match v over on _ when v > 100 -> { return 0; } on is int as val n -> { return n + 1; } end')]
 ];
 const fail = [
+  ['signed-computation-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('-42 + 1')],
+  ['signed-parentheses-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('-(42)')],
+  ['signed-double-minus-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('--42')],
+  ['signed-bool-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('-true')],
+  ['signed-i64-underflow', 'E_INTEGER_RANGE', invalidSigned('-9223372036854775809')],
+  ['signed-mutable-any-rejected', 'E_UNSUPPORTED_TYPE',
+    'fnc classify(Any value): int { return 42; } pub fnc main(): int { let value: Any = -42; return classify(value); }'],
   ['missing-capture-qualifier', 'E_SYNTAX', program('match v over on is int as n -> { return n; } on _ -> { return 0; } end')],
   ['mutable-capture-not-proven', 'E_SYNTAX', program('match v over on is int as let n -> { return n; } on _ -> { return 0; } end')],
   ['unknown-runtime-type', 'E_UNSUPPORTED_TYPE', program('match v over on is Widget -> { return 0; } on _ -> { return 1; } end')],
