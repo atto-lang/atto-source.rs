@@ -136,6 +136,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             let tok = if s == "yield" && chars.get(i) == Some(&'*') {
                 bump!();
                 Tok::YieldStar
+            } else if s == "seq" && chars.get(i) == Some(&'!') && chars.get(i + 1) != Some(&'=') {
+                bump!();
+                Tok::Ident("seq!".to_owned())
             } else {
                 Tok::Ident(s)
             };

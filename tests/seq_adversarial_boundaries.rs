@@ -21,18 +21,18 @@ fn rejects(source: &str) {
 #[test]
 fn seq_singleton_nesting_precedence_and_shadowing() {
     for source in [
-        "pub fnc main(): int { return seq(42); }",
-        "pub fnc main(): int { return seq(1, 2) + 40; }",
-        "pub fnc main(): int { return seq(1, seq(2, 42)); }",
-        "pub fnc main(): int { return (> 1, seq(2, 42)); }",
-        "pub fnc main(): int { return seq(1, (> 2, 42)); }",
-        "pub fnc main(): int { return seq(\"literal,comma\", 42); }",
-        "pub fnc main(): int { return seq(/* before */ 1 /* after */, 42); }",
-        "pub fnc main(): int { let int n = 9; return seq(let int n = 41, n + 1); }",
-        "pub fnc main(): int { let int x = 0; return seq(x += 1, seq(x += 1, x * 21)); }",
-        "pub fnc main(): int { const int a = seq(let int x = 20, x + 1); const int b = seq(let int x = 19, x + 2); return a + b; }",
+        "pub fnc main(): int { return seq! (42); }",
+        "pub fnc main(): int { return seq! (1, 2) + 40; }",
+        "pub fnc main(): int { return seq! (1, seq! (2, 42)); }",
+        "pub fnc main(): int { return (> 1, seq! (2, 42)); }",
+        "pub fnc main(): int { return seq! (1, (> 2, 42)); }",
+        "pub fnc main(): int { return seq! (\"literal,comma\", 42); }",
+        "pub fnc main(): int { return seq! (/* before */ 1 /* after */, 42); }",
+        "pub fnc main(): int { let int n = 9; return seq! (let int n = 41, n + 1); }",
+        "pub fnc main(): int { let int x = 0; return seq! (x += 1, seq! (x += 1, x * 21)); }",
+        "pub fnc main(): int { const int a = seq! (let int x = 20, x + 1); const int b = seq! (let int x = 19, x + 2); return a + b; }",
         "pub fnc main(): int { seq 10, 11; return 42; }",
-        "pure fnc p(): int { return seq(1, 42); } pub fnc main(): int { return p(); }",
+        "pure fnc p(): int { return seq! (1, 42); } pub fnc main(): int { return p(); }",
     ] {
         compiles(source);
     }
@@ -52,9 +52,9 @@ fn call_argument_comma_ownership_is_syntactic_and_explicit() {
 
     for source in [
         "fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(1, seq 0, 41); }",
-        "fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(seq(1, 2), 40); }",
+        "fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(seq! (1, 2), 40); }",
         "fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add((> 1, 2), 40); }",
-        "fnc id(int v): int { return v; } pub fnc main(): int { return id(seq(1, id(2), 42)); }",
+        "fnc id(int v): int { return v; } pub fnc main(): int { return id(seq! (1, id(2), 42)); }",
     ] {
         compiles(source);
     }
@@ -63,20 +63,20 @@ fn call_argument_comma_ownership_is_syntactic_and_explicit() {
 #[test]
 fn seq_rejects_empty_items_delimiters_nonvalues_and_bad_targets() {
     for source in [
-        "pub fnc main(): int { return seq(); }",
-        "pub fnc main(): int { return seq(, 42); }",
-        "pub fnc main(): int { return seq(1,, 42); }",
-        "pub fnc main(): int { return seq(1, 42,); }",
-        "pub fnc main(): int { return seq(1; 42); }",
-        "pub fnc main(): int { return seq(1, 42; }",
-        "pub fnc main(): int { return seq(let int n = 42); }",
-        "pub fnc main(): int { let int n = 1; return seq(n += 1); }",
-        "pub fnc main(): int { let int n = 1; return seq(1, n = 42); }",
-        "pub fnc main(): int { return seq(1, let int n = 42); }",
-        "pub fnc main(): int { let int n = 0; return seq(1 + n = 42, n); }",
-        "pub fnc main(): int { return seq(1, ^ 42); }",
-        "pub fnc main(): int { return seq(return 1, 42); }",
-        "pub fnc main(): int { return seq(1, (2, 3), 42); }",
+        "pub fnc main(): int { return seq! (); }",
+        "pub fnc main(): int { return seq! (, 42); }",
+        "pub fnc main(): int { return seq! (1,, 42); }",
+        "pub fnc main(): int { return seq! (1, 42,); }",
+        "pub fnc main(): int { return seq! (1; 42); }",
+        "pub fnc main(): int { return seq! (1, 42; }",
+        "pub fnc main(): int { return seq! (let int n = 42); }",
+        "pub fnc main(): int { let int n = 1; return seq! (n += 1); }",
+        "pub fnc main(): int { let int n = 1; return seq! (1, n = 42); }",
+        "pub fnc main(): int { return seq! (1, let int n = 42); }",
+        "pub fnc main(): int { let int n = 0; return seq! (1 + n = 42, n); }",
+        "pub fnc main(): int { return seq! (1, ^ 42); }",
+        "pub fnc main(): int { return seq! (return 1, 42); }",
+        "pub fnc main(): int { return seq! (1, (2, 3), 42); }",
     ] {
         rejects(source);
     }
@@ -85,13 +85,13 @@ fn seq_rejects_empty_items_delimiters_nonvalues_and_bad_targets() {
 #[test]
 fn seq_does_not_bypass_types_scopes_mutability_ownership_or_effects() {
     for source in [
-        "pub fnc main(): int { const int n = 1; return seq(n += 1, n); }",
-        "pub fnc main(): int { return seq(let int n = 1, let int n = 2, n); }",
-        "pub fnc main(): int { const int n = seq(let int hidden = 42, hidden); return hidden; }",
-        "pub fnc main(): int { let int n = 1; return seq(n += 1, n) + hidden; }",
-        "pub fnc main(): int { const int n = 42; return seq(take! n, n); }",
-        "pure fnc p(): int { return seq(stdio.println(1), 42); } pub fnc main(): int { return p(); }",
-        "fnc p(): bool { return seq(1, 42); } pub fnc main(): int { return 42; }",
+        "pub fnc main(): int { const int n = 1; return seq! (n += 1, n); }",
+        "pub fnc main(): int { return seq! (let int n = 1, let int n = 2, n); }",
+        "pub fnc main(): int { const int n = seq! (let int hidden = 42, hidden); return hidden; }",
+        "pub fnc main(): int { let int n = 1; return seq! (n += 1, n) + hidden; }",
+        "pub fnc main(): int { const int n = 42; return seq! (take! n, n); }",
+        "pure fnc p(): int { return seq! (stdio.println(1), 42); } pub fnc main(): int { return p(); }",
+        "fnc p(): bool { return seq! (1, 42); } pub fnc main(): int { return 42; }",
     ] {
         rejects(source);
     }
@@ -99,12 +99,12 @@ fn seq_does_not_bypass_types_scopes_mutability_ownership_or_effects() {
 
 #[test]
 fn delimited_seq_outer_commas_require_explicit_v2_callable_mode() {
-    // seq(...) is an expression; its own commas stop at the matching ')'.
+    // seq! (...) is an expression; its own commas stop at the matching ')'.
     // The comma *after* ')' belongs to the enclosing unmarked callable body.
     // In v1 this is legacy implicit-tail syntax; in v2 it requires '::'.
     for source in [
-        "fnc f() -> int seq(1, 2), 42 end pub fnc main(): int { return f(); }",
-        "fnc f() -> int const int n = seq(1, 2), n + 40 end pub fnc main(): int { return f(); }",
+        "fnc f() -> int seq! (1, 2), 42 end pub fnc main(): int { return f(); }",
+        "fnc f() -> int const int n = seq! (1, 2), n + 40 end pub fnc main(): int { return f(); }",
     ] {
         let legacy = compile_with_version(source, LanguageVersion::Legacy)
             .unwrap_or_else(|err| panic!("v1 compatibility regressed: {err}"));
@@ -122,7 +122,7 @@ fn delimited_seq_outer_commas_require_explicit_v2_callable_mode() {
             "bare seq statement must not create an edition diagnostic: {version:?}");
     }
 
-    let explicit = "fnc f() -> int :: seq(1, 2), 42 end pub fnc main(): int { return f(); }";
+    let explicit = "fnc f() -> int :: seq! (1, 2), 42 end pub fnc main(): int { return f(); }";
     assert!(compile_with_version(explicit, LanguageVersion::Explicit).is_ok(),
         "explicit v2 comma-tail mode must remain accepted");
 }

@@ -43,7 +43,6 @@ fn sequence_syntax_and_scopes_fail_closed() {
         "pub fnc main(): int { ^ (> let x = 5, x + 3; }",
         "pub fnc main(): int { seq let x = 5, x + 37; }",
         "pub fnc main(): int { ^ (> let x = 2, x + 3) ^ 4; }",
-        "fnc seq(int x): int { return x; } pub fnc main(): int { ^ seq(42); }",
         "pub fnc main(): int { ^ begin(42); }",
     ] {
         assert!(compile(src).is_err(), "malformed or untyped sequence compiled: {src}");
@@ -69,4 +68,24 @@ fn pure_sequence_checks_every_step_and_tail() {
     ] {
         assert!(compile(src).is_err(), "effectful operation hidden inside pure sequence: {src}");
     }
+}
+
+#[test]
+fn ordinary_seq_is_callable_and_bang_is_a_sequence() {
+    for src in [
+        "fnc seq(int a, int b): int { return a - b; } pub fnc main(): int { return seq(50, 8); }",
+        "fnc seq(int a, int b): int { return a - b; } pub fnc main(): int { return seq (50, 8); }",
+        "fnc seq(): int { return 42; } pub fnc main(): int { return seq(); }",
+        "fnc seq(int a): int { return a + 1; } pub fnc main(): int { return seq(41); }",
+        "fnc seq(int a, int b): int { return a - b; } pub fnc main(): int { return seq! (50, 42); }",
+        "pub fnc main(): int { ^ seq! 1, 42; }",
+    ] { accepted(src); }
+    let joined = lex("seq!(1, 42)").unwrap();
+    assert_eq!(joined[0].tok, Tok::Ident("seq!".to_owned()));
+    let split = lex("seq !(1, 42)").unwrap();
+    assert_eq!(split[0].tok, Tok::Ident("seq".to_owned()));
+    assert_eq!(split[1].tok, Tok::Bang);
+    let neq = lex("seq!=42").unwrap();
+    assert_eq!(neq[0].tok, Tok::Ident("seq".to_owned()));
+    assert_eq!(neq[1].tok, Tok::NotEq);
 }

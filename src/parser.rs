@@ -76,7 +76,7 @@ const RESERVED: &[&str] = &[
     "yield",
     "nlex",
     "return",
-    "seq",
+    "seq!",
     "begin",
     "self",
     "super",
@@ -1473,8 +1473,8 @@ impl Parser {
                     }
                 }
                 Tok::Ident(word) if (word == "return"
-                    || (word == "seq"
-                        // seq(...) is a delimited expression: its FOLLOWING outer
+                    || (matches!(word.as_str(), "seq" | "seq!")
+                        // seq! (...) is a delimited expression: its FOLLOWING outer
                         // comma may select a v1 implicit-tail body or require ::
                         // under strict v2. Only bare seq claims commas until ';'.
                         && !self.toks.get(self.i + offset + 1)
@@ -1868,13 +1868,9 @@ impl Parser {
                     }
                     return self.parse_return_match(pos);
                 }
-                if self.is_word("seq") {
-                    // Parenthesized seq is an expression; reuse ordinary expression
-                    // admission, then the normal return statement terminator.
-                    if *self.peek_at(1) == Tok::LParen {
-                        let value = self.parse_expr()?;
-                        self.terminator()?;
-                        return Ok(Stmt::Return(Some(value), pos));
+                if (self.is_word("seq") || self.is_word("seq!")) && *self.peek_at(1) != Tok::LParen {
+                    if self.in_generator {
+                        return Err(Diagnostic::new(pos, "E_RETURN", "generator cannot return a sequence value"));
                     }
                     self.advance();
                     // A single value-match is also a degenerate one-step
@@ -1910,7 +1906,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
             }
-            Some("seq") if *self.peek_at(1) != Tok::LParen => {
+            Some("seq" | "seq!") if *self.peek_at(1) != Tok::LParen => {
                 self.advance();
                 let value = self.parse_comma_sequence(Tok::Semi, pos)?;
                 self.terminator()?;
@@ -3051,9 +3047,9 @@ impl Parser {
                 }
                 // An unparenthesized `seq` consumes commas through this
                 // call's closing ')'. This is deliberately the final argument:
-                // use seq(...) or (> ... ) to delimit a sequence before more
+                // use seq! (...) or (> ... ) to delimit a sequence before more
                 // call arguments. This avoids guessing at comma ownership.
-                if self.is_word("seq") && *self.peek_at(1) != Tok::LParen {
+                if (self.is_word("seq") || self.is_word("seq!")) && *self.peek_at(1) != Tok::LParen {
                     let pos = self.pos();
                     self.advance();
                     args.push(self.parse_comma_sequence(Tok::RParen, pos)?);
@@ -3312,7 +3308,7 @@ impl Parser {
                 let inner = self.parse_comma_sequence(Tok::RParen, pos)?;
                 self.expect(Tok::RParen, "')' after return sequence")?;
                 Some(inner)
-            } else if self.is_word("seq") && *self.peek_at(1) != Tok::LParen {
+            } else if (self.is_word("seq") || self.is_word("seq!")) && *self.peek_at(1) != Tok::LParen {
                 self.advance();
                 Some(self.parse_comma_sequence(Tok::Semi, pos)?)
             } else if *self.peek() == Tok::Semi {
@@ -3490,7 +3486,7 @@ impl Parser {
             Tok::SequenceOpen => {
                 self.advance();
                 let result = self.parse_comma_sequence(Tok::RParen, pos)?;
-                self.expect(Tok::RParen, "')' to close sequence")?;
+                self.expect(Tok::RParen, "')' to close seq!uence")?;
                 return Ok(result);
             }
             Tok::LParen => {
@@ -3509,9 +3505,9 @@ impl Parser {
                 return Ok(result);
             }
             Tok::Ident(s) => match s.as_str() {
-                "seq" => {
+                "seq!" => {
                     self.advance();
-                    self.expect(Tok::LParen, "'(' after expression-position 'seq'")?;
+                    self.expect(Tok::LParen, "'(' after expression-position 'seq!'")?;
                     let result = self.parse_comma_sequence(Tok::RParen, pos)?;
                     self.expect(Tok::RParen, "')' to close seq")?;
                     return Ok(result);
