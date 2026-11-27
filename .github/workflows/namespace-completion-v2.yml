@@ -1,0 +1,34 @@
+name: Namespace v2 production class guests
+on:
+  pull_request:
+    paths:
+      - 'src/namespace.rs'
+      - 'src/target_syntax.rs'
+      - 'src/lib.rs'
+      - 'src/import_tree.rs'
+      - 'tests/namespace_completion_v2.rs'
+      - 'tests/folder_namespaces.rs'
+      - 'tests/import_tree.rs'
+      - '.github/workflows/namespace-completion-v2.yml'
+permissions:
+  contents: read
+jobs:
+  guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact source and execute actual guest and regression tests
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD^{tree}
+          rustc --version
+          cargo --version
+          node --version
+          cargo test --locked --test namespace_completion_v2 --test folder_namespaces --test import_tree --test receiver_constructors_state

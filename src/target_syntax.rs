@@ -54,6 +54,7 @@ pub struct ConstructorSite {
     pub public: bool,
     pub declaration_start: usize,
     pub params_start: usize,
+    pub params_end: usize,
     pub body_start: usize,
     pub end: usize,
 }
@@ -77,6 +78,8 @@ pub struct TargetHeaders {
     pub class_forwards: Vec<String>,
     /// Token ranges for class forward declarations, omitted after linkage.
     pub class_forward_sites: Vec<(usize, usize)>,
+    /// V2-only declared visibility; package exports never become public.
+    pub class_forward_exports: Vec<(String, crate::visibility_lower::Visibility, Pos)>,
     /// Parsed but unsupported protected per-instance class state attachments.
     pub state_owners: Vec<String>,
     /// Parsed but deliberately unlinked struct forwards.
@@ -418,18 +421,22 @@ impl Cursor<'_> {
         self.i = end;
         Ok(decl)
     }
-    fn constructor_site(&mut self, pos: Pos, public: bool, declaration_start: usize) -> R<ConstructorSite> {
+    fn constructor_site(&mut self, pos: Pos, public: bool, declaration_start: usize, v2: bool) -> R<ConstructorSite> {
         self.expect(&Tok::LParen, "expected '(' before constructor owner")?;
         let owner = self.ident()?;
         self.expect(&Tok::RParen, "expected ')' after constructor owner")?;
         let params_start = self.i;
         self.params()?;
-        self.expect(&Tok::Colon, "out-of-line constructor requires ': self'")?;
-        self.expect_word("self")?;
+        let params_end = self.i;
+        if self.take(&Tok::Colon) {
+            self.expect_word("self")?;
+        } else if !v2 {
+            return Err(self.err("E_SYNTAX", "out-of-line constructor requires ': self'"));
+        }
         let body_start = self.i;
         self.body(false, true, false)?;
         Ok(ConstructorSite { owner, pos, public, declaration_start,
-            params_start, body_start, end: self.i })
+            params_start, params_end, body_start, end: self.i })
     }
 
     /// Guarded state syntax is recognized only, never lowered to unprotected fields.
@@ -496,10 +503,10 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
 pub fn parse_target_declarations_with_path(toks: &[Token], logical_path: Option<&std::path::Path>)
     -> R<TargetHeaders> {
     let normalized = crate::namespace::normalize(toks, logical_path)?;
-    parse_target_declarations_normalized(&normalized)
+    parse_target_declarations_normalized(&normalized, false)
 }
 
-fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
+fn parse_target_declarations_normalized(toks: &[Token], v2: bool) -> R<TargetHeaders> {
     if toks.is_empty() {
         return Err(Diagnostic::new(Pos::default(), "E_EOF", "empty token stream"));
     }
@@ -747,7 +754,17 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
         } else if c.take_word("declare") {
             saw_declaration = true;
             let start = c.i - 1;
+            let visibility = if v2 && c.take_word("pub") {
+                if c.take(&Tok::LBracket) {
+                    c.expect_word("pkg")?;
+                    c.expect(&Tok::RBracket, "expected ']' after pkg")?;
+                    Some(crate::visibility_lower::Visibility::Package)
+                } else { Some(crate::visibility_lower::Visibility::Public) }
+            } else { None };
             let kind = c.word().map(str::to_owned).unwrap_or_default();
+            if v2 && kind != "class" {
+                return Err(c.err("E_UNSUPPORTED", "v2 file completion currently supports classes only"));
+            }
             if !matches!(kind.as_str(), "actor" | "class" | "struct") {
                 return Err(c.err("E_SYNTAX", "expected actor, class or struct after declare"));
             }
@@ -767,6 +784,9 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
             match kind.as_str() {
                 "actor" => out.actors.push(name),
                 "class" => {
+                    if let Some(visibility) = visibility {
+                        out.class_forward_exports.push((name.clone(), visibility, pos));
+                    }
                     out.class_forwards.push(name);
                     out.class_forward_sites.push((start, c.i));
                 }
@@ -790,7 +810,7 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 });
                 out.receivers.push(method);
             } else if c.take_word("constructor") {
-                let site = c.constructor_site(pos, public, declaration_start)?;
+                let site = c.constructor_site(pos, public, declaration_start, v2)?;
                 if out.constructors.iter().any(|prev| prev.owner == site.owner) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
                         "at most one authored constructor per nominal owner in v1"));
@@ -897,7 +917,11 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
         }
     }
     for (i, start, end) in spans {
-        validate_receiver_body(toks, &out, i, start, end)?;
+        // Declared classes are not actors. V2 completion invokes the existing
+        // immutable-class receiver checks after synthesizing a checked layout.
+        if !v2 || !out.class_forwards.contains(&out.receivers[i].owner) {
+            validate_receiver_body(toks, &out, i, start, end)?;
+        }
     }
     // The same parser-owned ledger drives both semantic validation and all
     // native backend consumers. Never maintain a second unsynchronized span
@@ -954,8 +978,10 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
     }
     for site in &headers.constructors {
         if site.declaration_start >= site.params_start ||
-           site.params_start >= site.body_start ||
-           site.body_start >= site.end || site.end > toks.len() {
+           site.params_start >= site.params_end ||
+           site.params_end > site.body_start ||
+           site.body_start >= site.end || site.end > toks.len() ||
+           !(site.body_start == site.params_end || site.body_start == site.params_end + 2) {
             return Err(Diagnostic::new(site.pos, "E_SYNTAX",
                 "invalid constructor source span"));
         }
@@ -1057,7 +1083,7 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
             insertions[owner].push(Token { tok: Tok::Ident("pub".to_owned()), pos: site.pos });
         }
         insertions[owner].push(Token { tok: Tok::Ident("constructor".to_owned()), pos: site.pos });
-        insertions[owner].extend_from_slice(&toks[site.params_start..site.body_start - 2]);
+        insertions[owner].extend_from_slice(&toks[site.params_start..site.params_end]);
         insertions[owner].extend_from_slice(&toks[site.body_start..site.end]);
     }
     let mut insert_at = vec![None; toks.len()];
@@ -1312,4 +1338,86 @@ fn validate_spawned_actor_calls(
         }
     }
     Ok(())
+}
+
+/// Complete a bounded v2 file-local class group and reuse the existing checked
+/// class lowering. No source files are flattened, no foreign attachment is
+/// admitted, and no field, contract, or actor layout is guessed. The normal
+/// compiler must still parse, typecheck, enforce ownership and emit the result.
+pub(crate) fn complete_file_classes_v2(toks: &[Token]) -> R<Option<Vec<Token>>> {
+    // The ordinary parser remains responsible for non-proposal programs.
+    // Only a lexer-recognized declaration triggers this restricted route;
+    // even a nested occurrence must pass the full file declaration parser.
+    if !toks.windows(2).any(|w| matches!((&w[0].tok, &w[1].tok),
+        (Tok::Ident(a), Tok::Ident(b)) if a == "declare" && (b == "class" || b == "pub"))) {
+        return Ok(None);
+    }
+    let mut headers = parse_target_declarations_normalized(toks, true)?;
+    let pos = toks.first().map_or(Pos::default(), |t| t.pos);
+    if headers.class_forwards.is_empty() || headers.namespace.is_some() ||
+        !headers.imports.is_empty() || !headers.mixed_imports.is_empty() ||
+        !headers.const_imports.is_empty() || !headers.constants.is_empty() ||
+        !headers.actors.is_empty() || !headers.definitions.is_empty() ||
+        !headers.struct_forwards.is_empty() || !headers.state_owners.is_empty() ||
+        !headers.classes.is_empty() {
+        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+            "v2 file completion supports only declared fieldless classes and local functions; no mixed or shared owners"));
+    }
+    // A concrete constructor or method is an explicit completion witness.
+    // Check every owner, including unused declarations, before lowering.
+    for owner in &headers.class_forwards {
+        if !headers.receivers.iter().any(|m| &m.owner == owner) &&
+            !headers.constructors.iter().any(|c| &c.owner == owner) {
+            return Err(Diagnostic::new(pos, "E_UNLINKED",
+                format!("declared class '{owner}' has no completion witness")));
+        }
+    }
+    let mut augmented = toks[..toks.len()-1].to_vec();
+    // Append internal empty layouts before EOF. The user did not author
+    // these definitions; the existing production class parser validates
+    // nominal names and layout invariants. Original source spans remain intact.
+    for owner in &headers.class_forwards {
+        if augmented.len() + 6 > crate::lexer::MAX_TOKENS {
+            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "completed class token budget exceeded"));
+        }
+        let start = augmented.len();
+        for name in ["define", "class", owner.as_str(), "as", "end"] {
+            augmented.push(Token { tok: Tok::Ident(name.to_owned()), pos });
+        }
+        let mut parse = augmented[start..].to_vec();
+        parse.push(Token { tok: Tok::Eof, pos });
+        let (class, end) = Parser::parse_target_class_at(&parse, 0)?;
+        if end != 5 || !class.fields.is_empty() ||
+            !class.methods.is_empty() || class.ctor.is_some() {
+            return Err(Diagnostic::new(pos, "E_UNLINKED", "invalid synthesized empty class layout"));
+        }
+        headers.classes.push(owner.clone());
+        headers.class_definitions.push(class);
+        headers.class_ends.push(start + end - 1);
+    }
+    augmented.push(toks[toks.len()-1].clone());
+    let mut result = lower_class_receivers(&augmented, &headers)?;
+    // Export only the actual declared owner with its original visibility,
+    // through the existing typed export binder (not an ambient host export).
+    let mut prefix = Vec::new();
+    for (owner, visibility, pos) in &headers.class_forward_exports {
+        for word in ["export", "pub"] {
+            prefix.push(Token { tok: Tok::Ident(word.into()), pos: *pos });
+        }
+        if *visibility == crate::visibility_lower::Visibility::Package {
+            prefix.extend([
+                Token { tok: Tok::LBracket, pos: *pos },
+                Token { tok: Tok::Ident("pkg".into()), pos: *pos },
+                Token { tok: Tok::RBracket, pos: *pos },
+            ]);
+        }
+        prefix.push(Token { tok: Tok::Ident("class".into()), pos: *pos });
+        prefix.push(Token { tok: Tok::Ident(owner.clone()), pos: *pos });
+        prefix.push(Token { tok: Tok::Semi, pos: *pos });
+    }
+    if prefix.len() + result.len() > crate::lexer::MAX_TOKENS {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "completed class token budget exceeded"));
+    }
+    prefix.append(&mut result);
+    Ok(Some(prefix))
 }
