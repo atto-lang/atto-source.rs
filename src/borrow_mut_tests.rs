@@ -348,3 +348,31 @@ fn bae_transitive_effectful_terminal_preserves_call() {
     assert_ne!(crate::compile(&source).expect("effectful chain"),
         crate::compile(&direct).expect("direct fields"));
 }
+
+
+#[test]
+fn bae_method_getter_carries_proved_receiver_mode_and_elides_forwarding() {
+    let source = include_str!("../tests/fixtures/pass/borrow-method-getter-v1.atto");
+    let program = typed(source);
+    let getter = program.funcs.iter().find(|f| f.name == "Parcel.get").unwrap();
+    assert_eq!(getter.param_ownership, [ParamOwnership::BorrowRead]);
+    let direct = source.replace("return inspect(parcel);", "return parcel.value;");
+    assert_eq!(crate::compile(source).expect("readonly getter"),
+        crate::compile(&direct).expect("direct field"));
+}
+
+#[test]
+fn bae_method_getter_does_not_admit_effectful_or_computed_receiver() {
+    let source = include_str!("../tests/fixtures/pass/borrow-method-getter-v1.atto");
+    let effect = source.replace("return self.value;", "stdio.print(1); return self.value;");
+    let program = typed(&effect);
+    let getter = program.funcs.iter().find(|f| f.name == "Parcel.get").unwrap();
+    assert_eq!(getter.param_ownership, [ParamOwnership::Legacy]);
+    let direct = effect.replace("return inspect(parcel);", "return parcel.value;");
+    assert_ne!(crate::compile(&effect).expect("effectful method"),
+        crate::compile(&direct).expect("direct field"));
+    let computed = source.replace("return inspect(parcel);", "return new Parcel().get();");
+    let computed_direct = computed.replace("new Parcel().get()", "parcel.value");
+    assert_ne!(crate::compile(&computed).expect("computed receiver"),
+        crate::compile(&computed_direct).expect("local receiver"));
+}
