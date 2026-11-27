@@ -360,3 +360,25 @@ fn new_record_separators_keep_map_tuple_and_duplicate_checks() {
         if matches!(&e.kind,ExprKind::Call(_,args)
             if args.len()==1 && matches!(&args[0].kind,ExprKind::Record(_)))));
 }
+
+#[test]
+fn inline_pair_record_entries_preserve_shape_and_literal_key() {
+    let p = binding("let a={foo := 40\nbar := 2}; let b=(foo := 40,bar=2); let c=(foo:40,bar := 2);");
+    let typed=collection_types::analyze(&p).unwrap();
+    assert_eq!(typed.len(),3);
+    assert_eq!(typed[0].value.ty,typed[1].value.ty);
+    assert_eq!(typed[1].value.ty,typed[2].value.ty);
+    for expr in ["{foo := 40\nbar := 2}", "{foo := 40,bar:2}", "(foo := 40,bar=2)", "(foo:40,bar := 2)"] {
+        guest(&format!("pub fnc main():int {{let foo=7;let r={expr};return r.foo+r.bar+foo-7;}}"));
+    }
+}
+
+#[test]
+fn inline_pair_record_admission_rejects_ambiguous_and_duplicate_entries() {
+    for expr in ["{foo := 1,foo:2}", "(foo := 1,foo=2)", "(foo:1,foo := 2)"] {
+        rejected(&format!("pub fnc main():int {{let r={expr};return 0;}}"),"E_DUPLICATE");
+    }
+    for expr in ["{foo := 1 bar := 2}", "{foo : = 1}", "(foo := 1,bar := 2)", "(foo := 1)", "(foo := 1\nbar=2)", "(foo := (bar=1),baz := 2)", "{foo := 1, \"bar\":2}"] {
+        assert!(compile(&format!("pub fnc main():int {{let r={expr};return 0;}}")).is_err(),"{expr}");
+    }
+}
