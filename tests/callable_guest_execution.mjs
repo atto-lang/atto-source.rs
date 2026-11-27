@@ -1,7 +1,7 @@
 // Runs native-compiler-generated Wasm guests for all currently implemented callable forms.
 // In particular, this checks *execution* rather than just compiler acceptance.
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,6 +58,79 @@ try {
     assert.equal(actual, BigInt(want), name + ': wrong guest return value');
     assert.equal(guest.exports.panic_code.value, 0, name + ': unexpected panic');
     console.log('PASS guest execution', name, String(actual));
+  }
+  // Named-call separator equivalence is observed in real compiled Wasm.
+  // Noncommutative result distinguishes parameter binding from source position.
+  const prefix = 'fnc f(int a, int b): int { return a * 10 + b; } ';
+  const scalarCases = [
+    ['colon', 'f(b: 2, a: 4)', 42n],
+    ['equals', 'f(b=2,a=4)', 42n],
+    ['mixed', 'f(b:2,a=4)', 42n],
+    ['mixed-reverse', 'f(b=2,a:4)', 42n],
+    ['positional-named', 'f(4,b=2)', 42n],
+    ['distinct-result', 'f(b=4,a=2)', 24n],
+  ];
+  for (const [id, call, expected] of scalarCases) {
+    const source = join(work, 'named-' + id + '.atto');
+    const out = source + '.wasm';
+    await writeFile(source, prefix + 'pub fnc main(): int { return ' + call + '; }');
+    const built = run(source, out);
+    assert.equal(built.error, undefined, id + ': compiler infrastructure failure');
+    assert.equal(built.signal, null, id + ': compiler signal');
+    assert.equal(built.status, 0, id + ': ' + built.stderr);
+    const bytes = await readFile(out);
+    assert.ok(WebAssembly.validate(bytes), id + ': invalid Wasm');
+    const module = new WebAssembly.Module(bytes);
+    assert.deepEqual(WebAssembly.Module.imports(module), [], id + ': unexpected host imports');
+    const guest = new WebAssembly.Instance(module, {});
+    for (let i = 0; i < 2; i++) {
+      assert.equal(guest.exports.main(), expected, id + ': wrong parameter-slot binding');
+      assert.equal(guest.exports.panic_code.value, 0, id + ': panic');
+    }
+    console.log('PASS named argument guest', id);
+  }
+  // Observe both order and count of effects on an admitted in-order call.
+  {
+    const source = join(work, 'named-effects.atto'), out = source + '.wasm';
+    await writeFile(source, prefix +
+      'fnc tick(int v): int { stdio.println(v); return v; } ' +
+      'pub fnc main(): int { return f(a=tick(4), b:tick(2)); }');
+    const built = run(source, out);
+    assert.equal(built.error, undefined);
+    assert.equal(built.signal, null);
+    assert.equal(built.status, 0, built.stderr);
+    const module = new WebAssembly.Module(await readFile(out));
+    assert.deepEqual(WebAssembly.Module.imports(module).map(x => x.module + '.' + x.name).sort(),
+      ['atto.print_i64', 'atto.print_newline']);
+    const events = [];
+    const guest = new WebAssembly.Instance(module, {atto:{
+      print_i64: v => { assert.equal(typeof v, 'bigint'); events.push(v); },
+      print_newline: () => events.push('newline'),
+    }});
+    for (let i = 0; i < 2; i++) {
+      assert.equal(guest.exports.main(), 42n);
+      assert.equal(guest.exports.panic_code.value, 0);
+    }
+    assert.deepEqual(events, [4n,'newline',2n,'newline',4n,'newline',2n,'newline']);
+    console.log('PASS named argument effects in source order');
+  }
+  for (const [id, call, diagnostic] of [
+    ['duplicate-mixed', 'f(a=4,a:2)', 'E_DUPLICATE'],
+    ['duplicate-positional', 'f(4,a=2)', 'E_DUPLICATE'],
+    ['unknown', 'f(z=4,b:2)', 'E_NAMED_ARG'],
+    ['positional-after-named', 'f(a=4,2)', 'E_SYNTAX'],
+    ['reorder-effect', 'f(b=tick(2),a:4)', 'E_EFFECT_ORDER'],
+  ]) {
+    const source = join(work, 'named-reject-' + id + '.atto'), out = source + '.wasm';
+    await writeFile(source, prefix + 'fnc tick(int v): int { stdio.println(v); return v; } ' +
+      'pub fnc main(): int { return ' + call + '; }');
+    const built = run(source, out);
+    assert.equal(built.error, undefined, id + ': compiler infrastructure failure');
+    assert.equal(built.signal, null, id + ': compiler signal');
+    assert.equal(built.status, 1, id + ': expected rejection');
+    assert.match(built.stderr, new RegExp('\\b' + diagnostic + '\\b'), id + ': wrong diagnostic');
+    await assert.rejects(stat(out), {code:'ENOENT'}, id + ': rejected source emitted artifact');
+    console.log('PASS named argument rejection', id);
   }
   for (const name of negative) {
     const path = fileURLToPath(new URL('./fixtures/fail/' + name, import.meta.url));
