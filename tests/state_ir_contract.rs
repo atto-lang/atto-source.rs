@@ -262,3 +262,45 @@ fn protected_snapshot_authenticates_slots_and_generated_tuple_constructor() {
             "corrupt protected snapshot {variant} emitted bytes");
     }
 }
+
+#[test]
+fn protected_region_rejects_forged_scalar_local_and_ticket_slot() {
+    use atto_compiler::{check::TE, wasm};
+    assert!(!wasm::emit(&typed()).is_empty());
+    for variant in 0..4 {
+        let mut program = typed();
+        let method = program.funcs.iter_mut().find(|f| f.name == "Counter.increment").unwrap();
+        let ticket = (method.params.len() + method.locals.len()) as u32;
+        if variant == 3 { method.params[1] = Type::Bool; }
+        let body = method.body.iter_mut().find_map(|s| match s {
+            TStmt::StateCriticalWrite(body) => Some(body), _ => None,
+        }).unwrap();
+        let TStmt::StateFieldWrite { value, .. } = &mut body[0] else { panic!("expected write"); };
+        let slot = match variant { 0 => ticket, 1 => u32::MAX, 2 => 0, _ => 1 };
+        *value = TE { e: TExpr::Local(slot), ty: Type::Int };
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),
+            "forged scalar local {variant} emitted bytes");
+    }
+}
+
+#[test]
+fn protected_result_cannot_overwrite_parameter_or_host_ticket() {
+    use atto_compiler::wasm;
+    let source = fs::read_to_string("tests/fixtures/pass/state-write-return-scalar.atto").unwrap();
+    let parsed = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
+    let original = check::check(&parsed).unwrap();
+    assert!(!wasm::emit(&original).is_empty());
+    for variant in 0..3 {
+        let mut program = original.clone();
+        let method = program.funcs.iter_mut().find(|f| f.name == "Counter.increment").unwrap();
+        let ticket = (method.params.len() + method.locals.len()) as u32;
+        let block = method.body.iter_mut().find_map(|s| match s {
+            TStmt::Block(b) => Some(b), _ => None,
+        }).unwrap();
+        let TStmt::StateCriticalWrite(body) = &mut block[0] else { panic!("expected write region"); };
+        let Some(TStmt::Set(slot, _)) = body.last_mut() else { panic!("expected detached result"); };
+        *slot = match variant { 0 => 1, 1 => ticket, _ => u32::MAX };
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),
+            "forged result store {variant} emitted bytes");
+    }
+}
