@@ -29,3 +29,12 @@ fn reusable_slot_invalid_programs_fail_closed() {
         assert!(err.code.starts_with("E_POINTER_"), "{from} -> {to}: {err}");
     }
 }
+
+#[test]
+fn erased_slot_cannot_hide_reserved_identifiers() {
+    for name in ["await", "true", "null", "to", "empty"] {
+        let source = format!("pub fnc main(): int {{ let mut RawPointer<int> {name} = RawPointer.empty<int>(); return 42; }}");
+        let err = atto_compiler::compile(&source).expect_err("reserved slot name");
+        assert!(err.code.starts_with("E_POINTER_"), "{name}: {err}");
+    }
+}

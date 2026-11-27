@@ -278,7 +278,8 @@ pub fn lower_slot(tokens: Vec<Token>) -> R<Vec<Token>> {
     c.eat(Tok::Gt, PROFILE)?;
     let slot = c.ident()?;
     let slot_name = Cursor::name_of(&slot);
-    if values.contains(slot_name) || matches!(slot_name, "null" | "to" | "empty" | "true" | "false") {
+    if values.contains(slot_name) || crate::parser::is_reserved(slot_name)
+        || matches!(slot_name, "null" | "to" | "empty" | "true" | "false") {
         return Err(failure(slot.pos, "E_POINTER_ALIAS", "slot cannot shadow a value or reserved name"));
     }
     c.eat(Tok::Assign, PROFILE)?;
@@ -325,9 +326,10 @@ pub fn lower_slot(tokens: Vec<Token>) -> R<Vec<Token>> {
             }
             c.eat(Tok::Assign, PROFILE)?;
             let pos = c.token().pos;
-            c.word("deref", PROFILE)?;
-            // Reuse the canonical adjacent-bang check, without granting rt aliases.
-            c.at -= 1;
+            // Reuse the adjacent-bang check, without granting rt aliases.
+            if !is_word(&c.token().tok, "deref") {
+                return Err(failure(pos, PROFILE, "slot reads require deref!"));
+            }
             c.operation("deref")?;
             let handle = c.ident()?;
             if Cursor::name_of(&handle) != slot_name {
