@@ -1,0 +1,8 @@
+// No match: the pattern starts with 30, but list starts with 10.
+pub fnc main(): int {
+  val items: List<int> = List.of(10, 20, 30);
+  return match<int> items over
+    on List.of(30, is int as val b, ...) -> b,
+    on _ -> 7
+  end;
+}

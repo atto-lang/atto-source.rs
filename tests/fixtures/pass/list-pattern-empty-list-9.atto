@@ -1,0 +1,8 @@
+// Exact empty List matches the empty pattern, not a nonempty List.
+pub fnc main(): int {
+  val items: List<int> = List.of();
+  return match<int> items over
+    on List.of() -> 9,
+    on _ -> 0
+  end;
+}

@@ -21,6 +21,8 @@ pub mod collection_layout_plan;
 pub mod collection_layout_storage;
 /// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
 pub mod collection_layout_guest;
+/// Restricted source-compiled List<int> match guest profile.
+pub mod list_pattern_guest;
 /// Shared canonical generic binding for production and guest collection parsers.
 pub mod collection_layout_type;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
@@ -107,6 +109,8 @@ pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
 pub mod tuple_ownership_ir;
 pub mod target_typed;
+/// Compile-time-only typed std.pattern fragment AST; guest List lowering not yet admitted.
+pub mod sequence_pattern_fragments;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;
@@ -352,6 +356,16 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
         if javascript { return Err(js_scalar::unsupported()); }
         actor_stack_bound::verify(&program)?;
+        let bytes = wasm::emit(&program);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
+    }
+    // Restricted List<int> structural patterns use the same checked heap
+    // IR and production Wasm emitter as the existing nominal Array guest.
+    if let Some(program) = list_pattern_guest::try_lower(&source_tokens)? {
         let bytes = wasm::emit(&program);
         if bytes.len() > wasm::MAX_OUTPUT {
             return Err(Diagnostic::new(Pos { line: 1, col: 1 },

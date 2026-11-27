@@ -8,6 +8,11 @@ use atto_compiler::compile;
 fn structural_sequence_patterns_are_not_misparsed_as_enum_variants() {
     for pattern in [
         "List.of(1, ...)",
+        "List.of(pattern.of(\"...\"))",
+        "List.of(pattern.of<int>(\"...\"))",
+        "List.of(pattern.of(\"is int as val x\"))",
+        "List.of(pattern.of(runtime_template))",
+        "List.of(pattern.of(\"..., ...\"))",
         "List.of(..., is int as val x, ...)",
         "Array.of(...(3 of int, 3 of bool))",
         "Tuple.of(...(3 of 7))",

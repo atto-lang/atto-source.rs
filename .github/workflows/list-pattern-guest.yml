@@ -1,0 +1,65 @@
+name: Restricted List pattern guest (exact source or pinned tree)
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain*'
+      - '.cargo/**'
+      - '.github/workflows/list-pattern-guest.yml'
+  push:
+    branches:
+      - feat/typed-seq-fragment-admission-20261119
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain*'
+      - '.cargo/**'
+      - '.github/workflows/list-pattern-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-compiled-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # A source workflow copied unchanged into a test carrier must NEVER
+      # treat the carrier's own github.sha as the original source commit.
+      # The carrier needs its own explicit provenance-pinned mirror job.
+      - name: Require original source repository for source-mode receipts
+        env:
+          ACTUAL_REPO: ${{ github.repository }}
+        run: |
+          if [ "$ACTUAL_REPO" != "atto-lang/atto-source.rs" ]; then
+            echo 'SOURCE_REPOSITORY_MISMATCH: use a separate carrier workflow with ATTO_VERIFY_MODE=mirror, pinned original HEAD and original tree' >&2
+            exit 2
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source HEAD and clean Git tree
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          test -z "$(git status --porcelain)"
+      - name: Test provenance guards only (not compiler evidence)
+        run: node --test tests/verify-list-pattern-proof.test.mjs
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup component add clippy --toolchain 1.85.1
+          rustup default 1.85.1
+          rustc --version
+      - name: Verify checked Rust compiler and execute generated guest Wasm
+        env:
+          ATTO_EXPECT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash scripts/verify-list-pattern-guest.sh

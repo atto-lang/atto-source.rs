@@ -1,0 +1,8 @@
+// SOURCE-COMPILED NARROW PROFILE. Real List<int> guest heap, not general List.
+pub fnc main(): int {
+  val items: List<int> = List.of(10, 20, 30, 40, 50);
+  return match<int> items over
+    on List.of(..., is int as val a, is int as val b, is int as val c, ...) -> a + b + c,
+    on _ -> 0
+  end;
+}

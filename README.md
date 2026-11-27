@@ -51,6 +51,61 @@ Under the new strict named-callable rule, every function, routine, class/actor m
 
 The browser compiler branch implements conservative return inference for simple literal, parameter and arithmetic returns, with `E_RETURN_INFER` on opaque or conflicting results. It does **not** provide complete typed whole-program inference. This is a source-breaking change: existing fixtures and examples that omit a return result need an individually checked migration. Do not blindly rewrite omissions to `void`. CI execution and native/other-backend parity are **not verified** by this README.
 
+## Restricted source-compiled List<int> pattern guest candidate (draft PR #415)
+
+This deliberately restricted Rust/Wasm backend profile compiles one immutable, locally declared fixed-size List<int> literal into an owned **guest heap allocation** with a checked length header and i64 cells. A single return match<int> on that local List supports leading/trailing bare rests, exact integer literals, underscores, immutable typed integer captures, a simple scalar capture guard, and an int addition result with required wildcard fallback. The checker enumerates no more than 32 statically bounded candidate starts; generated Wasm performs the actual comparisons and element loads. First matching witness is leftmost-shortest. A failed guard does not retry a later witness.
+
+This is a **separate List<int> guest ABI** from draft immutable Array<int> work in Rust #111/#178. They must be reconciled before promoting general collections. No dynamic List, arbitrary iterator, mutation, actor transfer, borrow-view lifetime, pattern.of<T> compiler intrinsic, counted repetition, multiple internal rest wildcards, custom extractor, runtime interpreter, or library integration is implied. The standalone typed template parser remains **host reference only**; imported std.pattern templates still fail closed. This profile permits only a single source-local main with literal data and no user-defined List declarations/imports.
+
+**Normal source checkout**: pin the 40-character original PR head before
+running the proof. This mode requires the actual Git commit SHA to match:
+
+```sh
+ATTO_EXPECT_HEAD=<40-character-PR-head-SHA> bash scripts/verify-list-pattern-guest.sh
+```
+
+**Token-free private whole-tree carrier**: GitHub creates a *different commit
+SHA* when source blobs are recreated in another repository. Record the original
+source commit and its tree SHA **from the trusted source repository**, before
+mirroring. Compare the carrier's entire Git tree (including paths, modes and
+blobs) against that independently recorded original tree, not against a SHA
+read back from the carrier itself:
+
+```sh
+ATTO_VERIFY_MODE=mirror \
+ATTO_EXPECT_HEAD=<40-character-original-source-commit-SHA> \
+ATTO_EXPECT_TREE=<40-character-original-source-Git-tree-SHA> \
+  bash scripts/verify-list-pattern-guest.sh
+```
+
+Missing/malformed source provenance, a mismatched complete tree, an untracked
+or ignored in-tree build input, an unverified gitlink/submodule, or a dirty
+checkout fails **before** any compiler run. Run on a fresh checkout: even an
+ignored prior `target/` directory is rejected by this proof mode. Mirror mode prints both the pinned
+source commit and the distinct carrier commit; it never presents carrier commit
+identity as a source commit proof. `ATTO_EXPECT_TREE` may also be set in
+normal mode for defense-in-depth. Verify that the externally supplied tree SHA
+really belongs to the declared original source commit; the isolated carrier
+cannot independently authenticate a private upstream repository. **Do not copy
+the upstream GitHub Actions workflow unchanged and let it check its own carrier
+`github.sha`**: that source-mode workflow intentionally rejects runs outside
+`atto-lang/atto-source.rs`. Create a separate restricted carrier workflow that
+checks out the exact mirrored tree and invokes the script in mirror mode with
+the previously trusted original source HEAD/tree SHA values. No tokens or
+cross-repository checkout are needed.
+
+`node --test tests/verify-list-pattern-proof.test.mjs` executes only negative
+provenance guards in disposable repositories and deliberately makes Cargo
+unavailable. It cannot establish compiler or guest success. The real proof
+requires the clean exact commit or tree, executes all four Rust test binaries,
+strict Clippy, the release `attoc` build, and compiled guest Wasm including
+overflow/negative tests. If toolchain or test execution fails, there is no
+PASS. See [List ABI reconciliation #434](https://github.com/atto-lang/atto-source.rs/issues/434)
+before combining this matcher with the incompatible `List.of` factory/typed
+empty storage in #425/#429.
+
+Ten guest fixtures require actual Wasm execution with exit values 60, 0, 30, 7, 1, 3, 32, 11 (full-length standalone rest), 9 (empty exact List), and 13 (empty standalone rest); one additional guest must trap on checked i64 overflow (panic_code=1). Ten rejected sources must create no **new** artifact at absent output paths, including reserved captures and malformed adjacent rests. The CLI preserves an existing caller-owned output file unchanged on failed compilation, and the harness separately verifies that preservation. The Rust test suite covers empty Lists, standalone rests, the 16-atom budget, ill-scoped captures and max-sized collection matching. The Node suite also verifies imports=0 and an actual contiguous list header/cell payload in guest memory for nonempty Lists; an empty List has only a zero-length header and cannot be uniquely identified by scanning otherwise zeroed linear memory. **Tests are authored, but were NOT EXECUTED or verified on the exact current branch head at documentation time.** Source Actions and checked alternate carriers previously had zero-step runner failures; no PASS can be inferred. Only source-compiled, independently executed guests justify enabling the profile in release builds.
+
 ## Experimental source-compiled scalar collection guest (draft PR #320)
 
 A strictly bounded `define struct` + `Array<T, layout=aos|soa|aosoa(N)>`

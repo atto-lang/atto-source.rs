@@ -1,0 +1,8 @@
+// Expected runtime checked-i64 overflow panic, code 1. Source MUST compile.
+pub fnc main(): int {
+  val items: List<int> = List.of(9223372036854775807, 1, 0);
+  return match<int> items over
+    on List.of(..., is int as val a, is int as val b, is int as val c, ...) -> a + b + c,
+    on _ -> 0
+  end;
+}
