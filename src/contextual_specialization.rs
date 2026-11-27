@@ -148,48 +148,17 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     out.extend_from_slice(&t[10..ctx_end]);
     if params_end != params_at + 1 { out.push(token(&t[params_at],Tok::Comma)); }
     out.extend_from_slice(&t[params_at+1..=main_at]);
+    // Specialized static signatures accept evaluated actuals in lexical order.
+    // Their body is identical and still checked by the ordinary compiler.
+    let member_end=out.len()-(main_at-body_end);
+    let mut variants=BTreeMap::<Vec<usize>,String>::new();
+    let mut variant_tokens=Vec::new();
     let mut aliases = BTreeMap::<String,Vec<String>>::new();
     let mut i = main_at+1;
     let mut main_return_seen = false;
     let mut writable = std::collections::BTreeSet::<String>::new();
     while i < main_end {
         let x = &t[i];
-        // Closed direct named return: no hoisting across a sibling expression.
-        // Capture RHSs in source order, then invoke with declaration-order slots.
-        if word(x)==Some("return") && w(&t,i+1)==Some(owner)
-            && is(&t,i+2,Tok::ColonColon) && is(&t,i+3,Tok::LParen) {
-            let close=pair(&t,i+3,Tok::LParen,Tok::RParen)?;
-            let parts=split_context(&t[i+4..close],x)?;
-            if parts.iter().any(|p| is(p,1,Tok::Assign)) {
-                if main_return_seen || (i!=main_at+1 && !is(&t,i-1,Tok::Semi))
-                    || parts.len()!=schema.len() { return Err(bad(i,"invalid direct named return")); }
-                let dot=close+1;
-                if !is(&t,dot,Tok::Dot)||w(&t,dot+1)!=Some(member)||!is(&t,dot+2,Tok::LParen) {
-                    return Err(bad(i,"expected declared contextual member"));
-                }
-                let end=pair(&t,dot+2,Tok::LParen,Tok::RParen)?;
-                if end+2!=main_end || !is(&t,end+1,Tok::Semi) {
-                    return Err(bad(i,"direct named invocation requires entire terminal return"));
-                }
-                let mut slots=vec![String::new();schema.len()];
-                for part in parts {
-                    if !is(part,1,Tok::Assign) { return Err(bad(i,"mixed named and positional context")); }
-                    let key=w(part,0).ok_or_else(||bad(i,"named context key required"))?;
-                    let j=schema.iter().position(|&(_,n)|n==key).ok_or_else(||bad(i,"unknown named context key"))?;
-                    if !slots[j].is_empty() {return Err(bad(i,"duplicate named context key"));}
-                    plain(&part[2..],owner,&aliases,x,true)?;
-                    let slot=format!("{PREFIX}direct_{}_{}",i,j);
-                    out.extend([ident(x,"const"),ident(x,&slot),token(x,Tok::Colon),ident(x,schema[j].0),token(x,Tok::Assign)]);
-                    out.extend_from_slice(&part[2..]);out.push(token(x,Tok::Semi));slots[j]=slot;
-                }
-                plain(&t[dot+3..end],owner,&aliases,x,false)?;
-                out.extend([x.clone(),ident(x,owner),t[dot].clone(),ident(x,&lowered),t[dot+2].clone()]);
-                for (j,slot) in slots.iter().enumerate(){if j>0{out.push(token(x,Tok::Comma));}out.push(ident(x,slot));}
-                if end!=dot+3{out.push(token(x,Tok::Comma));}
-                out.extend_from_slice(&t[dot+3..=end+1]);
-                i=end+2;continue;
-            }
-        }
         if word(x)==Some("return") { main_return_seen = true; }
         if matches!(x.tok, Tok::LBrace | Tok::RBrace | Tok::Pipe | Tok::FatArrow)
             || word(x).is_some_and(|s| matches!(s,"if"|"for"|"while"|"loop"|"do"|"match"|"switch"|"try"|"defer"|"recover"|"select"|"fnc"|"generator"|"block"|"then"|"else"|"end"|"async"|"suspend"|"using")) {
@@ -276,13 +245,43 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             if i>main_at+1 && (is(&t,i-1,Tok::Dot) || is(&t,i-1,Tok::ColonColon)) {
                 return Err(bad(i,"contextual receiver must be an unqualified nominal or local"));
             }
+            let mut target=lowered.clone();
             let (dot, context) = if direct {
                 if !is(&t,i+1,Tok::ColonColon) { return Err(bad(i,"contextual method requires explicit binding")); }
                 let end=pair(&t,i+2,Tok::LParen,Tok::RParen)?;
                 let parts = split_context(&t[i+3..end], x)?;
                 if parts.len() != schema.len() { return Err(bad(i, "context arity mismatch")); }
-                for part in parts { plain(part,owner,&aliases,x,true)?; }
-                (end+1,t[i+3..end].to_vec())
+                if parts.iter().any(|p|is(p,1,Tok::Assign)){
+                    let mut order=Vec::new();let mut actual=Vec::new();
+                    for part in parts {
+                        if !is(part,1,Tok::Assign){return Err(bad(i,"mixed named and positional context"));}
+                        let key=w(part,0).ok_or_else(||bad(i,"named context key required"))?;
+                        let j=schema.iter().position(|&(_,n)|n==key).ok_or_else(||bad(i,"unknown named context key"))?;
+                        if order.contains(&j){return Err(bad(i,"duplicate named context key"));}
+                        plain(&part[2..],owner,&aliases,x,true)?;
+                        if !actual.is_empty(){actual.push(token(x,Tok::Comma));}
+                        actual.extend_from_slice(&part[2..]);order.push(j);
+                    }
+                    if let Some(name)=variants.get(&order){target=name.clone();}
+                    else {
+                        if variants.len()>=16{return Err(bad(i,"named invocation specialization budget"));}
+                        target=format!("{PREFIX}order_{}",variants.len());
+                        variant_tokens.extend_from_slice(&t[4..7]);
+                        variant_tokens.extend([ident(x,&target),token(x,Tok::LParen)]);
+                        for (k,j) in order.iter().enumerate(){
+                            if k>0{variant_tokens.push(token(x,Tok::Comma));}
+                            variant_tokens.extend([ident(x,schema[*j].0),ident(x,schema[*j].1)]);
+                        }
+                        if params_end!=params_at+1{variant_tokens.push(token(x,Tok::Comma));}
+                        variant_tokens.extend_from_slice(&t[params_at+1..=body_end]);
+                        variants.insert(order,target.clone());
+                        if variant_tokens.len()>MAX_TOKENS{return Err(bad(i,"named specialization token budget"));}
+                    }
+                    (end+1,actual)
+                }else{
+                    for part in parts { plain(part,owner,&aliases,x,true)?; }
+                    (end+1,t[i+3..end].to_vec())
+                }
             } else {
                 let mut captured = Vec::new();
                 for (j, slot) in stored.unwrap().iter().enumerate() {
@@ -297,7 +296,7 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             let end=pair(&t,dot+2,Tok::LParen,Tok::RParen)?;
             if end>=main_end { return Err(bad(i,"context call crosses main boundary")); }
             plain(&t[dot+3..end],owner,&aliases,x,false)?;
-            out.extend([ident(x,owner),t[dot].clone(),ident(&t[dot+1],&lowered),t[dot+2].clone()]);
+            out.extend([ident(x,owner),t[dot].clone(),ident(&t[dot+1],&target),t[dot+2].clone()]);
             out.extend(context);
             if end!=dot+3 { out.push(token(x,Tok::Comma)); }
             out.extend_from_slice(&t[dot+3..=end]);
@@ -307,7 +306,8 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         out.push(x.clone()); i+=1;
     }
     out.extend_from_slice(&t[main_end..]);
-    if out.len()>MAX_TOKENS { return Err(bad(0,"contextual lowering token budget exceeded")); }
+    if out.len()+variant_tokens.len()>MAX_TOKENS { return Err(bad(0,"contextual lowering token budget exceeded")); }
+    out.splice(member_end..member_end,variant_tokens);
     Ok(out)
 }
 
@@ -350,6 +350,9 @@ mod tests {
             (multi_program("const x = Scale::(2, 3); const y = Scale::(4, 5); return x.apply(7) + y.apply(7);"), "50"),
             (multi_program("const x = Scale::(offset=7,factor=5); return x.apply(7);"), "42"),
             (multi_program("return Scale::(offset=7,factor=5).apply(7);"), "42"),
+            (multi_program("return 1 + Scale::(offset=7,factor=5).apply(7);"), "43"),
+            (multi_program("return Scale::(offset=7,factor=5).apply(7) + 1;"), "43"),
+            (multi_program("return Scale::(offset=7,factor=5).apply(7) - Scale::(factor=2,offset=1).apply(5);"), "31"),
             (multi_program("let n = 3; const x = Scale::(offset=n+1,factor=n); set n = 9; return x.apply(5) + Scale::(2,1).apply(7);"), "34"),
         ] {
             let wasm = crate::compile(&source).expect("compile guest");
@@ -381,8 +384,7 @@ mod tests {
             "set n = 9; return Scale::(2,1).apply(3);",
             "const x = Scale::(offset=2, 1); return x.apply(3);",
             "const x = Scale::(unknown=2, factor=1); return x.apply(3);",
-            "return 1 + Scale::(offset=2, factor=1).apply(3);",
-            "return Scale::(offset=2, factor=1).apply(3) + 1;",
+            "return Scale::(offset=2, 1).apply(3);",
             "return Scale::(offset=2, offset=1).apply(3);",
         ] { assert!(crate::compile(&multi_program(body)).is_err(), "{body}"); }
     }
