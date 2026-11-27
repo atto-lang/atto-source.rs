@@ -11,7 +11,7 @@
 //! eventually integrate Array as a first-class nominal generic AST type.
 
 use crate::ast::{BinOp, Type};
-use crate::check::{TExpr, TFunc, TProgram, TStmt, TE};
+use crate::check::{TExpr, TProgram, TStmt, TE};
 use crate::collection_layout_plan::{Plan, ScalarField, Storage};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
@@ -253,13 +253,7 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
     let offset = plan.offset(row, field)
         .ok_or_else(|| error(pos, "E_LAYOUT_BOUNDS", "invalid column read"))? as u32;
     body.push(TStmt::Return(Some(cell(offset))));
-    Ok(TProgram {
-        funcs: vec![TFunc { name: "main".to_owned(), params: vec![], ret: Type::Int,
-            locals: vec![Type::Array(0)], body }],
-        generators: vec![], main: 0, imports: vec![], data: vec![],
-        heap: true, globals: vec![], actors: vec![],
-        strings: false, guest_eh: false, raise_tag: false, catch_depth: false,
-    })
+    Ok(TProgram::collection_layout_main(body))
 }
 
 /// If the source requests the strictly supported fixed-scalar struct+Array

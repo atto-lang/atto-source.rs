@@ -392,6 +392,7 @@ struct StateMethodLayout {
 #[derive(Clone, Debug)]
 pub struct TProgram {
     state_methods: BTreeMap<usize, StateMethodLayout>,
+    state_constructors: BTreeMap<u32, (usize, Vec<(u32, Type)>)>,
     state_tuple_ctors: BTreeMap<u32, (u32, Vec<Type>)>,
     pub funcs: Vec<TFunc>,
     pub generators: Vec<TGenerator>,
@@ -415,6 +416,70 @@ pub struct TProgram {
 }
 
 impl TProgram {
+    /// Separate verified collection-layout profile has no protected regions.
+    /// Keep nominal state authority private rather than exposing mutable
+    /// metadata to an alternate lowerer merely to construct its scalar main.
+    pub(crate) fn collection_layout_main(body: Vec<TStmt>) -> Self {
+        Self {
+            state_methods: BTreeMap::new(),
+            state_constructors: BTreeMap::new(),
+            state_tuple_ctors: BTreeMap::new(),
+            funcs: vec![TFunc { name: "main".to_owned(), params: vec![], ret: Type::Int,
+                locals: vec![Type::Array(0)], body }],
+            generators: vec![], main: 0, imports: vec![], data: vec![],
+            heap: true, globals: vec![], actors: vec![],
+            strings: false, guest_eh: false, raise_tag: false, catch_depth: false,
+        }
+    }
+
+    pub(crate) fn is_protected_class(&self, ty: Type) -> bool {
+        matches!(ty, Type::Class(c) if self.state_constructors.contains_key(&c))
+    }
+
+    pub(crate) fn is_protected_object(&self, function: usize, obj: &TE) -> bool {
+        self.is_protected_class(obj.ty)
+            || (matches!(obj.e, TExpr::Local(0))
+                && (self.state_methods.contains_key(&function)
+                    || self.state_constructors.values().any(|(idx, _)| *idx == function)))
+    }
+
+    pub(crate) fn state_raw_initializer(&self, function: usize, obj: &TE, offset: u32, ty: Type) -> bool {
+        let Type::Class(c) = obj.ty else { return false; };
+        self.state_constructors.get(&c).is_some_and(|(idx, fields)|
+            *idx == function && matches!(obj.e, TExpr::Local(0))
+                && fields.contains(&(offset, ty)))
+    }
+
+    pub(crate) fn state_register_authorized(&self, function: usize, obj: &TE) -> bool {
+        let Type::Class(c) = obj.ty else { return false; };
+        self.state_constructors.get(&c).is_some_and(|(idx, _)|
+            *idx == function && matches!(obj.e, TExpr::Local(0)))
+    }
+
+    /// The restricted state constructor has no source-defined body: exactly
+    /// allocate, initialize every sealed slot, register, and return the handle.
+    /// Verify that generated shape before any ordinary field store is allowed.
+    pub(crate) fn state_constructor_shapes_valid(&self) -> bool {
+        self.state_constructors.iter().all(|(&class, (idx, fields))| {
+            let ty = Type::Class(class);
+            let Some(f) = self.funcs.get(*idx) else { return false; };
+            let receiver = |obj: &TE| obj.ty == ty && matches!(obj.e, TExpr::Local(0));
+            if !f.params.is_empty() || f.locals.as_slice() != [ty] || f.ret != ty
+                || f.body.len() != fields.len() + 3 { return false; }
+            if !matches!(&f.body[0], TStmt::Set(0, v) if v.ty == ty &&
+                matches!(v.e, TExpr::Alloc(bytes) if bytes == (fields.len() as u32 * FIELD_BYTES).max(FIELD_BYTES))) {
+                return false;
+            }
+            if !f.body[1..1+fields.len()].iter().zip(fields).all(|(stmt, (offset, field_ty))|
+                matches!(stmt, TStmt::FieldSet { obj, offset: got, ty, value }
+                    if receiver(obj) && got == offset && ty == field_ty && value.ty == *field_ty)) {
+                return false;
+            }
+            matches!(&f.body[fields.len()+1], TStmt::StateRegister(obj) if receiver(obj))
+                && matches!(&f.body[fields.len()+2], TStmt::Return(Some(obj)) if receiver(obj))
+        })
+    }
+
     pub(crate) fn state_method_receiver(&self, function: usize) -> Option<Type> {
         let layout = self.state_methods.get(&function)?;
         let f = self.funcs.get(function)?;
@@ -1668,9 +1733,12 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
     let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     let mut state_methods = BTreeMap::new();
+    let mut state_constructors = BTreeMap::new();
     let mut state_tuple_ctors = BTreeMap::new();
     for (ci, class) in g.classes.iter().enumerate() {
         if class.state_container {
+            state_constructors.insert(ci as u32, (class.new_idx as usize,
+                class.fields.iter().map(|f| (f.slot, f.ty)).collect()));
             let fields: Vec<_> = class.fields.iter()
                 .filter(|f| f.mode == FieldMode::ActorState && matches!(f.ty, Type::Int | Type::Bool))
                 .map(|f| (f.slot, f.ty, f.binding.rebindable())).collect();
@@ -1700,6 +1768,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     }
     Ok(TProgram {
         state_methods,
+        state_constructors,
         state_tuple_ctors,
         funcs,
         main,

@@ -225,6 +225,9 @@ impl Emit<'_> {
     fn state_method_receiver(&self) -> Option<Type> {
         self.state_authority.and_then(|(p, i)| p.state_method_receiver(i))
     }
+    fn protected_object(&self, obj: &TE) -> bool {
+        self.state_authority.is_some_and(|(p, i)| p.is_protected_object(i, obj))
+    }
     fn state_local_slot(&self, slot: u32, ty: Type, tail_store: bool) -> bool {
         self.state_authority.is_some_and(|(p, i)| p.state_local_slot(i, slot, ty, tail_store))
     }
@@ -533,6 +536,11 @@ impl Emit<'_> {
                 field_op(&mut self.code, Type::Int, *offset, true);
             }
             TStmt::FieldSet { obj, offset, ty, value } => {
+                if self.protected_object(obj) {
+                    assert!(self.state_authority.is_some_and(|(p, i)|
+                        p.state_raw_initializer(i, obj, *offset, *ty))
+                        && value.ty == *ty, "ordinary protected field store outside authenticated construction");
+                }
                 self.expr(obj);
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
@@ -567,6 +575,8 @@ impl Emit<'_> {
                 self.call(self.l.import(Import::StateLeave));
             }
             TStmt::StateRegister(obj) => {
+                assert!(self.state_authority.is_some_and(|(p, i)|
+                    p.state_register_authorized(i, obj)), "unauthorized protected state registration");
                 self.expr(obj);
                 self.call(self.l.import(Import::StateRegister));
             },
@@ -963,6 +973,7 @@ impl Emit<'_> {
                 field_op(&mut self.code, Type::Int, *offset, false);
             }
             TExpr::FieldGet { obj, offset } => {
+                assert!(!self.protected_object(obj), "ordinary protected field read bypasses lease");
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
             }
@@ -1523,6 +1534,7 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    assert!(p.state_constructor_shapes_valid(), "invalid protected state constructor shape");
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
@@ -1667,7 +1679,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             void_main: false,
             active_iterators: Vec::new(),
             state_ticket_slot: None,
-            state_authority: None,
+            state_authority: Some((p, usize::MAX)),
             state_write_depth: 0,
             uw: None,
             in_recover: false,

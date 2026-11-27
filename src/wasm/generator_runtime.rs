@@ -24,9 +24,9 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         frames: Vec::new(),
         void_main: false,
         active_iterators: Vec::new(),
-        // Generator functions never receive protected-state authority.
+        // Generator functions retain protected class identity, but never method authority.
         state_ticket_slot: None,
-        state_authority: None,
+        state_authority: Some((p, usize::MAX)),
         state_write_depth: 0,
         uw: None,
         in_recover: false,
