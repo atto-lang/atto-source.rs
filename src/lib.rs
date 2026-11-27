@@ -307,6 +307,9 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
                                 return Err(Diagnostic::new(original_tokens[start].pos, "E_UNSUPPORTED",
                                     "scalar struct lowering must not allocate a class, heap, string or actor"));
                             }
+                            if javascript {
+                                return js_scalar::emit(&typed).map(String::into_bytes);
+                            }
                             let bytes = wasm::emit(&typed);
                             if bytes.len() > wasm::MAX_OUTPUT {
                                 return Err(Diagnostic::new(original_tokens[start].pos, "E_OUTPUT_LIMIT",
