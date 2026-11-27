@@ -6,6 +6,7 @@
 //! an invented runtime type. Once this is wired to checked guest allocation the
 //! same type and tree structure can be consumed by the lowering stage.
 
+use std::collections::BTreeMap;
 use crate::ast::{Expr, ExprKind, Program, Stmt, Type, UnOp};
 use crate::diag::{Diagnostic, Pos};
 
@@ -203,7 +204,8 @@ fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Po
     Ok(())
 }
 
-fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
+fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
+    scalar_locals: &BTreeMap<String, LiteralType>)
     -> Result<TypedLiteral, Diagnostic>
 {
     use LiteralType::*;
@@ -219,6 +221,8 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
+        ExprKind::Var(name) => scalar_locals.get(name).cloned().ok_or_else(||
+            diag(e.pos, "E_UNSUPPORTED", "collection capture needs a proven local scalar binding"))?,
         ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
@@ -229,7 +233,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             Int
         }
         ExprKind::Unary(UnOp::Plus, v) if matches!(v.kind, ExprKind::Int(_)) =>
-            inferred(v, Some(&Int), depth + 1)?.ty,
+            inferred(v, Some(&Int), depth + 1, scalar_locals)?.ty,
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
                 Some(Array(element)) => (true, element.as_ref().clone()),
@@ -240,7 +244,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             let mut found = Bottom;
             for item in items {
                 let child = inferred(item,
-                    if element == Bottom { None } else { Some(&element) }, depth + 1)?;
+                    if element == Bottom { None } else { Some(&element) }, depth + 1, scalar_locals)?;
                 found = common(found, child.ty.clone(), item.pos)?;
                 children.push(child);
             }
@@ -253,7 +257,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             let mut typed_fields = Vec::new();
             for (field, value) in fields {
-                let child = inferred(value, None, depth + 1)?;
+                let child = inferred(value, None, depth + 1, scalar_locals)?;
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
             }
@@ -280,8 +284,8 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let (mut keys, mut vals) = (Bottom, Bottom);
             for (key,value) in entries {
-                let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1)?;
-                let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1)?;
+                let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1, scalar_locals)?;
+                let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1, scalar_locals)?;
                 keys = common(keys,key_node.ty.clone(),key.pos)?;
                 vals = common(vals,value_node.ty.clone(),value.pos)?;
                 children.push(key_node);
@@ -316,7 +320,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let mut tys = Vec::new();
             for (i,item) in items.iter().enumerate() {
-                let child = inferred(item,slots.map(|s| &s[i]),depth + 1)?;
+                let child = inferred(item,slots.map(|s| &s[i]),depth + 1, scalar_locals)?;
                 tys.push(child.ty.clone());
                 children.push(child);
             }
@@ -356,6 +360,10 @@ fn starts_literal(e: &Expr) -> bool {
 fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
     -> Result<(), Diagnostic>
 {
+    // Narrow initial profile: only prior scalar declarations in this statement
+    // list. Nested walks start with an empty inventory, rather than guessing
+    // binder identities across catch, loop, pattern and other scope boundaries.
+    let mut scalar_locals = BTreeMap::<String, LiteralType>::new();
     for stmt in body {
         match stmt {
             Stmt::Bind {name, ty,init,pos,..} => {
@@ -365,13 +373,29 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
                     LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
                     || starts_literal(init)
                 {
-                    let value = inferred(init,wanted.as_ref(),0)?;
+                    let value = inferred(init,wanted.as_ref(),0,&scalar_locals)?;
                     if ty.is_none() && (matches!(&init.kind, ExprKind::EmptyBraces) ||
                         matches!(&init.kind, ExprKind::Array(v) if v.is_empty())) {
                         return Err(diag(init.pos,"E_INFER",
                             "empty collection without type annotation is ambiguous"));
                     }
                     out.push(TypedBinding {name:name.clone(),declared:wanted,value});
+                    scalar_locals.remove(name);
+                } else {
+                    // Read-only type inventory, never a constant substitution:
+                    // the actual checker still validates the initializer and
+                    // use site. Only scalar literal or already-proven scalar
+                    // local inference is used when no annotation is present.
+                    let known = if ty.is_some() { wanted } else {
+                        inferred(init,None,0,&scalar_locals).ok().map(|v| v.ty)
+                    };
+                    match known {
+                        Some(t @ (LiteralType::Int | LiteralType::Bool |
+                            LiteralType::Float | LiteralType::String)) => {
+                            scalar_locals.insert(name.clone(),t);
+                        }
+                        _ => { scalar_locals.remove(name); }
+                    }
                 }
             }
             Stmt::Block(inner) | Stmt::While {body:inner,..} |
