@@ -163,6 +163,8 @@ try {
     ['semicolon',namedStage(10).replace(' end }',' end; }'),'55'],
     ['homonym','fnc fib(int v): int { return 999; } '+namedStage(10),'55'],
     ['two-identities','pub fnc main(): int { return 1 |> fnc f(int v): int { return v+2; } |> fnc f(int v): int { return v*14; }; }','42'],
+    ['max-i64','pub fnc main(): int { return 0 |> fnc f(int v): int { ^ match v over on 0 -> 9223372036854775807, on _ -> f(v-1)+1 end }; }','9223372036854775807'],
+    ['recursive-overflow','pub fnc main(): int { return 1 |> fnc f(int v): int { ^ match v over on 0 -> 9223372036854775807, on _ -> f(v-1)+1 end }; }','overflow'],
     ['stack-quota','pub fnc main(): int { return 2048 |> fnc f(int v): int { return f(v-1); }; }','stack'],
   ];
   for(const [id,src,want] of namedCases) {
@@ -176,7 +178,7 @@ const bytes=readFileSync(process.argv[1]);if(!WebAssembly.validate(bytes))throw 
 const m=new WebAssembly.Module(bytes);if(WebAssembly.Module.imports(m).length)throw Error('unexpected host imports');
 const i=new WebAssembly.Instance(m,{});
 try{const n=i.exports.main();if(typeof n!=='bigint'||i.exports.panic_code.value!==0)throw Error('wrong result ABI');console.log(String(n));}
-catch(e){if(!(e instanceof WebAssembly.RuntimeError)||i.exports.panic_code.value!==6)throw e;console.log('stack');}`;
+catch(e){if(!(e instanceof WebAssembly.RuntimeError))throw e;const code=i.exports.panic_code.value;if(code===6)console.log('stack');else if(code===1)console.log('overflow');else throw e;}`;
     const guest=spawnSync(process.execPath,['--input-type=module','-e',worker,out],{encoding:'utf8',timeout:5000,maxBuffer:1<<20});
     assert.equal(guest.error,undefined,id+': guest subprocess failure');
     assert.equal(guest.status,0,id+': '+guest.stderr);
