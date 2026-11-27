@@ -815,6 +815,65 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
     Ok(())
 }
 
+/// Shared declaration validation for the ordinary checker and restricted machine check-only path.
+fn validate_nominal_declarations(p: &Program) -> R<()> {
+    let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
+    let decl_names = p
+        .classes
+        .iter()
+        .map(|c| (c.name.as_str(), c.pos, "class"))
+        .chain(p.enums.iter().map(|e| (e.name.as_str(), e.pos, "enum")))
+        .chain(p.actors.iter().map(|a| (a.name.as_str(), a.pos, "actor")));
+    for (name, pos, kind) in decl_names {
+        if matches!(
+            name,
+            "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "int" | "bool" | "boolean"
+        ) || is_reserved_collection_or_loan_name(name) {
+            return Err(Diagnostic::new(
+                pos,
+                "E_DUPLICATE",
+                format!("'{name}' is a builtin and cannot be redefined"),
+            ));
+        }
+        if seen.insert(name, pos).is_some() {
+            return Err(Diagnostic::new(
+                pos,
+                "E_DUPLICATE",
+                format!("duplicate type name '{name}' ({kind})"),
+            ));
+        }
+    }
+    for f in &p.funcs {
+        if seen.contains_key(f.name.as_str()) {
+            return Err(Diagnostic::new(
+                f.pos,
+                "E_DUPLICATE",
+                format!("'{}' is already declared as a type", f.name),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a machine event using the production nominal resolver, not the graph's
+/// local spelling order. This does not prove Sendable, constructors or an ABI.
+pub(crate) fn resolve_machine_event_class(p: &Program, event: &str, pos: Pos) -> R<u32> {
+    validate_nominal_declarations(p)?;
+    let classes: Vec<String> = p.classes.iter().map(|c| c.name.clone()).collect();
+    let actors: Vec<String> = p.actors.iter().map(|a| a.name.clone()).collect();
+    let names = [(event.to_owned(), pos)];
+    match resolve(Type::Named(0), &names, &classes, &p.enums, &actors)? {
+        Type::Class(id) => {
+            let class = &p.classes[id as usize];
+            if class.state_container || !class.fields.is_empty() || !class.methods.is_empty() || class.ctor.is_some() {
+                return Err(Diagnostic::new(pos, "E_MACHINE_EVENT_TYPE", "restricted event requires an empty ordinary class"));
+            }
+            Ok(id)
+        }
+        _ => Err(Diagnostic::new(pos, "E_MACHINE_EVENT_TYPE", "event must be an ordinary class")),
+    }
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
@@ -931,41 +990,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     }
     let tn = &p.type_names;
     // ---- one namespace for functions, classes, enums and actors
-    let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
-    let decl_names = p
-        .classes
-        .iter()
-        .map(|c| (c.name.as_str(), c.pos, "class"))
-        .chain(p.enums.iter().map(|e| (e.name.as_str(), e.pos, "enum")))
-        .chain(p.actors.iter().map(|a| (a.name.as_str(), a.pos, "actor")));
-    for (name, pos, kind) in decl_names {
-        if matches!(
-            name,
-            "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "int" | "bool" | "boolean"
-        ) || is_reserved_collection_or_loan_name(name) {
-            return Err(Diagnostic::new(
-                pos,
-                "E_DUPLICATE",
-                format!("'{name}' is a builtin and cannot be redefined"),
-            ));
-        }
-        if seen.insert(name, pos).is_some() {
-            return Err(Diagnostic::new(
-                pos,
-                "E_DUPLICATE",
-                format!("duplicate type name '{name}' ({kind})"),
-            ));
-        }
-    }
-    for f in &p.funcs {
-        if seen.contains_key(f.name.as_str()) {
-            return Err(Diagnostic::new(
-                f.pos,
-                "E_DUPLICATE",
-                format!("'{}' is already declared as a type", f.name),
-            ));
-        }
-    }
+    validate_nominal_declarations(p)?;
     let class_names: Vec<String> = p.classes.iter().map(|c| c.name.clone()).collect();
     let actor_names: Vec<String> = p.actors.iter().map(|a| a.name.clone()).collect();
     let res = |t: Type| resolve(t, tn, &class_names, &p.enums, &actor_names);
