@@ -114,6 +114,7 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: |
+          node --test tests/copy_guest_receipt.test.mjs
           node --check tests/copy_doublebang_guest.mjs
           node tests/copy_doublebang_guest.mjs
       - name: Execute defer/recover/try/raise unwind guests against spec trace oracles
