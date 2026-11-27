@@ -157,3 +157,31 @@ fn shared_storage_vectors_reject_invalid_initializers() {
         assert!(compile(source).is_err());
     }
 }
+
+#[test]
+fn graph_table_verifies_slots_and_rejects_forged_metadata() {
+    let src = include_str!("fixtures/actor-machine-inspection-v1/flat-order.atto");
+    let actors = Parser::inspect_actor_machines(src).unwrap();
+    let graph = actors[0].machine.as_ref().unwrap();
+    let table = graph.transition_table().unwrap();
+    assert_eq!(table.initial(), 1);
+    assert_eq!(table.names(), &["Alpha".to_string(), "Zed".to_string()]);
+    assert_eq!(table.events(), &["AlphaEvent".to_string(), "Zulu".to_string()]);
+    assert_eq!(table.successor(1, 0), Some(Some(0)));
+    assert_eq!(table.successor(1, 1), Some(Some(1)));
+    assert_eq!(table.successor(0, 0), Some(None));
+    assert_eq!(table.successor(2, 0), None);
+    assert_eq!(table.successor(1, 2), None);
+    let mut bad = graph.clone();
+    bad.nodes[1].transitions[0].1 = 9;
+    assert!(bad.transition_table().is_err());
+    let mut bad = graph.clone();
+    bad.nodes[1].transitions.reverse();
+    assert!(bad.transition_table().is_err());
+    let mut bad = graph.clone();
+    bad.nodes[0].transitions.push(("X".into(), 1));
+    assert!(bad.transition_table().is_err());
+    let mut bad = graph.clone();
+    bad.nodes[1].transitions.remove(0);
+    assert!(bad.transition_table().is_err());
+}
