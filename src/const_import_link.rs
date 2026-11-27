@@ -119,7 +119,7 @@ fn provider_declarations(tokens: &[Token]) -> R<ProviderDeclarations> {
             get_ident(tokens, &mut i, pos)?;
             while tokens.get(i).is_some_and(|t| t.tok == Tok::Dot) {
                 i += 1;
-                get_ident(&tokens, &mut i, pos)?;
+                get_ident(tokens, &mut i, pos)?;
             }
             if tokens.get(i).is_none_or(|t| t.tok != Tok::Semi) {
                 return Err(fail(pos, "E_SYNTAX", "expected ';' after source namespace"));
