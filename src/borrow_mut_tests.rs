@@ -244,11 +244,16 @@ fn bae_two_field_effectful_call_keeps_original_abi() {
 fn readonly_formal_forwarding_uses_original_handle_without_extra_locals() {
     let source = include_str!("../tests/fixtures/pass/borrow-formal-forward-v1.atto");
     let implicit = source.replace("calculate(borrow! p)", "calculate(p)");
-    let direct = source.replace("calculate(borrow! p)", "p.left - p.right");
     let bytes = crate::compile(source).expect("readonly formal forwarding");
     assert_eq!(bytes, crate::compile(&implicit).expect("implicit reborrow"));
-    assert_eq!(bytes, crate::compile(&direct).expect("direct checked arithmetic"),
-        "eligible nested call must lower like direct field access");
+    // Hold the enclosing function's own eligibility constant: a local
+    // prevents it becoming a new two-field BAE proof in the direct variant.
+    let non_inline = source.replace("return calculate(borrow! p);",
+        "val result = calculate(borrow! p); return result;");
+    let direct = non_inline.replace("calculate(borrow! p)", "p.left - p.right");
+    assert_eq!(crate::compile(&non_inline).expect("nested read"),
+        crate::compile(&direct).expect("direct checked arithmetic"),
+        "eligible inner call must lower like direct field access");
     let program = typed(source);
     for name in ["forward", "outer"] {
         let f = program.funcs.iter().find(|f| f.name == name).unwrap();
