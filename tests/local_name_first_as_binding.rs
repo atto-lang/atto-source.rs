@@ -29,3 +29,14 @@ fn postfix_identity_cast_remains_an_expression() {
     assert!(compile(&source("const x = 42 as int;")).is_ok());
     assert!(compile(&source("const x = true as int;")).is_err());
 }
+
+#[test]
+fn const_mut_and_val_emit_identical_fixed_scalar_bindings() {
+    for declaration in ["int x = 42;", "x : int = 42;", "x as int = 42;", "x = 42;"] {
+        let val = compile(&source(&format!("val {declaration}"))).unwrap();
+        let alias = compile(&source(&format!("const mut {declaration}"))).unwrap();
+        assert_eq!(val, alias, "{declaration}");
+    }
+    assert!(compile(&source("val mut int x = 42;")).is_err());
+    assert!(compile("define fnc int • main() { const mut int x = 42; x = 7; return x; }").is_err());
+}
