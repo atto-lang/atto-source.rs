@@ -3193,22 +3193,32 @@ impl Parser {
                 && *self.peek_at(1) == Tok::Colon;
             let quoted_map_key = matches!(self.peek(), Tok::Str(_))
                 && *self.peek_at(1) == Tok::Colon;
-            if identifier_field {
+            let captured_field = *self.peek() == Tok::Colon;
+            if identifier_field || captured_field {
                 if record_mode == Some(false) {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
                         "cannot mix identifier Record fields with quoted or expression Map entries"));
                 }
                 record_mode = Some(true);
-                let (name, at) = match self.advance() {
-                    Token { tok: Tok::Ident(name), pos } => (name, pos),
-                    _ => unreachable!(),
+                if captured_field { self.advance(); }
+                let at = self.pos();
+                let name = match self.peek().clone() {
+                    Tok::Ident(name) if !is_reserved(&name) => name,
+                    _ => return Err(self.expected("an identifier after ':'")),
                 };
-                self.expect(Tok::Colon, "':' after record field")?;
+                self.advance();
+                if !captured_field {
+                    self.expect(Tok::Colon, "':' after record field")?;
+                }
                 if !seen_record_names.insert(name.clone()) {
                     return Err(Diagnostic::new(at, "E_DUPLICATE",
                         format!("duplicate record field '{name}'")));
                 }
-                let value = self.parse_expr()?;
+                let value = if captured_field {
+                    Expr { kind: ExprKind::Var(name.clone()), pos: at }
+                } else {
+                    self.parse_expr()?
+                };
                 record.push((name, value));
             } else {
                 if record_mode == Some(true) {
