@@ -26,6 +26,8 @@ pub mod collection_layout_type;
 #[allow(clippy::needless_return)]
 pub mod copy_graph_v1;
 pub mod check;
+/// Static aggregate argument slot planning; typed spread lowering remains gated.
+pub mod call_slot_plan;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
