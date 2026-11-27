@@ -165,7 +165,9 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    if allocation_guarantees::present(&lexer::lex(source)?) {
+    let source_tokens = lexer::lex(source)?;
+    parser::Parser::check_named_stage_profile(&source_tokens)?;
+    if allocation_guarantees::present(&source_tokens) {
         return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
             "annotated linked-source compilation requires a verified cross-file effect contract"));
     }
@@ -230,6 +232,7 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
         ));
     }
     let tokens = lexer::lex(source)?;
+    parser::Parser::check_named_stage_profile(&tokens)?;
     if allocation_guarantees::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
@@ -264,6 +267,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
 
 fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>, javascript: bool)
     -> Result<Vec<u8>, Diagnostic> {
+    parser::Parser::check_named_stage_profile(&tokens)?;
     if allocation_guarantees::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);

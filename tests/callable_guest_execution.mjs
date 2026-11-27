@@ -1,7 +1,7 @@
 // Runs native-compiler-generated Wasm guests for all currently implemented callable forms.
 // In particular, this checks *execution* rather than just compiler acceptance.
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm, stat, lstat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -151,6 +151,111 @@ try {
     assert.equal(built.status,1,source+': '+built.stderr);
     assert.ok(built.stderr.includes('E_UNSUPPORTED'),source+': '+built.stderr);
     await assert.rejects(stat(out),{code:'ENOENT'});
+  }
+  // Named fnc stage proof: actual compiler and bounded separate Wasm process.
+  // The expensive fib(55) source is compiled in Rust tests, not run in smoke CI.
+  const namedStage = n => 'pub fnc main(): int { return '+n+' |> fnc fib(int v): int { ^ match v over on 0 -> 0, on 1 -> 1, on _ -> fib(v - 2) + fib(v - 1) end }; }';
+  const namedCases = [
+    ['zero',namedStage(0),'0'],
+    ['one',namedStage(1),'1'],
+    ['ten',namedStage(10),'55'],
+    ['twenty',namedStage(20),'6765'],
+    ['semicolon',namedStage(10).replace(' end }',' end; }'),'55'],
+    ['homonym','fnc fib(int v): int { return 999; } '+namedStage(10),'55'],
+    ['two-identities','pub fnc main(): int { return 1 |> fnc f(int v): int { return v+2; } |> fnc f(int v): int { return v*14; }; }','42'],
+    ['max-i64','pub fnc main(): int { return 0 |> fnc f(int v): int { ^ match v over on 0 -> 9223372036854775807, on _ -> f(v-1)+1 end }; }','9223372036854775807'],
+    ['recursive-overflow','pub fnc main(): int { return 1 |> fnc f(int v): int { ^ match v over on 0 -> 9223372036854775807, on _ -> f(v-1)+1 end }; }','overflow'],
+    ['stack-quota','pub fnc main(): int { return 2048 |> fnc f(int v): int { return f(v-1); }; }','stack'],
+  ];
+  for(const [id,src,want] of namedCases) {
+    const source=join(work,'named-stage-'+id+'.atto'),out=source+'.wasm';
+    await writeFile(source,src);
+    const built=run(source,out);
+    assert.equal(built.error,undefined,id+': compile subprocess failure');
+    assert.equal(built.status,0,id+': '+built.stderr);
+    const worker=`import {readFileSync} from 'node:fs';
+const bytes=readFileSync(process.argv[1]);if(!WebAssembly.validate(bytes))throw Error('invalid Wasm');
+const m=new WebAssembly.Module(bytes);if(WebAssembly.Module.imports(m).length)throw Error('unexpected host imports');
+const i=new WebAssembly.Instance(m,{});
+try{const n=i.exports.main();if(typeof n!=='bigint'||i.exports.panic_code.value!==0)throw Error('wrong result ABI');console.log(String(n));}
+catch(e){if(!(e instanceof WebAssembly.RuntimeError))throw e;const code=i.exports.panic_code.value;if(code===6)console.log('stack');else if(code===1)console.log('overflow');else throw e;}`;
+    const guest=spawnSync(process.execPath,['--input-type=module','-e',worker,out],{encoding:'utf8',timeout:5000,maxBuffer:1<<20});
+    assert.equal(guest.error,undefined,id+': guest subprocess failure');
+    assert.equal(guest.status,0,id+': '+guest.stderr);
+    assert.equal(guest.signal,null,id+': unexpected guest signal');
+    assert.equal(guest.stderr,'',id+': unexpected guest stderr');
+    assert.equal(guest.stdout,want+'\n',id+': wrong guest result');
+    console.log('PASS named recursive guest',id,want);
+  }
+  // Observe the real upstream effect, not just its returned scalar. Two
+  // successful invocations on one instance must restore recursive depth.
+  {
+    const source=join(work,'named-stage-once.atto'),out=source+'.wasm';
+    await writeFile(source,`fnc upstream(): int { stdio.println(7); return 10; }
+pub fnc main(): int {
+    return upstream() |> fnc fib(int v): int {
+        ^ match v over on 0 -> 0, on 1 -> 1, on _ -> fib(v-2)+fib(v-1) end
+    };
+}`);
+    const built=run(source,out);
+    assert.equal(built.error,undefined);
+    assert.equal(built.signal,null);
+    assert.equal(built.status,0,built.stderr);
+    const worker=`import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const b=readFileSync(process.argv[1]);assert.ok(WebAssembly.validate(b));
+const m=new WebAssembly.Module(b);
+const declared=WebAssembly.Module.imports(m).map(x=>x.module+'.'+x.name).sort();
+assert.deepEqual(declared,['atto.print_i64','atto.print_newline']);
+const events=[];
+const i=new WebAssembly.Instance(m,{atto:{print_i64:v=>{assert.equal(typeof v,'bigint');events.push(String(v));},print_newline:()=>events.push('newline')}});
+for(let n=0;n<2;n++){assert.equal(i.exports.main(),55n);assert.equal(i.exports.panic_code.value,0);}
+assert.deepEqual(events,['7','newline','7','newline']);
+console.log('once-ok');`;
+    const guest=spawnSync(process.execPath,['--input-type=module','-e',worker,out],{encoding:'utf8',timeout:5000,maxBuffer:1<<20});
+    assert.equal(guest.error,undefined);
+    assert.equal(guest.signal,null);
+    assert.equal(guest.status,0,guest.stderr);
+    assert.equal(guest.stderr,'');
+    assert.equal(guest.stdout,'once-ok\n');
+    console.log('PASS named recursive guest once-only upstream');
+  }
+  // The large finite depth control detects quota leaks on success. Merely
+  // invoking fib(10) twice would not reveal a leaked 1024-frame counter.
+  {
+    const source=join(work,'named-stage-depth-restore.atto'),out=source+'.wasm';
+    await writeFile(source,'pub fnc main(): int { return 600 |> fnc count(int v): int { ^ match v over on 0 -> 0, on _ -> count(v-1)+1 end }; }');
+    const built=run(source,out);
+    assert.equal(built.error,undefined);
+    assert.equal(built.signal,null);
+    assert.equal(built.status,0,built.stderr);
+    const worker=`import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const m=new WebAssembly.Module(readFileSync(process.argv[1]));
+assert.deepEqual(WebAssembly.Module.imports(m),[]);
+const i=new WebAssembly.Instance(m,{});
+for(let n=0;n<3;n++){assert.equal(i.exports.main(),600n);assert.equal(i.exports.panic_code.value,0);}
+console.log('depth-ok');`;
+    const guest=spawnSync(process.execPath,['--input-type=module','-e',worker,out],{encoding:'utf8',timeout:5000,maxBuffer:1<<20});
+    assert.equal(guest.error,undefined);
+    assert.equal(guest.signal,null);
+    assert.equal(guest.status,0,guest.stderr);
+    assert.equal(guest.stderr,'');
+    assert.equal(guest.stdout,'depth-ok\n');
+    console.log('PASS named recursive guest repeated depth restoration');
+  }
+  for(const [id,src,code] of [
+    ['escape','pub fnc main(): int { val x = 1 |> fnc f(int v): int { return v; }; return f(x); }','E_UNBOUND'],
+    ['capture','pub fnc main(): int { val x = 1; return 1 |> fnc f(int v): int { return v+x; }; }','E_UNSUPPORTED'],
+    ['arity','pub fnc main(): int { return 1 |> fnc f(int v): int { return f(v,v); }; }','E_ARITY'],
+  ]) {
+    const source=join(work,'named-stage-negative-'+id+'.atto'),out=source+'.wasm';
+    await writeFile(source,src);
+    const built=run(source,out);
+    assert.equal(built.error,undefined,id+': compile infrastructure');
+    assert.equal(built.status,1,id+': '+built.stderr);
+    assert.match(built.stderr,new RegExp('\\b'+code+':'));
+    await assert.rejects(lstat(out),{code:'ENOENT'});
   }
   for (const name of negative) {
     const path = fileURLToPath(new URL('./fixtures/fail/' + name, import.meta.url));
