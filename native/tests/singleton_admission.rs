@@ -16,7 +16,11 @@ fn singleton_declarations_have_stable_fail_closed_diagnostic() {
         let err = parse(declaration).expect_err(declaration);
         assert_eq!(err.class, "singleton_unsupported", "{declaration}: {err}");
         assert!(err.message.contains("ORES-SINGLETON-UNSUPPORTED"));
-        assert_eq!(err.offset, declaration.find("singleton").unwrap(), "{declaration}");
+        assert_eq!(
+            err.offset,
+            declaration.find("singleton").unwrap(),
+            "{declaration}"
+        );
     }
 }
 #[test]

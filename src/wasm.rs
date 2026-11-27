@@ -42,6 +42,8 @@ pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 pub const PANIC_STACK: i32 = 6;
 /// Checked refinement predicate violation in the verified quantity profile.
 pub const PANIC_REFINEMENT: i32 = 7;
+/// Checked shift distance outside 0..63; terminal guest panic, not a masked shift.
+pub const PANIC_SHIFT_DISTANCE: i32 = 8;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -212,6 +214,9 @@ struct Emit<'a> {
     active_iterators: Vec<u32>,
     /// Scratch i64 local for an opaque host-issued admission ticket.
     state_ticket_slot: Option<u32>,
+    // Reserved only when a shift is emitted; no extra locals for unaffected functions.
+    shift_slot: u32,
+    shift_used: bool,
     state_write_depth: u32,
     /// Unwind slots of a try/defer/recover function: (ret, saved, msg, kind, pending).
     uw: Option<(Option<u32>, u32, u32, u32, u32)>,
@@ -690,6 +695,38 @@ impl Emit<'_> {
         for _ in arms { self.close(); }
     }
 
+    // Stack contains the already-evaluated lhs and rhs. Save only the rhs,
+    // reject unsigned rhs >= 64 (including negative signed counts), then
+    // restore the exact count. Never evaluate the source operand twice.
+    fn checked_shift_opcode(&mut self, opcode: u8) {
+        self.shift_used = true;
+        self.op(0x22); // local.tee
+        uleb(&mut self.code, self.shift_slot as u64);
+        self.i64c(64);
+        self.op(0x5A); // i64.ge_u
+        self.open(0x04, 0x40, Frame::Other);
+        panic(&mut self.code, PANIC_SHIFT_DISTANCE);
+        self.close();
+        self.get(self.shift_slot);
+        self.op(opcode);
+    }
+
+    // Local declarations precede the emitted body. Install the extra i64
+    // only if needed and relocate recorded call/landing offsets.
+    fn finish_shift_local(&mut self, locals: &mut Vec<Type>) {
+        if !self.shift_used { return; }
+        let old_len = locals_decl(locals).len();
+        locals.push(Type::Int);
+        let prefix = locals_decl(locals);
+        let delta = prefix.len() - old_len;
+        self.code.splice(..old_len, prefix);
+        for (start, end, _) in &mut self.calls {
+            *start += delta;
+            *end += delta;
+        }
+        for landing in &mut self.landings { *landing += delta; }
+    }
+
     fn binary_opcode(&mut self, op: &BinOp, ty: Type) {
         let int = ty == Type::Int;
         if ty == Type::Float {
@@ -718,9 +755,9 @@ impl Emit<'_> {
             BinOp::BitAnd => self.op(0x83), // i64.and
             BinOp::BitOr => self.op(0x84),  // i64.or
             BinOp::BitXor => self.op(0x85), // i64.xor
-            BinOp::Shl => self.op(0x86),    // i64.shl (count mod 64)
-            BinOp::AShr => self.op(0x87),   // i64.shr_s
-            BinOp::LShr => self.op(0x88),   // i64.shr_u
+            BinOp::Shl => self.checked_shift_opcode(0x86),
+            BinOp::AShr => self.checked_shift_opcode(0x87),
+            BinOp::LShr => self.checked_shift_opcode(0x88),
             BinOp::And => self.op(0x71), // i32.and
             BinOp::Or => self.op(0x72),  // i32.or
             BinOp::Lt => self.op(0x53),
@@ -729,7 +766,15 @@ impl Emit<'_> {
             BinOp::Ge => self.op(0x59),
             BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
             BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-            BinOp::Div => self.call(self.l.helper(self.l.quantity_div.expect("division not admitted by checker"))),
+            BinOp::Div => {
+                // Quantity lowering retains its separate checked helper.
+                // Normal source i64 division is statically safe by admission.
+                if let Some(helper) = self.l.quantity_div {
+                    self.call(self.l.helper(helper));
+                } else {
+                    self.op(0x7f); // i64.div_s
+                }
+            },
         }
 
     }
@@ -1583,6 +1628,8 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             void_main: is_void_main,
             active_iterators: Vec::new(),
             state_ticket_slot: state_hooks.then_some((f.params.len()+f.locals.len()) as u32),
+            shift_slot: (f.params.len() + locals.len()) as u32,
+            shift_used: false,
             state_write_depth: 0,
             uw: None,
             in_recover: false,
@@ -1611,6 +1658,7 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             e.op(0x00); // unreachable: definite-return analysis proved every path returns
         }
         e.op(0x0B);
+        e.finish_shift_local(&mut locals);
         fn_meta.push(FnMeta {
             body: bodies.len(),
             decl_len: locals_decl(&locals).len(),
@@ -1650,6 +1698,8 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             void_main: false,
             active_iterators: Vec::new(),
             state_ticket_slot: None,
+            shift_slot: 1, // actor_init has one i32 parameter and no user locals
+            shift_used: false,
             state_write_depth: 0,
             uw: None,
             in_recover: false,
@@ -1669,6 +1719,7 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
         }
         e.op(0x00); // unknown actor type
         e.op(0x0B);
+        e.finish_shift_local(&mut Vec::new());
         bodies.push(e.code);
 
         func_types.push(types.idx(Sig(vec![I32, I64, I64], vec![])));
