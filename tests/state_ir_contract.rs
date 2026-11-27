@@ -304,3 +304,34 @@ fn protected_result_cannot_overwrite_parameter_or_host_ticket() {
             "forged result store {variant} emitted bytes");
     }
 }
+
+#[test]
+fn forged_protected_schema_cannot_gain_ordinary_class_or_reference_authority() {
+    use atto_compiler::ast::{FieldBinding, FieldMode, FieldVisibility};
+    let source = fs::read_to_string("tests/fixtures/pass/180-standalone-state-critical.atto").unwrap();
+    let original = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
+    assert!(check::check(&original).is_ok());
+    for variant in 0..13 {
+        let mut parsed = original.clone();
+        let c = parsed.classes.iter_mut().find(|c| c.name == "Counter").unwrap();
+        match variant {
+            0 => c.fields[0].visibility = FieldVisibility::Public,
+            1 => c.fields[0].visibility = FieldVisibility::Package,
+            2 => c.fields[0].mode = FieldMode::Final,
+            3 => c.fields[0].binding = FieldBinding::Let,
+            4 => c.fields[0].referent_mutable = true,
+            5 => c.fields[0].init = None,
+            6 => c.fields[0].ty = Type::Str,
+            7 => c.fields[0].ty = Type::Float,
+            8 => c.fields.clear(),
+            9 => c.methods[0].is_static = true,
+            10 => c.methods[0].name = "state_w".into(),
+            11 => c.methods[0].params[0].name = "state_ro".into(),
+            _ => c.methods[0].params[0].name = "s".into(),
+        }
+        match check::check(&parsed) {
+            Err(d) => assert_eq!(d.code, "E_STATE_BORROW", "schema {variant}: {d}"),
+            Ok(_) => panic!("forged schema {variant} admitted"),
+        }
+    }
+}
