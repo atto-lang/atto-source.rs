@@ -105,6 +105,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/collection-layout-guest-execution.mjs
+      - name: Execute contextual reference construction guests and no-artifact negatives
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/contextual-new-guest.mjs
       - name: Execute checked monomorphic Any type tests, captures and rejection oracles
         env:
           ATTOC: target/release/attoc

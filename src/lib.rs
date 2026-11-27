@@ -23,6 +23,8 @@ pub mod collection_layout_storage;
 pub mod collection_layout_guest;
 /// Shared canonical generic binding for production and guest collection parsers.
 pub mod collection_layout_type;
+/// Staged compile-time bundle resolution; no guest admission.
+pub mod parametric_bundle;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
 /// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
 // The canonical verifier is imported byte-identically from the independent

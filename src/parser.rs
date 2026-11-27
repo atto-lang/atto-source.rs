@@ -265,6 +265,8 @@ pub struct Parser {
     state_method: bool,
     state_binder: Option<String>,
     struct_value_bindings: Option<Vec<Pos>>,
+    // Prior, file-local public-field scalar constructors proven to be bijective.
+    contextual_new_fields: std::collections::BTreeMap<String, Vec<(String, Type)>>,
 }
 
 struct TypeFirstField {
@@ -400,6 +402,7 @@ impl Parser {
             state_method: false,
             state_binder: None,
             struct_value_bindings: None,
+            contextual_new_fields: std::collections::BTreeMap::new(),
         }
     }
 
@@ -755,7 +758,11 @@ impl Parser {
                 }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
-                    prog.classes.push(self.parse_class(public)?);
+                    let decl = self.parse_class(public)?;
+                    if let Some(fields) = Self::contextual_new_schema(&decl) {
+                        self.contextual_new_fields.insert(decl.name.clone(), fields);
+                    }
+                    prog.classes.push(decl);
                 }
                 (Some("define"), Some("state")) => {
                     self.i += at + 2;
@@ -2547,6 +2554,14 @@ impl Parser {
             && self.word_at(3) == Some("loop")
             && *self.peek_at(4) == Tok::LParen;
         if !typed_loop && !inferred_loop {
+            if matches!(self.word_at(0), Some("val" | "const" | "let")) {
+                let mut prefix = Vec::new();
+                let binding = self.parse_binding_with_prefix(Some(&mut prefix))?;
+                self.terminator()?;
+                out.extend(prefix);
+                out.push(binding);
+                return Ok(());
+            }
             out.push(self.parse_stmt()?);
             return Ok(());
         }
@@ -3051,8 +3066,86 @@ impl Parser {
         Ok(ExprKind::StateRead(field))
     }
 
+    /// Only direct, one-to-one initialization of every public deferred-final
+    /// scalar field is admitted. This does not invent field access or bypass
+    /// the ordinary constructor, ownership checker or allocator.
+    fn contextual_new_schema(decl: &ClassDecl) -> Option<Vec<(String, Type)>> {
+        let ctor = decl.ctor.as_ref()?;
+        if decl.state_container || decl.fields.is_empty() || decl.fields.len() > 32
+            || decl.fields.len() != ctor.params.len() || ctor.body.len() != ctor.params.len()
+            || decl.fields.iter().any(|f| f.visibility != FieldVisibility::Public
+                || f.binding != FieldBinding::Final || f.init.is_some()
+                || !matches!(f.ty, Type::Int | Type::Bool))
+            || ctor.params.iter().any(|p| p.mutable) {
+            return None;
+        }
+        let mut ordered = vec![None; ctor.params.len()];
+        let mut initialized = std::collections::BTreeSet::new();
+        for stmt in &ctor.body {
+            let Stmt::FieldAssign { target, field, value, .. } = stmt else { return None };
+            if !matches!(&target.kind, ExprKind::SelfRef) { return None; }
+            let ExprKind::Var(param) = &value.kind else { return None };
+            let index = ctor.params.iter().position(|p| &p.name == param)?;
+            let destination = decl.fields.iter().find(|f| &f.name == field)?;
+            if destination.ty != ctor.params[index].ty || !initialized.insert(field.as_str())
+                || ordered[index].replace((field.clone(), destination.ty)).is_some() { return None; }
+        }
+        ordered.into_iter().collect()
+    }
+
+    /// Lower reordered scalar initializers into inaccessible typed locals in
+    /// lexical statement order before ordinary constructor argument binding.
+    /// Contexts without a statement-list lowering boundary stay fail closed.
+    fn parse_contextual_new(&mut self, expected: Option<Type>, prefix: Option<&mut Vec<Stmt>>) -> R<Expr> {
+        let site = self.i;
+        let pos = self.pos();
+        let deny = || Diagnostic::new(pos, "E_CONTEXTUAL_NEW",
+            "contextual new requires a typed local and a prior public-field scalar constructor");
+        let Some(Type::Named(index)) = expected else { return Err(deny()); };
+        let owner = self.type_names.get(index as usize).map(|(n, _)| n.clone()).ok_or_else(deny)?;
+        let fields = self.contextual_new_fields.get(&owner).cloned().ok_or_else(deny)?;
+        self.expect_word("new")?;
+        self.expect(Tok::LBrace, "'{' after contextual new")?;
+        let mut written_args = Vec::with_capacity(fields.len());
+        let mut seen = std::collections::BTreeSet::new();
+        for i in 0..fields.len() {
+            if i != 0 { self.expect(Tok::Comma, "',' between contextual fields")?; }
+            let (written, field_pos) = self.ident("a contextual constructor field")?;
+            let slot = fields.iter().position(|(field, _)| field == &written)
+                .ok_or_else(|| Diagnostic::new(field_pos, "E_CONTEXTUAL_NEW", "unknown contextual field"))?;
+            if !seen.insert(slot) {
+                return Err(Diagnostic::new(field_pos, "E_CONTEXTUAL_NEW", "duplicate contextual field"));
+            }
+            self.expect(Tok::Colon, "':' after contextual field")?;
+            written_args.push((slot, self.parse_expr()?));
+        }
+        self.expect(Tok::RBrace, "'}' after complete contextual construction")?;
+        if written_args.iter().enumerate().any(|(i, (slot, _))| i != *slot) {
+            if !written_args.iter().all(|(_, e)| matches!(&e.kind, ExprKind::Int(Some(_)) | ExprKind::Bool(_))) {
+                let out = prefix.ok_or_else(|| Diagnostic::new(pos, "E_CONTEXTUAL_NEW_ORDER",
+                    "reordered nonliteral initializers require a statement-list lowering boundary"))?;
+                // The lexer cannot produce NUL-prefixed names. The source
+                // token index is unique within this parser, including nested
+                // lexical scopes. No source binding can read these temporaries.
+                for (i, (slot, expr)) in written_args.iter_mut().enumerate() {
+                    let name = format!("\0contextual_new_{site}_{i}");
+                    let at = expr.pos;
+                    let init = std::mem::replace(expr, Expr { kind: ExprKind::Var(name.clone()), pos: at });
+                    out.push(Stmt::Bind { kind: BindKind::Val, name, ty: Some(fields[*slot].1), init, pos: at });
+                }
+            }
+            written_args.sort_by_key(|(slot, _)| *slot);
+        }
+        let args = written_args.into_iter().map(|(_, expr)| expr).collect();
+        Ok(Expr { kind: ExprKind::New(owner, args), pos })
+    }
+
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
     fn parse_binding(&mut self) -> R<Stmt> {
+        self.parse_binding_with_prefix(None)
+    }
+
+    fn parse_binding_with_prefix(&mut self, prefix: Option<&mut Vec<Stmt>>) -> R<Stmt> {
         let pos = self.pos();
         let kind = if self.eat_word("val") {
             BindKind::Val
@@ -3110,7 +3203,11 @@ impl Parser {
             ));
         }
         self.advance();
-        let init = self.parse_expr()?;
+        let init = if self.is_word("new") && *self.peek_at(1) == Tok::LBrace {
+            self.parse_contextual_new(ty, if kind == BindKind::Const { None } else { prefix })?
+        } else {
+            self.parse_expr()?
+        };
         if (kind == BindKind::Val || explicit_mut) && kind != BindKind::Const {
             if let Some(bindings) = self.struct_value_bindings.as_mut() {
                 bindings.push(pos);
