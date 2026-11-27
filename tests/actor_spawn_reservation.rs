@@ -131,3 +131,87 @@ fn per_actor_receive_limit_is_bounded_and_retained_until_settlement() {
     assert_eq!(empty.reserve(unit()).unwrap_err(), Error::Policy);
     assert_eq!(empty.usage(), [0;4]);
 }
+
+#[test]
+fn concurrent_receive_caps_are_independent_and_retire_fences_new_entries() {
+    let gate = Arc::new(Mutex::new(Gate::<2, 4>::new(Charge::new(2,2,2,2).unwrap())));
+    let (p,q) = {
+        let mut g = gate.lock().unwrap();
+        let p = g.reserve_with_receive_limit(unit(), 1).unwrap();
+        let q = g.reserve_with_receive_limit(unit(), 3).unwrap();
+        for actor in [&p,&q] {
+            let lease = g.begin_init(actor).unwrap();
+            assert_eq!(g.complete_init(&lease, true), Ok(true));
+        }
+        (p,q)
+    };
+    let start = Arc::new(Barrier::new(129));
+    let arrived = Arc::new(Barrier::new(129));
+    let settle = Arc::new(Barrier::new(129));
+    let winners = [AtomicUsize::new(0),AtomicUsize::new(0)];
+    std::thread::scope(|s| {
+        for i in 0..128 {
+            let (gate,start,arrived,settle) = (gate.clone(),start.clone(),arrived.clone(),settle.clone());
+            let (actor,winner) = if i%2==0 { (&p,&winners[0]) } else { (&q,&winners[1]) };
+            s.spawn(move || {
+                start.wait();
+                let lease = gate.lock().unwrap().try_enter_receive(actor).unwrap();
+                if lease.is_some() { winner.fetch_add(1,Ordering::SeqCst); }
+                arrived.wait();
+                settle.wait();
+                if let Some(lease) = lease {
+                    gate.lock().unwrap().finish_receive(&lease).unwrap();
+                }
+            });
+        }
+        start.wait();
+        arrived.wait();
+        let observed = [winners[0].load(Ordering::SeqCst),winners[1].load(Ordering::SeqCst)];
+        // Record results before unblocking workers, so a failed assertion does not strand them.
+        let retirement = {
+            let mut g = gate.lock().unwrap();
+            let rp = g.retire(&p);
+            let rq = g.retire(&q);
+            (rp,rq,g.try_enter_receive(&p).map(|l|l.is_none()),
+             g.try_enter_receive(&q).map(|l|l.is_none()),
+             g.release_after_quiescence(&p),g.release_after_quiescence(&q),g.usage())
+        };
+        settle.wait();
+        assert_eq!(observed,[1,3]);
+        assert_eq!(retirement,(Ok(()),Ok(()),Ok(true),Ok(true),Err(Error::InFlight),Err(Error::InFlight),[2;4]));
+    });
+    let mut g = gate.lock().unwrap();
+    g.release_after_quiescence(&p).unwrap();
+    assert_eq!(g.usage(),[1;4]);
+    g.release_after_quiescence(&q).unwrap();
+    assert_eq!(g.usage(),[0;4]);
+}
+
+#[test]
+fn concurrent_init_settlement_and_retirement_preserve_quota() {
+    let gate = Mutex::new(Gate::<1,1>::new(unit()));
+    for _ in 0..2000 {
+        let (p,init) = {
+            let mut g=gate.lock().unwrap();
+            let p=g.reserve(unit()).unwrap();
+            let init=g.begin_init(&p).unwrap();
+            (p,init)
+        };
+        let start=Barrier::new(2);
+        std::thread::scope(|s| {
+            let completion=s.spawn(|| {
+                start.wait();
+                gate.lock().unwrap().complete_init(&init,true)
+            });
+            start.wait();
+            gate.lock().unwrap().retire(&p).unwrap();
+            assert!(completion.join().unwrap().is_ok());
+        });
+        let mut g=gate.lock().unwrap();
+        assert_eq!(g.usage(),[1;4]);
+        assert!(!g.may_receive(&p));
+        assert!(g.try_enter_receive(&p).unwrap().is_none());
+        g.release_after_quiescence(&p).unwrap();
+        assert_eq!(g.usage(),[0;4]);
+    }
+}
