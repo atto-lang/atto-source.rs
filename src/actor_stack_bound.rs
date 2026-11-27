@@ -213,8 +213,8 @@ mod tests {
     }
     #[test] fn accepts_exact_frame_limit() {
         let mut bodies = vec![vec![]; MAX_ACTOR_STATIC_CALL_DEPTH];
-        for i in 0..MAX_ACTOR_STATIC_CALL_DEPTH - 1 {
-            bodies[i].push(call((i + 1) as u32));
+        for (i, body) in bodies.iter_mut().enumerate().take(MAX_ACTOR_STATIC_CALL_DEPTH - 1) {
+            body.push(call((i + 1) as u32));
         }
         assert!(verify(&program(bodies, 0)).is_ok());
     }
@@ -223,16 +223,16 @@ mod tests {
         // The cached tail depth must still be counted in the second path.
         let mut bodies = vec![vec![]; MAX_ACTOR_STATIC_CALL_DEPTH + 1];
         bodies[0] = vec![call(1), call(MAX_ACTOR_STATIC_CALL_DEPTH as u32)];
-        for i in 1..MAX_ACTOR_STATIC_CALL_DEPTH - 1 {
-            bodies[i].push(call((i + 1) as u32));
+        for (i, body) in bodies.iter_mut().enumerate().take(MAX_ACTOR_STATIC_CALL_DEPTH - 1).skip(1) {
+            body.push(call((i + 1) as u32));
         }
         bodies[MAX_ACTOR_STATIC_CALL_DEPTH].push(call(1));
         assert!(verify(&program(bodies, 0)).is_err());
     }
     #[test] fn rejects_deep_acyclic_chains() {
         let mut bodies = vec![vec![]; MAX_ACTOR_STATIC_CALL_DEPTH + 1];
-        for i in 0..MAX_ACTOR_STATIC_CALL_DEPTH {
-            bodies[i].push(call((i + 1) as u32));
+        for (i, body) in bodies.iter_mut().enumerate().take(MAX_ACTOR_STATIC_CALL_DEPTH) {
+            body.push(call((i + 1) as u32));
         }
         assert!(verify(&program(bodies, 0)).is_err());
     }
@@ -248,8 +248,8 @@ mod tests {
     }
     #[test] fn initializer_charges_its_entry_frame() {
         let mut bodies = vec![vec![]; MAX_ACTOR_STATIC_CALL_DEPTH];
-        for i in 0..MAX_ACTOR_STATIC_CALL_DEPTH - 1 {
-            bodies[i].push(call((i + 1) as u32));
+        for (i, body) in bodies.iter_mut().enumerate().take(MAX_ACTOR_STATIC_CALL_DEPTH - 1) {
+            body.push(call((i + 1) as u32));
         }
         let mut p = program(bodies, 0);
         p.actors[0].receive = None;
