@@ -3190,10 +3190,11 @@ impl Parser {
                     "brace literal exceeds 1024 entries"));
             }
             let identifier_field = matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                && *self.peek_at(1) == Tok::Colon;
+                && matches!(self.peek_at(1), Tok::Colon | Tok::Assign);
             let quoted_map_key = matches!(self.peek(), Tok::Str(_))
                 && *self.peek_at(1) == Tok::Colon;
             let captured_field = *self.peek() == Tok::Colon;
+            let equals_field = identifier_field && *self.peek_at(1) == Tok::Assign;
             if identifier_field || captured_field {
                 if record_mode == Some(false) {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
@@ -3208,7 +3209,7 @@ impl Parser {
                 };
                 self.advance();
                 if !captured_field {
-                    self.expect(Tok::Colon, "':' after record field")?;
+                    if !self.eat(&Tok::Assign) { self.expect(Tok::Colon, "':' or '=' after record field")?; }
                 }
                 if !seen_record_names.insert(name.clone()) {
                     return Err(Diagnostic::new(at, "E_DUPLICATE",
@@ -3264,10 +3265,10 @@ impl Parser {
             // A subsequent entry can start on the following line; same-line
             // entries need commas. At most one entry is parsed per iteration.
             let previous_line = self.toks[self.i.saturating_sub(1)].pos.line;
-            if *self.peek() != Tok::Eof && self.pos().line > previous_line {
+            if !equals_field && *self.peek() != Tok::Eof && self.pos().line > previous_line {
                 continue;
             }
-            return Err(self.expected("',' or a newline between brace entries, or '}'"));
+            return Err(self.expected(if equals_field { "',' between equals Record fields, or '}'" } else { "',' or a newline between brace entries, or '}'" }));
         }
         if record_mode == Some(true) {
             Ok(ExprKind::Record(record))
@@ -3292,10 +3293,10 @@ impl Parser {
             let name = match self.peek().clone() {
                 Tok::Ident(name) if !is_reserved(&name) => name,
                 _ => return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                    "parenthesized Record fields require identifier=expression or :identifier")),
+                    "parenthesized Record fields require identifier=expression, identifier:expression or :identifier")),
             };
             self.advance();
-            if !captured { self.expect(Tok::Assign, "'=' after named Record field")?; }
+            if !captured && !self.eat(&Tok::Assign) { self.expect(Tok::Colon, "'=' or ':' after named Record field")?; }
             if !seen.insert(name.clone()) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE",
                     format!("duplicate Record field '{name}'")));
@@ -3309,10 +3310,10 @@ impl Parser {
                     break;
                 }
                 if *self.peek() != Tok::Colon && !(matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && *self.peek_at(1) == Tok::Assign)
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
                 {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix named Record fields and positional Tuple items; expected field=value or :field"));
+                        "cannot mix named Record fields and positional Tuple items; expected field=value, field:value or :field"));
                 }
                 continue;
             }
@@ -3346,7 +3347,7 @@ impl Parser {
                 // Identifier '=' or a leading capture ':' selects Record.
                 // Equality, Pair syntax and ordinary positional items do not.
                 if *self.peek() == Tok::Colon || (matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && *self.peek_at(1) == Tok::Assign)
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
                 {
                     return self.parse_named_record_parens(pos);
                 }
