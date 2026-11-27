@@ -2344,6 +2344,26 @@ impl Parser {
             Some("do") if matches!(self.word_at(1), Some("switch" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
+            // Canonical stdout methods, deliberately limited to the existing
+            // literal-string browser admission profile, not a process fd.
+            Some("stdio" | "process")
+                if *self.peek_at(1) == Tok::Dot
+                    && ((word.as_deref() == Some("stdio") && self.word_at(2) == Some("out"))
+                        || (word.as_deref() == Some("process") && self.word_at(2) == Some("stdout")))
+                    && *self.peek_at(3) == Tok::Dot
+                    && self.word_at(4) == Some("write")
+                    && *self.peek_at(5) == Tok::LParen =>
+            {
+                let name = if word.as_deref() == Some("stdio") {
+                    "stdio.out.write"
+                } else {
+                    "process.stdout.write"
+                };
+                for _ in 0..5 { self.advance(); }
+                let args = self.parse_args()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(Expr { kind: ExprKind::Call(name.to_owned(), args), pos }))
+            }
             // Narrow, executable Writable<string/int/bool/float> builtin.
             // Use the existing typed stdio.print lowering, not a new host
             // import or unchecked operator overload. The << token pair
