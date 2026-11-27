@@ -67,7 +67,7 @@ pub struct TargetHeaders {
     /// Token ranges for class forward declarations, omitted after linkage.
     pub class_forward_sites: Vec<(usize, usize)>,
     /// V2-only declared visibility; package exports never become public.
-    class_forward_exports: Vec<(String, crate::visibility_lower::Visibility, Pos)>,
+    pub class_forward_exports: Vec<(String, crate::visibility_lower::Visibility, Pos)>,
     /// Parsed but unsupported protected per-instance class state attachments.
     pub state_owners: Vec<String>,
     /// Parsed but deliberately unlinked struct forwards.
@@ -1364,16 +1364,16 @@ pub(crate) fn complete_file_classes_v2(toks: &[Token]) -> R<Option<Vec<Token>>> 
         for name in ["define", "class", owner.as_str(), "as", "end"] {
             augmented.push(Token { tok: Tok::Ident(name.to_owned()), pos });
         }
-        let mut parse = augmented.clone();
+        let mut parse = augmented[start..].to_vec();
         parse.push(Token { tok: Tok::Eof, pos });
-        let (class, end) = Parser::parse_target_class_at(&parse, start)?;
-        if end != augmented.len() || !class.fields.is_empty() ||
+        let (class, end) = Parser::parse_target_class_at(&parse, 0)?;
+        if end != 5 || !class.fields.is_empty() ||
             !class.methods.is_empty() || class.ctor.is_some() {
             return Err(Diagnostic::new(pos, "E_UNLINKED", "invalid synthesized empty class layout"));
         }
         headers.classes.push(owner.clone());
         headers.class_definitions.push(class);
-        headers.class_ends.push(end - 1);
+        headers.class_ends.push(start + end - 1);
     }
     augmented.push(toks[toks.len()-1].clone());
     let mut result = lower_class_receivers(&augmented, &headers)?;
