@@ -174,14 +174,23 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
                 if parts.len() != schema.len() { return Err(bad(i, "context arity mismatch")); }
                 if t[i+6..end].iter().any(|q| word(q)==Some(name)) { return Err(bad(i,"self-referencing contextual binding")); }
                 if aliases.len()>=64 { return Err(bad(i,"context binding limit (64)")); }
-                let mut slots = Vec::new();
-                for (j, (part, (ty, _))) in parts.into_iter().zip(&schema).enumerate() {
-                    plain(part,owner,&aliases,x,true)?;
+                let named = parts.iter().any(|part| is(part,1,Tok::Assign));
+                let mut slots = vec![String::new();schema.len()];
+                for (k, part) in parts.into_iter().enumerate() {
+                    let (j, value) = if named {
+                        if !is(part,1,Tok::Assign) { return Err(bad(i,"mixed named and positional context")); }
+                        let key = w(part,0).ok_or_else(|| bad(i,"named context key required"))?;
+                        let j = schema.iter().position(|&(_,n)| n==key)
+                            .ok_or_else(|| bad(i,"unknown named context key"))?;
+                        if !slots[j].is_empty() { return Err(bad(i,"duplicate named context key")); }
+                        (j,&part[2..])
+                    } else { (k,part) };
+                    plain(value,owner,&aliases,x,true)?;
                     let slot = format!("{PREFIX}slot_{}_{}",aliases.len(),j);
-                    out.extend([x.clone(),ident(&t[i+1],&slot),token(x,Tok::Colon),ident(x,ty),t[i+2].clone()]);
-                    out.extend_from_slice(part);
+                    out.extend([x.clone(),ident(&t[i+1],&slot),token(x,Tok::Colon),ident(x,schema[j].0),t[i+2].clone()]);
+                    out.extend_from_slice(value);
                     out.push(t[end+1].clone());
-                    slots.push(slot);
+                    slots[j]=slot;
                 }
                 aliases.insert(name.into(),slots);
                 i=end+2; continue;
@@ -287,6 +296,7 @@ mod tests {
             (program("let n = 3; const x = Scale::(n + 1); n = 9; return x.apply(n) + Scale::(n - 7).apply(3);"), "42"),
             (multi_program("let n = 3; const x = Scale::(n, n + 1); n = 9; return x.apply(5) + Scale::(2, 1).apply(7);"), "34"),
             (multi_program("const x = Scale::(2, 3); const y = Scale::(4, 5); return x.apply(7) + y.apply(7);"), "50"),
+            (multi_program("const x = Scale::(offset=7,factor=5); return x.apply(7);"), "42"),
         ] {
             let wasm = crate::compile(&source).expect("compile guest");
             let mut child = Command::new("node").args(["-e",
@@ -312,7 +322,10 @@ mod tests {
             "return Scale::(2, 1, 0).apply(3);",
             "return Scale::(2,).apply(3);",
             "return Scale::(,2).apply(3);",
-            "const x = Scale::(factor=2, offset=1); return x.apply(3);",
+            "const x = Scale::(factor=2, factor=1); return x.apply(3);",
+            "const x = Scale::(offset=2, 1); return x.apply(3);",
+            "const x = Scale::(unknown=2, factor=1); return x.apply(3);",
+            "return Scale::(offset=2, factor=1).apply(3);",
         ] { assert!(crate::compile(&multi_program(body)).is_err(), "{body}"); }
     }
     #[test] fn reject_mismatched_ordinary_arguments_before_rewrite() {
