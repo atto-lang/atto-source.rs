@@ -325,6 +325,8 @@ pub struct NominalMachineInspection {
     pub actor: String,
     pub declarations: Vec<String>,
     pub declaration_ids: Vec<usize>,
+    /// Indices into the production checker's source-order class table; never wire IDs.
+    pub checker_class_ids: Vec<u32>,
     pub table: FlatMachineTable,
 }
 
@@ -789,11 +791,14 @@ impl Parser {
             if let Some(graph) = actor.machine {
                 let table = graph.transition_table()?;
                 let mut declaration_ids = Vec::new();
+                let mut checker_class_ids = Vec::new();
                 for event in table.events() {
+                    let checked_id = crate::check::resolve_machine_event_class(&program, event, graph.pos)?;
                     let id = ids.get(event.as_str()).ok_or_else(|| reject("event must resolve to a unique empty ordinary class in this file"))?;
                     declaration_ids.push(*id);
+                    checker_class_ids.push(checked_id);
                 }
-                result.push(NominalMachineInspection { actor: actor.actor, declarations: declarations.clone(), declaration_ids, table });
+                result.push(NominalMachineInspection { actor: actor.actor, declarations: declarations.clone(), declaration_ids, checker_class_ids, table });
             }
         }
         Ok(result)
