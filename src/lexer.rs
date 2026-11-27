@@ -67,7 +67,27 @@ pub struct Token {
 pub const MAX_TOKENS: usize = 32_768;
 pub const MAX_STRING_BYTES: usize = 4_096;
 
+/// Original delimiter of an ordinary, decoded source string. A synthetic
+/// token has no such provenance until its source origin is authenticated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringQuote { Double, Single, Backtick }
+
+/// Keep quote provenance separate from semantic token equality: literal
+/// values of different spellings still compare equal in ordinary expressions.
+/// Positions use the lexer's original Unicode-scalar line/column coordinates.
+pub type StringQuoteOrigins = std::collections::BTreeMap<(u32, u32), StringQuote>;
+
+pub fn lex_with_quote_origins(source: &str) -> Result<(Vec<Token>, StringQuoteOrigins), Diagnostic> {
+    let mut origins = StringQuoteOrigins::new();
+    let tokens = lex_internal(source, Some(&mut origins))?;
+    Ok((tokens, origins))
+}
+
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    lex_internal(source, None)
+}
+
+fn lex_internal(source: &str, mut origins: Option<&mut StringQuoteOrigins>) -> Result<Vec<Token>, Diagnostic> {
     let chars: Vec<char> = source.chars().collect();
     let mut out = Vec::new();
     let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
@@ -289,6 +309,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "string literal is too long"));
                 }
             }
+            if let Some(map) = origins.as_deref_mut() {
+                map.insert((pos.line, pos.col), if quote == '"' { StringQuote::Double } else { StringQuote::Single });
+            }
             out.push(Token { tok: Tok::Str(s), pos });
             continue;
         }
@@ -322,6 +345,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
                         "string literal is too long"));
                 }
+            }
+            if let Some(map) = origins.as_deref_mut() {
+                map.insert((pos.line, pos.col), StringQuote::Backtick);
             }
             out.push(Token { tok: Tok::Str(s), pos });
             continue;
@@ -400,5 +426,33 @@ mod pair_token_tests {
         assert_eq!(kinds.iter().filter(|t| ***t == Tok::ColonEqual).count(), 1);
         assert_eq!(kinds.iter().filter(|t| ***t == Tok::Colon).count(), 2);
         assert_eq!(kinds.iter().filter(|t| ***t == Tok::ColonColon).count(), 1);
+    }
+}
+
+
+#[cfg(test)]
+mod quote_origin_tests {
+    use super::*;
+    #[test]
+    fn quote_origins_do_not_change_decoded_string_semantics() {
+        let source = "\"x\" 'x' \x60x\x60 \"\\u{78}\"";
+        let (tokens, origins) = lex_with_quote_origins(source).unwrap();
+        assert_eq!(tokens.iter().map(|t| &t.tok).collect::<Vec<_>>(),
+            lex(source).unwrap().iter().map(|t| &t.tok).collect::<Vec<_>>());
+        assert_eq!(origins.values().copied().collect::<Vec<_>>(),
+            vec![StringQuote::Double, StringQuote::Single, StringQuote::Backtick, StringQuote::Double]);
+        assert!(tokens[..4].iter().all(|t| t.tok == Tok::Str("x".into())));
+    }
+
+    #[test]
+    fn ignored_comments_and_unicode_columns_cannot_forge_label_origins() {
+        let source = "/* \"fake\" */\nα \"name\" // 'ignored'\n'other'";
+        let (tokens, origins) = lex_with_quote_origins(source).unwrap();
+        assert_eq!(origins.len(), 2);
+        assert_eq!(origins.get(&(2,3)), Some(&StringQuote::Double));
+        assert_eq!(origins.get(&(3,1)), Some(&StringQuote::Single));
+        assert_eq!(origins.get(&(2,1)), None);
+        assert_eq!(tokens.iter().filter(|t| matches!(t.tok,Tok::Str(_))).count(),2);
+        assert!(lex_with_quote_origins("\"unterminated").is_err());
     }
 }
