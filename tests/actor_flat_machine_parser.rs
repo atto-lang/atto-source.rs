@@ -60,3 +60,24 @@ fn graph_size_is_bounded() {
     source.push_str("end end end");
     parser_code(&source, "E_SOURCE_LIMIT");
 }
+
+// A valid first graph must not hide a second declaration or broken actor tail.
+#[test]
+fn duplicate_machine_and_actor_tail_are_checked() {
+    let machine = "state machine as initial state Idle; final state Idle; end";
+    parser_code(&format!("define actor Foo as {machine} {machine} end"), "E_MACHINE_GRAPH");
+    parser_code(&format!("define actor Foo as pub {machine} end"), "E_SYNTAX");
+    let source = format!("define actor Foo as {machine}");
+    assert!(Parser::new(lexer::lex(&source).unwrap()).parse_program().is_err());
+    assert!(compile(&source).is_err());
+}
+
+#[test]
+fn node_limit_is_bounded() {
+    let mut source = String::from("define actor Foo as state machine as initial state Idle; final state Idle; ");
+    for i in 0..256 {
+        source.push_str(&format!("final state Node{i}; "));
+    }
+    source.push_str("end end");
+    parser_code(&source, "E_SOURCE_LIMIT");
+}
