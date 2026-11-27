@@ -38,3 +38,25 @@ fn erased_slot_cannot_hide_reserved_identifiers() {
         assert!(err.code.starts_with("E_POINTER_"), "{name}: {err}");
     }
 }
+
+#[test]
+fn erased_pointer_bang_operations_require_separators() {
+    for (from, to) in [
+        ("ref! p to a;", "ref!p to a;"),
+        ("val first = deref! p;", "val first = deref!p;"),
+        ("unref! p;", "unref!p;"),
+    ] {
+        assert!(GOOD.contains(from), "missing mutation target: {from}");
+        let bad = GOOD.replacen(from, to, 1);
+        let err = atto_compiler::compile(&bad).expect_err("glued operand emitted Wasm");
+        assert!(err.code.starts_with("E_POINTER_") || err.code == "E_BANG_KEYWORD_WHITESPACE", "{from} -> {to}: {err}");
+    }
+}
+
+#[test]
+fn erased_linear_handle_cannot_hide_reserved_names() {
+    for name in ["await", "true", "null", "to", "empty"] {
+        let source = format!("pub fnc main(): int {{ let value: int = 42; val Pointer<int> {name} = ref! value; val answer = deref! {name}; unref! {name}; return answer; }}");
+        assert!(atto_compiler::compile(&source).is_err(), "reserved handle emitted Wasm: {name}");
+    }
+}
