@@ -804,7 +804,7 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: cr
                     CopyFieldKind::Scalar,
                 Type::Class(child) if classes[child as usize].immutable_leaf && !f.referent_mutable =>
                     CopyFieldKind::ImmutableShared,
-                Type::Class(child) if classes[child as usize].closed_scalar_leaf && f.referent_mutable =>
+                Type::Class(child) if classes[child as usize].closed_scalar_leaf && (f.referent_mutable || f.binding == FieldBinding::Val) =>
                     CopyFieldKind::SharedMutable(child + 1),
                 Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
                 _ => CopyFieldKind::Unresolved,
@@ -835,7 +835,7 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: cr
     if mode == CopyMode::Deep {
         for field in &classes[ci as usize].fields {
             if let Type::Class(child) = field.ty {
-                if field.referent_mutable && classes[child as usize].closed_scalar_leaf {
+                if (field.referent_mutable || (field.binding == FieldBinding::Val && !classes[child as usize].immutable_leaf)) && classes[child as usize].closed_scalar_leaf {
                     expected.insert(child + 1);
                 }
             }
@@ -1114,7 +1114,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 Type::Class(ci) => !actor
                     && f.binding != FieldBinding::Const
                     && ((!f.referent_mutable && immutable_leaves[ci as usize])
-                        || (f.referent_mutable && closed_scalar_leaves[ci as usize]))
+                        || ((f.referent_mutable || f.binding == FieldBinding::Val) && closed_scalar_leaves[ci as usize]))
                     && f.init.as_ref().is_some_and(|e| matches!(&e.kind,
                         ExprKind::New(name, args) if name == &class_names[ci as usize] && args.is_empty())),
                 _ => false,
@@ -1149,7 +1149,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut classes = Vec::new();
     for (ci, c) in p.classes.iter().enumerate() {
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
-        if fields.iter().any(|f| matches!(f.ty, Type::Class(_)) && f.referent_mutable)
+        if fields.iter().any(|f| matches!(f.ty, Type::Class(child) if f.referent_mutable || (f.binding == FieldBinding::Val && !immutable_leaves[child as usize])))
             && (c.state_container || c.ctor.is_some() || !c.methods.is_empty()) {
             return Err(Diagnostic::new(c.pos, "E_COPY_UNPROVEN",
                 "mutable nested root requires a closed constructor-free, method-free layout"));
@@ -1170,7 +1170,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let flat = !c.state_container && fields.iter().all(|f| match f.ty {
             Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
             Type::Class(child) => (immutable_leaves[child as usize] && !f.referent_mutable)
-                || (closed_scalar_leaves[child as usize] && f.referent_mutable),
+                || (closed_scalar_leaves[child as usize] && (f.referent_mutable || f.binding == FieldBinding::Val)),
             _ => false,
         });
         let deep_copy_idx = if flat && !c.methods.iter().any(|m| m.name == "copy_deep") { Some(take()) } else { None };
@@ -1247,7 +1247,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     };
 
     let nested_root_type = |t: Type| matches!(t, Type::Class(ci)
-        if g.classes[ci as usize].fields.iter().any(|f| f.referent_mutable && matches!(f.ty, Type::Class(_))));
+        if g.classes[ci as usize].fields.iter().any(|f| matches!(f.ty, Type::Class(child) if f.referent_mutable || (f.binding == FieldBinding::Val && !g.classes[child as usize].immutable_leaf))));
     for f in &p.funcs {
         if nested_root_type(res(f.ret)?) || f.params.iter().any(|q| res(q.ty).is_ok_and(nested_root_type)) {
             return Err(Diagnostic::new(f.pos, "E_COPY_UNPROVEN", "mutable nested roots cannot cross callable boundaries"));
@@ -1470,7 +1470,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 let mut value = TE { e: TExpr::FieldGet {
                     obj: Box::new(source.clone()), offset: field.slot,
                 }, ty: field.ty };
-                if mode == crate::copy_graph_v1::CopyMode::Deep && field.referent_mutable {
+                if mode == crate::copy_graph_v1::CopyMode::Deep && (field.referent_mutable || matches!(field.ty, Type::Class(child) if field.binding == FieldBinding::Val && !g.classes[child as usize].immutable_leaf)) {
                     if let Type::Class(child) = field.ty {
                         let idx = g.classes[child as usize].deep_copy_idx.ok_or_else(||
                             Diagnostic::new(c.pos, "E_COPY_AOT_WITNESS", "missing mutable leaf copier"))?;
@@ -1893,7 +1893,7 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
     if let Type::Class(ci) = ty {
         let info = &g.classes[ci as usize];
         if !actor && ((info.immutable_leaf && !f.referent_mutable)
-            || (info.closed_scalar_leaf && f.referent_mutable))
+            || (info.closed_scalar_leaf && (f.referent_mutable || f.binding == FieldBinding::Val)))
             && matches!(&init.kind, ExprKind::New(name, args) if name == &info.name && args.is_empty())
         {
             return Ok(Some(TE { e: TExpr::Call(info.new_idx, Vec::new()), ty }));
@@ -2808,7 +2808,7 @@ impl<'a> FnCx<'a> {
 
     fn has_mutable_nested(&self, ty: Type) -> bool {
         matches!(ty, Type::Class(ci) if self.g.classes[ci as usize].fields.iter().any(|f|
-            f.referent_mutable && matches!(f.ty, Type::Class(_))))
+            matches!(f.ty, Type::Class(child) if f.referent_mutable || (f.binding == FieldBinding::Val && !self.g.classes[child as usize].immutable_leaf))))
     }
 
     fn pop_scope(&mut self) {
@@ -2962,7 +2962,7 @@ impl<'a> FnCx<'a> {
                     if self.nested_linear && self.owner == Owner::TopLevel {
                         if let Type::Class(ci) = v.ty {
                             let offsets: Vec<u32> = self.g.classes[ci as usize].fields.iter()
-                                .filter(|f| f.referent_mutable && matches!(f.ty, Type::Class(_)))
+                                .filter(|f| matches!(f.ty, Type::Class(child) if f.referent_mutable || (f.binding == FieldBinding::Val && !self.g.classes[child as usize].immutable_leaf)))
                                 .map(|f| f.slot).collect();
                             for offset in offsets {
                                 if let Some(source) = shared_source {
@@ -3802,6 +3802,9 @@ impl<'a> FnCx<'a> {
                         "protected state requires the checked critical-write lease"));
                 }
                 if !f.binding.rebindable() {
+                    if matches!(f.ty, Type::Class(_)) && self.has_mutable_nested(Type::Class(c)) {
+                        return Err(Diagnostic::new(pos, "E_COPY_READONLY_SLOT", "cannot replace fixed nested root field"));
+                    }
                     return Err(Diagnostic::new(pos, "E_IMMUTABLE",
                         "cannot reassign val/final/const field"));
                 }
@@ -4230,7 +4233,7 @@ impl<'a> FnCx<'a> {
                             }
                         }
                         let class = &self.g.classes[ci as usize];
-                        if class.fields.iter().any(|f| f.referent_mutable && matches!(f.ty, Type::Class(_))) {
+                        if self.has_mutable_nested(Type::Class(ci)) {
                             let owner_slot = match &inner.kind {
                                 ExprKind::Var(n) => self.lookup(n).map(|l| l.slot),
                                 _ => None,
