@@ -1005,7 +1005,7 @@ impl Parser {
 
     /// Restricted, non-emitting grammar probe for an actor-local flat machine.
     /// No state schema, runtime dispatch, effect or ownership authority is created.
-    fn parse_flat_actor_machine(&mut self) -> R<()> {
+    fn parse_flat_actor_machine(&mut self) -> R<Members> {
         use std::collections::{BTreeMap, BTreeSet};
         let pos = self.pos();
         self.expect_word("state")?;
@@ -1164,8 +1164,7 @@ impl Parser {
                 }
                 Some("state") if actor && self.word_at(1) == Some("machine")
                     && self.word_at(2) == Some("as") => {
-                    self.parse_flat_actor_machine()?;
-                    unreachable!("machine grammar probe never admits guest lowering");
+                    return self.parse_flat_actor_machine();
                 }
                 Some("state") if actor => {
                     self.advance();
