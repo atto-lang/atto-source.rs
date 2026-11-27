@@ -665,7 +665,7 @@ impl Parser {
         };
         // Type-position '?' is Option sugar, never formal omission or
         // expression propagation. Reuse the existing executable ADT ABI only.
-        let ty = if self.eat(&Tok::Question) {
+        let ty = if !self.default_pair() && self.eat(&Tok::Question) {
             match ty {
                 Type::Int => Type::OptionInt,
                 Type::ResultIntStr => Type::OptionResultIntStr,
@@ -673,7 +673,7 @@ impl Parser {
                     "type suffix '?' requires a supported Option payload in this backend")),
             }
         } else { ty };
-        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
+        if (matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Pipe) || (*self.peek() == Tok::Question && !self.default_pair())) {
             return Err(unsupported(self.pos(), "generic, nested optional, union and sequence types"));
         }
         Ok(ty)
@@ -2214,7 +2214,7 @@ impl Parser {
                 || (*self.peek_at(1) == Tok::Question && *self.peek_at(2) == Tok::Colon));
         if name_first {
             let (name, pos) = self.ident("a parameter name")?;
-            let omittable = self.eat(&Tok::Question);
+            let omittable = !self.default_pair() && self.eat(&Tok::Question);
             self.expect(Tok::Colon, "':' after parameter name")?;
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
@@ -2223,23 +2223,74 @@ impl Parser {
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
         let (name, pos) = self.ident("a parameter name")?;
-        let omittable = self.eat(&Tok::Question);
+        let omittable = !self.default_pair() && self.eat(&Tok::Question);
         self.finish_param(name, ty, mutable, omittable, allow_omittable, pos)
     }
 
-    fn finish_param(&self, name: String, ty: Type, mutable: bool, omittable: bool,
+    // Keep '?' tokens separate from propagation and ternary. Only adjacent
+    // pairs in formal-default position are coalescing delimiters.
+    fn default_pair(&self) -> bool {
+        if *self.peek() != Tok::Question || *self.peek_at(1) != Tok::Question { return false; }
+        let a = &self.toks[self.i].pos;
+        let b = &self.toks[self.i + 1].pos;
+        a.line == b.line && a.col.checked_add(1) == Some(b.col)
+    }
+
+    fn default_literal(&mut self, ty: Type) -> R<DefaultLiteral> {
+        let pos = self.pos();
+        if ty == Type::OptionInt && self.eat_word("None") {
+            return Ok(DefaultLiteral::None);
+        }
+        let wrapped = ty == Type::OptionInt && self.eat_word("Some");
+        if wrapped { self.expect(Tok::LParen, "'(' after Some")?; }
+        let negative = self.eat(&Tok::Minus);
+        let n = match self.peek() {
+            Tok::Int(Some(n)) if *n <= i64::MAX as u64 => {
+                if negative { -(*n as i64) } else { *n as i64 }
+            }
+            Tok::Int(None) if negative => i64::MIN,
+            _ => return Err(Diagnostic::new(pos, "E_DEFAULT_LITERAL", "expected a bounded integer literal default")),
+        };
+        self.advance();
+        if wrapped { self.expect(Tok::RParen, "')' after Some payload")?; }
+        if !matches!(ty, Type::Int | Type::OptionInt) {
+            return Err(Diagnostic::new(pos, "E_DEFAULT_LITERAL", "unsupported default payload type"));
+        }
+        Ok(DefaultLiteral::Int(n))
+    }
+
+    fn finish_param(&mut self, name: String, ty: Type, mutable: bool, omittable: bool,
         allow_omittable: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
         }
         if *self.peek() == Tok::Assign {
-            return Err(unsupported(self.pos(), "default parameter values"));
+            return Err(unsupported(self.pos(), "bare '=' default parameter values"));
         }
-        if omittable && (!allow_omittable || mutable || !matches!(ty, Type::OptionInt | Type::OptionResultIntStr)) {
+        let mut none_default = None;
+        let mut omission_default = None;
+        while self.default_pair() {
+            let p = self.pos();
+            self.advance();
+            let question_pos = self.pos();
+            self.advance();
+            let equal_pos = self.pos();
+            let omission = *self.peek() == Tok::Assign && question_pos.line == equal_pos.line
+                && question_pos.col.checked_add(1) == Some(equal_pos.col);
+            if omission { self.advance(); }
+            if !allow_omittable || mutable || (omission && (!omittable || omission_default.is_some()))
+                || (!omission && (ty != Type::OptionInt || none_default.is_some() || omission_default.is_some())) {
+                return Err(Diagnostic::new(p, "E_DEFAULT_CLAUSE", "invalid, duplicate or out-of-order default clause"));
+            }
+            let value = self.default_literal(ty)?;
+            if omission { omission_default = Some(value); } else { none_default = Some(value); }
+        }
+        if omittable && (!allow_omittable || mutable || (!matches!(ty, Type::OptionInt | Type::OptionResultIntStr)
+            && !(ty == Type::Int && omission_default.is_some()))) {
             return Err(Diagnostic::new(pos, "E_OMITTABLE_DEFAULT",
-                "this direct-call slice admits only immutable omittable Option formals with implicit None"));
+                "omittable scalar requires a supported explicit default"));
         }
-        Ok(Param { name, ty, mutable, omittable, pos })
+        Ok(Param { name, ty, mutable, omittable, none_default, omission_default, pos })
     }
 
     // ----------------------------------------------------------- statements
