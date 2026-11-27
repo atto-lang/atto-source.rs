@@ -19,7 +19,7 @@ enum Input {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: attoc [--verify=strict] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
+    eprintln!("usage: attoc [--verify=strict | --explicit-rebinding] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
     ExitCode::from(2)
 }
 
@@ -27,9 +27,15 @@ fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut args = Vec::new();
     let mut strict = false;
+    let mut explicit_rebinding = false;
     let (mut report_path, mut compiler_sha, mut case) = (None, None, None);
     let mut it = raw.into_iter();
     while let Some(a) = it.next() {
+        if a == "--explicit-rebinding" {
+            if explicit_rebinding { return usage(); }
+            explicit_rebinding = true;
+            continue;
+        }
         if a == "--verify=strict" {
             if strict { return usage(); }
             strict = true;
@@ -59,6 +65,10 @@ fn main() -> ExitCode {
             None => return usage(),
         }
     }
+    if explicit_rebinding && (strict || report_path.is_some() || compiler_sha.is_some() || case.is_some()) {
+        eprintln!("explicit binding preview cannot be combined with verification or borrow report modes");
+        return ExitCode::from(2);
+    }
     if strict && (report_path.is_some() || compiler_sha.is_some() || case.is_some()) {
         eprintln!("strict verification cannot be combined with borrow reports");
         return ExitCode::from(2);
@@ -75,7 +85,7 @@ fn main() -> ExitCode {
     }
     let mut report_source: Option<Vec<u8>> = None;
     if matches!(args.as_slice(), [flag] if flag == "--help" || flag == "-h") {
-        println!("usage: attoc [--verify=strict] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
+        println!("usage: attoc [--verify=strict | --explicit-rebinding] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
         return ExitCode::SUCCESS;
     }
     let (input, output) = match args.as_slice() {
@@ -98,6 +108,10 @@ fn main() -> ExitCode {
             (Input::LockedPackage { root: root.clone(), entry: entry.clone(), digest: digest.clone() }, Some(out.clone())),
         _ => return usage(),
     };
+    if explicit_rebinding && !matches!(&input, Input::Single(_) | Input::Check(_)) {
+        eprintln!("explicit binding preview supports only single-source inputs");
+        return ExitCode::from(2);
+    }
     if strict && !matches!(&input, Input::Single(_) | Input::Check(_)) {
         eprintln!("strict verification currently supports only single-source inputs");
         return ExitCode::from(2);
@@ -113,7 +127,9 @@ fn main() -> ExitCode {
                 }
             };
             if report_path.is_some() { report_source = Some(source.as_bytes().to_vec()); }
-            if strict {
+            if explicit_rebinding {
+                (path, atto_compiler::compile_explicit_rebinding(&source))
+            } else if strict {
                 (path, atto_compiler::compile_verified_strict(&source))
             } else {
             // A caller-relative logical path enables use default namespace(N)
