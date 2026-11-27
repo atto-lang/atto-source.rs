@@ -1209,6 +1209,35 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     let mut classes = Vec::new();
     for c in &p.classes {
+        // The public AST is not an admission proof. Re-establish the
+        // restricted scalar protected-state schema before ordinary class
+        // layout could admit a public, reference-like or nonsealed field.
+        if c.state_container {
+            if c.fields.is_empty() || c.fields.len() > 128 || c.methods.len() > 64
+                || c.ctor.is_some() {
+                return Err(Diagnostic::new(c.pos, "E_STATE_BORROW",
+                    "protected state requires a bounded private schema and no custom constructor"));
+            }
+            for field in &c.fields {
+                if !matches!(res(field.ty)?, Type::Int | Type::Bool)
+                    || field.visibility != FieldVisibility::Private
+                    || field.mode != FieldMode::ActorState
+                    || field.binding != FieldBinding::ActorState
+                    || field.referent_mutable || field.init.is_none() {
+                    return Err(Diagnostic::new(field.pos, "E_STATE_BORROW",
+                        "protected state requires initialized private owned int/bool slots"));
+                }
+            }
+            let sealed = |name: &str| matches!(name,
+                "handle_state" | "state_ro" | "state_w" | "handle_state_ro" | "handle_state_w");
+            for method in &c.methods {
+                if method.is_static || sealed(&method.name)
+                    || method.params.iter().any(|p| p.name == "s" || sealed(&p.name)) {
+                    return Err(Diagnostic::new(method.pos, "E_STATE_BORROW",
+                        "protected methods require instance authority and unshadowed intrinsics"));
+                }
+            }
+        }
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
         let mut methods = methods_of(&c.name, &c.methods, &c.fields)?;
         let new_idx = take();
@@ -4605,7 +4634,15 @@ impl<'a> FnCx<'a> {
                 let checked = (|| -> R<TE> {
                     let receiver = || TE { e: TExpr::Local(0), ty: Type::Class(c) };
                     match projection {
-                        StateProjection::Scalar(field) => self.field_get(receiver(), field, pos),
+                        StateProjection::Scalar(field) => {
+                            let value = self.field_get(receiver(), field, pos)?;
+                            if !matches!(value.ty, Type::Int | Type::Bool)
+                                || !matches!(&value.e, TExpr::StateFieldRead { .. }) {
+                                return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                                    "read callback requires a detached owned int/bool protected projection"));
+                            }
+                            Ok(value)
+                        },
                         StateProjection::Tuple { class, fields } => {
                             if !class.starts_with("__atto_tuple_private_") || fields.is_empty()
                                 || fields.len() > 16 {
