@@ -251,3 +251,45 @@ pub fn resolve_mode_v2(t: &[Token], logical_source: Option<&Path>) -> R<Namespac
         }).collect();
     Ok(NamespaceModeV2::Named(names))
 }
+
+/// Prepare a single-file v2 input for the existing, full compiler pipeline.
+/// No shared namespace is lowered as a file-local scope: those modes require
+/// the authenticated package linker. Mask only a lexer-validated first header
+/// and preserve source line/column positions for downstream diagnostics.
+pub(crate) fn prepare_file_v2(source: &str) -> R<String> {
+    let pos = Pos { line: 1, col: 1 };
+    if source.len() > crate::SOURCE_CAP {
+        return Err(error(pos, "E_SOURCE_LIMIT", "source exceeds compiler byte limit"));
+    }
+    let tokens = crate::lexer::lex(source)?;
+    if resolve_mode_v2(&tokens, None)? != NamespaceModeV2::File {
+        return Err(error(pos, "E_UNSUPPORTED",
+            "shared namespace v2 requires authenticated package linking"));
+    }
+    if !header_v2(&tokens, 0) {
+        return Ok(source.to_owned());
+    }
+    // File/default headers have exactly four tokens. resolve_mode_v2
+    // already checked the semicolon, first position and header uniqueness.
+    let start = tokens[0].pos;
+    let end = tokens[3].pos;
+    let mut result = String::with_capacity(source.len());
+    let (mut line, mut col) = (1u32, 1u32);
+    let mut masking = false;
+    let mut ended = false;
+    for ch in source.chars() {
+        if (line, col) == (start.line, start.col) { masking = true; }
+        if masking && !ended {
+            result.push(if ch == '\n' || ch == '\r' { ch } else { ' ' });
+            if (line, col) == (end.line, end.col) {
+                if ch != ';' { return Err(error(end, "E_SYNTAX", "invalid namespace span")); }
+                ended = true;
+            }
+        } else {
+            result.push(ch);
+        }
+        if ch == '\n' { line += 1; col = 1; } else { col += 1; }
+    }
+    if !ended { return Err(error(end, "E_SYNTAX", "unterminated namespace span")); }
+    Ok(result)
+}
