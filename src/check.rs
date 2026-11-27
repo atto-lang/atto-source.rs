@@ -3563,71 +3563,69 @@ impl<'a> FnCx<'a> {
         // General aliases, protected state and reference-valued fields are
         // not admitted by this bounded browser/guest implementation.
         if let ExprKind::Var(name) = &target.kind {
-            if let Some((slot, local_ty, mutable_binding)) =
+            if let Some((slot, Type::Class(c), mutable_binding)) =
                 self.lookup(name).map(|l| (l.slot, l.ty, l.mutable)) {
-                if let Type::Class(c) = local_ty {
-                    if self.loans.contains_key(&slot) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "cannot mutate a field through a readonly borrowed handle"));
-                    }
-                    if self.moved.contains(&slot) {
-                        return Err(Diagnostic::new(pos, "E_MOVED",
-                            "cannot mutate a field of a moved owner"));
-                    }
-                    if !mutable_binding || !self.fresh_class_roots.contains(&slot) {
-                        return Err(Diagnostic::new(pos, "E_OWNERSHIP",
-                            "direct class writes require a mutable binding of a proven-unique direct-new class owner"));
-                    }
-                    let class = &self.g.classes[c as usize];
-                    if class.name.starts_with("__atto_tuple_private_") {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "tuple root fields require separate provenance"));
-                    }
-                    let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
-                        Diagnostic::new(pos, "E_UNBOUND",
-                            format!("class '{}' has no field '{field}'", class.name)))?;
-                    if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
-                        return Err(Diagnostic::new(pos, "E_PRIVATE",
-                            "cannot mutate a private class field outside its class"));
-                    }
-                    if f.mode == FieldMode::ActorState {
-                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                            "protected state requires the checked critical-write lease"));
-                    }
-                    if !f.binding.rebindable() {
-                        return Err(Diagnostic::new(pos, "E_IMMUTABLE",
-                            "cannot reassign val/final/const field"));
-                    }
-                    let (offset, fty) = (f.slot, f.ty);
-                    if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "reference-valued class field assignment requires checked ownership transfer"));
-                    }
-                    if self.loans.values().any(|loan| loan.owner == slot &&
-                        (loan.field.is_none() || loan.field == Some(offset))) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "cannot write a field overlapping an active loan"));
-                    }
-                    let checked = self.consume_expected(value, fty)?;
-                    // RHS may execute nested calls and take! the owner, or
-                    // introduce an overlapping loan. Revalidate AFTER effects.
-                    if self.moved.contains(&slot) {
-                        return Err(Diagnostic::new(pos, "E_MOVED",
-                            "class field assignment RHS moved its owner"));
-                    }
-                    if self.loans.values().any(|loan| loan.owner == slot &&
-                        (loan.field.is_none() || loan.field == Some(offset))) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "class field assignment RHS created an overlapping loan"));
-                    }
-                    if checked.ty != fty {
-                        return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
-                    }
-                    return Ok(TStmt::FieldSet {
-                        obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
-                        offset, ty: fty, value: checked,
-                    });
+                if self.loans.contains_key(&slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "cannot mutate a field through a readonly borrowed handle"));
                 }
+                if self.moved.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_MOVED",
+                        "cannot mutate a field of a moved owner"));
+                }
+                if !mutable_binding || !self.fresh_class_roots.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        "direct class writes require a mutable binding of a proven-unique direct-new class owner"));
+                }
+                let class = &self.g.classes[c as usize];
+                if class.name.starts_with("__atto_tuple_private_") {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "tuple root fields require separate provenance"));
+                }
+                let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
+                    Diagnostic::new(pos, "E_UNBOUND",
+                        format!("class '{}' has no field '{field}'", class.name)))?;
+                if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
+                    return Err(Diagnostic::new(pos, "E_PRIVATE",
+                        "cannot mutate a private class field outside its class"));
+                }
+                if f.mode == FieldMode::ActorState {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "protected state requires the checked critical-write lease"));
+                }
+                if !f.binding.rebindable() {
+                    return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                        "cannot reassign val/final/const field"));
+                }
+                let (offset, fty) = (f.slot, f.ty);
+                if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "reference-valued class field assignment requires checked ownership transfer"));
+                }
+                if self.loans.values().any(|loan| loan.owner == slot &&
+                    (loan.field.is_none() || loan.field == Some(offset))) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "cannot write a field overlapping an active loan"));
+                }
+                let checked = self.consume_expected(value, fty)?;
+                // RHS may execute nested calls and take! the owner, or
+                // introduce an overlapping loan. Revalidate AFTER effects.
+                if self.moved.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_MOVED",
+                        "class field assignment RHS moved its owner"));
+                }
+                if self.loans.values().any(|loan| loan.owner == slot &&
+                    (loan.field.is_none() || loan.field == Some(offset))) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "class field assignment RHS created an overlapping loan"));
+                }
+                if checked.ty != fty {
+                    return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
+                }
+                return Ok(TStmt::FieldSet {
+                    obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
+                    offset, ty: fty, value: checked,
+                });
             }
         }
         if !matches!(target.kind, ExprKind::SelfRef) {
