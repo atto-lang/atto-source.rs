@@ -107,10 +107,25 @@ fn collection_type(p: &mut Parser<'_>, nominal: &str) -> Result<ResolvedType, Di
 
 fn struct_row(p: &mut Parser<'_>, struct_name: &str, fields: &[String]) -> Result<Vec<i64>, Diagnostic> {
     let pos = p.pos();
-    p.word(struct_name)?;
-    let braces = if p.eat(Tok::LParen) { false } else {
-        p.expect(Tok::LBrace, "'(' or '{' after struct constructor")?;
+    // The already resolved nominal array element supplies the owner. Never
+    // choose a type by field shape or reinterpret reference construction.
+    let contextual_make = matches!(p.peek(), Tok::Ident(s) if s == "make");
+    if matches!(p.peek(), Tok::Ident(s) if s == "new") {
+        return Err(error(pos, "E_CONSTRUCTION_CATEGORY", "reference construction cannot initialize an inline struct slot"));
+    }
+    let braces = if contextual_make {
+        p.word("make")?;
+        if matches!(p.peek(), Tok::Ident(_)) {
+            p.word(struct_name)?;
+        }
+        p.expect(Tok::LBrace, "'{' after value construction")?;
         true
+    } else {
+        p.word(struct_name)?;
+        if p.eat(Tok::LParen) { false } else {
+            p.expect(Tok::LBrace, "'(' or '{' after struct constructor")?;
+            true
+        }
     };
     let mut out = vec![None; fields.len()];
     let mut count = 0usize;
@@ -333,6 +348,32 @@ fnc main() -> int {
         let b = compiler(&PROGRAM.replace("Array<Particle, layout=soa>",
             "Array<layout=soa, T=Particle>")).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn contextual_make_uses_resolved_owner_and_preserves_layout() {
+        let contextual = PROGRAM.replace("Particle(x=10, y=20, velocity=1)", "make {x:10, y:20, velocity:1}")
+            .replace("Particle(x=30, y=40, velocity=2)", "make {velocity:2, x:30, y:40}");
+        assert_eq!(compiler(&contextual).unwrap(), compiler(PROGRAM).unwrap());
+        let typed = contextual.replace("make {", "make Particle {");
+        assert_eq!(compiler(&typed).unwrap(), compiler(PROGRAM).unwrap());
+        let fixed = contextual.replace("    ];", "    ] with {size=2};");
+        assert_eq!(compiler(&fixed).unwrap(), compiler(PROGRAM).unwrap());
+        for invalid in [
+            contextual.replace("make {", "new {"),
+            contextual.replacen("make {", "new {", 1),
+        ] {
+            assert_eq!(compiler(&invalid).unwrap_err().code, "E_CONSTRUCTION_CATEGORY");
+        }
+        for invalid in [
+            contextual.replace("make {x:10, y:20, velocity:1}", "make {x:10,x:20,velocity:1}"),
+            contextual.replace("make {x:10, y:20, velocity:1}", "make {x:10,y:20}"),
+            contextual.replace("make {x:10, y:20, velocity:1}", "make {x:10,y:20,unknown:1}"),
+            contextual.replace("make {x:10, y:20, velocity:1}", "make Wrong {x:10,y:20,velocity:1}"),
+            contextual.replace("make {x:10, y:20, velocity:1}", "make {x=10,y:20,velocity:1}"),
+        ] {
+            assert!(compiler(&invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
