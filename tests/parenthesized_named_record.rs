@@ -360,3 +360,21 @@ fn new_record_separators_keep_map_tuple_and_duplicate_checks() {
         if matches!(&e.kind,ExprKind::Call(_,args)
             if args.len()==1 && matches!(&args[0].kind,ExprKind::Record(_)))));
 }
+
+#[test]
+fn portable_brace_record_call_keeps_single_positional_slot() {
+    // Parser proof only; direct Record ABI and named calls are separate gates.
+    let p = parse("fnc f(int x,int y):int {return x+y;} pub fnc main():int {let x=100;return f({x=4,y=8});}");
+    let Stmt::Return(Some(e),_) = &p.funcs[1].body[1] else {panic!("missing call")};
+    let ExprKind::Call(name,args) = &e.kind else {panic!("not a call")};
+    assert_eq!(name,"f");
+    assert_eq!(args.len(),1);
+    let ExprKind::Record(fields) = &args[0].kind else {panic!("not a Record")};
+    assert_eq!(fields.len(),2);
+    assert_eq!(fields[0].0,"x");
+    assert_eq!(fields[1].0,"y");
+    assert!(matches!(&fields[0].1.kind, ExprKind::Int(Some(4))));
+    assert!(matches!(&fields[1].1.kind, ExprKind::Int(Some(8))));
+    assert!(compile("fnc f(int x,int y):int {return x+y;} pub fnc main():int {return f({x=4,y=8});}").is_err());
+    rejected("fnc f(int x):int {return x;} pub fnc main():int {return f({x=4,x=8});}", "E_DUPLICATE");
+}
