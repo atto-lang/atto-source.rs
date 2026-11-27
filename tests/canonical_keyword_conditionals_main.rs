@@ -17,6 +17,12 @@ fn keyword_conditionals_and_existing_ternaries_execute() {
         "pub fnc main(): int { do if false then return 7; elif true then return 42; else return 0; fi }",
         "pub fnc main(): int { do if false then return 7; fi return 42; }",
         "pub fnc main(): int { if false do return 7; else return 42; fi }",
+        "pub fnc main(): int { if true { return 42; } else { return 7; } }",
+        "pub fnc main(): int { if false { return 7; } else { return 42; } }",
+        "pub fnc main(): int { if false { return 7; } return 42; }",
+        "pub fnc main(): int { if false { return 7; } fi return 42; }",
+        "pub fnc main(): int { do if true then if false { return 7; } fi return 42; }",
+        "pub fnc main(): int { do if false then if true { return 7; } else return 42; fi }",
         "pub fnc main(): int { val int x = 9223372036854775807; return if false then x + 1 else 42 fi; }",
     ] {
         let wasm = compile(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));

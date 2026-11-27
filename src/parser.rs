@@ -259,6 +259,8 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    // The nearest statement sequence owns a keyword conditional delimiter.
+    keyword_if_arm: bool,
     state_method: bool,
     state_binder: Option<String>,
     struct_value_bindings: Option<Vec<Pos>>,
@@ -393,6 +395,7 @@ impl Parser {
             array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            keyword_if_arm: false,
             state_method: false,
             state_binder: None,
             struct_value_bindings: None,
@@ -2389,6 +2392,8 @@ impl Parser {
         self.enter()?;
         let previous = self.erlang_body;
         self.erlang_body = false;
+        let previous_keyword_arm = self.keyword_if_arm;
+        self.keyword_if_arm = false;
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out = Vec::new();
             while *self.peek() != Tok::RBrace {
@@ -2401,6 +2406,7 @@ impl Parser {
             Ok(out)
         })();
         self.erlang_body = previous;
+        self.keyword_if_arm = previous_keyword_arm;
         self.leave();
         parsed
     }
@@ -2409,6 +2415,8 @@ impl Parser {
         self.enter()?;
         let previous = self.erlang_body;
         self.erlang_body = false;
+        let previous_keyword_arm = self.keyword_if_arm;
+        self.keyword_if_arm = stops.contains(&"fi");
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out = Vec::new();
             loop {
@@ -2429,6 +2437,7 @@ impl Parser {
             Ok(out)
         })();
         self.erlang_body = previous;
+        self.keyword_if_arm = previous_keyword_arm;
         self.leave();
         parsed
     }
@@ -3145,7 +3154,8 @@ impl Parser {
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if !prefix_do && *self.peek() == Tok::LBrace {
+        let braced = !prefix_do && *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
                 if self.eat_word("elif")
@@ -3159,7 +3169,8 @@ impl Parser {
                     self.grow(1)?;
                     let c = self.parse_cond_head()?;
                     arms.push((c, self.parse_block()?));
-                } else if self.eat_word("else") {
+                } else if self.is_word("else") && (!self.keyword_if_arm || *self.peek_at(1) == Tok::LBrace) {
+                    self.advance();
                     otherwise = Some(self.parse_block()?);
                     break;
                 } else {
@@ -3201,7 +3212,11 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        // Braces are self-delimiting. The migration spelling `} fi` is
+        // accepted only if the nearest enclosing keyword arm does not own fi.
+        if braced {
+            if !self.keyword_if_arm { self.eat_word("fi"); }
+        } else if !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
