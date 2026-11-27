@@ -3051,7 +3051,7 @@ impl Parser {
         Ok(ExprKind::StateRead(field))
     }
 
-    /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
+    /// Local binding: qualifier (IDENT (":"|"as") type_ref | [type_ref] IDENT) "=" expression.
     fn parse_binding(&mut self) -> R<Stmt> {
         let pos = self.pos();
         let kind = if self.eat_word("val") {
@@ -3077,7 +3077,9 @@ impl Parser {
             }
             self.advance();
         }
-        let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+        let (name, ty) = if matches!(self.peek(), Tok::Ident(_))
+            && (*self.peek_at(1) == Tok::Colon || self.word_at(1) == Some("as"))
+        {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
             (name, Some(self.parse_type()?))
