@@ -2093,9 +2093,9 @@ impl Parser {
                 "val already means const mut; val mut is a duplicate qualifier"));
         }
         let (kind, referent_mutable) = if kind == BindKind::Const && written_mut {
-            (BindKind::Val, false)
+            (BindKind::Val, true)
         } else {
-            (kind, written_mut)
+            (kind, kind == BindKind::Val || written_mut)
         };
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a variable name")?;
