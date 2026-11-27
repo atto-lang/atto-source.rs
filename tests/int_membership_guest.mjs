@@ -7,6 +7,8 @@ import {join} from 'node:path';
 const attoc = process.env.ATTOC || 'target/release/attoc';
 const program = (subject, arms) => 'pub fnc main(): int { return match ' + subject + ' over ' + arms + ' end; }';
 const pass = [
+  'const Pattern p = on 5; pub fnc main(): int { return match |5| over on p -> 42, on _ -> 0 end; }',
+  'const Pattern[] z = [on 1,on 2]; pub fnc main(): int { return match |(1 + 1)| over in z -> 42, on _ -> 0 end; }',
   'const Pattern p = on 5; '+program('5','on p -> 42, on _ -> 0'),
   'const Pattern p = in [5,6,7]; '+program('6','on p -> 42, on _ -> 0'),
   'const Pattern[] z = [on 1,in [2,3],on true]; '+program('3','in z -> 42, on _ -> 0'),
@@ -28,6 +30,8 @@ const pass = [
   'fnc get(): int { return 2; } ' + program('get()','in [1,2] -> 42, on _ -> 0')
 ];
 const fail = [
+  'const Pattern p = on 5; pub fnc main(): int { return match |5 over on p -> 42, on _ -> 0 end; }',
+  'const Pattern p = on 5; pub fnc main(): int { return match |5,6| over on p -> 42, on _ -> 0 end; }',
   'const Pattern p = on 5; pub fnc main(): int { return p; }',
   'const Pattern p = on q; const Pattern q = on p; '+program('2','on _ -> 42'),
   'const Pattern[] z = [on 1,2]; '+program('2','on _ -> 42'),
