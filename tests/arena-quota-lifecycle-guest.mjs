@@ -1,5 +1,6 @@
 // Compiler-backed policy evidence. Concatenation does not prove import linking.
 import assert from 'node:assert/strict';
+import {arenaPolicyBatches} from './arena-policy-differential-v1.mjs';
 import {createHash} from 'node:crypto';
 import {readFileSync,writeFileSync,mkdtempSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -46,4 +47,11 @@ try{
  assert.equal(bad.status,1n);
  console.log('ARENA_POLICY_GUEST_ASSERTIONS=56 DETERMINISTIC_WASM_SHA256='+first.digest);
  console.log('WRONG_ORACLE_REJECTED_AT_ASSERTION=1');
+ let tested=0;
+ for(const batch of arenaPolicyBatches()){
+   const result=compileAndRun(bodies.slice(0,2).join('\n')+'\n'+batch.source,'differential-'+batch.start);
+   assert.equal(result.status,100n,'differential batch '+batch.start+' assertion '+result.status);
+   tested+=batch.count;
+ }
+ assert.equal(tested,352);console.log('ARENA_POLICY_DIFFERENTIAL_WASM_PASS cases='+tested);
 }finally{rmSync(dir,{recursive:true,force:true})}
