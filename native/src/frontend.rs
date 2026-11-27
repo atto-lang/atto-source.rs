@@ -131,7 +131,11 @@ enum Kind {
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
+    #[regex(
+        r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*",
+        logos::skip,
+        allow_greedy = true
+    )]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -467,12 +471,20 @@ fn parse_scalar(source: &str, unsigned: bool) -> Result<Program, ParseError> {
             return Err(err("duplicate_export", "duplicate export name"));
         }
         let mut matches = functions.iter_mut().filter(|f| f.name == export.name);
-        let function = matches.next().ok_or_else(|| err("export_unresolved", "export must name a local function"))?;
+        let function = matches
+            .next()
+            .ok_or_else(|| err("export_unresolved", "export must name a local function"))?;
         if matches.next().is_some() {
-            return Err(err("duplicate_declaration", "ambiguous local function export"));
+            return Err(err(
+                "duplicate_declaration",
+                "ambiguous local function export",
+            ));
         }
         if export.scope == ExportScope::Package && (function.exported || function.name == "main") {
-            return Err(err("export_visibility_conflict", "package export cannot name a public function or native entry point"));
+            return Err(err(
+                "export_visibility_conflict",
+                "package export cannot name a public function or native entry point",
+            ));
         }
         if export.scope == ExportScope::Public {
             function.exported = true;
@@ -530,9 +542,13 @@ impl Parser {
         };
         if self.peek() == Some(Kind::Fnc) {
             self.expect(Kind::Fnc)?;
-        } else if self.tokens.get(self.cursor).is_some_and(|t|
-            t.kind == Kind::Identifier && matches!(t.text.as_str(), "class" | "actor" | "enum" | "module" | "struct"))
-        {
+        } else if self.tokens.get(self.cursor).is_some_and(|t| {
+            t.kind == Kind::Identifier
+                && matches!(
+                    t.text.as_str(),
+                    "class" | "actor" | "enum" | "module" | "struct"
+                )
+        }) {
             return Err(ParseError {
                 offset: self.pos(),
                 class: "export_kind_mismatch",
@@ -541,12 +557,21 @@ impl Parser {
         }
         let name = self.expect(Kind::Identifier)?.text;
         self.expect(Kind::Semicolon)?;
-        Ok((Export { name, scope, kind: ExportKind::Function }, offset))
+        Ok((
+            Export {
+                name,
+                scope,
+                kind: ExportKind::Function,
+            },
+            offset,
+        ))
     }
 
     fn scalar_type_ahead(&self) -> bool {
         if self.unsigned {
-            self.tokens.get(self.cursor).is_some_and(|t| t.kind == Kind::Identifier && matches!(t.text.as_str(), "u64" | "uint"))
+            self.tokens.get(self.cursor).is_some_and(|t| {
+                t.kind == Kind::Identifier && matches!(t.text.as_str(), "u64" | "uint")
+            })
         } else {
             self.peek() == Some(Kind::Int)
         }
@@ -557,7 +582,11 @@ impl Parser {
         } else if self.scalar_type_ahead() {
             self.expect(Kind::Identifier)?;
         } else {
-            return Err(ParseError { offset: self.pos(), class: "unsigned_type_required", message: "explicit u64 or uint required".into() });
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "unsigned_type_required",
+                message: "explicit u64 or uint required".into(),
+            });
         }
         Ok(())
     }
@@ -752,9 +781,14 @@ impl Parser {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
                 if self.unsigned {
-                    let bits = normalized_integer_digits(&t)?.parse::<u64>().map_err(|_| ParseError {
-                        offset: t.start, class: "integer_overflow", message: "u64 integer literal overflow".into(),
-                    })?;
+                    let bits =
+                        normalized_integer_digits(&t)?
+                            .parse::<u64>()
+                            .map_err(|_| ParseError {
+                                offset: t.start,
+                                class: "integer_overflow",
+                                message: "u64 integer literal overflow".into(),
+                            })?;
                     return Ok(Expr::Integer(bits as i64));
                 }
                 let integer =
@@ -790,7 +824,11 @@ impl Parser {
             Some(Kind::Minus) => {
                 let minus = self.expect(Kind::Minus)?;
                 if self.unsigned {
-                    return Err(ParseError { offset: minus.start, class: "unsigned_negation", message: "unary minus is not admitted in this unsigned profile".into() });
+                    return Err(ParseError {
+                        offset: minus.start,
+                        class: "unsigned_negation",
+                        message: "unary minus is not admitted in this unsigned profile".into(),
+                    });
                 }
                 // The signed i64 minimum is valid even though its positive
                 // magnitude is outside i64.

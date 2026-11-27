@@ -112,14 +112,29 @@ fn validate_expr(
 // No public conversion exposes it to signed codegen or signed facts exporters.
 pub(crate) struct UnsignedModule(Module);
 impl UnsignedModule {
-    pub(crate) fn inner(&self) -> &Module { &self.0 }
+    pub(crate) fn inner(&self) -> &Module {
+        &self.0
+    }
 }
 pub(crate) fn lower_unsigned(source: &str) -> Result<UnsignedModule, String> {
     let ast = crate::frontend::parse_unsigned(source).map_err(|e| e.to_string())?;
     let module = lower(ast).map_err(|e| e.to_string())?;
-    let entry = module.functions.iter().find(|f| f.symbol == "main").ok_or("unsigned main missing")?;
-    if !entry.exported || !entry.params.is_empty() || module.functions.iter().any(|f| f.symbol == "atto_guest_main") {
-        return Err("unsigned profile requires a public zero-argument main and no reserved observer symbol".into());
+    let entry = module
+        .functions
+        .iter()
+        .find(|f| f.symbol == "main")
+        .ok_or("unsigned main missing")?;
+    if !entry.exported
+        || !entry.params.is_empty()
+        || module
+            .functions
+            .iter()
+            .any(|f| f.symbol == "atto_guest_main")
+    {
+        return Err(
+            "unsigned profile requires a public zero-argument main and no reserved observer symbol"
+                .into(),
+        );
     }
     // This reuses the existing bounded expression traversal only, not its
     // signed effect facts as a certificate.
@@ -137,14 +152,27 @@ fn validate_unsigned_work(module: &Module) -> Result<(), String> {
     if module.functions.len() > MAX_FUNCTIONS {
         return Err("unsigned function budget exceeded".into());
     }
-    let index: HashMap<&str, usize> = module.functions.iter().enumerate()
-        .map(|(i, f)| (f.symbol.as_str(), i)).collect();
+    let index: HashMap<&str, usize> = module
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.symbol.as_str(), i))
+        .collect();
     let mut costs = vec![None; module.functions.len()];
     let mut active = vec![false; module.functions.len()];
-    fn cost(i: usize, module: &Module, index: &HashMap<&str, usize>,
-        costs: &mut [Option<usize>], active: &mut [bool]) -> Result<usize, String> {
-        if active[i] { return Err("recursive unsigned call graph".into()); }
-        if let Some(n) = costs[i] { return Ok(n); }
+    fn cost(
+        i: usize,
+        module: &Module,
+        index: &HashMap<&str, usize>,
+        costs: &mut [Option<usize>],
+        active: &mut [bool],
+    ) -> Result<usize, String> {
+        if active[i] {
+            return Err("recursive unsigned call graph".into());
+        }
+        if let Some(n) = costs[i] {
+            return Ok(n);
+        }
         active[i] = true;
         let function = &module.functions[i];
         let mut pending: Vec<&Expr> = function.locals.iter().map(|(_, e)| e).collect();
@@ -155,8 +183,9 @@ fn validate_unsigned_work(module: &Module) -> Result<(), String> {
             match expr {
                 Expr::Integer(_) | Expr::Name(_) => {}
                 Expr::Negate(_) => return Err("signed negation in unsigned MIR".into()),
-                Expr::Add(a,b) | Expr::Subtract(a,b) | Expr::Multiply(a,b) => {
-                    pending.push(a); pending.push(b);
+                Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
+                    pending.push(a);
+                    pending.push(b);
                 }
                 Expr::Call { name, args } => {
                     let target = *index.get(name.as_str()).ok_or("unknown unsigned callee")?;
@@ -164,13 +193,17 @@ fn validate_unsigned_work(module: &Module) -> Result<(), String> {
                     pending.extend(args.iter());
                 }
             }
-            if total > MAX_EXPANDED { return Err("unsigned expanded work budget exceeded".into()); }
+            if total > MAX_EXPANDED {
+                return Err("unsigned expanded work budget exceeded".into());
+            }
         }
         active[i] = false;
         costs[i] = Some(total);
         Ok(total)
     }
-    for i in 0..module.functions.len() { cost(i, module, &index, &mut costs, &mut active)?; }
+    for i in 0..module.functions.len() {
+        cost(i, module, &index, &mut costs, &mut active)?;
+    }
     Ok(())
 }
 
@@ -208,12 +241,19 @@ pub fn lower_with_ref_layout(
         if !export_names.insert(export.name.as_str()) {
             return Err(failure("duplicate_export", "duplicate MIR export"));
         }
-        let function = program.functions.iter().find(|f| f.name == export.name)
+        let function = program
+            .functions
+            .iter()
+            .find(|f| f.name == export.name)
             .ok_or_else(|| failure("export_unresolved", "MIR export must name a local function"))?;
         if (export.scope == ExportScope::Public && !function.exported)
-            || (export.scope == ExportScope::Package && (function.exported || function.name == "main"))
+            || (export.scope == ExportScope::Package
+                && (function.exported || function.name == "main"))
         {
-            return Err(failure("export_visibility_conflict", "inconsistent MIR export linkage"));
+            return Err(failure(
+                "export_visibility_conflict",
+                "inconsistent MIR export linkage",
+            ));
         }
     }
     let mut functions = Vec::with_capacity(program.functions.len());

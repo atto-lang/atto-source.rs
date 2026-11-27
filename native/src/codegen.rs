@@ -25,9 +25,15 @@ pub fn emit_object_checked_i64(program: &Module) -> Result<Vec<u8>, String> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ArithmeticMode { WrappingI64, CheckedI64, CheckedU64 }
+enum ArithmeticMode {
+    WrappingI64,
+    CheckedI64,
+    CheckedU64,
+}
 
-pub(crate) fn emit_unsigned_object(program: &crate::mir::UnsignedModule) -> Result<Vec<u8>, String> {
+pub(crate) fn emit_unsigned_object(
+    program: &crate::mir::UnsignedModule,
+) -> Result<Vec<u8>, String> {
     emit_object_with_arithmetic_mode(program.inner(), ArithmeticMode::CheckedU64)
 }
 
@@ -38,12 +44,18 @@ fn emit_object_with_arithmetic_mode(
     // Do not let callers constructing MIR directly turn package metadata
     // into a public native symbol or use the implicit main exception.
     for export in &program.exports {
-        let function = program.functions.iter().find(|f| f.symbol == export.name)
+        let function = program
+            .functions
+            .iter()
+            .find(|f| f.symbol == export.name)
             .ok_or_else(|| format!("unresolved native export '{}'", export.name))?;
         if export.scope == crate::frontend::ExportScope::Package
             && (function.exported || function.symbol == "main")
         {
-            return Err(format!("package export '{}' cannot have public linkage", export.name));
+            return Err(format!(
+                "package export '{}' cannot have public linkage",
+                export.name
+            ));
         }
     }
     let isa = native::builder()
@@ -70,13 +82,23 @@ fn emit_object_with_arithmetic_mode(
         // remain callable internally, but cannot be linked from another object.
         // Keep the existing implicit executable entry-point ABI for "main",
         // which is also a root in the release tree-shaker.
-        let linkage = if function.symbol == "main" || (mode != ArithmeticMode::CheckedU64 && function.exported) {
+        let linkage = if function.symbol == "main"
+            || (mode != ArithmeticMode::CheckedU64 && function.exported)
+        {
             Linkage::Export
         } else {
             Linkage::Local
         };
         let id = module
-            .declare_function(if mode == ArithmeticMode::CheckedU64 && function.symbol == "main" { "atto_guest_main" } else { &function.symbol }, linkage, &signature)
+            .declare_function(
+                if mode == ArithmeticMode::CheckedU64 && function.symbol == "main" {
+                    "atto_guest_main"
+                } else {
+                    &function.symbol
+                },
+                linkage,
+                &signature,
+            )
             .map_err(|e| e.to_string())?;
         ids.insert(function.symbol.clone(), id);
     }
@@ -113,13 +135,7 @@ fn emit_object_with_arithmetic_mode(
                 let value = compile_expr(&mut builder, expression, &values, &calls, mode)?;
                 values.insert(name.clone(), value);
             }
-            let result = compile_expr(
-                &mut builder,
-                &function.return_value,
-                &values,
-                &calls,
-                mode,
-            )?;
+            let result = compile_expr(&mut builder, &function.return_value, &values, &calls, mode)?;
             builder.ins().return_(&[result]);
             builder.finalize(frontend_config);
         }
