@@ -71,7 +71,7 @@ fn units<'a>(math: &'a str, extra: &'a str) -> Vec<LinkUnit<'a>> {
     ]
 }
 
-fn graph3<'a>(math: &'a str) -> Vec<LinkUnit<'a>> {
+fn graph3(math: &str) -> Vec<LinkUnit<'_>> {
     units(math, UNUSED_A).into_iter().take(3).collect()
 }
 

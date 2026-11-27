@@ -224,7 +224,8 @@ pub fn inspect(toks: &[Token]) -> R<Vec<TupleBinding>> {
         let scalar_initializer = tok(toks, i + 3) == Some(&Tok::Assign);
         // 'for (const x of items)' is a for-of header, not a tuple
         // binder, even though its first two tokens look like '(const'.
-        let loop_header = i > 0 && word(tok(toks, i - 1), "for");
+        // Immutable state-loop headers are also parsed by the loop grammar.
+        let loop_header = i > 0 && (word(tok(toks, i - 1), "for") || word(tok(toks, i - 1), "loop"));
         let explicit_tuple = tok(toks, i) == Some(&Tok::LParen)
             && mode(tok(toks, i + 1)).is_some()
             && !scalar_initializer && !loop_header;
