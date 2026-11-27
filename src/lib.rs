@@ -130,6 +130,18 @@ pub fn compile_js(source: &str) -> Result<String, Diagnostic> {
     String::from_utf8(bytes).map_err(|_| js_scalar::unsupported())
 }
 
+/// Explicit single-file namespace-v2 entrypoint. File/default/omitted
+/// are identical; named/folder membership remains a package-linker concern.
+/// Uses the existing checked compiler, never a second guest emitter.
+pub fn compile_namespace_file_v2(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile(&namespace::prepare_file_v2(source)?)
+}
+
+/// Same single-file profile for the existing checked JavaScript emitter.
+pub fn compile_js_namespace_file_v2(source: &str) -> Result<String, Diagnostic> {
+    compile_js(&namespace::prepare_file_v2(source)?)
+}
+
 /// Opt-in verified scalar profile. The ordinary compiler and linked-source
 /// paths remain unchanged. Strict requests never fall back to ordinary emission.
 pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
