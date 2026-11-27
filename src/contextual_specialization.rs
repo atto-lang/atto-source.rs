@@ -185,6 +185,23 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
                 i=end+2; continue;
             }
         }
+        // Copying this closed scalar-only binding preserves the captured
+        // immutable values. No context expression is re-evaluated and no
+        // new runtime storage is required. Resource captures remain denied.
+        if w(&t,i)==Some("const") && is(&t,i+2,Tok::Assign) && is(&t,i+4,Tok::Semi) {
+            if let Some(slots) = w(&t,i+3).and_then(|name| aliases.get(name)).cloned() {
+                let name = w(&t,i+1).ok_or_else(|| bad(i,"context alias name required"))?;
+                if crate::parser::is_reserved(name) || name==owner || aliases.contains_key(name)
+                    || t[main_at+1..i].iter().any(|q| word(q)==Some(name)) {
+                    return Err(bad(i,"context alias conflicts with a prior source name"));
+                }
+                if aliases.len()>=64 || (i!=main_at+1 && !is(&t,i-1,Tok::Semi)) {
+                    return Err(bad(i,"context alias limit or invalid statement boundary"));
+                }
+                aliases.insert(name.into(),slots);
+                i+=5; continue;
+            }
+        }
         let stored = word(x).and_then(|name| aliases.get(name));
         let direct = word(x)==Some(owner);
         if direct || stored.is_some() {
@@ -261,6 +278,7 @@ mod tests {
             (program("let n = 3; const x = Scale::(n); n = 9; const a = x.apply(4); const b = x.apply(5); return a + b + Scale::(2).apply(7);"), "41"),
             (program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);"), "20"),
             (program("return Scale::(6).apply(7);"), "42"),
+            (program("const x = Scale::(6); const y = x; const z = y; return z.apply(7);"), "42"),
             (program("let n = 3; const x = Scale::(n + 1); n = 9; return x.apply(n) + Scale::(n - 7).apply(3);"), "42"),
             (multi_program("let n = 3; const x = Scale::(n, n + 1); n = 9; return x.apply(5) + Scale::(2, 1).apply(7);"), "34"),
             (multi_program("const x = Scale::(2, 3); const y = Scale::(4, 5); return x.apply(7) + y.apply(7);"), "50"),
@@ -312,6 +330,14 @@ mod tests {
         let body: String = (0..64).map(|i| format!("const cap{i} = Scale::(2, 3); ")).collect();
         assert!(lower(crate::lexer::lex(&multi_program(&format!("{body}return cap63.apply(3);"))).unwrap()).is_ok());
         assert!(lower(crate::lexer::lex(&multi_program(&format!("{body}const extra = Scale::(2, 3); return extra.apply(3);"))).unwrap()).is_err());
+    }
+    #[test] fn immutable_context_aliases() {
+        assert!(crate::compile(&program("const x = Scale::(6); const y = x; const z = y; return z.apply(7);")).is_ok());
+        for body in [
+            "const x = Scale::(6); const y = x; y = 3; return x.apply(7);",
+            "const x = Scale::(6); const x = x; return x.apply(7);",
+            "const x = Scale::(6); const y = x; return y;",
+        ] { assert!(crate::compile(&program(body)).is_err(), "{body}"); }
     }
     #[test] fn separate_bindings_compile() {
         assert!(crate::compile(&program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);")).is_ok());
