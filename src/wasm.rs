@@ -766,7 +766,15 @@ impl Emit<'_> {
             BinOp::Ge => self.op(0x59),
             BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
             BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-            BinOp::Div => self.call(self.l.helper(self.l.quantity_div.expect("division not admitted by checker"))),
+            BinOp::Div => {
+                // Quantity lowering retains its separate checked helper.
+                // Normal source i64 division is statically safe by admission.
+                if let Some(helper) = self.l.quantity_div {
+                    self.call(self.l.helper(helper));
+                } else {
+                    self.op(0x7f); // i64.div_s
+                }
+            },
         }
 
     }
