@@ -1,0 +1,3 @@
+// expect-error: E_BREAK_VALUE
+// java: target-only
+pub fnc main(): int { break 1; return 0; }

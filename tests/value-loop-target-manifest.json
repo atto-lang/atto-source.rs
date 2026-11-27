@@ -1,0 +1,110 @@
+{
+  "historical_source_commit": "24a2102ecb7902a0274db59086ec513ce5050cc9",
+  "historical_tree": "d279b20111bb8f2f891fd0103474263083714b70",
+  "base_commit": "f787804b5aa18acc747e875e7470fe836066c860",
+  "originals": [
+    {
+      "path": "tests/fixtures/fail/230-recur-outside-loop.atto",
+      "blob": "9e30cf3d66b1822dbe0b26dc6a9452f1fdef85e5"
+    },
+    {
+      "path": "tests/fixtures/fail/231-recur-in-ordinary-loop.atto",
+      "blob": "80f43655697a6d93af6ff85b871cdd3371ddab51"
+    },
+    {
+      "path": "tests/fixtures/fail/232-recur-arity-low.atto",
+      "blob": "a26ca09c729aa4580fb356188aaa077477dcbe0a"
+    },
+    {
+      "path": "tests/fixtures/fail/233-recur-arity-high.atto",
+      "blob": "4e2f47dc07b631d800820a5d536a039655dd354a"
+    },
+    {
+      "path": "tests/fixtures/fail/234-recur-wrong-type.atto",
+      "blob": "a70bb1ef9f3438bf9333b2cb6580004b7eede54c"
+    },
+    {
+      "path": "tests/fixtures/fail/235-recur-non-tail.atto",
+      "blob": "284dd73f4c50bd84a910d91d72143a440cf0d53f"
+    },
+    {
+      "path": "tests/fixtures/fail/236-recur-nested-non-tail.atto",
+      "blob": "fc208cd65bcfabb74574e7dff5b1200687fd09d5"
+    },
+    {
+      "path": "tests/fixtures/fail/237-recur-break-mismatched-result.atto",
+      "blob": "d818823920a05df7e2427f09c33da20d71247d60"
+    },
+    {
+      "path": "tests/fixtures/fail/238-recur-bare-break.atto",
+      "blob": "a298e3b8a521f570969d899f05e32b4638cd4055"
+    },
+    {
+      "path": "tests/fixtures/fail/239-recur-bare-continue.atto",
+      "blob": "9c7d5c9a206b6df190a8f7650a1134d6f9b2d375"
+    },
+    {
+      "path": "tests/fixtures/fail/240-recur-let-binding-rejected.atto",
+      "blob": "7cf380fa616f4b2b33ebd67c2e2489182bf95b9e"
+    },
+    {
+      "path": "tests/fixtures/fail/241-recur-empty-state-rejected.atto",
+      "blob": "a34c3bdc157cd00e77a2fd1c92b1748aac2a167c"
+    },
+    {
+      "path": "tests/fixtures/fail/242-recur-without-break-value.atto",
+      "blob": "df3059cdcccf216c5f8a8481db2679455fd02916"
+    },
+    {
+      "path": "tests/fixtures/fail/243-recur-duplicate-state.atto",
+      "blob": "72e93458d731a596d2bc2f9e26cb9b2124b7edfb"
+    },
+    {
+      "path": "tests/fixtures/fail/244-break-value-outside-loop.atto",
+      "blob": "ac086e31bc916918cd5da3536d2698803ec91b50"
+    },
+    {
+      "path": "tests/fixtures/fail/245-recur-non-exhaustive-tail.atto",
+      "blob": "a773737ee5005b824ff0f59e7cf4ca19ffff4cac"
+    },
+    {
+      "path": "tests/fixtures/pass/220-recur-sum.atto",
+      "blob": "adf984b7e7c7e1dd864460e89db50e47f0ee50dd"
+    },
+    {
+      "path": "tests/fixtures/pass/221-recur-parallel-fibonacci.atto",
+      "blob": "5ea7a41aa0052b55ff6d10eebce7561dbe78fe8b"
+    },
+    {
+      "path": "tests/fixtures/pass/222-recur-branch-else.atto",
+      "blob": "45e590a6e0eb0bea544ccad2dc9c829580557b6f"
+    },
+    {
+      "path": "tests/fixtures/pass/223-recur-break-multiple-branches.atto",
+      "blob": "cd5e393b2ecdef7d09ed34b1fb97e2b0efb82751"
+    },
+    {
+      "path": "tests/fixtures/pass/224-recur-bool-state.atto",
+      "blob": "aa479d448a0925f3f176c6c81b5d7b0409485869"
+    },
+    {
+      "path": "tests/fixtures/pass/225-recur-float-state.atto",
+      "blob": "5b1cf621d7d757753fa786ed945a6eae89a4c148"
+    },
+    {
+      "path": "tests/fixtures/pass/226-recur-string-state.atto",
+      "blob": "474f73ee88e95c89f485db6f4a138dc6dd31a64c"
+    },
+    {
+      "path": "tests/fixtures/pass/227-recur-source-order-init.atto",
+      "blob": "4ec369653a9b333c61449a02b4c06fc8e51f4d07"
+    }
+  ],
+  "new_targets": [
+    "tests/fixtures/pass/228-recur-evaluation-order.atto",
+    "tests/fixtures/pass/229-recur-constant-stack.atto",
+    "tests/fixtures/pass/230-stateless-value-loop.atto",
+    "tests/fixtures/pass/231-recur-nested-loop-target.atto"
+  ],
+  "status": "TARGET_NOT_EXECUTED"
+}
