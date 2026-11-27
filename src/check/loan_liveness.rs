@@ -95,6 +95,9 @@ pub(super) fn stmt_mentions(stmt: &Stmt, target: &str, fuel: &mut usize) -> bool
                         || a.body.iter().any(|s| stmt_mentions(s, target, fuel))
                 })
         }
+        // Telemetry scopes are newer than the original lifetime profile.
+        // Retain every live loan until their effect and cleanup census is proven.
+        Stmt::UsingTelemetry { .. } => true,
         Stmt::Break(_) | Stmt::Continue(_) => false,
     }
 }
@@ -184,5 +187,17 @@ mod tests {
         };
         let mut fuel = 8;
         assert!(!stmt_mentions(&Stmt::Expr(literal), "reader", &mut fuel));
+    }
+
+    #[test]
+    fn unknown_telemetry_effects_conservatively_retain_loans() {
+        let stmt = Stmt::UsingTelemetry {
+            operation: "test".into(),
+            alias: "span".into(),
+            body: Vec::new(),
+            pos: Pos { line: 1, col: 1 },
+        };
+        let mut fuel = 32;
+        assert!(stmt_mentions(&stmt, "reader", &mut fuel));
     }
 }
