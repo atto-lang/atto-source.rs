@@ -245,6 +245,9 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
+    /// At this expression nesting depth, a single bar closes a standalone match subject.
+    /// Nested grouped expressions and call arguments retain ordinary operators.
+    delimited_match_depth: Option<u32>,
     /// A ternary's middle arm must leave ':' to its ternary separator.
     ascription_colon: bool,
     /// Explicit lambda nesting is independently bounded to avoid stack
@@ -387,6 +390,7 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
+            delimited_match_depth: None,
             ascription_colon: true,
             lambda_nesting: 0,
             type_names: Vec::new(),
@@ -3229,6 +3233,28 @@ impl Parser {
     /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
     /// (or `over { on P { } }`); legacy `match [first] x [;] P -> { } end`
     /// with `else` as the catch-all. `do match` requires `over`.
+    /// The first standalone slice accepts a single delimited subject. Reuse
+    /// the existing checked match AST, never a synthetic callable or tuple.
+    /// A comma is not a scalar match: product subjects need their own typed ABI.
+    fn parse_standalone_match_subject(&mut self) -> R<(Expr, bool)> {
+        if !self.eat(&Tok::Pipe) {
+            return self.parse_expr().map(|subject| (subject, false));
+        }
+        if matches!(self.peek(), Tok::Pipe | Tok::Comma | Tok::Eof) {
+            return Err(self.expected("a nonempty delimited match subject"));
+        }
+        let previous = self.delimited_match_depth;
+        self.delimited_match_depth = Some(self.depth + 1);
+        let result = self.parse_expr();
+        self.delimited_match_depth = previous;
+        let subject = result?;
+        if *self.peek() == Tok::Comma {
+            return Err(unsupported(self.pos(), "multiple delimited match subjects"));
+        }
+        self.expect(Tok::Pipe, "'|' after delimited match subject")?;
+        Ok((subject, true))
+    }
+
     fn parse_match(&mut self, procedural: bool) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("match")?;
@@ -3236,8 +3262,11 @@ impl Parser {
             return Err(unsupported(self.pos(), "value match ('match<T>')"));
         }
         self.eat_word("first");
-        let subject = self.parse_expr()?;
+        let (subject, delimited) = self.parse_standalone_match_subject()?;
         let over = self.eat_word("over");
+        if delimited && !over {
+            return Err(self.expected("'over' after delimited match subject"));
+        }
         if !over {
             self.eat(&Tok::Semi);
         }
@@ -3512,7 +3541,7 @@ impl Parser {
 
     fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
         self.expect_word("match")?;
-        let subject = self.parse_expr()?;
+        let (subject, _) = self.parse_standalone_match_subject()?;
         self.expect_word("over")?;
         let mut arms = Vec::new();
         while !self.is_word("end") {
@@ -3912,7 +3941,7 @@ impl Parser {
             self.height -= 1;
         }
         match self.peek() {
-            Tok::Pipe => {
+            Tok::Pipe if self.delimited_match_depth != Some(self.depth) => {
                 return Err(Diagnostic::new(
                     self.pos(),
                     "E_UNSUPPORTED",
@@ -4035,7 +4064,11 @@ impl Parser {
     fn parse_bitwise_or(&mut self) -> R<Expr> {
         let mut left = self.parse_bitwise_xor()?;
         let mut links = 0;
-        while self.cond == 0 && *self.peek() == Tok::Pipe && *self.peek_at(1) != Tok::Pipe {
+        while self.cond == 0
+            && self.delimited_match_depth != Some(self.depth)
+            && *self.peek() == Tok::Pipe
+            && *self.peek_at(1) != Tok::Pipe
+        {
             let pos = self.pos();
             self.advance();
             self.grow(1)?;
