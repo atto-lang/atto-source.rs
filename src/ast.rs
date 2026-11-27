@@ -211,13 +211,28 @@ pub struct EnumDecl {
     pub variants: Vec<(String, Pos)>,
 }
 
-/// `receive(ActorMail<T> mail): void { ... }`.
+/// One sealed actor ingress. Direct typed payloads and ActorMail<T> are
+/// semantically distinct: only the latter exposes envelope metadata.
 #[derive(Clone, Debug)]
 pub struct Receive {
     pub pos: Pos,
     pub mail: String,
     pub payload: Type,
+    /// True for receive(ActorMail<T> mail), false for receive(msg: T).
+    pub envelope: bool,
     pub body: Vec<Stmt>,
+}
+
+/// Declared actor scheduling/isolation mode. Untrusted and shared modes
+/// remain fail-closed in the browser Wasm guest until real TenantVM fencing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActorKind {
+    #[default]
+    Default,
+    Serial,
+    Isolated,
+    Shared,
+    Untrusted,
 }
 
 /// Actor persistence is nominal and cannot be inferred from user code.
@@ -245,6 +260,7 @@ pub struct ActorPersistenceHook {
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    pub kind: ActorKind,
     pub persistence: ActorPersistenceMode,
     pub persistence_hooks: Vec<ActorPersistenceHook>,
     pub fields: Vec<Field>,

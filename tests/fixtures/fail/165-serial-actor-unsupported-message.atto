@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED_TYPE
+define serial actor Worker as
+    receive(msg: String): void { return; }
+end
+pub fnc main(): int { return 0; }

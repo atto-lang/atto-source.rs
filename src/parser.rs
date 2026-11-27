@@ -104,6 +104,7 @@ const RESERVED: &[&str] = &[
     "persistent",
     "durable",
     "isoactor",
+    "serial",
     "shared",
     "untrusted",
     "spawn",
@@ -150,6 +151,9 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "persistent",
     "durable",
     "isoactor",
+    "serial",
+    "shared",
+    "untrusted",
     "define",
     "import",
     "async",
@@ -691,7 +695,7 @@ impl Parser {
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile)?;
+        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Default)?;
         Ok((decl, p.i))
     }
 
@@ -742,7 +746,7 @@ impl Parser {
                         ));
                     }
                     self.i += qualifier + 2;
-                    prog.actors.push(self.parse_actor(true, mode)?);
+                    prog.actors.push(self.parse_actor(true, mode, ActorKind::Default)?);
                     continue;
                 }
             }
@@ -766,15 +770,57 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 2;
-                    let decl = self.parse_actor(true, ActorPersistenceMode::Volatile)?;
+                    let decl = self.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Default)?;
                     prog.actors.push(decl);
+                }
+                // Actor kind is an explicit scheduling/isolation contract.
+                // The checker rejects unavailable isolation modes; syntax must
+                // never silently downgrade a declared untrusted actor.
+                (Some("define"), Some("serial" | "shared" | "untrusted")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    let kind = match self.word_at(at + 1) {
+                        Some("serial") => ActorKind::Serial,
+                        Some("shared") => ActorKind::Shared,
+                        _ => ActorKind::Untrusted,
+                    };
+                    self.i += at + 2;
+                    self.expect_word("actor")?;
+                    prog.actors.push(self.parse_actor(true, ActorPersistenceMode::Volatile, kind)?);
+                }
+                (Some("define"), Some("isoactor")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += at + 2;
+                    prog.actors.push(self.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Isolated)?);
+                }
+                (Some("serial" | "shared" | "untrusted"), Some("actor")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    let kind = match self.word_at(at) {
+                        Some("serial") => ActorKind::Serial,
+                        Some("shared") => ActorKind::Shared,
+                        _ => ActorKind::Untrusted,
+                    };
+                    self.i += at + 2;
+                    prog.actors.push(self.parse_actor(false, ActorPersistenceMode::Volatile, kind)?);
+                }
+                (Some("isoactor"), Some(w)) if w != "fnc" => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += at + 1;
+                    prog.actors.push(self.parse_actor(false, ActorPersistenceMode::Volatile, ActorKind::Isolated)?);
                 }
                 (Some("actor"), Some(w)) if w != "fnc" => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 1;
-                    let decl = self.parse_actor(false, ActorPersistenceMode::Volatile)?;
+                    let decl = self.parse_actor(false, ActorPersistenceMode::Volatile, ActorKind::Default)?;
                     prog.actors.push(decl);
                 }
                 (Some("define"), Some("enum")) => {
@@ -1148,7 +1194,7 @@ impl Parser {
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
-    fn parse_actor(&mut self, defined: bool, persistence: ActorPersistenceMode) -> R<ActorDecl> {
+    fn parse_actor(&mut self, defined: bool, persistence: ActorPersistenceMode, kind: ActorKind) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         reject_intrinsic_type_name(&name, pos)?;
         self.decl_head("actor")?;
@@ -1172,6 +1218,7 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            kind,
             persistence,
             persistence_hooks: m.persistence_hooks,
             fields: m.fields,
@@ -1695,48 +1742,48 @@ impl Parser {
         })
     }
 
-    /// `receive ( ActorMail < T > name ) [ : void ] block`.
+    /// Receive exactly one typed message or an explicit ActorMail envelope.
+    /// The envelope is the only spelling that exposes sequence metadata.
     fn parse_receive(&mut self, owner: &str) -> R<Receive> {
         let pos = self.pos();
         self.advance();
         self.expect(Tok::LParen, "'('")?;
-        if !self.is_word("ActorMail") {
+        let (mail, payload, envelope) = if self.is_word("ActorMail") {
+            self.advance();
+            if *self.peek() != Tok::Lt {
+                return Err(Diagnostic::new(
+                    self.pos(), "E_TYPE",
+                    "ActorMail requires an explicit payload type, for example ActorMail<int>",
+                ));
+            }
+            self.advance();
+            let payload = self.parse_type()?;
+            self.expect(Tok::Gt, "'>'")?;
+            let (mail, _) = self.ident("a mail parameter name")?;
+            (mail, payload, true)
+        } else if matches!(self.peek_at(1), Tok::Colon) {
+            let (mail, _) = self.ident("a message parameter name")?;
+            self.expect(Tok::Colon, "':' after message parameter")?;
+            let payload = self.parse_type()?;
+            (mail, payload, false)
+        } else {
             return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' parameter must be ActorMail<T>"),
+                self.pos(), "E_TYPE",
+                format!("actor '{owner}.receive' takes exactly one typed message (msg: T) or ActorMail<T> mail"),
             ));
-        }
-        self.advance();
-        if *self.peek() != Tok::Lt {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                "ActorMail requires an explicit payload type, for example ActorMail<int>",
-            ));
-        }
-        self.advance();
-        let payload = self.parse_type()?;
-        self.expect(Tok::Gt, "'>'")?;
-        let (mail, _) = self.ident("a mail parameter name")?;
+        };
         if *self.peek() == Tok::Comma {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' takes exactly one ActorMail<T> parameter"),
-            ));
+            return Err(Diagnostic::new(self.pos(), "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' takes exactly one typed message parameter")));
         }
         self.expect(Tok::RParen, "')'")?;
         let (result, inferred) = self.parse_return_spec(&[])?;
         if inferred || result != Type::Void {
-            return Err(Diagnostic::new(
-                pos,
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' must explicitly return void"),
-            ));
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' must explicitly return void")));
         }
         let body = self.parse_block()?;
-        Ok(Receive { pos, mail, payload, body })
+        Ok(Receive { pos, mail, payload, envelope, body })
     }
 
     /// Named callables MUST spell their return, including void. The second

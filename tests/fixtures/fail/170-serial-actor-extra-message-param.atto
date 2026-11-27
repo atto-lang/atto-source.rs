@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+define serial actor Worker as
+    receive(msg: int, other: int): void { return; }
+end
+pub fnc main(): int { return 0; }

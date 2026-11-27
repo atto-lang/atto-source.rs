@@ -347,6 +347,9 @@ pub struct TGenerator {
 #[derive(Clone, Debug)]
 pub struct TActor {
     pub name: String,
+    pub kind: ActorKind,
+    /// Verified ingress wire type, never inferred from host-supplied payload.
+    pub payload: Type,
     /// `(state global, initializer)` in declaration order.
     pub inits: Vec<(u32, TE)>,
     /// Function index of `receive(value: i64, sequence: i64)`.
@@ -1136,6 +1139,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut actors = Vec::new();
     let mut globals = Vec::new();
     for a in &p.actors {
+        match a.kind {
+            ActorKind::Default | ActorKind::Serial => {}
+            ActorKind::Isolated | ActorKind::Shared | ActorKind::Untrusted =>
+                return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED",
+                    "isolated/shared/untrusted scheduling and TenantVM confinement are not yet proven")),
+        }
+        if a.receive.is_none() {
+            return Err(Diagnostic::new(a.pos, "E_TYPE",
+                format!("actor '{}' requires exactly one typed receive(msg: T) or receive(ActorMail<T> mail) entrypoint", a.name)));
+        }
         let fields = fields_of(&a.name, &a.fields, true, globals.len() as u32)?;
         globals.extend(fields.iter().map(|f| f.ty));
         let mut methods = methods_of(&a.name, &a.methods, &a.fields)?;
@@ -1143,7 +1156,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             return Err(Diagnostic::new(
                 m.pos,
                 "E_TYPE",
-                format!("actor mailbox handler '{}.receive' parameter must be ActorMail<T>", a.name),
+                format!("actor mailbox handler '{}.receive' must use the sealed typed receive entrypoint", a.name),
             ));
         }
         let receive_idx = a.receive.as_ref().map(|_| take());
@@ -1162,6 +1175,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                             tn_plain(t, tn, &class_names, &p.enums, &actor_names)
                         ),
                     ));
+                }
+                if !r.envelope && t != Type::Int {
+                    return Err(Diagnostic::new(r.pos, "E_UNSUPPORTED_TYPE",
+                        "direct receive(msg: T) currently lowers only int; use ActorMail<bool> for bool"));
                 }
                 t
             }
@@ -1441,11 +1458,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         if let (Some(r), Some(ridx)) = (&a.receive, info.receive_idx) {
             let label = format!("{}.receive", a.name);
-            let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
+            let named = if r.envelope {
+                [("$value", Type::Int, false), ("$sequence", Type::Int, false)]
+            } else {
+                [(r.mail.as_str(), Type::Int, false), ("$sequence", Type::Int, false)]
+            };
             let body = body_check(
                 &g,
                 BodyCheckInput {
-                    owner, named: &named, mail: Some((r.mail.as_str(), info.payload)),
+                    owner, named: &named,
+                    mail: if r.envelope { Some((r.mail.as_str(), info.payload)) } else { None },
                     ret: Type::Void, body: &r.body, label: &label, pos: r.pos,
                 },
                 &mut imports, &mut data,
@@ -1495,6 +1517,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         tactors.push(TActor {
             name: a.name.clone(),
+            kind: a.kind,
+            payload: info.payload,
             inits,
             receive: info.receive_idx,
         });
@@ -5094,7 +5118,7 @@ impl<'a> FnCx<'a> {
                     return Err(type_err(
                         pos,
                         format!(
-                            "actor '{}' has no receive(ActorMail<T>) handler, so it cannot accept send",
+                            "actor '{}' has no typed receive handler, so it cannot accept send",
                             actor.name
                         ),
                     ));
@@ -5106,7 +5130,7 @@ impl<'a> FnCx<'a> {
                     return Err(type_err(
                         args[0].pos,
                         format!(
-                            "ActorRef.send mailbox value has type {} but '{actor_name}' receives ActorMail<{}>",
+                            "ActorRef.send mailbox value has type {} but '{actor_name}' receives {}",
                             self.tn(v.ty),
                             self.tn(payload)
                         ),
