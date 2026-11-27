@@ -266,6 +266,53 @@ try {
     assert.deepEqual(await readFile(output), Buffer.from(bytes),
       `${id}: native and wasm32 compound XOR guest bytes diverged`);
   }
+  // Shared numeric cases must exercise both compiler targets, not just the
+  // browser compiler. Compare exact artifacts and execute the native output.
+  for (const c of sharedNumeric) {
+    const input = join(tmp, 'numeric-'+c.id+'.atto');
+    const output = join(tmp, 'numeric-'+c.id+'.wasm');
+    await writeFile(input, c.source);
+    const browser = compile(c.source);
+    assert.equal(browser.ok, true, c.id+': '+browser.diagnostic);
+    const native = spawnSync(attoc, [input, '-o', output],
+      {encoding:'utf8',timeout:30000});
+    assert.equal(native.error, undefined, c.id);
+    assert.equal(native.signal, null, c.id);
+    assert.equal(native.status, 0, c.id+': '+native.stderr);
+    const bytes = await readFile(output);
+    assert.deepEqual(bytes, Buffer.from(browser.guest), c.id);
+    const guest = new WebAssembly.Instance(new WebAssembly.Module(bytes), {});
+    if(c.expected.kind==='value'){
+      assert.equal(guest.exports.main(), BigInt(c.expected.value), c.id);
+      assert.equal(guest.exports.panic_code.value, 0, c.id);
+    }else{
+      assert.throws(()=>guest.exports.main(), WebAssembly.RuntimeError, c.id);
+      assert.equal(guest.exports.panic_code.value,
+        c.expected.code==='integer_overflow'?1:2, c.id);
+    }
+  }
+  // Static distance rejection must be a language diagnostic in both targets,
+  // not a crashed compiler, and must leave no artifact.
+  for (const op of ['<<<','>>>','ashr']) {
+    for (const distance of ['-1','64','-9223372036854775808','9223372036854775807']) {
+      const label=op+' '+distance;
+      const program=`pub fnc main(): int { return 1 ${op} ${distance}; }\n`;
+      const browser=compile(program);
+      assert.equal(browser.ok,false,label);
+      assert.match(browser.diagnostic,/\bE_SHIFT_DISTANCE\b/,label);
+      const id=['<<<','>>>','ashr'].indexOf(op)+'-'+distance;
+      const input=join(tmp,'static-shift-'+id+'.atto');
+      const output=join(tmp,'static-shift-'+id+'.wasm');
+      await writeFile(input,program);
+      const native=spawnSync(attoc,[input,'-o',output],{encoding:'utf8',timeout:30000});
+      assert.equal(native.error,undefined,label);
+      assert.equal(native.signal,null,label);
+      assert.equal(native.status,1,label);
+      assert.match(native.stderr,/\bE_SHIFT_DISTANCE\b/,label);
+      await assert.rejects(readFile(output),{code:'ENOENT'},label);
+    }
+  }
+  console.log('PASS 4 shared numeric native/wasm32 artifact comparisons; 12 dual-compiler exact shift diagnostics');
   const floatSource = join(tmp, 'float-division.atto');
   const floatArtifact = join(tmp, 'float-division.wasm');
   await writeFile(floatSource, divisionSource + '\n');
