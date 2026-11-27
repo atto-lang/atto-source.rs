@@ -199,6 +199,31 @@ test('actual compiler ABI emits checked scalar ESM and rejects unlowered effects
     classCases++;
   }
   console.log('DUAL_TARGET_CLASS_CASES='+classCases);
+  // Ownership violations must fail in both emitters, before an artifact is published.
+  let ownershipCases=0;
+  for(const file of [
+    '150-borrow-conflicting-loans.atto',
+    '151-borrow-use-after-take.atto',
+    '152-borrow-escaped-loan.atto',
+    '153-copy-noncopy-class.atto',
+    '155-borrow-reader-mutation.atto',
+    '156-borrow-owner-move.atto',
+    '157-borrow-mut-owner-read.atto',
+    '991-copy-doublebang-class-unproved.atto',
+    '996-copy-doublebang-exclusive-loan.atto',
+    '997-copy-doublebang-nested-array-no-runtime.atto'
+  ]){
+    const source=readFileSync(new URL('../fixtures/fail/'+file,import.meta.url),'utf8');
+    const js=compile(source,'compile_js');
+    const wasm=compile(source,'compile');
+    assert.notEqual(js.status,0,file);
+    assert.notEqual(wasm.status,0,file);
+    assert.equal(js.bytes.length,0,file);
+    assert.equal(wasm.bytes.length,0,file);
+    assert.equal(js.diagnostic,wasm.diagnostic,file);
+    ownershipCases++;
+  }
+  console.log('DUAL_TARGET_OWNERSHIP_DENIAL_CASES='+ownershipCases);
   const overflow=await run('pub fnc main(): int { return 9223372036854775807+1; }');
   assert.throws(()=>overflow.main(),/E_PANIC:1/);
   assert.equal(overflow.panic_code.value,1);
