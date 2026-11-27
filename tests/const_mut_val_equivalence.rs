@@ -23,3 +23,14 @@ fn duplicate_val_mut_is_not_an_alternate_authority() {
     let d = compile("pub fnc main(): int { val mut x = 42; return x; }").unwrap_err();
     assert_eq!(d.code, "E_SYNTAX");
 }
+
+#[test]
+fn const_mut_and_val_owned_record_artifact_equivalence() {
+    let a = compile(r#"pub fnc main(): int { const mut Record r={foo:1}; r.foo=42; return r.foo; }"#).unwrap();
+    let b = compile(r#"pub fnc main(): int { val Record r={foo:1}; r.foo=42; return r.foo; }"#).unwrap();
+    assert_eq!(a, b);
+    for q in ["val", "const mut"] {
+        let source = format!("pub fnc main(): int {{ {q} Record r={{foo:1}}; r={{foo:42}}; return r.foo; }}");
+        assert!(compile(&source).is_err(), "{source}");
+    }
+}
