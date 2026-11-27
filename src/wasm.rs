@@ -208,6 +208,7 @@ struct Emit<'a> {
     active_iterators: Vec<u32>,
     /// Scratch i64 local for an opaque host-issued admission ticket.
     state_ticket_slot: Option<u32>,
+    state_authority: Option<(&'a TProgram, usize)>,
     state_write_depth: u32,
     /// Unwind slots of a try/defer/recover function: (ret, saved, msg, kind, pending).
     uw: Option<(Option<u32>, u32, u32, u32, u32)>,
@@ -221,6 +222,15 @@ struct Emit<'a> {
 }
 
 impl Emit<'_> {
+    fn state_method_receiver(&self) -> Option<Type> {
+        self.state_authority.and_then(|(p, i)| p.state_method_receiver(i))
+    }
+    fn state_field_slot(&self, offset: u32, ty: Type, write: bool) -> bool {
+        self.state_authority.is_some_and(|(p, i)| p.state_field_slot(i, offset, ty, write))
+    }
+    fn state_snapshot_ctor(&self, ty: Type, ctor: u32, fields: &[(Type, u32)]) -> bool {
+        self.state_authority.is_some_and(|(p, _)| p.state_snapshot_ctor(ty, ctor, fields))
+    }
     fn op(&mut self, b: u8) {
         self.code.push(b);
     }
@@ -523,12 +533,16 @@ impl Emit<'_> {
             TStmt::StateFieldWrite { obj, offset, ty, value } => {
                 assert!(self.state_write_depth > 0,
                     "state field write missing typed exclusive scope");
+                assert!(crate::check::state_receiver(obj) && self.state_method_receiver() == Some(obj.ty)
+                    && self.state_field_slot(*offset, *ty, true) && *ty == value.ty,
+                    "state write does not match checker-owned nominal layout");
                 self.expr(obj);
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
             }
             TStmt::StateCriticalWrite(body) => {
-                assert!(crate::check::state_ir_region(body, None, true), "invalid typed scalar state region");
+                assert!(self.state_method_receiver().is_some()
+                    && crate::check::state_ir_region(body, None, true), "invalid typed scalar state region");
                 // Synchronous, never-park: the host authenticates this
                 // container/continuation and either grants immediately or
                 // fails closed. Yield/throw/defer in this lexical scope are
@@ -942,7 +956,8 @@ impl Emit<'_> {
                 field_op(&mut self.code, v.ty, *offset, false);
             }
             TExpr::StateWriteValue { body, result } => {
-                assert!(crate::check::state_ir_region(body, Some(result), false) && v.ty == result.ty,
+                assert!(self.state_method_receiver().is_some()
+                    && crate::check::state_ir_region(body, Some(result), false) && v.ty == result.ty,
                     "invalid typed scalar state expression region");
                 assert_eq!(self.state_write_depth, 0, "nested typed lease");
                 let slot = self.state_ticket_slot.expect("protected write value ticket local");
@@ -960,8 +975,9 @@ impl Emit<'_> {
                 self.call(self.l.import(Import::StateLeave));
             }
             TExpr::StateSnapshot { ctor, fields } => {
-                assert!(!fields.is_empty() && fields.len() <= 16 && matches!(v.ty, Type::Class(_)) &&
-                    fields.iter().all(|(ty, offset)| matches!(ty, Type::Int | Type::Bool) && crate::check::state_offset(*offset)),
+                assert!(self.state_method_receiver().is_some() && !fields.is_empty() && fields.len() <= 16
+                    && self.state_snapshot_ctor(v.ty, *ctor, fields)
+                    && fields.iter().all(|(ty, offset)| self.state_field_slot(*offset, *ty, false)),
                     "invalid typed state snapshot shape");
                 // Fixed receiver and scalar loads only. No allocation, user
                 // call, suspension or per-field ticket inside the read lease.
@@ -984,8 +1000,8 @@ impl Emit<'_> {
                 self.calls.push((at, self.code.len(), *ctor));
             }
             TExpr::StateFieldRead { obj, offset } => {
-                assert!(crate::check::state_receiver(obj) && crate::check::state_offset(*offset) &&
-                    matches!(v.ty, Type::Int | Type::Bool), "invalid typed state field read");
+                assert!(crate::check::state_receiver(obj) && self.state_method_receiver() == Some(obj.ty)
+                    && self.state_field_slot(*offset, v.ty, false), "invalid typed state field read");
                 if self.state_write_depth == 0 {
                     // Read an immutable scalar by value. The host owns the
                     // ticket, never the source code or the Wasm guest.
@@ -1572,6 +1588,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             void_main: is_void_main,
             active_iterators: Vec::new(),
             state_ticket_slot: state_hooks.then_some((f.params.len()+f.locals.len()) as u32),
+            state_authority: Some((p, i)),
             state_write_depth: 0,
             uw: None,
             in_recover: false,
@@ -1639,6 +1656,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             void_main: false,
             active_iterators: Vec::new(),
             state_ticket_slot: None,
+            state_authority: None,
             state_write_depth: 0,
             uw: None,
             in_recover: false,
