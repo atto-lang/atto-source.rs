@@ -5,6 +5,6 @@ pub fnc main(): int {
     if i >= 3 { break x; }
     recur(x + 1.0, i + 1);
   };
-  if result eq 4.0 { return 4; }
+  if result eq 4.0 { return 4; } fi
   return 0;
 }

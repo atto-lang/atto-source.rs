@@ -1,10 +1,10 @@
 // expect-exit: 42
 // java: target-only
 pub fnc main(): int {
-    val result = loop (val i = 0, val x = 40.0, val done = false) {
-        if done { break x; }
+    val result = loop (val i = 0, val x = 40.0, val finished = false) {
+        if finished { break x; }
         recur(i + 1, x + 2.0, i eq 0);
     };
-    if result eq 42.0 { return 42; }
+    if result eq 42.0 { return 42; } fi
     return 0;
 }

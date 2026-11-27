@@ -172,7 +172,11 @@ fn isolated_handler_rejects_intrinsic_receiver_and_ascribed_callable_reference()
 fn module_helper_limit_accounts_for_pending_siblings() {
     let mut src = String::new();
     for i in 0..9 {
-        let bindings = (0..8).map(|j| format!("val f_{j} = || -> 1;")).collect::<String>();
+        let mut bindings = String::new();
+        for j in 0..8 {
+            use std::fmt::Write as _;
+            write!(&mut bindings, "val f_{j} = || -> 1;").unwrap();
+        }
         let calls = (0..8).map(|j| format!("f_{j}()")).collect::<Vec<_>>().join("+");
         src.push_str(&format!("fnc group_{i}():int {{ {bindings} return {calls}; }}"));
     }

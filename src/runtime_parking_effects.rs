@@ -146,7 +146,8 @@ mod tests {
                 node(direct, calls)
             }).collect();
             let actual = infer_parking(&nodes).unwrap();
-            for root in 0..n {
+            assert_eq!(actual.len(), n);
+            for (root, observed) in actual.iter().enumerate() {
                 let mut expected = ParkingEffects::default();
                 let mut seen = vec![false; n];
                 let mut pending = vec![root];
@@ -161,8 +162,8 @@ mod tests {
                         else { expected.unresolved = true; }
                     }
                 }
-                assert_eq!(actual[root], expected);
-                assert_eq!(actual[root].requires_suspend_annotation(), expected.explicit_suspend);
+                assert_eq!(*observed, expected);
+                assert_eq!(observed.requires_suspend_annotation(), expected.explicit_suspend);
             }
         }
         let empty = ParkingEffects::default();
