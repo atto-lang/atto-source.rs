@@ -191,6 +191,7 @@ function nativeBytes(path) {
 }
 
 let passed = 0, javaChecked = 0, nativeChecked = 0;
+let javaTargetOnly = 0;
 let tracedActorMessages = 0, tracedActorInstances = 0;
 const failures = [];
 function check(label, fn) {
@@ -279,7 +280,9 @@ for (const f of await fixtures('pass')) {
       assert.deepEqual(nativeBytes(f.path), r.wasm, 'native and wasm32 compiler hosts emit identical bytes');
       nativeChecked++;
     }
-    if (java) {
+    if (java && header(f.source, 'java')[0] === 'target-only') {
+      javaTargetOnly++;
+    } else if (java) {
       const j = runJava(f.path);
       const claim = header(f.source, 'java')[0];
       if (claim === 'llvm-design') {
@@ -337,7 +340,9 @@ for (const f of await fixtures('fail')) {
       assert.equal(nativeBytes(f.path), null, 'native host also rejects');
       nativeChecked++;
     }
-    if (java) {
+    if (java && header(f.source, 'java')[0] === 'target-only') {
+      javaTargetOnly++;
+    } else if (java) {
       const claim = header(f.source, 'java')[0];
       const j = runJava(f.path);
       if (claim === 'rejects') assert.ok(j.rejected, `Java reference accepted it (exit ${j.status})`);
@@ -794,7 +799,7 @@ try {
 }
 
 console.log(`conformance: ${passed} passed, ${failures.length} failed` +
-  (java ? `, ${javaChecked} Java-differential` : ', Java differential skipped (set ATTO_JAVA)') +
+  (java ? `, ${javaChecked} Java-differential, ${javaTargetOnly} target-only (Java not verified)` : ', Java differential skipped (set ATTO_JAVA)') +
   (attoc ? `, ${nativeChecked} native-vs-wasm` : ', native parity skipped (set ATTOC)'));
 if (failures.length) {
   console.error(failures.join('\n'));
