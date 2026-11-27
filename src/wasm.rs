@@ -985,7 +985,7 @@ impl Emit<'_> {
                 self.op(0xa7);
                 self.i32c(match source.ty {
                     Type::OptionInt => 1,
-                    Type::ResultIntError => 2,
+                    Type::ResultIntError | Type::ResultOptionIntError => 2,
                     Type::ResultIntStr => 3,
                     _ => unreachable!("unverified checked unwrap type"),
                 });
@@ -1001,8 +1001,8 @@ impl Emit<'_> {
                         self.i64c(0);
                         field_op(&mut self.code, Type::Int, 16, true);
                     }
-                    Type::ResultIntError | Type::ResultIntStr => {
-                        let payload_ty = if source.ty == Type::ResultIntError { Type::Error } else { Type::Str };
+                    Type::ResultIntError | Type::ResultOptionIntError | Type::ResultIntStr => {
+                        let payload_ty = if source.ty == Type::ResultIntStr { Type::Str } else { Type::Error };
                         self.get(*tmp);
                         field_op(&mut self.code, payload_ty, 8, false);
                         field_op(&mut self.code, payload_ty, 16, true);
@@ -1014,7 +1014,7 @@ impl Emit<'_> {
                 uleb(&mut self.code, 0);
                 self.close();
                 self.get(*tmp);
-                field_op(&mut self.code, Type::Int, 8, false);
+                field_op(&mut self.code, v.ty, 8, false);
             }
             TExpr::AdtPropagate { source, tmp, success_tag } => {
                 // Source (and all of its effects) is evaluated exactly once.

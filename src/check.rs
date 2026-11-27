@@ -4867,7 +4867,19 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn method_on(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
-        if name == "unwrap" && matches!(recv.ty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntError) {
+        // Reuse the existing discriminant test, never read an inactive payload.
+        let predicate_tag = match (recv.ty, name) {
+            (Type::OptionInt | Type::OptionResultIntStr, "is_none") => Some(0),
+            (Type::OptionInt | Type::OptionResultIntStr, "is_some") => Some(1),
+            (Type::ResultIntStr | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError, "is_ok") => Some(0),
+            (Type::ResultIntStr | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError, "is_err") => Some(1),
+            _ => None,
+        };
+        if let Some(tag) = predicate_tag {
+            self.arity(name, 0, args.len(), pos)?;
+            return Ok(TE { e: TExpr::AdtIs { obj: Box::new(recv), tag }, ty: Type::Bool });
+        }
+        if name == "unwrap" && matches!(recv.ty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntError | Type::ResultOptionIntError) {
             if self.owner != Owner::TopLevel || self.cleanup_depth > 0 || self.finally_depth > 0
                 || self.loops != 0 {
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
@@ -4879,11 +4891,12 @@ impl<'a> FnCx<'a> {
             } else {
                 (0, "called Result::unwrap() on an Err value")
             };
+            let payload_ty = if recv.ty == Type::ResultOptionIntError { Type::OptionInt } else { Type::Int };
             let tmp = self.temp(recv.ty, pos)?;
             let error_tmp = self.temp(Type::Error, pos)?;
             let (message_offset, message_len) = self.string(message, pos)?;
             return Ok(TE { e: TExpr::AdtUnwrap { source: Box::new(recv),
-                tmp, error_tmp, message_offset, message_len, success_tag }, ty: Type::Int });
+                tmp, error_tmp, message_offset, message_len, success_tag }, ty: payload_ty });
         }
         if recv.ty == Type::Str {
             return self.string_method(recv, name, args, pos);
