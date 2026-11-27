@@ -16,7 +16,9 @@ const cases = [
   ['bare-three', 'return 1, 2, 42;', 42n],
   ['caret-bare', '^ 1, 2, 42;', 42n],
   ['explicit-seq', 'return seq 1, 2, 42;', 42n],
-  ['contextual-caret', 'return ^ (1, 2, 42);', 42n],
+  ['explicit-delimited', 'return (> 1, 2, 42);', 42n],
+  ['redundant-caret', 'return ^ 42;', 42n],
+  ['redundant-caret-sequence', 'return ^ seq! (1, 42);', 42n],
   ['delimited-expr', 'return (> 1, 2), 42;', 42n],
   ['grouped-tail', 'return (40), (40 + 2);', 42n],
   ['nested-args', 'return add(10, 20), add(20, 22);', 42n,
@@ -27,11 +29,13 @@ const cases = [
     'fnc body_result() -> int :: const x: int = 40, x + 2 end'],
 ];
 const invalid = [
-  ['empty-caret-sequence', 'return ^ ();', 'E_EMPTY_SEQUENCE'],
+  ['empty-explicit-sequence', 'return (>);', 'E_EMPTY_SEQUENCE'],
   ['trailing-comma', 'return 1,;', 'E_SYNTAX'],
   ['double-comma', 'return 1,,42;', 'E_SYNTAX'],
   ['bad-final-type', 'return 1, true;', 'E_TYPE'],
-  ['bare-caret-not-expression', 'return ^ 42;', 'E_SYNTAX'],
+  ['reverse-return-marker', '^ return 42;', 'E_RETURN_MARKER_ORDER'],
+  ['repeated-return-marker', 'return ^ ^ 42;', 'E_RETURN_MARKER_ORDER'],
+  ['old-caret-tuple-not-sequence', 'return ^ (1, 42);', 'E_UNSUPPORTED'],
   ['moved-prefix', 'val value = 42; return take! value, value;', 'E_MOVED'],
   ['ordinary-tuple-not-sequence', 'return (1, 42);', 'E_UNSUPPORTED'],
 ];
@@ -51,6 +55,8 @@ try {
     await writeFile(path,source,'utf8');
     const result=compilerResult(path,guestPath);
     assert.equal(result.status,0,id+' native compiler error: '+result.stderr);
+    if (id.startsWith('redundant-')) assert.match(result.stderr,/W_REDUNDANT_RETURN/);
+    else assert.doesNotMatch(result.stderr,/W_REDUNDANT_RETURN/);
     const wasm=await readFile(guestPath);
     assert.ok(WebAssembly.validate(wasm),id+' invalid guest Wasm');
     const module=new WebAssembly.Module(wasm);

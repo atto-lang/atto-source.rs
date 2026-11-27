@@ -57,6 +57,8 @@ function executeGuest(bytes) {
 }
 
 const fixtures = [
+  ['warned_return', 'pub fnc main(): int { return ^ 42; }', 42],
+  ['warned_sequence_return', 'pub fnc main(): int { return ^ seq! (1, 42); }', 42],
   ['ordinary_seq_call', 'fnc seq(int a, int b): int { return a-b; } pub fnc main(): int { return seq(50,8); }', 42],
   ['ordinary_seq_call_spaced', 'fnc seq(int a, int b): int { return a-b; } pub fnc main(): int { return seq (50,8); }', 42],
   ['bang_is_not_call', 'fnc seq(int a, int b): int { return a-b; } pub fnc main(): int { return seq! (50,42); }', 42],
@@ -99,6 +101,15 @@ try {
     assert.equal(native.status, 0, `native compiler failed ${id}: ${native.stderr || native.error}`);
     const nativeBytes = await readFile(output);
     const wasmBytes = compileWasmHost(source);
+    const warned = id.startsWith('warned_');
+    assert.equal(compiler.warning_count(), warned ? 1 : 0, id);
+    assert.equal(compiler.warning_code(0), warned ? 1 : 0, id);
+    assert.equal(compiler.warning_code(999999), 0, id);
+    if (warned) {
+      assert.match(native.stderr, /W_REDUNDANT_RETURN/);
+      assert.equal(compiler.warning_line_number(0), 1);
+      assert.ok(compiler.warning_column_number(0) > 0);
+    } else assert.doesNotMatch(native.stderr, /W_REDUNDANT_RETURN/);
     assert.deepEqual(nativeBytes, wasmBytes, `native/wasm32 guest bytes diverged: ${id}`);
     const {result, events} = executeGuest(nativeBytes);
     assert.equal(result, BigInt(expected), `incorrect executed guest result: ${id}`);

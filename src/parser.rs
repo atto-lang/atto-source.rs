@@ -1768,6 +1768,20 @@ impl Parser {
         }
     }
 
+    // Exactly one redundant caret may follow the literal return keyword.
+    // It never alters operand grammar. A tuple remains a tuple even on
+    // backends where tuple lowering is not supported.
+    fn parse_return_marker(&mut self) -> R<()> {
+        let keyword_return = self.is_word("return");
+        self.advance();
+        if keyword_return { self.eat(&Tok::Caret); }
+        if *self.peek() == Tok::Caret || self.is_word("return") {
+            return Err(Diagnostic::new(self.pos(), "E_RETURN_MARKER_ORDER",
+                "only a single redundant caret after literal return is allowed"));
+        }
+        Ok(())
+    }
+
     fn parse_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
         if *self.peek() == Tok::At {
@@ -1837,28 +1851,7 @@ impl Parser {
                 Ok(Stmt::Yield(value, pos))
             }
             Some("return") => {
-                // A literal `return ^ (...)` is a contextual last-value
-                // sequence, *not* two returns. A leading statement `^ (...)`
-                // keeps its existing tuple/grouped-expression meaning.
-                let keyword_return = self.is_word("return");
-                self.advance();
-                if keyword_return && self.eat(&Tok::Caret) {
-                    self.expect(Tok::LParen, "'(' after 'return ^'")?;
-                    if *self.peek() == Tok::RParen {
-                        return Err(Diagnostic::new(self.pos(), "E_EMPTY_SEQUENCE",
-                            "return ^ (...) requires at least one expression"));
-                    }
-                    // Reuse the exact lexical sequence AST/checker/lowering
-                    // employed by `seq` and `(> ... )`. No tuple fallback.
-                    let value = self.parse_comma_sequence(Tok::RParen, pos)?;
-                    self.expect(Tok::RParen, "')' after return sequence")?;
-                    if self.in_generator {
-                        return Err(Diagnostic::new(pos, "E_RETURN",
-                            "generator cannot return a sequence value"));
-                    }
-                    self.terminator()?;
-                    return Ok(Stmt::Return(Some(value), pos));
-                }
+                self.parse_return_marker()?;
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
                     // return values, including an exhaustive match.
@@ -3296,19 +3289,8 @@ impl Parser {
             // as normal callable returns. A literal semicolon is required to
             // end an explicit return, even when a ')' follows.
             let pos = self.pos();
-            let keyword_return = self.is_word("return");
-            self.advance();
-            let value = if keyword_return && self.eat(&Tok::Caret) {
-                // `return ^ (a, b)` is a contextual last-value sequence.
-                self.expect(Tok::LParen, "'(' after 'return ^'")?;
-                if *self.peek() == Tok::RParen {
-                    return Err(Diagnostic::new(self.pos(), "E_EMPTY_SEQUENCE",
-                        "return ^ (...) requires at least one expression"));
-                }
-                let inner = self.parse_comma_sequence(Tok::RParen, pos)?;
-                self.expect(Tok::RParen, "')' after return sequence")?;
-                Some(inner)
-            } else if (self.is_word("seq") || self.is_word("seq!")) && *self.peek_at(1) != Tok::LParen {
+            self.parse_return_marker()?;
+            let value = if (self.is_word("seq") || self.is_word("seq!")) && *self.peek_at(1) != Tok::LParen {
                 self.advance();
                 Some(self.parse_comma_sequence(Tok::Semi, pos)?)
             } else if *self.peek() == Tok::Semi {

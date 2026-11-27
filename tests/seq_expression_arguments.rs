@@ -111,7 +111,7 @@ fn explicit_lambda_returns_use_same_checked_comma_sequence_ast() {
         "pub fnc main(): int { val f = (|| -> ^ seq 10, 20, 42;); return 0; }",
         "pub fnc main(): int { val f = (|| -> return seq! (10, 20, 42);); return 0; }",
         "pub fnc main(): int { val f = (|| -> ^ seq! (10, 20, 42);); return 0; }",
-        "pub fnc main(): int { val f = (|| -> return ^ (10, 20, 42);); return 0; }",
+        "pub fnc main(): int { val f = (|| -> return ^ (> 10, 20, 42);); return 0; }",
     ] {
         let ast = Parser::new(lex(src).unwrap()).parse_program().unwrap();
         let Stmt::Bind { init, .. } = &ast.funcs[0].body[0] else { panic!("expected lambda binding: {src}") };
@@ -132,14 +132,14 @@ fn malformed_explicit_lambda_comma_returns_fail_closed() {
         "pub fnc main(): int { val f = || -> return 1,; return 0; }",
         "pub fnc main(): int { val f = || -> ^ 1,,2; return 0; }",
         "pub fnc main(): int { val f = || -> return seq 1; 2; return 0; }",
-        "pub fnc main(): int { val f = || -> return ^ (); return 0; }",
+        "pub fnc main(): int { val f = || -> return ^ (> ); return 0; }",
         "pub fnc main(): int { val f = || -> return 1, 2); return 0; }",
     ] {
         let lexed = lex(src).unwrap();
         assert!(Parser::new(lexed).parse_program().is_err(),
             "malformed explicit lambda return parsed: {src}");
     }
-    let src = "pub fnc main(): int { val f = || -> return ^ (); return 0; }";
+    let src = "pub fnc main(): int { val f = || -> return ^ (> ); return 0; }";
     let err = Parser::new(lex(src).unwrap()).parse_program().unwrap_err();
     assert_eq!(err.code, "E_EMPTY_SEQUENCE", "{err}");
 }
