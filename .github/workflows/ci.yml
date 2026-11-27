@@ -61,6 +61,12 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/parentheses_guest.mjs
+      - name: Execute integer membership match guests and reject invalid lists
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node --check tests/int_membership_guest.mjs
+          node tests/int_membership_guest.mjs
       - name: Execute immediate await receiver guests and fail-closed diagnostics
         env:
           ATTOC: target/release/attoc
