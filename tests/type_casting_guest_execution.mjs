@@ -61,6 +61,10 @@ const invalidSigned = expr =>
   'pub fnc main(): int { val value: Any = ' + expr + '; return classify(value); }';
 
 const pass = [
+  ['type-list-hit', program('match v over is in [string, int] -> { return v + 1; } on _ -> { return 0; } end')],
+  ['type-list-miss', program('match v over is in [string, bool] -> { return 0; } is int -> { return v + 1; } end')],
+  ['type-list-guard-fallback', program('match v over is in [int, string] when v > 90 -> { return 0; } on is in [bool, int] as val n -> { return n + 1; } on _ -> { return 0; } end')],
+  ['type-list-singleton', program('match v over is in [int] -> { return v + 1; } end')],
   ['signed-negative-int', signedInt('-42')],
   ['signed-spaced-unary-minus', signedInt('- 42')],
   ['signed-comment-separated-minus', signedInt('-/* comment */42')],
@@ -82,6 +86,12 @@ const pass = [
   ['guarded-wildcard-fallthrough', program('match v over on _ when v > 100 -> { return 0; } on is int as val n -> { return n + 1; } end')]
 ];
 const fail = [
+  ['type-list-empty', 'E_SYNTAX', program('match v over is in [] -> { return 42; } on _ -> { return 0; } end')],
+  ['type-list-alias-duplicate', 'E_MATCH', program('match v over is in [string, String] -> { return 42; } on _ -> { return 0; } end')],
+  ['type-list-not-a-type', 'E_UNSUPPORTED_TYPE', program('match v over is in [int, 42] -> { return 42; } on _ -> { return 0; } end')],
+  ['type-list-missing-comma', 'E_SYNTAX', program('match v over is in [int string] -> { return 42; } on _ -> { return 0; } end')],
+  ['type-list-covered', 'E_MATCH', program('match v over is in [int, string] -> { return 42; } is string -> { return 0; } end')],
+  ['type-list-no-coverage', 'E_MATCH', program('match v over is in [string, bool] -> { return 42; } end')],
   ['signed-computation-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('-42 + 1')],
   ['signed-parentheses-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('-(42)')],
   ['signed-double-minus-must-remain-rejected', 'E_UNSUPPORTED_TYPE', invalidSigned('--42')],
