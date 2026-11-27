@@ -145,6 +145,7 @@ struct Layout {
     borrow_getters: Vec<Option<(Type, Type, u32)>>,
     borrow_int_pairs: Vec<Option<(Type, BinOp, u32, u32)>>,
     borrow_two_args: Vec<Option<TwoBorrowPlan>>,
+    borrow_many_args: Vec<Option<ManyBorrowPlan>>,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -816,6 +817,28 @@ impl Emit<'_> {
                         BinOp::Mul => H_MUL,
                         _ => unreachable!("verified checked two-argument arithmetic"),
                     }));
+                } else if let Some(plan) =
+                    verified_many_borrow_call(v, *f, args, &self.l.borrow_many_args).cloned()
+                {
+                    // A verified postfix program contains only ordinary
+                    // reads of stable borrowed formals and checked integer
+                    // operations. Preserve each original operation/order.
+                    for step in &plan.steps {
+                        match *step {
+                            ManyBorrowStep::Field(index, offset) => {
+                                self.expr(&args[index]);
+                                field_op(&mut self.code, Type::Int, offset, false);
+                            }
+                            ManyBorrowStep::Arithmetic(op) => {
+                                self.call(self.l.helper(match op {
+                                    BinOp::Add => H_ADD,
+                                    BinOp::Sub => H_SUB,
+                                    BinOp::Mul => H_MUL,
+                                    _ => unreachable!("verified checked arithmetic"),
+                                }));
+                            }
+                        }
+                    }
                 } else {
                     // Fail closed when the callee proof and this exact call
                     // site disagree. Preserve original evaluation order/ABI.
@@ -1521,6 +1544,69 @@ fn transitive_readonly_proofs(funcs: &[TFunc]) -> (Vec<GetterProof>, Vec<IntPair
     (getters, pairs)
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ManyBorrowStep {
+    Field(usize, u32),
+    Arithmetic(BinOp),
+}
+
+#[derive(Clone, Debug)]
+struct ManyBorrowPlan {
+    owners: Vec<Type>,
+    steps: Vec<ManyBorrowStep>,
+}
+
+// Bounded source-checked profile: 3..=8 readonly class inputs,
+// ordinary integer field reads and checked +, -, *. Require every
+// parameter to be read; no computed arguments, cleanup, or calls.
+fn verified_many_borrow(f: &TFunc) -> Option<ManyBorrowPlan> {
+    if !(3..=8).contains(&f.params.len()) || f.ret != Type::Int
+        || !f.locals.is_empty() || f.param_ownership.len() != f.params.len()
+        || !f.params.iter().all(|t| matches!(t, Type::Class(_)))
+        || !f.param_ownership.iter().all(|m| matches!(m, ParamOwnership::BorrowRead)) {
+        return None;
+    }
+    let [TStmt::Return(Some(value))] = f.body.as_slice() else { return None };
+    fn visit(value: &TE, owners: &[Type], steps: &mut Vec<ManyBorrowStep>,
+             seen: &mut u16, depth: usize) -> Option<()> {
+        if depth > 8 || steps.len() >= 31 || value.ty != Type::Int { return None; }
+        match &value.e {
+            TExpr::FieldGet { obj, offset } => {
+                let TExpr::Local(slot) = &obj.e else { return None };
+                let index = *slot as usize;
+                if owners.get(index) != Some(&obj.ty) { return None; }
+                *seen |= 1u16 << index;
+                steps.push(ManyBorrowStep::Field(index, *offset));
+            }
+            TExpr::Bin(op, a, b) if matches!(*op, BinOp::Add | BinOp::Sub | BinOp::Mul) => {
+                visit(a, owners, steps, seen, depth + 1)?;
+                visit(b, owners, steps, seen, depth + 1)?;
+                if steps.len() >= 31 { return None; }
+                steps.push(ManyBorrowStep::Arithmetic(*op));
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+    let mut steps = Vec::new();
+    let mut seen = 0;
+    visit(value, &f.params, &mut steps, &mut seen, 0)?;
+    if seen != (1u16 << f.params.len()) - 1 { return None; }
+    Some(ManyBorrowPlan { owners: f.params.clone(), steps })
+}
+
+fn verified_many_borrow_call<'a>(
+    result: &TE, function: u32, args: &[TE], plans: &'a [Option<ManyBorrowPlan>],
+) -> Option<&'a ManyBorrowPlan> {
+    let plan = plans.get(function as usize)?.as_ref()?;
+    if result.ty != Type::Int || args.len() != plan.owners.len()
+        || !args.iter().zip(&plan.owners).all(|(arg, owner)|
+            arg.ty == *owner && matches!(&arg.e, TExpr::Local(_))) {
+        return None;
+    }
+    Some(plan)
+}
+
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let (borrow_getters, borrow_int_pairs) = transitive_readonly_proofs(&p.funcs);
     let heap_global = 1;
@@ -1541,6 +1627,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         borrow_getters,
         borrow_int_pairs,
         borrow_two_args: p.funcs.iter().map(verified_two_borrow).collect(),
+        borrow_many_args: p.funcs.iter().map(verified_many_borrow).collect(),
     };
     let mut types = Types(Vec::new());
 
