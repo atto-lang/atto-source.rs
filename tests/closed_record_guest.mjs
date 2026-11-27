@@ -64,7 +64,17 @@ const positives=[
  ['pub fnc main(): int {let Record headers={status_code:42,content_type:"ok"}; return headers.status_code+headers["status_code"]-42;}',42n,''],
  ['pub fnc main(): int {let Record headers={empty:1,café:41,cafe_decomp:7}; return headers["empty"]+headers["café"];}',42n,''],
 ];
+positives.push(
+ ['pub fnc main():int {let r={foo := 40\nbar := 2};return r.foo+r.bar;}',42n,''],
+ ['pub fnc main():int {let r=(foo := 40,bar=2);return r.foo+r.bar;}',42n,''],
+ ['pub fnc main():int {let foo=7;let r=(foo:40,bar := 2);return r.foo+r.bar+foo-7;}',42n,''],
+ ['pub fnc main():int {let r={foo := 40\nbar = 2,};return r.foo+r.bar;}',42n,'']
+);
 const negatives=[
+ ['pub fnc main():int {let r={foo := 1,foo:2};return 0;}','E_DUPLICATE'],
+ ['pub fnc main():int {let r=(foo := 1,foo=2);return 0;}','E_DUPLICATE'],
+ ['pub fnc main():int {let r=(foo:1,foo := 2);return 0;}','E_DUPLICATE'],
+
  ['pub fnc main(): int {const age=42; val z=(:age,age=5); return 0;}','E_DUPLICATE'],
  ['pub fnc main(): int {const age=42; val z=(:age,5); return 0;}','E_LITERAL_KIND'],
  ['pub fnc main(): int {const age=42; val z={:age,age:1}; return 0;}','E_DUPLICATE'],

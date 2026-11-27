@@ -3190,11 +3190,12 @@ impl Parser {
                     "brace literal exceeds 1024 entries"));
             }
             let identifier_field = matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                && matches!(self.peek_at(1), Tok::Colon | Tok::Assign);
+                && matches!(self.peek_at(1), Tok::Colon | Tok::Assign | Tok::ColonAssign);
             let quoted_map_key = matches!(self.peek(), Tok::Str(_))
                 && *self.peek_at(1) == Tok::Colon;
             let captured_field = *self.peek() == Tok::Colon;
             let equals_field = identifier_field && *self.peek_at(1) == Tok::Assign;
+            let pair_field = identifier_field && *self.peek_at(1) == Tok::ColonAssign;
             if identifier_field || captured_field {
                 if record_mode == Some(false) {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
@@ -3209,7 +3210,7 @@ impl Parser {
                 };
                 self.advance();
                 if !captured_field {
-                    if !self.eat(&Tok::Assign) { self.expect(Tok::Colon, "':' or '=' after record field")?; }
+                    if !self.eat(&Tok::Assign) && !self.eat(&Tok::ColonAssign) { self.expect(Tok::Colon, "':' or '=' after record field")?; }
                 }
                 if !seen_record_names.insert(name.clone()) {
                     return Err(Diagnostic::new(at, "E_DUPLICATE",
@@ -3265,7 +3266,11 @@ impl Parser {
             // A subsequent entry can start on the following line; same-line
             // entries need commas. At most one entry is parsed per iteration.
             let previous_line = self.toks[self.i.saturating_sub(1)].pos.line;
-            if !equals_field && *self.peek() != Tok::Eof && self.pos().line > previous_line {
+            // Existing colon/Map newline syntax remains compatible. For the
+            // new Pair path, conservatively require comma after multiline
+            // decoded string tokens (their end line is not tracked here).
+            let previous_multiline_string = matches!(&self.toks[self.i.saturating_sub(1)].tok, Tok::Str(s) if s.contains('\n'));
+            if !equals_field && !(pair_field && previous_multiline_string) && *self.peek() != Tok::Eof && self.pos().line > previous_line {
                 continue;
             }
             return Err(self.expected(if equals_field { "',' between equals Record fields, or '}'" } else { "',' or a newline between brace entries, or '}'" }));
@@ -3296,7 +3301,7 @@ impl Parser {
                     "parenthesized Record fields require identifier=expression, identifier:expression or :identifier")),
             };
             self.advance();
-            if !captured && !self.eat(&Tok::Assign) { self.expect(Tok::Colon, "'=' or ':' after named Record field")?; }
+            if !captured && !self.eat(&Tok::Assign) && !self.eat(&Tok::ColonAssign) { self.expect(Tok::Colon, "'=' or ':' after named Record field")?; }
             if !seen.insert(name.clone()) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE",
                     format!("duplicate Record field '{name}'")));
@@ -3310,7 +3315,7 @@ impl Parser {
                     break;
                 }
                 if *self.peek() != Tok::Colon && !(matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon | Tok::ColonAssign))
                 {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
                         "cannot mix named Record fields and positional Tuple items; expected field=value, field:value or :field"));
@@ -3321,6 +3326,36 @@ impl Parser {
             break;
         }
         Ok(Expr { kind: ExprKind::Record(fields), pos })
+    }
+
+    // Called only when the first item is an inline Pair. A later explicit
+    // field/capture at this exact delimiter level commits to Record parsing;
+    // nested fields and equality operators never select the outer kind.
+    fn pair_prefix_has_named_record_item(&self) -> bool {
+        let mut depth = 0usize;
+        let mut start = true;
+        for i in self.i..self.toks.len() {
+            let t = &self.toks[i].tok;
+            if depth == 0 && start {
+                let next = self.toks.get(i + 1).map(|x| &x.tok);
+                if matches!(t, Tok::Colon) && matches!(next, Some(Tok::Ident(_))) {
+                    return true;
+                }
+                if matches!(t, Tok::Ident(name) if !is_reserved(name))
+                    && matches!(next, Some(Tok::Assign | Tok::Colon)) {
+                    return true;
+                }
+                start = false;
+            }
+            match t {
+                Tok::LParen | Tok::LBrace | Tok::LBracket => depth += 1,
+                Tok::RParen | Tok::RBrace | Tok::RBracket if depth > 0 => depth -= 1,
+                Tok::RParen | Tok::RBrace | Tok::RBracket | Tok::Eof => return false,
+                Tok::Comma if depth == 0 => start = true,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn parse_primary(&mut self) -> R<Expr> {
@@ -3348,6 +3383,8 @@ impl Parser {
                 // Equality, Pair syntax and ordinary positional items do not.
                 if *self.peek() == Tok::Colon || (matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
                     && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
+                    || (matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
+                        && *self.peek_at(1) == Tok::ColonAssign && self.pair_prefix_has_named_record_item())
                 {
                     return self.parse_named_record_parens(pos);
                 }
@@ -3501,6 +3538,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Comma => ",",
                 Tok::Colon => ":",
                 Tok::ColonColon => "::",
+                Tok::ColonAssign => ":=",
                 Tok::Arrow => "->",
                 Tok::FatArrow => "=>",
                 Tok::Dot => ".",
