@@ -264,6 +264,7 @@ pub struct Parser {
     struct_value_bindings: Option<Vec<Pos>>,
     pattern_constants: std::collections::BTreeMap<String, (bool, Pattern)>,
     pattern_name_uses: std::collections::BTreeSet<usize>,
+    pattern_type_spellings: std::collections::BTreeMap<String, Pos>,
 }
 
 struct TypeFirstField {
@@ -400,6 +401,7 @@ impl Parser {
             struct_value_bindings: None,
             pattern_constants: Default::default(),
             pattern_name_uses: Default::default(),
+            pattern_type_spellings: Default::default(),
         }
     }
 
@@ -798,6 +800,19 @@ impl Parser {
                     return Err(unsupported(self.pos(), &what));
                 }
                 _ => prog.funcs.push(self.parse_func()?),
+            }
+        }
+        // Builtin spellings are not permission to erase nominal identity.
+        for name in prog.classes.iter().map(|d| &d.name)
+            .chain(prog.enums.iter().map(|d| &d.name))
+            .chain(prog.actors.iter().map(|d| &d.name)) {
+            if let Some(pos) = self.pattern_type_spellings.get(name) {
+                return Err(Diagnostic::new(*pos, "E_PATTERN_TYPE",
+                    "scalar pattern type spelling is shadowed by a nominal declaration"));
+            }
+            if name == "Pattern" {
+                return Err(Diagnostic::new(self.pos(), "E_PATTERN_TYPE",
+                    "Pattern is a compiler-owned compile-time category"));
             }
         }
         // The initial file-scope profile prohibits runtime escape and
@@ -3698,7 +3713,8 @@ impl Parser {
         if array { self.expect(Tok::RBracket, "']' in Pattern[]")?; }
         let name_index = self.i;
         let (name, _) = self.ident("compile-time pattern name")?;
-        if name == "Pattern" || self.pattern_constants.contains_key(&name) {
+        if matches!(name.as_str(), "Pattern" | "Int" | "int" | "bool" | "boolean" | "float" | "f64" | "String" | "string") ||
+            self.pattern_constants.contains_key(&name) {
             return Err(Diagnostic::new(pos, "E_PATTERN_NAME", "duplicate or reserved Pattern name"));
         }
         if self.pattern_constants.len() >= 128 {
@@ -3785,6 +3801,11 @@ impl Parser {
             if types.contains(&ty) {
                 return Err(Diagnostic::new(self.pos(), "E_MATCH", "duplicate canonical type in type list"));
             }
+            let spelling = match self.peek() {
+                Tok::Ident(w) => w.clone(),
+                _ => unreachable!("scalar type spelling already validated"),
+            };
+            self.pattern_type_spellings.insert(spelling, self.pos());
             self.advance();
             types.push(ty);
             if !plural || self.eat(&Tok::RBracket) { break; }
