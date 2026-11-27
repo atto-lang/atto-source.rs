@@ -490,6 +490,8 @@ struct FnCx<'a> {
     unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// > 0 while checking an isolated defer/recover body.
     cleanup_depth: u32,
+    /// Only a checked literal Boolean may prove a ternary arm unreachable.
+    dead_division_arm: bool,
     telemetry_aliases: Vec<String>,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
@@ -2476,6 +2478,7 @@ impl<'a> FnCx<'a> {
             data,
             unwind: None,
             cleanup_depth: 0,
+            dead_division_arm: false,
             telemetry_aliases: Vec::new(),
             recover_cursor: None,
             recover_error: None,
@@ -4213,6 +4216,13 @@ impl<'a> FnCx<'a> {
                             Some(_) => true,
                         };
                         if !safe {
+                            // Both operands have already been checked for
+                            // types, names and ownership. An unreachable arm
+                            // cannot execute this division. Do not emit a
+                            // target trap or relax the live proof boundary.
+                            if self.dead_division_arm {
+                                return Ok(TE { e: TExpr::I64(0), ty: Type::Int });
+                            }
                             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                                 "checked integer division requires a proven nonzero divisor and no MIN/-1 overflow, or typed ordinary-error lowering"));
                         }
@@ -4297,11 +4307,20 @@ impl<'a> FnCx<'a> {
     }
 
     #[inline(never)]
+    fn ternary_arm(&mut self, e: &Expr, untaken: bool) -> R<TE> {
+        let previous = self.dead_division_arm;
+        self.dead_division_arm = previous || untaken;
+        let result = self.value(e);
+        self.dead_division_arm = previous;
+        result
+    }
+
+    #[inline(never)]
     fn ternary(&mut self, c: &Expr, a: &Expr, b: &Expr, pos: Pos) -> R<TE> {
         Ok({
             let c = self.cond(c, "ternary")?;
-            let a = self.value(a)?;
-            let b = self.value(b)?;
+            let a = self.ternary_arm(a, matches!(&c.e, TExpr::Bool(false)))?;
+            let b = self.ternary_arm(b, matches!(&c.e, TExpr::Bool(true)))?;
             if a.ty != b.ty {
                 return Err(type_err(
                     pos,
