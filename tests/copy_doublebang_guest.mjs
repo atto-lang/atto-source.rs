@@ -1,4 +1,4 @@
-// Compiles real .atto copy!! programs using native attoc and executes guest
+// Compiles real .atto copy! and copy!! programs using native attoc and executes guest
 // WebAssembly. This is a BOUNDED flat-class test, not a recursive graph proof.
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
@@ -16,12 +16,14 @@ const positives = [
   '995-copy-doublebang-flat-class-mixed-fields.atto',
   '996-copy-doublebang-constructor-state.atto',
   '997-copy-doublebang-private-state.atto',
+  '998-copy-shallow-flat-class.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
   '992-copy-doublebang-mut-invalid.atto',
   '996-copy-doublebang-exclusive-loan.atto',
   '997-copy-doublebang-nested-array-no-runtime.atto',
+  '153-copy-noncopy-class.atto',
 ];
 const imports = {
   atto: {
@@ -72,7 +74,8 @@ try {
     const output = join(dir, filename + '.wasm');
     const result = run(source, output);
     assert.equal(result.error, undefined, filename + ': compiler process failed');
-    assert.notEqual(result.status, 0, filename + ': unsupported copy accepted');
+    assert.equal(result.signal, null, filename + ': compiler terminated by signal');
+    assert.equal(result.status, 1, filename + ': expected compiler diagnostic exit');
     assert.ok(result.stderr.includes(expected), filename + ': expected ' + expected + ', got: ' + result.stderr);
     await assert.rejects(stat(output), { code: 'ENOENT' }, filename + ': rejected compiler produced output');
     console.log('PASS rejected guest', filename, expected);
