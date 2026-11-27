@@ -491,7 +491,9 @@ struct FnCx<'a> {
     // Conservative straight-line per-root field write authority. No joins,
     // loops or scope recovery are inferred in this first mutable-leaf slice.
     nested_linear: bool,
-    unique_nested_fields: BTreeSet<(u32, u32)>,
+    nested_groups: BTreeMap<(u32, u32), u64>,
+    next_nested_group: u64,
+    nested_copy_binding: bool,
     /// Stable CLASS borrow provenance; expiry never grants ownership.
     borrowed_slots: BTreeSet<u32>,
     nll_fuel: usize,
@@ -1243,6 +1245,25 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         actors,
         type_names: tn,
     };
+
+    let nested_root_type = |t: Type| matches!(t, Type::Class(ci)
+        if g.classes[ci as usize].fields.iter().any(|f| f.referent_mutable && matches!(f.ty, Type::Class(_))));
+    for f in &p.funcs {
+        if nested_root_type(res(f.ret)?) || f.params.iter().any(|q| res(q.ty).is_ok_and(nested_root_type)) {
+            return Err(Diagnostic::new(f.pos, "E_COPY_UNPROVEN", "mutable nested roots cannot cross callable boundaries"));
+        }
+    }
+    for c in &g.classes {
+        if c.ctor_params.iter().copied().any(nested_root_type) ||
+            c.methods.iter().any(|m| nested_root_type(m.ret) || m.params.iter().copied().any(nested_root_type)) {
+            return Err(Diagnostic::new(Pos::default(), "E_COPY_UNPROVEN", "mutable nested roots cannot cross class callable boundaries"));
+        }
+    }
+    for a in &g.actors {
+        if a.methods.iter().any(|m| nested_root_type(m.ret) || m.params.iter().copied().any(nested_root_type)) {
+            return Err(Diagnostic::new(Pos::default(), "E_COPY_UNPROVEN", "mutable nested roots cannot cross actor callable boundaries"));
+        }
+    }
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
         Some((i, _, ret)) => {
@@ -2558,7 +2579,9 @@ impl<'a> FnCx<'a> {
             moved: BTreeSet::new(),
             fresh_class_roots: BTreeSet::new(),
             nested_linear: true,
-            unique_nested_fields: BTreeSet::new(),
+            nested_groups: BTreeMap::new(),
+            next_nested_group: 0,
+            nested_copy_binding: false,
             borrowed_slots: BTreeSet::new(),
             nll_fuel: NLL_WORK_BUDGET,
             loans: BTreeMap::new(),
@@ -2771,6 +2794,23 @@ impl<'a> FnCx<'a> {
         Ok(slot)
     }
 
+    fn nested_unique(&self, root: u32, offset: u32) -> bool {
+        self.nested_groups.get(&(root, offset)).is_some_and(|group|
+            self.nested_groups.values().filter(|g| *g == group).take(2).count() == 1)
+    }
+
+    fn new_nested_group(&mut self, root: u32, offset: u32, pos: Pos) -> R<()> {
+        self.next_nested_group = self.next_nested_group.checked_add(1).ok_or_else(||
+            Diagnostic::new(pos, "E_COPY_GRAPH_BUDGET", "nested identity counter exhausted"))?;
+        self.nested_groups.insert((root, offset), self.next_nested_group);
+        Ok(())
+    }
+
+    fn has_mutable_nested(&self, ty: Type) -> bool {
+        matches!(ty, Type::Class(ci) if self.g.classes[ci as usize].fields.iter().any(|f|
+            f.referent_mutable && matches!(f.ty, Type::Class(_))))
+    }
+
     fn pop_scope(&mut self) {
         if let Some(ended) = self.scopes.pop() {
             if let Some(tr) = self.trace.as_mut() {
@@ -2781,6 +2821,7 @@ impl<'a> FnCx<'a> {
                 self.loans.remove(&l.slot);
                 self.moved.remove(&l.slot);
                 self.fresh_class_roots.remove(&l.slot);
+                self.nested_groups.retain(|(root, _), _| *root != l.slot);
                 self.borrowed_slots.remove(&l.slot);
             }
         }
@@ -2851,9 +2892,9 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
-        if !matches!(s, Stmt::Bind { .. } | Stmt::Assign { .. } | Stmt::FieldAssign { .. } | Stmt::Expr(_) | Stmt::Return(..)) {
+        if !matches!(s, Stmt::Bind { .. } | Stmt::Assign { .. } | Stmt::FieldAssign { .. } | Stmt::Expr(_) | Stmt::Return(..) | Stmt::Block(_)) {
             self.nested_linear = false;
-            self.unique_nested_fields.clear();
+            self.nested_groups.clear();
         }
         if let Some(tr) = self.trace.as_mut() {
             let outside = match s {
@@ -2882,10 +2923,21 @@ impl<'a> FnCx<'a> {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
                 };
-                let v = match want {
-                    Some(t) => self.consume_expected(init, t)?,
-                    None => self.consume(init)?,
+                let shared_source = match &init.kind {
+                    ExprKind::Ownership(OwnershipOp::Copy, _, inner) => match &inner.kind {
+                        ExprKind::Var(n) => self.lookup(n).map(|l| l.slot),
+                        _ => None,
+                    },
+                    _ => None,
                 };
+                self.nested_copy_binding = matches!(init.kind, ExprKind::New(..) |
+                    ExprKind::Ownership(OwnershipOp::Copy | OwnershipOp::DeepCopy, _, _));
+                let checked = match want {
+                    Some(t) => self.consume_expected(init, t),
+                    None => self.consume(init),
+                };
+                self.nested_copy_binding = false;
+                let v = checked?;
                 if let Some(t) = want {
                     if t != v.ty {
                         return Err(type_err(
@@ -2907,12 +2959,18 @@ impl<'a> FnCx<'a> {
                 if matches!(v.ty, Type::Class(_)) && matches!(init.kind,
                     ExprKind::New(..) | ExprKind::Ownership(OwnershipOp::Copy | OwnershipOp::DeepCopy, _, _)) {
                     self.fresh_class_roots.insert(slot);
-                    if self.nested_linear && self.owner == Owner::TopLevel
-                        && matches!(init.kind, ExprKind::New(..) | ExprKind::Ownership(OwnershipOp::DeepCopy, _, _)) {
+                    if self.nested_linear && self.owner == Owner::TopLevel {
                         if let Type::Class(ci) = v.ty {
-                            for field in &self.g.classes[ci as usize].fields {
-                                if field.referent_mutable && matches!(field.ty, Type::Class(_)) {
-                                    self.unique_nested_fields.insert((slot, field.slot));
+                            let offsets: Vec<u32> = self.g.classes[ci as usize].fields.iter()
+                                .filter(|f| f.referent_mutable && matches!(f.ty, Type::Class(_)))
+                                .map(|f| f.slot).collect();
+                            for offset in offsets {
+                                if let Some(source) = shared_source {
+                                    let group = *self.nested_groups.get(&(source, offset)).ok_or_else(||
+                                        Diagnostic::new(*pos, "E_COPY_UNPROVEN", "missing source field identity"))?;
+                                    self.nested_groups.insert((slot, offset), group);
+                                } else {
+                                    self.new_nested_group(slot, offset, *pos)?;
                                 }
                             }
                         }
@@ -2955,7 +3013,7 @@ impl<'a> FnCx<'a> {
                 }
                 // Never restore freshness after reassignment; monotone across joins.
                 self.fresh_class_roots.remove(&slot);
-                self.unique_nested_fields.retain(|(root, _)| *root != slot);
+                self.nested_groups.retain(|(root, _), _| *root != slot);
                 // a reassigned object binding owns a value again
                 self.moved.remove(&slot);
                 TStmt::Set(slot, v)
@@ -3626,7 +3684,7 @@ impl<'a> FnCx<'a> {
                                 if !self.nested_linear || self.owner != Owner::TopLevel || !mutable ||
                                     !self.fresh_class_roots.contains(&root) || self.moved.contains(&root) ||
                                     self.borrowed_slots.contains(&root) || self.loans.values().any(|l| l.owner == root) ||
-                                    !self.unique_nested_fields.contains(&(root, edge.slot)) {
+                                    !self.nested_unique(root, edge.slot) {
                                     return Err(Diagnostic::new(pos, "E_COPY_READONLY", "nested referent has no independent write authority"));
                                 }
                                 if edge.visibility == FieldVisibility::Private {
@@ -3647,7 +3705,7 @@ impl<'a> FnCx<'a> {
                                 let (edge_offset, offset, ty) = (edge.slot, f.slot, f.ty);
                                 let v = self.value(value)?;
                                 if v.ty != ty { return Err(type_err(value.pos, "nested field assignment type mismatch")); }
-                                if !self.unique_nested_fields.contains(&(root, edge_offset)) || self.moved.contains(&root)
+                                if !self.nested_unique(root, edge_offset) || self.moved.contains(&root)
                                     || self.loans.values().any(|l| l.owner == root) {
                                     return Err(Diagnostic::new(pos, "E_COPY_READONLY", "nested field RHS invalidated authority"));
                                 }
@@ -3787,7 +3845,7 @@ impl<'a> FnCx<'a> {
                     return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
                 }
                 if fresh_leaf_replacement && matches!(fty, Type::Class(_)) && self.nested_linear {
-                    self.unique_nested_fields.insert((slot, offset));
+                    self.new_nested_group(slot, offset, pos)?;
                 }
                 return Ok(TStmt::FieldSet {
                     obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
@@ -3980,6 +4038,9 @@ impl<'a> FnCx<'a> {
             Some(l) => (l.slot, l.ty),
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
+        if self.has_mutable_nested(owner_ty) {
+            return Err(Diagnostic::new(pos, "E_COPY_UNPROVEN", "mutable nested root borrowing requires lifetime provenance"));
+        }
         // The whole-owner straight-line exporter cannot represent projected
         // places. Never emit a whole-root graph as proof of field authority.
         let predicted_loan_slot = self.nparams + self.locals.len() as u32;
@@ -4182,7 +4243,9 @@ impl<'a> FnCx<'a> {
                                 self.loans.values().any(|l| l.owner == slot) {
                                 return Err(Diagnostic::new(pos, "E_COPY_UNPROVEN", "mutable nested copy requires a proven direct root in straight-line scope"));
                             }
-                            if shallow { self.unique_nested_fields.retain(|(root, _)| *root != slot); }
+                            if !self.nested_copy_binding {
+                                return Err(Diagnostic::new(pos, "E_COPY_UNPROVEN", "mutable nested copy must initialize a lexical root"));
+                            }
                             if let Some(tr) = self.trace.as_mut() { tr.unavailable("nested copy authority not in L3 wire profile"); }
                         }
                         let method = if shallow { "copy" } else { "copy_deep" };
@@ -4247,6 +4310,9 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
                 };
                 let slot = *slot_ref;
+                if self.has_mutable_nested(value.ty) {
+                    return Err(Diagnostic::new(pos, "E_COPY_UNPROVEN", "mutable nested root cannot escape lexical identity tracking"));
+                }
                 if let Some(tr) = self.trace.as_mut() {
                     if tr.is_loan_binder(slot) { tr.escape_binder(slot); } else { tr.moved(slot, pos); }
                 }
@@ -4266,6 +4332,10 @@ impl<'a> FnCx<'a> {
     /// assignment, argument, return): naming an object local moves it.
     fn consume(&mut self, e: &Expr) -> R<TE> {
         let v = self.value(e)?;
+        if self.has_mutable_nested(v.ty) && !(self.nested_copy_binding && matches!(e.kind,
+            ExprKind::New(..) | ExprKind::Ownership(OwnershipOp::Copy | OwnershipOp::DeepCopy, _, _))) {
+            return Err(Diagnostic::new(e.pos, "E_COPY_UNPROVEN", "mutable nested root cannot escape lexical identity tracking"));
+        }
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
             if let Some(tr) = self.trace.as_mut() {
