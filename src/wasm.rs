@@ -144,6 +144,7 @@ struct Layout {
     /// the caller's existing guest handle. Never manufacture a borrow slot.
     borrow_getters: Vec<Option<(Type, Type, u32)>>,
     borrow_int_pairs: Vec<Option<(Type, BinOp, u32, u32)>>,
+    borrow_two_args: Vec<Option<TwoBorrowPlan>>,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -798,6 +799,23 @@ impl Emit<'_> {
                         BinOp::Mul => H_MUL,
                         _ => unreachable!("verified checked integer pair"),
                     }));
+                } else if let Some(plan) =
+                    verified_two_borrow_call(v, *f, args, &self.l.borrow_two_args)
+                {
+                    // Both arguments are already checked stable local reads.
+                    // Field order follows the return expression, not the
+                    // formal declaration order. No side-effecting expression
+                    // is duplicated or reordered by this proof.
+                    self.expr(&args[plan.left.0]);
+                    field_op(&mut self.code, Type::Int, plan.left.1, false);
+                    self.expr(&args[plan.right.0]);
+                    field_op(&mut self.code, Type::Int, plan.right.1, false);
+                    self.call(self.l.helper(match plan.op {
+                        BinOp::Add => H_ADD,
+                        BinOp::Sub => H_SUB,
+                        BinOp::Mul => H_MUL,
+                        _ => unreachable!("verified checked two-argument arithmetic"),
+                    }));
                 } else {
                     // Fail closed when the callee proof and this exact call
                     // site disagree. Preserve original evaluation order/ABI.
@@ -1399,6 +1417,56 @@ fn verified_borrow_int_pair_call(
     Some((op, left, right))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TwoBorrowPlan {
+    owners: [Type; 2],
+    op: BinOp,
+    left: (usize, u32),
+    right: (usize, u32),
+}
+
+// Exactly two readonly class formals and one checked integer operation,
+// reading one ordinary field of each. No callee locals, leases or effects.
+fn verified_two_borrow(f: &TFunc) -> Option<TwoBorrowPlan> {
+    let [Type::Class(a), Type::Class(b)] = f.params.as_slice() else { return None };
+    let owners = [Type::Class(*a), Type::Class(*b)];
+    if !matches!(f.param_ownership.as_slice(),
+        [ParamOwnership::BorrowRead, ParamOwnership::BorrowRead])
+        || !f.locals.is_empty() || f.ret != Type::Int {
+        return None;
+    }
+    let [TStmt::Return(Some(TE { e: TExpr::Bin(op, lhs, rhs), ty: Type::Int }))] =
+        f.body.as_slice() else { return None };
+    if !matches!(*op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+        return None;
+    }
+    fn field(value: &TE, owners: [Type; 2]) -> Option<(usize, u32)> {
+        let TExpr::FieldGet { obj, offset } = &value.e else { return None };
+        let TExpr::Local(slot) = &obj.e else { return None };
+        let index = *slot as usize;
+        if value.ty != Type::Int || owners.get(index) != Some(&obj.ty) {
+            return None;
+        }
+        Some((index, *offset))
+    }
+    let left = field(lhs, owners)?;
+    let right = field(rhs, owners)?;
+    if left.0 == right.0 { return None; }
+    Some(TwoBorrowPlan { owners, op: *op, left, right })
+}
+
+fn verified_two_borrow_call(
+    result: &TE, function: u32, args: &[TE], plans: &[Option<TwoBorrowPlan>],
+) -> Option<TwoBorrowPlan> {
+    let [a, b] = args else { return None };
+    let plan = *plans.get(function as usize)?.as_ref()?;
+    if result.ty != Type::Int || [a.ty, b.ty] != plan.owners
+        || !matches!(&a.e, TExpr::Local(_)) || !matches!(&b.e, TExpr::Local(_)) {
+        return None;
+    }
+    Some(plan)
+}
+
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
@@ -1417,6 +1485,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         raise_tag: p.raise_tag,
         borrow_getters: p.funcs.iter().map(verified_borrow_getter).collect(),
         borrow_int_pairs: p.funcs.iter().map(verified_borrow_int_pair).collect(),
+        borrow_two_args: p.funcs.iter().map(verified_two_borrow).collect(),
     };
     let mut types = Types(Vec::new());
 
