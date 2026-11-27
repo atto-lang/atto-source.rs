@@ -5232,14 +5232,15 @@ impl<'a> FnCx<'a> {
                 return Ok(accumulated);
             }
         }
-        if name == "stdio.print" || name == "stdio.println" {
+        if matches!(name, "stdio.print" | "stdio.println" | "stdio.stdout.write" | "process.stdout.write") {
             // The parser desugars `stdio.out << value` and the explicit
             // `writech stdio.out, value` through this checked builtin.
             // Never let a lexical binding named `stdio` be silently bypassed
             // by that syntactic rewrite: it denotes a different receiver.
             // Full stream capability dispatch can resolve shadowed names
             // when it is implemented.
-            if self.lookup("stdio").is_some() {
+            let capability = if name == "process.stdout.write" { "process" } else { "stdio" };
+            if self.lookup(capability).is_some() || (name.ends_with(".write") && (self.g.names.contains_key(capability) || self.g.class(capability).is_some() || self.g.actor(capability).is_some() || self.g.enum_(capability).is_some())) {
                 return Err(Diagnostic::new(pos, "E_IO_SHADOW",
                     "the builtin stdio capability is shadowed by a local binding; use an unshadowed handle"));
             }
@@ -5263,6 +5264,7 @@ impl<'a> FnCx<'a> {
                 });
             }
             let v = self.value(&args[0])?;
+            if name.ends_with(".write") && v.ty != Type::Str { return Err(type_err(args[0].pos, "stdout.write requires String")); }
             return match v.ty {
                 Type::Float => {
                     self.imports.push(Import::PrintF64);
