@@ -245,6 +245,9 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
+    /// Exact token index of a standalone match subject's closing single bar.
+    /// Recursive ternary parsing is not a grouping boundary.
+    delimited_match_end: Option<usize>,
     /// A ternary's middle arm must leave ':' to its ternary separator.
     ascription_colon: bool,
     /// Explicit lambda nesting is independently bounded to avoid stack
@@ -387,6 +390,7 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
+            delimited_match_end: None,
             ascription_colon: true,
             lambda_nesting: 0,
             type_names: Vec::new(),
@@ -2120,7 +2124,15 @@ impl Parser {
             let args = self.parse_args()?;
             (params, body, args)
         } else {
-            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+            // Initial braceless profile: only literal stdout writes; no implicit
+            // arbitrary callback invocation, captures or suspension.
+            let expr = self.parse_expr()?;
+            if !matches!(&expr.kind, ExprKind::Call(name, args)
+                if matches!(name.as_str(), "stdio.stdout.write" | "process.stdout.write")
+                    && matches!(args.as_slice(), [Expr { kind: ExprKind::Str(_), .. }])) {
+                return Err(unsupported(pos, "braceless defer outside literal stdout write profile"));
+            }
+            (Vec::new(), vec![Stmt::Expr(expr)], Vec::new())
         };
         self.terminator()?;
         Ok(Stmt::Defer { params, body, args, pos })
@@ -3221,6 +3233,66 @@ impl Parser {
     /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
     /// (or `over { on P { } }`); legacy `match [first] x [;] P -> { } end`
     /// with `else` as the catch-all. `do match` requires `over`.
+    /// The first standalone slice accepts a single delimited subject. Reuse
+    /// the existing checked match AST, never a synthetic callable or tuple.
+    /// A comma is not a scalar match: product subjects need their own typed ABI.
+    fn parse_standalone_match_subject(&mut self) -> R<(Expr, bool)> {
+        if !self.eat(&Tok::Pipe) {
+            return self.parse_expr().map(|subject| (subject, false));
+        }
+        if matches!(self.peek(), Tok::Pipe | Tok::Comma | Tok::Eof) {
+            return Err(self.expected("a nonempty delimited match subject"));
+        }
+        let closing = self.find_delimited_match_end()?;
+        let previous = self.delimited_match_end;
+        self.delimited_match_end = Some(closing);
+        let result = self.parse_expr();
+        self.delimited_match_end = previous;
+        let subject = result?;
+        if *self.peek() == Tok::Comma {
+            return Err(unsupported(self.pos(), "multiple delimited match subjects"));
+        }
+        if self.i != closing {
+            return Err(self.expected("closing bar of delimited match subject"));
+        }
+        self.expect(Tok::Pipe, "'|' after delimited match subject")?;
+        Ok((subject, true))
+    }
+
+    // Find the first single bar outside explicit grouping. Keep the ordinary
+    // expression parser authoritative; this bounded scan only locates its end.
+    fn find_delimited_match_end(&self) -> R<usize> {
+        let mut closers = Vec::new();
+        let mut i = self.i;
+        let limit = self.toks.len().min(self.i.saturating_add(4096));
+        while i < limit {
+            let token = &self.toks[i];
+            match &token.tok {
+                Tok::LParen => closers.push(Tok::RParen),
+                Tok::LBracket => closers.push(Tok::RBracket),
+                Tok::LBrace => closers.push(Tok::RBrace),
+                Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                    if closers.pop().as_ref() != Some(&token.tok) {
+                        return Err(Diagnostic::new(token.pos, "E_SYNTAX",
+                            "unbalanced delimited match subject"));
+                    }
+                }
+                Tok::Pipe if closers.is_empty() => {
+                    if self.toks.get(i + 1).is_some_and(|next| next.tok == Tok::Pipe) {
+                        i += 1;
+                    } else {
+                        return Ok(i);
+                    }
+                }
+                Tok::Eof => break,
+                _ => {}
+            }
+            i += 1;
+        }
+        Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+            "missing closing bar or delimited match subject exceeds token budget"))
+    }
+
     fn parse_match(&mut self, procedural: bool) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("match")?;
@@ -3228,8 +3300,11 @@ impl Parser {
             return Err(unsupported(self.pos(), "value match ('match<T>')"));
         }
         self.eat_word("first");
-        let subject = self.parse_expr()?;
+        let (subject, delimited) = self.parse_standalone_match_subject()?;
         let over = self.eat_word("over");
+        if delimited && !over {
+            return Err(self.expected("'over' after delimited match subject"));
+        }
         if !over {
             self.eat(&Tok::Semi);
         }
@@ -3294,6 +3369,7 @@ impl Parser {
         if arms.is_empty() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "match requires at least one arm"));
         }
+        if delimited { self.eat(&Tok::Semi); }
         Ok(Stmt::Match { subject, arms, pos })
     }
 
@@ -3326,8 +3402,12 @@ impl Parser {
             let Stmt::Bind { name, ty, init, pos: at, .. } = self.parse_binding()? else {
                 unreachable!("parse_binding always returns a binding");
             };
-            let ty = ty.filter(|t| matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str))
-                .ok_or_else(|| unsupported(at, "state loop requires explicit primitive state type"))?;
+            // Infer only from the same closed scalar grammar used for result
+            // hints. The normal checker still validates each initializer.
+            // Explicit annotations are never replaced by inferred types.
+            let ty = ty.or_else(|| Self::scalar_loop_result_hint(&init, &state))
+                .filter(|t| matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str))
+                .ok_or_else(|| unsupported(at, "state loop requires an unambiguous primitive state type"))?;
             if state.iter().any(|(n, _)| n == &name) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE", "duplicate state binder"));
             }
@@ -3390,6 +3470,14 @@ impl Parser {
             ExprKind::Float(_) => Some(Type::Float),
             ExprKind::Str(_) => Some(Type::Str),
             ExprKind::Var(n) => state.iter().find(|(name, _)| name == n).map(|(_, ty)| *ty),
+            ExprKind::Unary(op, a) => {
+                let ty = Self::scalar_loop_result_hint(a, state)?;
+                match (op, ty) {
+                    (UnOp::Neg | UnOp::Plus, Type::Int | Type::Float) => Some(ty),
+                    (UnOp::Not, Type::Bool) | (UnOp::BitNot, Type::Int) => Some(ty),
+                    _ => None,
+                }
+            }
             ExprKind::Binary(op, a, b) => {
                 let a = Self::scalar_loop_result_hint(a, state)?;
                 let b = Self::scalar_loop_result_hint(b, state)?;
@@ -3496,7 +3584,7 @@ impl Parser {
 
     fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
         self.expect_word("match")?;
-        let subject = self.parse_expr()?;
+        let (subject, _) = self.parse_standalone_match_subject()?;
         self.expect_word("over")?;
         let mut arms = Vec::new();
         while !self.is_word("end") {
@@ -3896,7 +3984,7 @@ impl Parser {
             self.height -= 1;
         }
         match self.peek() {
-            Tok::Pipe => {
+            Tok::Pipe if self.delimited_match_end != Some(self.i) => {
                 return Err(Diagnostic::new(
                     self.pos(),
                     "E_UNSUPPORTED",
@@ -3965,7 +4053,7 @@ impl Parser {
     fn parse_logical_or(&mut self) -> R<Expr> {
         let mut left = self.parse_logical_and()?;
         let mut links = 0;
-        while *self.peek() == Tok::Pipe && *self.peek_at(1) == Tok::Pipe {
+        while self.delimited_match_end != Some(self.i) && *self.peek() == Tok::Pipe && *self.peek_at(1) == Tok::Pipe {
             let pos = self.pos();
             self.advance();
             self.advance();
@@ -4019,7 +4107,11 @@ impl Parser {
     fn parse_bitwise_or(&mut self) -> R<Expr> {
         let mut left = self.parse_bitwise_xor()?;
         let mut links = 0;
-        while self.cond == 0 && *self.peek() == Tok::Pipe && *self.peek_at(1) != Tok::Pipe {
+        while self.cond == 0
+            && self.delimited_match_end != Some(self.i)
+            && *self.peek() == Tok::Pipe
+            && *self.peek_at(1) != Tok::Pipe
+        {
             let pos = self.pos();
             self.advance();
             self.grow(1)?;
@@ -4438,6 +4530,16 @@ impl Parser {
                 Tok::Dot => {
                     let dot = self.pos();
                     if let ExprKind::Var(base) = &e.kind {
+                        if ((base == "stdio" && matches!(self.word_at(1), Some("out" | "stdout"))) || (base == "process" && self.word_at(1) == Some("stdout")))
+                            && self.word_at(3) == Some("write") {
+                            let qualified = format!("{base}.stdout.write");
+                            self.advance(); self.advance();
+                            if *self.peek() != Tok::Dot { return Err(self.expected("'.'")); }
+                            self.advance(); self.advance();
+                            if *self.peek() != Tok::LParen { return Err(self.expected("'('")); }
+                            e = Expr { kind: ExprKind::Var(qualified), pos };
+                            continue;
+                        }
                         if base == "stdio" {
                             if let Some(m @ ("print" | "println")) = self.word_at(1) {
                                 let qualified = format!("stdio.{m}");

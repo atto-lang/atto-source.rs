@@ -131,7 +131,11 @@ enum Kind {
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
+    #[regex(
+        r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*",
+        logos::skip,
+        allow_greedy = true
+    )]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -364,6 +368,16 @@ fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), ParseError> {
 }
 
 pub fn parse(source: &str) -> Result<Program, ParseError> {
+    parse_scalar(source, false)
+}
+
+// The unsigned AST is intentionally internal: its integer payloads store exact
+// bits, not signed mathematical values. Only the unsigned MIR path consumes it.
+pub(crate) fn parse_unsigned(source: &str) -> Result<Program, ParseError> {
+    parse_scalar(source, true)
+}
+
+fn parse_scalar(source: &str, unsigned: bool) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
             offset: MAX_SOURCE_BYTES,
@@ -375,11 +389,21 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
     for (kind, range) in Kind::lexer(&prepared).spanned() {
-        let kind = kind.map_err(|_| ParseError {
-            offset: range.start,
-            class: "syntax_error",
-            message: "unsupported token".into(),
-        })?;
+        let kind = match kind {
+            Ok(kind) => kind,
+            Err(_) => {
+                // A complete unsupported declaration header must retain its
+                // typed denial even when its body uses tokens outside this
+                // scalar lexer (e.g. ActorMail<int>). Only the already lexed
+                // prefix is inspected, never raw source or fabricated tokens.
+                reject_http_actor_declarations(&tokens)?;
+                return Err(ParseError {
+                    offset: range.start,
+                    class: "syntax_error",
+                    message: "unsupported token".into(),
+                });
+            }
+        };
         if tokens.len() >= MAX_TOKENS {
             return Err(ParseError {
                 offset: range.start,
@@ -425,6 +449,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         source_len: source.len(),
         primary_depth: 0,
         infix_operators: 0,
+        unsigned,
     };
     let mut functions = Vec::new();
     let mut directives = Vec::new();
@@ -456,12 +481,20 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             return Err(err("duplicate_export", "duplicate export name"));
         }
         let mut matches = functions.iter_mut().filter(|f| f.name == export.name);
-        let function = matches.next().ok_or_else(|| err("export_unresolved", "export must name a local function"))?;
+        let function = matches
+            .next()
+            .ok_or_else(|| err("export_unresolved", "export must name a local function"))?;
         if matches.next().is_some() {
-            return Err(err("duplicate_declaration", "ambiguous local function export"));
+            return Err(err(
+                "duplicate_declaration",
+                "ambiguous local function export",
+            ));
         }
         if export.scope == ExportScope::Package && (function.exported || function.name == "main") {
-            return Err(err("export_visibility_conflict", "package export cannot name a public function or native entry point"));
+            return Err(err(
+                "export_visibility_conflict",
+                "package export cannot name a public function or native entry point",
+            ));
         }
         if export.scope == ExportScope::Public {
             function.exported = true;
@@ -476,6 +509,7 @@ struct Parser {
     source_len: usize,
     primary_depth: usize,
     infix_operators: usize,
+    unsigned: bool,
 }
 impl Parser {
     fn peek(&self) -> Option<Kind> {
@@ -518,9 +552,13 @@ impl Parser {
         };
         if self.peek() == Some(Kind::Fnc) {
             self.expect(Kind::Fnc)?;
-        } else if self.tokens.get(self.cursor).is_some_and(|t|
-            t.kind == Kind::Identifier && matches!(t.text.as_str(), "class" | "actor" | "enum" | "module" | "struct"))
-        {
+        } else if self.tokens.get(self.cursor).is_some_and(|t| {
+            t.kind == Kind::Identifier
+                && matches!(
+                    t.text.as_str(),
+                    "class" | "actor" | "enum" | "module" | "struct"
+                )
+        }) {
             return Err(ParseError {
                 offset: self.pos(),
                 class: "export_kind_mismatch",
@@ -529,9 +567,39 @@ impl Parser {
         }
         let name = self.expect(Kind::Identifier)?.text;
         self.expect(Kind::Semicolon)?;
-        Ok((Export { name, scope, kind: ExportKind::Function }, offset))
+        Ok((
+            Export {
+                name,
+                scope,
+                kind: ExportKind::Function,
+            },
+            offset,
+        ))
     }
 
+    fn scalar_type_ahead(&self) -> bool {
+        if self.unsigned {
+            self.tokens.get(self.cursor).is_some_and(|t| {
+                t.kind == Kind::Identifier && matches!(t.text.as_str(), "u64" | "uint")
+            })
+        } else {
+            self.peek() == Some(Kind::Int)
+        }
+    }
+    fn scalar_type(&mut self) -> Result<(), ParseError> {
+        if !self.unsigned {
+            self.expect(Kind::Int)?;
+        } else if self.scalar_type_ahead() {
+            self.expect(Kind::Identifier)?;
+        } else {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "unsigned_type_required",
+                message: "explicit u64 or uint required".into(),
+            });
+        }
+        Ok(())
+    }
     fn function(&mut self) -> Result<Function, ParseError> {
         // Canonical AttoLang permits both "define pub fnc" and
         // "pub define fnc"; the declaration still must be a scalar fnc.
@@ -555,13 +623,13 @@ impl Parser {
         let mut params = Vec::new();
         if self.peek() != Some(Kind::RParen) {
             loop {
-                let name = if self.peek() == Some(Kind::Int) {
-                    self.expect(Kind::Int)?;
+                let name = if self.scalar_type_ahead() {
+                    self.scalar_type()?;
                     self.expect(Kind::Identifier)?.text
                 } else {
                     let name = self.expect(Kind::Identifier)?.text;
                     self.expect(Kind::Colon)?;
-                    self.expect(Kind::Int)?;
+                    self.scalar_type()?;
                     name
                 };
                 params.push(name);
@@ -580,11 +648,11 @@ impl Parser {
                 } else {
                     self.expect(Kind::Colon)?;
                 }
-                self.expect(Kind::Int)?;
+                self.scalar_type()?;
                 self.expect(Kind::LBrace)?;
                 false
             }
-            Some(Kind::As) => {
+            Some(Kind::As) if !self.unsigned => {
                 self.expect(Kind::As)?;
                 true
             }
@@ -600,20 +668,20 @@ impl Parser {
         // Canonical scalar locals are immutable by default. All admitted
         // spellings lower to the same typed local; this does not admit mut/let
         // rebinding or infer any non-integer type.
-        while matches!(self.peek(), Some(Kind::Const | Kind::Val | Kind::Int)) {
+        while matches!(self.peek(), Some(Kind::Const | Kind::Val)) || self.scalar_type_ahead() {
             if self.peek() == Some(Kind::Const) {
                 self.expect(Kind::Const)?;
             } else if self.peek() == Some(Kind::Val) {
                 self.expect(Kind::Val)?;
             }
-            let local_name = if self.peek() == Some(Kind::Int) {
-                self.expect(Kind::Int)?;
+            let local_name = if self.scalar_type_ahead() {
+                self.scalar_type()?;
                 self.expect(Kind::Identifier)?.text
             } else {
                 let name = self.expect(Kind::Identifier)?.text;
                 if self.peek() == Some(Kind::Colon) {
                     self.expect(Kind::Colon)?;
-                    self.expect(Kind::Int)?;
+                    self.scalar_type()?;
                 }
                 name
             };
@@ -722,6 +790,17 @@ impl Parser {
             }
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
+                if self.unsigned {
+                    let bits =
+                        normalized_integer_digits(&t)?
+                            .parse::<u64>()
+                            .map_err(|_| ParseError {
+                                offset: t.start,
+                                class: "integer_overflow",
+                                message: "u64 integer literal overflow".into(),
+                            })?;
+                    return Ok(Expr::Integer(bits as i64));
+                }
                 let integer =
                     normalized_integer_digits(&t)?
                         .parse::<i64>()
@@ -754,6 +833,13 @@ impl Parser {
             }
             Some(Kind::Minus) => {
                 let minus = self.expect(Kind::Minus)?;
+                if self.unsigned {
+                    return Err(ParseError {
+                        offset: minus.start,
+                        class: "unsigned_negation",
+                        message: "unary minus is not admitted in this unsigned profile".into(),
+                    });
+                }
                 // The signed i64 minimum is valid even though its positive
                 // magnitude is outside i64.
                 if self.peek() == Some(Kind::Number) {

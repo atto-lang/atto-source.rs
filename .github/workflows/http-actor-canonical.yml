@@ -1,0 +1,26 @@
+name: Canonical HTTP actor admission
+on:
+  push:
+    branches: ['test/http-actor-canonical-admission-20261127']
+  pull_request:
+    paths:
+      - 'tests/fixtures/http-actor-v1/**'
+      - 'tests/http-actor-fixture-pins.test.mjs'
+      - 'native/**'
+      - '.github/workflows/http-actor-canonical.yml'
+permissions:
+  contents: read
+jobs:
+  admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      - run: node --test tests/http-actor-fixture-pins.test.mjs
+      - run: cargo test --manifest-path native/Cargo.toml --locked --test http_actor_admission

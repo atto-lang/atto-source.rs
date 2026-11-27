@@ -498,6 +498,7 @@ struct FnCx<'a> {
     unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// > 0 while checking an isolated defer/recover body.
     cleanup_depth: u32,
+    cleanup_io_shadow: [bool; 2],
     telemetry_aliases: Vec<String>,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
@@ -2487,6 +2488,7 @@ impl<'a> FnCx<'a> {
             data,
             unwind: None,
             cleanup_depth: 0,
+            cleanup_io_shadow: [false; 2],
             telemetry_aliases: Vec::new(),
             recover_cursor: None,
             recover_error: None,
@@ -2561,6 +2563,8 @@ impl<'a> FnCx<'a> {
     /// the explicit factory parameters in `bound`.
     fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>,
                 error: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
+        let outer_shadow = self.cleanup_io_shadow;
+        self.cleanup_io_shadow = [outer_shadow[0] || self.lookup("stdio").is_some(), outer_shadow[1] || self.lookup("process").is_some()];
         let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
@@ -2580,6 +2584,7 @@ impl<'a> FnCx<'a> {
         self.borrowed_slots = borrowed_slots;
         self.loops = loops;
         self.scopes = scopes;
+        self.cleanup_io_shadow = outer_shadow;
         r
     }
 
@@ -3563,71 +3568,69 @@ impl<'a> FnCx<'a> {
         // General aliases, protected state and reference-valued fields are
         // not admitted by this bounded browser/guest implementation.
         if let ExprKind::Var(name) = &target.kind {
-            if let Some((slot, local_ty, mutable_binding)) =
+            if let Some((slot, Type::Class(c), mutable_binding)) =
                 self.lookup(name).map(|l| (l.slot, l.ty, l.mutable)) {
-                if let Type::Class(c) = local_ty {
-                    if self.loans.contains_key(&slot) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "cannot mutate a field through a readonly borrowed handle"));
-                    }
-                    if self.moved.contains(&slot) {
-                        return Err(Diagnostic::new(pos, "E_MOVED",
-                            "cannot mutate a field of a moved owner"));
-                    }
-                    if !mutable_binding || !self.fresh_class_roots.contains(&slot) {
-                        return Err(Diagnostic::new(pos, "E_OWNERSHIP",
-                            "direct class writes require a mutable binding of a proven-unique direct-new class owner"));
-                    }
-                    let class = &self.g.classes[c as usize];
-                    if class.name.starts_with("__atto_tuple_private_") {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "tuple root fields require separate provenance"));
-                    }
-                    let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
-                        Diagnostic::new(pos, "E_UNBOUND",
-                            format!("class '{}' has no field '{field}'", class.name)))?;
-                    if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
-                        return Err(Diagnostic::new(pos, "E_PRIVATE",
-                            "cannot mutate a private class field outside its class"));
-                    }
-                    if f.mode == FieldMode::ActorState {
-                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                            "protected state requires the checked critical-write lease"));
-                    }
-                    if !f.binding.rebindable() {
-                        return Err(Diagnostic::new(pos, "E_IMMUTABLE",
-                            "cannot reassign val/final/const field"));
-                    }
-                    let (offset, fty) = (f.slot, f.ty);
-                    if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "reference-valued class field assignment requires checked ownership transfer"));
-                    }
-                    if self.loans.values().any(|loan| loan.owner == slot &&
-                        (loan.field.is_none() || loan.field == Some(offset))) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "cannot write a field overlapping an active loan"));
-                    }
-                    let checked = self.consume_expected(value, fty)?;
-                    // RHS may execute nested calls and take! the owner, or
-                    // introduce an overlapping loan. Revalidate AFTER effects.
-                    if self.moved.contains(&slot) {
-                        return Err(Diagnostic::new(pos, "E_MOVED",
-                            "class field assignment RHS moved its owner"));
-                    }
-                    if self.loans.values().any(|loan| loan.owner == slot &&
-                        (loan.field.is_none() || loan.field == Some(offset))) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "class field assignment RHS created an overlapping loan"));
-                    }
-                    if checked.ty != fty {
-                        return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
-                    }
-                    return Ok(TStmt::FieldSet {
-                        obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
-                        offset, ty: fty, value: checked,
-                    });
+                if self.loans.contains_key(&slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "cannot mutate a field through a readonly borrowed handle"));
                 }
+                if self.moved.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_MOVED",
+                        "cannot mutate a field of a moved owner"));
+                }
+                if !mutable_binding || !self.fresh_class_roots.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        "direct class writes require a mutable binding of a proven-unique direct-new class owner"));
+                }
+                let class = &self.g.classes[c as usize];
+                if class.name.starts_with("__atto_tuple_private_") {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "tuple root fields require separate provenance"));
+                }
+                let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
+                    Diagnostic::new(pos, "E_UNBOUND",
+                        format!("class '{}' has no field '{field}'", class.name)))?;
+                if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
+                    return Err(Diagnostic::new(pos, "E_PRIVATE",
+                        "cannot mutate a private class field outside its class"));
+                }
+                if f.mode == FieldMode::ActorState {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "protected state requires the checked critical-write lease"));
+                }
+                if !f.binding.rebindable() {
+                    return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                        "cannot reassign val/final/const field"));
+                }
+                let (offset, fty) = (f.slot, f.ty);
+                if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "reference-valued class field assignment requires checked ownership transfer"));
+                }
+                if self.loans.values().any(|loan| loan.owner == slot &&
+                    (loan.field.is_none() || loan.field == Some(offset))) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "cannot write a field overlapping an active loan"));
+                }
+                let checked = self.consume_expected(value, fty)?;
+                // RHS may execute nested calls and take! the owner, or
+                // introduce an overlapping loan. Revalidate AFTER effects.
+                if self.moved.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_MOVED",
+                        "class field assignment RHS moved its owner"));
+                }
+                if self.loans.values().any(|loan| loan.owner == slot &&
+                    (loan.field.is_none() || loan.field == Some(offset))) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "class field assignment RHS created an overlapping loan"));
+                }
+                if checked.ty != fty {
+                    return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
+                }
+                return Ok(TStmt::FieldSet {
+                    obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
+                    offset, ty: fty, value: checked,
+                });
             }
         }
         if !matches!(target.kind, ExprKind::SelfRef) {
@@ -5232,14 +5235,15 @@ impl<'a> FnCx<'a> {
                 return Ok(accumulated);
             }
         }
-        if name == "stdio.print" || name == "stdio.println" {
+        if matches!(name, "stdio.print" | "stdio.println" | "stdio.stdout.write" | "process.stdout.write") {
             // The parser desugars `stdio.out << value` and the explicit
             // `writech stdio.out, value` through this checked builtin.
             // Never let a lexical binding named `stdio` be silently bypassed
             // by that syntactic rewrite: it denotes a different receiver.
             // Full stream capability dispatch can resolve shadowed names
             // when it is implemented.
-            if self.lookup("stdio").is_some() {
+            let capability = if name == "process.stdout.write" { "process" } else { "stdio" };
+            if self.lookup(capability).is_some() || self.cleanup_io_shadow[usize::from(capability == "process")] || (name.ends_with(".write") && (self.g.names.contains_key(capability) || self.g.class(capability).is_some() || self.g.actor(capability).is_some() || self.g.enum_(capability).is_some())) {
                 return Err(Diagnostic::new(pos, "E_IO_SHADOW",
                     "the builtin stdio capability is shadowed by a local binding; use an unshadowed handle"));
             }
@@ -5263,6 +5267,7 @@ impl<'a> FnCx<'a> {
                 });
             }
             let v = self.value(&args[0])?;
+            if name.ends_with(".write") && v.ty != Type::Str { return Err(type_err(args[0].pos, "stdout.write requires String")); }
             return match v.ty {
                 Type::Float => {
                     self.imports.push(Import::PrintF64);

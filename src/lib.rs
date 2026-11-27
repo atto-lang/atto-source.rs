@@ -9,6 +9,8 @@
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+/// Bounded 32-bit actor slab heap (Offset32/Handle32), C++/wasm32 parity.
+pub mod actor_slab_heap;
 /// Bounded static synchronous actor call graphs; not continuation lowering.
 pub mod actor_stack_bound;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
@@ -45,6 +47,7 @@ mod struct_value_guest;
 pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
 pub mod scalar_generic;
+mod contextual_specialization;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
@@ -94,6 +97,8 @@ pub mod visibility_lower;
 pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
+/// Internal resolved-call effect closure; not guest continuation lowering.
+pub mod runtime_parking_effects;
 pub mod target_syntax;
 /// File-scoped namespace headers derived from a package-relative source path.
 pub mod namespace;
@@ -231,6 +236,9 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
     }
+    if contextual_specialization::present(&tokens) {
+        return compile_prelexed_target(tokens, logical_path, javascript);
+    }
     // Admit bounded typed quantity/refinement sources and explicitly
     // contracted private scalar headers. The typed lowerer checks the entire
     // file; errors never fall back to the ordinary parser or host evaluation.
@@ -262,6 +270,7 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
     }
+    let tokens = contextual_specialization::lower(tokens)?;
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.

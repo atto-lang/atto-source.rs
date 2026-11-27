@@ -18,7 +18,9 @@ fn rejected(source: &str) {
 
 #[test]
 fn shared_http_actor_3x4_atto_fixture_fails_closed() {
-    rejected(include_str!("../../tests/fixtures/http-actor-unsupported.atto"));
+    rejected(include_str!(
+        "../../tests/fixtures/http-actor-unsupported.atto"
+    ));
 }
 
 #[test]
@@ -69,7 +71,9 @@ fn unicode_line_separators_cannot_hide_http_actor_after_comment() {
              pub fnc main(): int {{ return http(); }}"
         );
         assert!(frontend::parse(&valid).is_ok(), "separator: {separator:?}");
-        assert!(!compile(&valid).expect("valid http identifier source").is_empty());
+        assert!(!compile(&valid)
+            .expect("valid http identifier source")
+            .is_empty());
     }
 }
 
@@ -98,5 +102,16 @@ fn unicode_comment_terminators_preserve_following_block_comment_and_http_gate() 
             "unterminated_comment",
             "separator {separator:?}"
         );
+    }
+}
+
+#[test]
+fn canonical_http_actor_fixtures_fail_closed_before_object_or_effect_ir() {
+    for source in [
+        include_str!("../../tests/fixtures/http-actor-v1/serial-1x1.atto"),
+        include_str!("../../tests/fixtures/http-actor-v1/explicit-1x1.atto"),
+        include_str!("../../tests/fixtures/http-actor-v1/unsupported-3x4.atto"),
+    ] {
+        rejected(source);
     }
 }

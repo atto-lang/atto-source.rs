@@ -241,8 +241,11 @@ fn multi_lambda_rejects_unverified_links_shadowing_and_excessive_bindings() {
         let diagnostic = atto_compiler::compile(source).expect_err("must fail closed");
         assert_eq!(diagnostic.code, code, "{diagnostic}");
     }
-    let bindings = (0..9).map(|i| format!("val f_{i} = || -> {i};"))
-        .collect::<String>();
+    let mut bindings = String::new();
+    for i in 0..9 {
+        use std::fmt::Write as _;
+        write!(&mut bindings, "val f_{i} = || -> {i};").unwrap();
+    }
     let src = format!("pub fnc main(): int {{ {bindings} return f_0(); }}");
     let diagnostic = atto_compiler::compile(&src).expect_err("per-function helper budget");
     assert_eq!(diagnostic.code, "E_SOURCE_LIMIT", "{diagnostic}");
