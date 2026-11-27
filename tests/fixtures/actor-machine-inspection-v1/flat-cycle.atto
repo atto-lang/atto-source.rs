@@ -1,0 +1,12 @@
+define actor Foo as
+    state { let int count: 0; }
+    state machine as
+        initial state Idle;
+        state Idle as
+            on Start() -> Running;
+        end
+        state Running as
+            on Stop() -> Idle;
+        end
+    end
+end

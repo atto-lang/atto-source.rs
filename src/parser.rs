@@ -235,6 +235,107 @@ pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
 
+/// Resolved graph metadata for inspection only. This is not executable MIR.
+#[derive(Clone, Debug)]
+pub struct FlatActorMachine {
+    pub pos: Pos,
+    pub initial: usize,
+    pub nodes: Vec<FlatMachineNode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FlatMachineNode {
+    pub name: String,
+    pub terminal: bool,
+    pub transitions: Vec<(String, usize)>,
+}
+
+/// Graph-local ordinal event slots, never a nominal event or durable identity.
+#[derive(Clone, Debug)]
+pub struct FlatMachineTable {
+    initial: usize,
+    names: Vec<String>,
+    events: Vec<String>,
+    rows: Vec<(bool, Vec<(usize, usize)>)>,
+}
+
+impl FlatActorMachine {
+    pub fn transition_table(&self) -> R<FlatMachineTable> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let reject = |reason| Diagnostic::new(self.pos, "E_MACHINE_TABLE", reason);
+        let n = self.nodes.len();
+        if n == 0 || n > MAX_MEMBERS || self.initial >= n {
+            return Err(reject("node bound or initial index"));
+        }
+        let mut names = Vec::<String>::new();
+        let mut events = BTreeSet::<String>::new();
+        let mut count = 0;
+        for node in &self.nodes {
+            if node.name.is_empty() || names.last().is_some_and(|p| p >= &node.name) {
+                return Err(reject("node name or order"));
+            }
+            names.push(node.name.clone());
+            if node.terminal && !node.transitions.is_empty() {
+                return Err(reject("terminal edges"));
+            }
+            let mut prev: Option<&str> = None;
+            for (event, target) in &node.transitions {
+                count += 1;
+                if count > MAX_MEMBERS || event.is_empty() || prev.is_some_and(|p| p >= event.as_str()) || *target >= n {
+                    return Err(reject("edge bound, name, order or target"));
+                }
+                events.insert(event.clone());
+                prev = Some(event.as_str());
+            }
+        }
+        let mut seen = vec![false; n];
+        let mut pending = vec![self.initial];
+        while let Some(node) = pending.pop() {
+            if seen[node] { continue; }
+            seen[node] = true;
+            pending.extend(self.nodes[node].transitions.iter().map(|(_, target)| *target));
+        }
+        if seen.iter().any(|v| !v) {
+            return Err(reject("unreachable node"));
+        }
+        let events: Vec<String> = events.into_iter().collect();
+        let slots: BTreeMap<&str, usize> = events.iter().enumerate().map(|(i, e)| (e.as_str(), i)).collect();
+        let rows = self.nodes.iter().map(|node| (node.terminal, node.transitions.iter()
+            .map(|(event, target)| (slots[event.as_str()], *target)).collect())).collect();
+        Ok(FlatMachineTable { initial: self.initial, names, events, rows })
+    }
+}
+
+impl FlatMachineTable {
+    pub fn initial(&self) -> usize { self.initial }
+    pub fn names(&self) -> &[String] { &self.names }
+    pub fn events(&self) -> &[String] { &self.events }
+    pub fn terminal(&self, node: usize) -> Option<bool> { self.rows.get(node).map(|row| row.0) }
+    /// Pure lookup, not actor admission or mutation.
+    pub fn successor(&self, node: usize, slot: usize) -> Option<Option<usize>> {
+        if slot >= self.events.len() { return None; }
+        let (_, transitions) = self.rows.get(node)?;
+        Some(transitions.iter().find(|(event, _)| *event == slot).map(|(_, target)| *target))
+    }
+}
+
+/// File-local declaration indices only. Not a message ABI or a type-checker proof.
+#[derive(Clone, Debug)]
+pub struct NominalMachineInspection {
+    pub actor: String,
+    pub declarations: Vec<String>,
+    pub declaration_ids: Vec<usize>,
+    pub table: FlatMachineTable,
+}
+
+/// Actor-local declarations kept separate from legacy executable fields.
+#[derive(Clone, Debug)]
+pub struct ActorMachineInspection {
+    pub actor: String,
+    pub storage: Option<Vec<Field>>,
+    pub machine: Option<FlatActorMachine>,
+}
+
 #[derive(Clone)]
 pub struct Parser {
     toks: Vec<Token>,
@@ -261,6 +362,8 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    inspect_machines: bool,
+    machine_inspections: Vec<ActorMachineInspection>,
 }
 
 struct TypeFirstField {
@@ -291,6 +394,8 @@ struct Members {
     methods: Vec<Method>,
     receive: Option<Receive>,
     persistence_hooks: Vec<ActorPersistenceHook>,
+    machine: Option<FlatActorMachine>,
+    storage: Option<(Pos, Vec<Field>)>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -383,6 +488,8 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            inspect_machines: false,
+            machine_inspections: Vec::new(),
         }
     }
 
@@ -678,6 +785,70 @@ impl Parser {
         Ok((decl, p.i))
     }
 
+    /// Parse via the production parser, returning only source metadata, never a Program.
+    /// Inspection cannot be selected by a code-generation caller on an existing Parser.
+    pub fn inspect_actor_machines(source: &str) -> R<Vec<ActorMachineInspection>> {
+        if source.len() > crate::SOURCE_CAP {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT", "source exceeds input cap"));
+        }
+        let (parser, _) = Self::parse_machine_inspection(source)?;
+        Ok(parser.machine_inspections)
+    }
+
+    fn parse_machine_inspection(source: &str) -> R<(Self, Program)> {
+        if source.len() > crate::SOURCE_CAP {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT", "source exceeds input cap"));
+        }
+        let mut parser = Self::new(crate::lexer::lex(source)?);
+        parser.inspect_machines = true;
+        let program = parser.parse_program()?;
+        Ok((parser, program))
+    }
+
+    /// Restricted file-root nominal declaration resolution. The source itself
+    /// supplies the declarations; callers cannot provide their own type table.
+    /// No type-checker, Sendable proof, runtime identity or executable IR.
+    pub fn inspect_nominal_machines(source: &str) -> R<Vec<NominalMachineInspection>> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let (parser, program) = Self::parse_machine_inspection(source)?;
+        let at = Pos { line: 1, col: 1 };
+        let reject = |reason| Diagnostic::new(at, "E_MACHINE_EVENT_TYPE", reason);
+        // Deliberately restrict the scope until package/type resolution exists.
+        if !program.enums.is_empty() || !program.funcs.is_empty() || program.actor_interface.is_some() {
+            return Err(reject("nominal machine inspection requires file-root class and actor declarations only"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut empty_classes = BTreeSet::new();
+        for class in &program.classes {
+            if !seen.insert(class.name.as_str()) {
+                return Err(reject("duplicate nominal declaration"));
+            }
+            if !class.state_container && class.fields.is_empty() && class.methods.is_empty() && class.ctor.is_none() {
+                empty_classes.insert(class.name.clone());
+            }
+        }
+        for actor in &program.actors {
+            if !seen.insert(actor.name.as_str()) {
+                return Err(reject("duplicate nominal declaration"));
+            }
+        }
+        let declarations: Vec<String> = empty_classes.into_iter().collect();
+        let ids: BTreeMap<&str, usize> = declarations.iter().enumerate().map(|(i, name)| (name.as_str(), i)).collect();
+        let mut result = Vec::new();
+        for actor in parser.machine_inspections {
+            if let Some(graph) = actor.machine {
+                let table = graph.transition_table()?;
+                let mut declaration_ids = Vec::new();
+                for event in table.events() {
+                    let id = ids.get(event.as_str()).ok_or_else(|| reject("event must resolve to a unique empty ordinary class in this file"))?;
+                    declaration_ids.push(*id);
+                }
+                result.push(NominalMachineInspection { actor: actor.actor, declarations: declarations.clone(), declaration_ids, table });
+            }
+        }
+        Ok(result)
+    }
+
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
@@ -901,6 +1072,18 @@ impl Parser {
             return Err(Diagnostic::new(pos, "E_DURABLE_HOOK_OVERRIDE",
                 "durable actor persistence is runtime-managed, not overridden by hooks"));
         }
+        if self.inspect_machines {
+            if m.machine.is_some() || m.storage.is_some() {
+                self.machine_inspections.push(ActorMachineInspection {
+                    actor: name.clone(), storage: m.storage.map(|(_, fields)| fields), machine: m.machine,
+                });
+            }
+        } else if let Some(machine) = &m.machine {
+            return Err(Diagnostic::new(machine.pos, "E_MACHINE_LOWERING_UNSUPPORTED",
+                "flat actor state machine parsed; typed ownership/effect lowering is not implemented"));
+        } else if let Some((at, _)) = &m.storage {
+            return Err(Diagnostic::new(*at, "E_UNSUPPORTED", "inline actor storage lowering is not implemented in this profile"));
+        }
         Ok(ActorDecl {
             name,
             pos,
@@ -1053,6 +1236,88 @@ impl Parser {
             format!("invalid persistent actor hook signature: {}", e.message)))
     }
 
+    /// Restricted, non-emitting grammar probe for an actor-local flat machine.
+    /// No state schema, runtime dispatch, effect or ownership authority is created.
+    fn parse_flat_actor_machine(&mut self) -> R<FlatActorMachine> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let pos = self.pos();
+        self.expect_word("state")?;
+        self.expect_word("machine")?;
+        self.expect_word("as")?;
+        let mut initial = None;
+        let mut nodes = BTreeMap::<String, BTreeMap<String, String>>::new();
+        let mut edge_count = 0usize;
+        let mut terminals = BTreeSet::new();
+        while !self.eat_word("end") {
+            if self.eat_word("initial") {
+                self.expect_word("state")?;
+                let (name, at) = self.ident("an initial state name")?;
+                self.expect(Tok::Semi, "';'")?;
+                if initial.replace(name).is_some() {
+                    return Err(Diagnostic::new(at, "E_MACHINE_GRAPH", "duplicate initial state"));
+                }
+                continue;
+            }
+            if nodes.len() >= MAX_MEMBERS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many machine nodes"));
+            }
+            let terminal = self.eat_word("final");
+            self.expect_word("state")?;
+            let (name, at) = self.ident("a behavioral state name")?;
+            if nodes.contains_key(&name) {
+                return Err(Diagnostic::new(at, "E_MACHINE_GRAPH", "duplicate behavioral state"));
+            }
+            let mut edges = BTreeMap::new();
+            if terminal {
+                terminals.insert(name.clone());
+                self.expect(Tok::Semi, "';'")?;
+            } else {
+                self.expect_word("as")?;
+                while !self.eat_word("end") {
+                    self.expect_word("on")?;
+                    let (event, event_pos) = self.ident("an event name")?;
+                    self.expect(Tok::LParen, "'('")?;
+                    self.expect(Tok::RParen, "')' (payload-free probe only)")?;
+                    self.expect(Tok::Arrow, "'->'")?;
+                    let (target, _) = self.ident("a successor state name")?;
+                    self.expect(Tok::Semi, "';'")?;
+                    edge_count += 1;
+                    if edge_count > MAX_MEMBERS {
+                        return Err(Diagnostic::new(event_pos, "E_SOURCE_LIMIT", "too many machine transitions"));
+                    }
+                    if edges.insert(event, target).is_some() {
+                        return Err(Diagnostic::new(event_pos, "E_MACHINE_GRAPH", "duplicate event in state"));
+                    }
+                }
+            }
+            nodes.insert(name, edges);
+        }
+        let initial = initial.ok_or_else(|| Diagnostic::new(pos, "E_MACHINE_GRAPH", "missing initial state"))?;
+        if !nodes.contains_key(&initial)
+            || nodes.values().flat_map(|edges| edges.values()).any(|target| !nodes.contains_key(target))
+        {
+            return Err(Diagnostic::new(pos, "E_MACHINE_GRAPH", "unknown initial or successor state"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![initial.clone()];
+        while let Some(name) = pending.pop() {
+            if seen.insert(name.clone()) {
+                pending.extend(nodes[&name].values().cloned());
+            }
+        }
+        if seen.len() != nodes.len() {
+            return Err(Diagnostic::new(pos, "E_MACHINE_GRAPH", "unreachable behavioral state"));
+        }
+        let ids: BTreeMap<String, usize> = nodes.keys().cloned().enumerate().map(|(i, n)| (n, i)).collect();
+        let initial = ids[&initial];
+        let nodes = nodes.into_iter().map(|(name, edges)| {
+            let terminal = terminals.contains(&name);
+            let transitions = edges.into_iter().map(|(event, target)| (event, ids[&target])).collect();
+            FlatMachineNode { name, terminal, transitions }
+        }).collect();
+        Ok(FlatActorMachine { pos, initial, nodes })
+    }
+
     /// Class or actor members up to and including `close` (`end` or `}`).
     fn parse_members(&mut self, owner: &str, actor: bool, close: &str) -> R<Members> {
         let kind = if actor { "actor" } else { "class" };
@@ -1078,6 +1343,7 @@ impl Parser {
                 return Err(unsupported(self.pos(), "annotations"));
             }
             let mpos = self.pos();
+            let explicit_visibility = self.is_word("pub") || self.is_word("private");
             let visibility = if self.eat_word("pub") {
                 if self.eat(&Tok::LBracket) {
                     if !self.eat_word("pkg") || !self.eat(&Tok::RBracket) {
@@ -1135,6 +1401,49 @@ impl Parser {
                     let params = self.parse_params()?;
                     let body = self.parse_block()?;
                     m.ctor = Some(Constructor { pos: mpos, params, body });
+                }
+                Some("state") if actor && self.word_at(1) == Some("machine")
+                    && self.word_at(2) == Some("as") => {
+                    if explicit_visibility {
+                        return Err(Diagnostic::new(mpos, "E_SYNTAX", "state machine cannot have visibility modifiers"));
+                    }
+                    if m.machine.is_some() {
+                        return Err(Diagnostic::new(mpos, "E_MACHINE_GRAPH", "duplicate state machine"));
+                    }
+                    m.machine = Some(self.parse_flat_actor_machine()?);
+                }
+                Some("state") if actor && *self.peek_at(1) == Tok::LBrace => {
+                    if explicit_visibility || m.storage.is_some() {
+                        return Err(Diagnostic::new(mpos, "E_SYNTAX", "duplicate or modified actor state container"));
+                    }
+                    self.advance();
+                    self.expect(Tok::LBrace, "'{' after state")?;
+                    let mut fields: Vec<Field> = Vec::new();
+                    while !self.eat(&Tok::RBrace) {
+                        if fields.len() >= 64 {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many sealed state fields"));
+                        }
+                        self.expect_word("let")?;
+                        let parsed = self.parse_type_first_field(FieldVisibility::Private, FieldMode::ActorState, FieldBinding::ActorState, false)?;
+                        if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
+                            return Err(unsupported(parsed.field.pos, "non-scalar sealed actor state"));
+                        }
+                        // Match the Java preflight: this profile retains only
+                        // literal scalar initializers, not untyped call/effect ASTs.
+                        let literal_matches = match (parsed.field.ty, parsed.field.init.as_ref().map(|e| &e.kind)) {
+                            (Type::Int, Some(ExprKind::Int(Some(n)))) => *n <= i64::MAX as u64,
+                            (Type::Bool, Some(ExprKind::Bool(_))) => true,
+                            _ => false,
+                        };
+                        if !literal_matches {
+                            return Err(Diagnostic::new(parsed.field.pos, "E_STATE", "sealed actor state initializer must be a matching scalar literal"));
+                        }
+                        if fields.iter().any(|f| f.name == parsed.field.name) {
+                            return Err(Diagnostic::new(parsed.field.pos, "E_DUPLICATE", "duplicate sealed state field"));
+                        }
+                        fields.push(parsed.field);
+                    }
+                    m.storage = Some((mpos, fields));
                 }
                 Some("state") if actor => {
                     self.advance();
@@ -1266,6 +1575,11 @@ impl Parser {
                         "a class member (field, constructor or method)"
                     }))
                 }
+            }
+        }
+        if let Some((pos, _)) = &m.storage {
+            if !m.fields.is_empty() {
+                return Err(Diagnostic::new(*pos, "E_SYNTAX", "sealed actor storage cannot mix legacy fields"));
             }
         }
         Ok(m)
