@@ -23,7 +23,12 @@ fn pair(t: &[Token], i: usize, open: Tok, close: Tok) -> Result<usize, Diagnosti
     Err(err(&t[i], "unclosed contextual delimiter"))
 }
 pub fn present(t: &[Token]) -> bool {
-    t.windows(3).any(|x| word(&x[0]).is_some() && x[1].tok == Tok::ColonColon && x[2].tok == Tok::LParen)
+    // The existing callable body separator also accepts `-> int :: (expr) end`.
+    // Activate this bounded lowerer only for a contextual declaration; ordinary
+    // callable bodies must remain on the original parser path.
+    t.windows(4).any(|x| word(&x[0]) == Some("fnc")
+        && word(&x[1]).is_some() && x[2].tok == Tok::ColonColon
+        && x[3].tok == Tok::LParen)
 }
 fn plain(t: &[Token], owner: &str, aliases: &BTreeMap<String,String>, anchor: &Token, context: bool) -> Result<(), Diagnostic> {
     if context && t.is_empty() { return Err(err(anchor, "exactly one context expression is required")); }
@@ -174,6 +179,13 @@ mod tests {
     #[test] fn ordinary_input_unchanged() {
         let t=crate::lexer::lex("fnc main() -> int { return 7; }").unwrap();
         assert!(!present(&t)); assert_eq!(lower(t.clone()).unwrap().len(),t.len());
+    }
+    #[test] fn legacy_callable_separator_does_not_activate_context_lowering() {
+        let t = crate::lexer::lex("fnc main() -> int :: (42) end").unwrap();
+        assert!(!present(&t));
+        let original: Vec<_> = t.iter().map(|x| x.tok.clone()).collect();
+        let lowered: Vec<_> = lower(t).unwrap().into_iter().map(|x| x.tok).collect();
+        assert_eq!(original, lowered);
     }
     #[test] fn stored_capture_and_direct_compile() {
         let src=program("let n = 3; const x = Scale::(n); n = 9; const a = x.apply(4); const b = x.apply(5); return a + b + Scale::(2).apply(7);");
