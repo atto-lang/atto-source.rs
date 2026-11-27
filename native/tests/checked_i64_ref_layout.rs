@@ -3,8 +3,7 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use oreslang_source_rs::{
-    compile_checked_i64, compile_checked_i64_with_ref_layout,
-    ref_layout::ManagedRefLayout,
+    compile_checked_i64, compile_checked_i64_with_ref_layout, ref_layout::ManagedRefLayout,
 };
 use std::{
     fs,
@@ -43,7 +42,10 @@ fn run_guest(source: &str, layout: ManagedRefLayout) -> ExitStatus {
     let executable = dir.0.join("guest");
     let bytes = compile_checked_i64_with_ref_layout(source, layout)
         .unwrap_or_else(|err| panic!("checked compilation failed for {layout:?}: {err}"));
-    assert!(bytes.starts_with(b"\x7fELF"), "expected Linux native object");
+    assert!(
+        bytes.starts_with(b"\x7fELF"),
+        "expected Linux native object"
+    );
     fs::write(&object, bytes).expect("write object");
 
     let linked = Command::new("cc")
@@ -103,10 +105,8 @@ fn explicit_layout_does_not_bypass_frontend_or_mir_admission() {
 fn old_default_entrypoint_remains_available() {
     let source = "pub fnc main(): int { return 42; }";
     let default_object = compile_checked_i64(source).expect("default checked build");
-    let configured_object = compile_checked_i64_with_ref_layout(
-        source,
-        ManagedRefLayout::default(),
-    )
-    .expect("explicit default layout checked build");
+    let configured_object =
+        compile_checked_i64_with_ref_layout(source, ManagedRefLayout::default())
+            .expect("explicit default layout checked build");
     assert!(!default_object.is_empty() && !configured_object.is_empty());
 }

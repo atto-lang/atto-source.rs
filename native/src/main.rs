@@ -158,7 +158,9 @@ fn main() -> ExitCode {
             .read_to_string(&mut source)
             .map_err(|e| e.to_string())?;
         if source.len() > MAX_SOURCE_BYTES {
-            return Err(format!("source too large: exceeds {MAX_SOURCE_BYTES}-byte admission budget"));
+            return Err(format!(
+                "source too large: exceeds {MAX_SOURCE_BYTES}-byte admission budget"
+            ));
         }
         let parsed = frontend::parse(&source).map_err(|e| e.to_string())?;
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;

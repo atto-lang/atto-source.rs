@@ -21,7 +21,8 @@ impl Work {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "oresc-checked-call-boundary-{}-{nonce}", std::process::id()
+            "oresc-checked-call-boundary-{}-{nonce}",
+            std::process::id()
         ));
         fs::create_dir(&path).expect("create isolated native build directory");
         Self(path)
@@ -85,7 +86,12 @@ fn assert_native_value(result: &Output, expected: i64, label: &str) {
 }
 
 fn assert_native_overflow(result: &Output, label: &str) {
-    assert_eq!(result.status.signal(), Some(4), "{label}: {:?}", result.status);
+    assert_eq!(
+        result.status.signal(),
+        Some(4),
+        "{label}: {:?}",
+        result.status
+    );
     assert!(result.stdout.is_empty(), "{label}: partial value on trap");
     assert!(result.stderr.is_empty(), "{label}: unexpected stderr");
 }
@@ -120,14 +126,26 @@ fn dynamic_interprocedural_overflow_is_never_silently_wrapped_or_dce_removed() {
 #[test]
 fn full_width_safe_parameters_and_matched_boundaries_still_execute() {
     let cases = [
-        ("fnc add(int a,int b): int { return a+b; } \
-          pub fnc main(): int { return add(40,2); }", 42),
-        ("fnc add(int a,int b): int { return a+b; } \
-          pub fnc main(): int { return add(9223372036854775807,0)-9223372036854775807+42; }", 42),
-        ("fnc sub(int a,int b): int { return a-b; } \
-          pub fnc main(): int { return sub(-9223372036854775808,0)-(-9223372036854775808)+42; }", 42),
-        ("fnc mul(int a,int b): int { return a*b; } \
-          pub fnc main(): int { return mul(3037000499,3037000499)-9223372030926249001+42; }", 42),
+        (
+            "fnc add(int a,int b): int { return a+b; } \
+          pub fnc main(): int { return add(40,2); }",
+            42,
+        ),
+        (
+            "fnc add(int a,int b): int { return a+b; } \
+          pub fnc main(): int { return add(9223372036854775807,0)-9223372036854775807+42; }",
+            42,
+        ),
+        (
+            "fnc sub(int a,int b): int { return a-b; } \
+          pub fnc main(): int { return sub(-9223372036854775808,0)-(-9223372036854775808)+42; }",
+            42,
+        ),
+        (
+            "fnc mul(int a,int b): int { return a*b; } \
+          pub fnc main(): int { return mul(3037000499,3037000499)-9223372030926249001+42; }",
+            42,
+        ),
     ];
     for (source, expected) in cases {
         let result = actual_native_output(source);

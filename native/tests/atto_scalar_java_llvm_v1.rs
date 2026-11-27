@@ -92,21 +92,66 @@ fn canonical_sources_keep_exact_java_llvm_git_blob_ids() {
     // This also protects copied canonical source bytes from future drift.
     // Git is already required by the source-owned exact-checkout CI gate.
     for (path, expected) in [
-        ("positive/canonical-add.atto", "015f8b0f79aafa796a148d2adeff1574e8d6c491"),
-        ("positive/precedence.atto", "50414e5e95c8007f066696f55aa75309555b83e2"),
-        ("positive/parentheses.atto", "9f508169c741486d5cec7510ac84fb761f342def"),
-        ("positive/signed-minimum.atto", "450ebee951733d3f0b567413e70724155d26ce13"),
-        ("positive/signed-max-minus-one.atto", "c400f440fde2fbc10514ab7cfd2ffe3d19729ee1"),
-        ("positive/type-first-readonly.atto", "75ff4afc98fc65a774611eb7686e893f3d28a6da"),
-        ("positive/typed-const-readonly.atto", "0325018c54dd3534ddac76dc29724aa61e979683"),
-        ("positive/inferred-const-readonly.atto", "4fe471862d90ba57e135b93728bd44690ff2c894"),
-        ("positive/pure-call.atto", "e5ab32f7d8f684d655a83a3df989f16c52090c05"),
-        ("positive/type-first-parameter.atto", "3d6c16ed04aa86f954461885ec77c8f10b47fb5c"),
-        ("negative/type-first-reassignment.atto", "b118f53e68565dcb9e6acd58deb8ee47dca67606"),
-        ("negative/typed-const-reassignment.atto", "784ebd47a50211e6f00cb732cc74319ed1e58fac"),
-        ("negative/removed-modulo.atto", "45d5794870e93074d9b11b90833a849e96aaa4c1"),
-        ("negative/removed-caret.atto", "6889c7e83c8d94b906fbfe78723caee9580da6aa"),
-        ("negative/removed-double-caret.atto", "7ee99948018e927cce74c9ad0edc1975e4251689"),
+        (
+            "positive/canonical-add.atto",
+            "015f8b0f79aafa796a148d2adeff1574e8d6c491",
+        ),
+        (
+            "positive/precedence.atto",
+            "50414e5e95c8007f066696f55aa75309555b83e2",
+        ),
+        (
+            "positive/parentheses.atto",
+            "9f508169c741486d5cec7510ac84fb761f342def",
+        ),
+        (
+            "positive/signed-minimum.atto",
+            "450ebee951733d3f0b567413e70724155d26ce13",
+        ),
+        (
+            "positive/signed-max-minus-one.atto",
+            "c400f440fde2fbc10514ab7cfd2ffe3d19729ee1",
+        ),
+        (
+            "positive/type-first-readonly.atto",
+            "75ff4afc98fc65a774611eb7686e893f3d28a6da",
+        ),
+        (
+            "positive/typed-const-readonly.atto",
+            "0325018c54dd3534ddac76dc29724aa61e979683",
+        ),
+        (
+            "positive/inferred-const-readonly.atto",
+            "4fe471862d90ba57e135b93728bd44690ff2c894",
+        ),
+        (
+            "positive/pure-call.atto",
+            "e5ab32f7d8f684d655a83a3df989f16c52090c05",
+        ),
+        (
+            "positive/type-first-parameter.atto",
+            "3d6c16ed04aa86f954461885ec77c8f10b47fb5c",
+        ),
+        (
+            "negative/type-first-reassignment.atto",
+            "b118f53e68565dcb9e6acd58deb8ee47dca67606",
+        ),
+        (
+            "negative/typed-const-reassignment.atto",
+            "784ebd47a50211e6f00cb732cc74319ed1e58fac",
+        ),
+        (
+            "negative/removed-modulo.atto",
+            "45d5794870e93074d9b11b90833a849e96aaa4c1",
+        ),
+        (
+            "negative/removed-caret.atto",
+            "6889c7e83c8d94b906fbfe78723caee9580da6aa",
+        ),
+        (
+            "negative/removed-double-caret.atto",
+            "7ee99948018e927cce74c9ad0edc1975e4251689",
+        ),
     ] {
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../contracts/atto-scalar-v1")
@@ -151,7 +196,8 @@ fn canonical_negatives_are_rejected_before_native_emission() {
 
 #[test]
 fn canonical_parameter_spellings_are_ast_equivalent() {
-    let prefix = "pub fnc add(int x, int y): int { return x+y; } pub fnc main(): int { return add(20,22); }";
+    let prefix =
+        "pub fnc add(int x, int y): int { return x+y; } pub fnc main(): int { return add(20,22); }";
     let suffix = "pub fnc add(x: int, y: int): int { return x+y; } pub fnc main(): int { return add(20,22); }";
     let mixed = "pub fnc add(int x, y: int): int { return x+y; } pub fnc main(): int { return add(20,22); }";
     let expected = frontend::parse(prefix).expect("type-first baseline");
@@ -194,7 +240,10 @@ fn mixed_parameter_spellings_keep_duplicate_and_arity_checks() {
         "pub fnc f(x: int): int { int x = 7; return x; }",
     ] {
         let error = compile(source).expect_err("duplicate admitted");
-        assert!(error.starts_with("duplicate_declaration"), "{source}: {error}");
+        assert!(
+            error.starts_with("duplicate_declaration"),
+            "{source}: {error}"
+        );
     }
     for source in [
         "pub fnc f(x: int): int { return x; } pub fnc main(): int { return f(); }",
@@ -216,7 +265,9 @@ fn removed_operators_have_canonical_diagnostics_and_exact_offsets() {
         assert_eq!(err.class, "removed_operator");
         assert_eq!(err.offset, offset);
         assert!(
-            compile(&source).unwrap_err().starts_with("removed_operator"),
+            compile(&source)
+                .unwrap_err()
+                .starts_with("removed_operator"),
             "{source}"
         );
     }
@@ -430,7 +481,10 @@ mod linux_native {
                     String::from_utf8_lossy(&compiled.stderr)
                 );
             }
-            assert!(!absent.exists(), "{name}: object published for invalid source");
+            assert!(
+                !absent.exists(),
+                "{name}: object published for invalid source"
+            );
             assert_eq!(
                 fs::read(&sentinel).unwrap(),
                 b"PREEXISTING",

@@ -5,22 +5,26 @@ use oreslang_source_rs::{compile, compile_checked_i64, frontend, mir};
 fn unary_plus_preserves_integer_literals_and_nested_precedence() {
     let ast = frontend::parse("pub fnc main(): int { return +(+40) + +2; }")
         .expect("unary plus is valid on scalar expressions");
-    assert!(matches!(ast.functions[0].expression, frontend::Expr::Add(..)));
-    let literal = frontend::parse("pub fnc main(): int { return +42; }")
-        .expect("positive signed literal");
+    assert!(matches!(
+        ast.functions[0].expression,
+        frontend::Expr::Add(..)
+    ));
+    let literal =
+        frontend::parse("pub fnc main(): int { return +42; }").expect("positive signed literal");
     assert_eq!(literal.functions[0].expression, frontend::Expr::Integer(42));
-    assert!(mir::lower(ast).is_ok(), "unary plus must preserve typed MIR");
+    assert!(
+        mir::lower(ast).is_ok(),
+        "unary plus must preserve typed MIR"
+    );
 }
 
 #[test]
 fn unary_plus_handles_calls_and_checked_codegen() {
     let source = "pub fnc main(): int { return +add(+19, +23); }\nfnc add(int left, int right): int { return left + right; }";
     assert!(!compile(source).expect("compile native object").is_empty());
-    assert!(
-        !compile_checked_i64(source)
-            .expect("compile checked signed native object")
-            .is_empty()
-    );
+    assert!(!compile_checked_i64(source)
+        .expect("compile checked signed native object")
+        .is_empty());
 }
 
 #[test]
@@ -56,10 +60,9 @@ fn unary_plus_executes_full_i64_minimum_in_native_guest() {
         .duration_since(UNIX_EPOCH)
         .expect("clock after UNIX epoch")
         .as_nanos();
-    let scratch = Scratch(std::env::temp_dir().join(format!(
-        "ores-rs-unary-plus-{}-{nonce}",
-        std::process::id()
-    )));
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("ores-rs-unary-plus-{}-{nonce}", std::process::id())),
+    );
     fs::create_dir(&scratch.0).expect("create test directory");
 
     let source = "pub fnc scalar_value(): int { return +(-9223372036854775808); }";
