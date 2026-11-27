@@ -100,3 +100,14 @@ fn unicode_comment_terminators_preserve_following_block_comment_and_http_gate() 
         );
     }
 }
+
+#[test]
+fn canonical_http_actor_fixtures_fail_closed_before_object_or_effect_ir() {
+    for source in [
+        include_str!("../../tests/fixtures/http-actor-v1/serial-1x1.atto"),
+        include_str!("../../tests/fixtures/http-actor-v1/explicit-1x1.atto"),
+        include_str!("../../tests/fixtures/http-actor-v1/unsupported-3x4.atto"),
+    ] {
+        rejected(source);
+    }
+}
