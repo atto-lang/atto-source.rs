@@ -1614,6 +1614,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
+                    exclusive: false,
                     pos: m.pos,
                 },
                 mi.ret,
