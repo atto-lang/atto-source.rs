@@ -250,6 +250,74 @@ pub struct FlatMachineNode {
     pub transitions: Vec<(String, usize)>,
 }
 
+/// Graph-local ordinal event slots, never a nominal event or durable identity.
+#[derive(Clone, Debug)]
+pub struct FlatMachineTable {
+    initial: usize,
+    names: Vec<String>,
+    events: Vec<String>,
+    rows: Vec<(bool, Vec<(usize, usize)>)>,
+}
+
+impl FlatActorMachine {
+    pub fn transition_table(&self) -> R<FlatMachineTable> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let reject = |reason| Diagnostic::new(self.pos, "E_MACHINE_TABLE", reason);
+        let n = self.nodes.len();
+        if n == 0 || n > MAX_MEMBERS || self.initial >= n {
+            return Err(reject("node bound or initial index"));
+        }
+        let mut names = Vec::<String>::new();
+        let mut events = BTreeSet::<String>::new();
+        let mut count = 0;
+        for node in &self.nodes {
+            if node.name.is_empty() || names.last().is_some_and(|p| p >= &node.name) {
+                return Err(reject("node name or order"));
+            }
+            names.push(node.name.clone());
+            if node.terminal && !node.transitions.is_empty() {
+                return Err(reject("terminal edges"));
+            }
+            let mut prev: Option<&str> = None;
+            for (event, target) in &node.transitions {
+                count += 1;
+                if count > MAX_MEMBERS || event.is_empty() || prev.is_some_and(|p| p >= event.as_str()) || *target >= n {
+                    return Err(reject("edge bound, name, order or target"));
+                }
+                events.insert(event.clone());
+                prev = Some(event.as_str());
+            }
+        }
+        let mut seen = vec![false; n];
+        let mut pending = vec![self.initial];
+        while let Some(node) = pending.pop() {
+            if seen[node] { continue; }
+            seen[node] = true;
+            pending.extend(self.nodes[node].transitions.iter().map(|(_, target)| *target));
+        }
+        if seen.iter().any(|v| !v) {
+            return Err(reject("unreachable node"));
+        }
+        let events: Vec<String> = events.into_iter().collect();
+        let slots: BTreeMap<&str, usize> = events.iter().enumerate().map(|(i, e)| (e.as_str(), i)).collect();
+        let rows = self.nodes.iter().map(|node| (node.terminal, node.transitions.iter()
+            .map(|(event, target)| (slots[event.as_str()], *target)).collect())).collect();
+        Ok(FlatMachineTable { initial: self.initial, names, events, rows })
+    }
+}
+
+impl FlatMachineTable {
+    pub fn initial(&self) -> usize { self.initial }
+    pub fn names(&self) -> &[String] { &self.names }
+    pub fn events(&self) -> &[String] { &self.events }
+    /// Pure lookup, not actor admission or mutation.
+    pub fn successor(&self, node: usize, slot: usize) -> Option<Option<usize>> {
+        if slot >= self.events.len() { return None; }
+        let (_, transitions) = self.rows.get(node)?;
+        Some(transitions.iter().find(|(event, _)| *event == slot).map(|(_, target)| *target))
+    }
+}
+
 /// Actor-local declarations kept separate from legacy executable fields.
 #[derive(Clone, Debug)]
 pub struct ActorMachineInspection {
