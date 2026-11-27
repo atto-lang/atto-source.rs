@@ -1,3 +1,39 @@
+import {CheckedWriteQueue} from '/checked-write-queue.mjs';
+
+// Execute the actual bounded host queue in the browser Worker, independently
+// from Atto guest lowering. This probe must never be advertised as an
+// executable nb/do guest write.
+async function checkedWriterProbe() {
+  const delivered=[],supervisor=[];
+  let release;
+  const gate=new Promise(resolve=>{release=resolve});
+  const q=new CheckedWriteQueue({slots:2,maxBytes:12,
+    sink:async bytes=>{
+      delivered.push(new TextDecoder().decode(bytes));
+      await gate;
+      return {ok:true,written:bytes.length};
+    },
+    supervisor:event=>supervisor.push(event)
+  });
+  const first=q.submitWrite({owner:'actor',generation:7,mode:'nb',payload:'hello'});
+  // A macrotask turn lets the first adapter call become committed.
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const second=q.submitWrite({owner:'actor',generation:7,mode:'do',
+    payload:'drop',onOutcome:()=>{throw new Error('cancelled callback must not run')}});
+  const excess=q.submitWrite({owner:'actor',generation:7,mode:'nb',payload:'extra'});
+  q.stopOwner('actor',7);
+  release();
+  const completed=await first.future;
+  await new Promise(resolve=>setTimeout(resolve,0));
+  return {
+    first:completed,
+    quota:excess.error?.code,
+    queuedAccepted:second.ok,
+    notices:supervisor.map(e=>e.outcome.error?.code),
+    delivered,stats:q.stats,
+  };
+}
+
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
@@ -11,6 +47,11 @@ function javaDouble(x){
   return (m.includes('.')?m:m+'.0')+'E'+e.replace('+','');
 }
 self.onmessage=async ({data})=>{
+  if(data?.probe==='checked_writer'){
+    try{self.postMessage({ok:true,probe:await checkedWriterProbe()});}
+    catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message});}
+    return;
+  }
   try{
     const bytes=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
     if(!WebAssembly.validate(bytes))throw new Error('invalid compiler wasm');
