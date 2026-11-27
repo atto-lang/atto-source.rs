@@ -40,6 +40,8 @@ pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 /// Logical stack exhausted (spec chapter 25): a call inside a recursive call
 /// cycle would exceed [`MAX_CALL_DEPTH`] live guest frames.
 pub const PANIC_STACK: i32 = 6;
+/// Explicit checked ADT expect failure, never a catchable Error.
+pub const PANIC_EXPECT: i32 = 7;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -957,7 +959,7 @@ impl Emit<'_> {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, 8, false);
             },
-            TExpr::AdtUnwrap { source, tmp, error_tmp, message_offset, message_len, success_tag } => {
+            TExpr::AdtUnwrap { source, tmp, error_tmp, message_offset, message_len, success_tag, terminal } => {
                 self.expr(source);
                 self.set(*tmp);
                 // Invalid discriminants are engine faults, not ordinary errors.
@@ -973,6 +975,13 @@ impl Emit<'_> {
                 self.i32c(*success_tag as i32);
                 self.op(0x47); // i32.ne
                 self.open(0x04, 0x40, Frame::Other);
+                if *terminal {
+                    panic(&mut self.code, PANIC_EXPECT);
+                    self.close();
+                    self.get(*tmp);
+                    field_op(&mut self.code, v.ty, 8, false);
+                    return;
+                }
                 // Preserve the existing Error message ABI (+8). The internal
                 // reserved header distinguishes Option, Result<*,Error> and
                 // Result<*,String>; +16 retains the original closed payload.

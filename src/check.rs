@@ -185,7 +185,7 @@ pub enum TExpr {
     /// Checked closed scalar unwrap: failure is a private ordinary throw,
     /// not a return, raise, or engine trap. The receiver is evaluated once.
     AdtUnwrap { source: Box<TE>, tmp: u32, error_tmp: u32,
-        message_offset: u32, message_len: u32, success_tag: u32 },
+        message_offset: u32, message_len: u32, success_tag: u32, terminal: bool },
     /// Checked physical-array cell load at a compiler-planned in-bounds
     /// byte offset. Never represented as a class field or untrusted pointer.
     CollectionLoad { array: Box<TE>, offset: u32 },
@@ -1593,8 +1593,8 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::StateFieldRead { obj: v, .. }
         | TExpr::PrintObj { obj: v, .. } | TExpr::IntParse { value: v, .. } =>
             expr_escape_effects(v, effects),
-        TExpr::AdtUnwrap { source, .. } =>
-            expr_escape_effects(source, effects).union(EscapeEffects { throws: true, raises: false }),
+        TExpr::AdtUnwrap { source, terminal, .. } =>
+            expr_escape_effects(source, effects).union(EscapeEffects { throws: !*terminal, raises: false }),
         TExpr::Trap { value: v, .. } =>
             expr_escape_effects(v, effects).without_throw(),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b)
@@ -4879,13 +4879,15 @@ impl<'a> FnCx<'a> {
             self.arity(name, 0, args.len(), pos)?;
             return Ok(TE { e: TExpr::AdtIs { obj: Box::new(recv), tag }, ty: Type::Bool });
         }
-        if name == "unwrap" && matches!(recv.ty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntError | Type::ResultOptionIntError) {
+        if (name == "unwrap" || name == "expect") && matches!(recv.ty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntError | Type::ResultOptionIntError) {
             if self.owner != Owner::TopLevel || self.cleanup_depth > 0 || self.finally_depth > 0
                 || self.loops != 0 {
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                     "checked unwrap outside the top-level scalar function profile needs audited cleanup integration"));
             }
-            self.arity("Option/Result.unwrap", 0, args.len(), pos)?;
+            let terminal = name == "expect";
+            if terminal { self.arity("Option/Result.expect", 1, args.len(), pos)?; }
+            else { self.arity("Option/Result.unwrap", 0, args.len(), pos)?; }
             let (success_tag, message) = if recv.ty == Type::OptionInt {
                 (1, "called Option::unwrap() on a None value")
             } else {
@@ -4894,9 +4896,15 @@ impl<'a> FnCx<'a> {
             let payload_ty = if recv.ty == Type::ResultOptionIntError { Type::OptionInt } else { Type::Int };
             let tmp = self.temp(recv.ty, pos)?;
             let error_tmp = self.temp(Type::Error, pos)?;
+            let message = if terminal {
+                match &args[0].kind {
+                    ExprKind::Str(text) => text.as_str(),
+                    _ => return Err(type_err(args[0].pos, "expect currently requires a literal String message")),
+                }
+            } else { message };
             let (message_offset, message_len) = self.string(message, pos)?;
             return Ok(TE { e: TExpr::AdtUnwrap { source: Box::new(recv),
-                tmp, error_tmp, message_offset, message_len, success_tag }, ty: payload_ty });
+                tmp, error_tmp, message_offset, message_len, success_tag, terminal }, ty: payload_ty });
         }
         if recv.ty == Type::Str {
             return self.string_method(recv, name, args, pos);
@@ -5069,14 +5077,15 @@ impl<'a> FnCx<'a> {
                 return Ok(accumulated);
             }
         }
-        if name == "stdio.print" || name == "stdio.println" {
+        if matches!(name, "stdio.print" | "stdio.println" | "stdio.stdout.write" | "process.stdout.write") {
             // The parser desugars `stdio.out << value` and the explicit
             // `writech stdio.out, value` through this checked builtin.
             // Never let a lexical binding named `stdio` be silently bypassed
             // by that syntactic rewrite: it denotes a different receiver.
             // Full stream capability dispatch can resolve shadowed names
             // when it is implemented.
-            if self.lookup("stdio").is_some() {
+            let capability = if name == "process.stdout.write" { "process" } else { "stdio" };
+            if self.lookup(capability).is_some() || (name.ends_with(".write") && (self.g.names.contains_key(capability) || self.g.class(capability).is_some())) {
                 return Err(Diagnostic::new(pos, "E_IO_SHADOW",
                     "the builtin stdio capability is shadowed by a local binding; use an unshadowed handle"));
             }
@@ -5100,6 +5109,7 @@ impl<'a> FnCx<'a> {
                 });
             }
             let v = self.value(&args[0])?;
+            if name.ends_with(".write") && v.ty != Type::Str { return Err(type_err(args[0].pos, "stdout.write requires String")); }
             return match v.ty {
                 Type::Float => {
                     self.imports.push(Import::PrintF64);

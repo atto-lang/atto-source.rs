@@ -3829,6 +3829,16 @@ impl Parser {
                 Tok::Dot => {
                     let dot = self.pos();
                     if let ExprKind::Var(base) = &e.kind {
+                        if ((base == "stdio" && matches!(self.word_at(1), Some("out" | "stdout"))) || (base == "process" && self.word_at(1) == Some("stdout")))
+                            && self.word_at(3) == Some("write") {
+                            let qualified = format!("{base}.stdout.write");
+                            self.advance(); self.advance();
+                            if *self.peek() != Tok::Dot { return Err(self.expected("'.'")); }
+                            self.advance(); self.advance();
+                            if *self.peek() != Tok::LParen { return Err(self.expected("'('")); }
+                            e = Expr { kind: ExprKind::Var(qualified), pos };
+                            continue;
+                        }
                         if base == "stdio" {
                             if let Some(m @ ("print" | "println")) = self.word_at(1) {
                                 let qualified = format!("stdio.{m}");
