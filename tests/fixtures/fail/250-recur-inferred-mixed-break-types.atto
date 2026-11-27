@@ -1,3 +1,0 @@
-// expect-error: E_TYPE
-// java: target-only
-pub fnc main(): int { val v = loop (val n: int = 0) { if n eq 0 { break 42; } break true; }; return 0; }

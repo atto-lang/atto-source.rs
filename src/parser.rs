@@ -2542,13 +2542,13 @@ impl Parser {
         let slot = format!("\0recur_result_{}", self.i);
         self.expect_word("val")?;
         let (name, _) = self.ident("a value-loop result binding")?;
-        let mut inferred = if typed_loop {
+        let mut result_ty = if typed_loop {
             self.expect(Tok::Colon, "':' after result binding")?;
             Some(self.parse_type()?)
         } else { None };
         self.expect(Tok::Assign, "'=' before value loop")?;
-        let lowered = self.parse_scalar_state_loop(pos, Some(&slot), &mut inferred, inferred_loop)?;
-        let ty = inferred.ok_or_else(|| unsupported(pos, "cannot infer scalar value-loop result"))?;
+        let lowered = self.parse_scalar_state_loop(pos, Some(&slot), inferred_loop, &mut result_ty)?;
+        let ty = result_ty.ok_or_else(|| unsupported(pos, "cannot infer scalar loop result"))?;
         let init = match ty {
             Type::Int => ExprKind::Int(Some(0)),
             Type::Bool => ExprKind::Bool(false),
@@ -2638,7 +2638,7 @@ impl Parser {
             Some("return") => {
                 self.advance();
                 if self.is_word("loop") && *self.peek_at(1) == Tok::LParen {
-                    return self.parse_scalar_state_loop(pos, None, &mut None, false);
+                    return self.parse_scalar_state_loop(pos, None, false, &mut None);
                 }
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
@@ -3308,7 +3308,7 @@ impl Parser {
     /// position. A valued break returns directly or assigns the private
     /// result slot then exits the lexical loop. Arbitrary expression
     /// contexts still require typed CFG lowering.
-    fn parse_scalar_state_loop(&mut self, pos: Pos, result_slot: Option<&str>, inferred: &mut Option<Type>, infer_result: bool) -> R<Stmt> {
+    fn parse_scalar_state_loop(&mut self, pos: Pos, result_slot: Option<&str>, infer: bool, result_ty: &mut Option<Type>) -> R<Stmt> {
         if self.in_generator || self.state_method || self.erlang_body || self.struct_value_bindings.is_some() {
             return Err(unsupported(pos, "state loop in this callable profile"));
         }
@@ -3346,7 +3346,7 @@ impl Parser {
             if !self.eat(&Tok::Comma) { break; }
         }
         self.expect(Tok::RParen, "')' after state bindings")?;
-        let (mut body, terminal, _, has_break) = self.parse_state_loop_body(&state, result_slot, inferred, infer_result)?;
+        let (mut body, terminal, _, has_break) = self.parse_state_loop_body(&state, result_slot, infer, result_ty)?;
         if !terminal {
             return Err(Diagnostic::new(pos, "E_RECUR_TAIL", "state loop body may not fall through"));
         }
@@ -3378,50 +3378,49 @@ impl Parser {
         }
     }
 
-    // Deliberately incomplete type *proof*, not a permissive guess.
-    // The normal checker still validates every operand and assignment.
-    // Refuse mixed numeric operands and other unproven forms instead of
-    // introducing a default or a conversion that could change the type.
-    fn infer_closed_loop_value(e: &Expr, state: &[(String, Type)]) -> Option<Type> {
+    // A conservative hint only for the closed scalar grammar. Every
+    // expression is still independently typechecked by the ordinary checker;
+    // no evaluation or coercion is performed here. Ambiguous forms require
+    // an explicit annotation until the typed expression join exists.
+    fn scalar_loop_result_hint(e: &Expr, state: &[(String, Type)]) -> Option<Type> {
+        use BinOp::*;
         match &e.kind {
             ExprKind::Int(_) => Some(Type::Int),
-            ExprKind::Float(_) => Some(Type::Float),
             ExprKind::Bool(_) => Some(Type::Bool),
+            ExprKind::Float(_) => Some(Type::Float),
             ExprKind::Str(_) => Some(Type::Str),
             ExprKind::Var(n) => state.iter().find(|(name, _)| name == n).map(|(_, ty)| *ty),
             ExprKind::Unary(op, a) => {
-                let t = Self::infer_closed_loop_value(a, state)?;
-                match (op, t) {
-                    (UnOp::Neg | UnOp::Plus, Type::Int | Type::Float) => Some(t),
-                    (UnOp::Not, Type::Bool) | (UnOp::BitNot, Type::Int) => Some(t),
+                let ty = Self::scalar_loop_result_hint(a, state)?;
+                match (op, ty) {
+                    (UnOp::Neg | UnOp::Plus, Type::Int | Type::Float) => Some(ty),
+                    (UnOp::Not, Type::Bool) | (UnOp::BitNot, Type::Int) => Some(ty),
                     _ => None,
                 }
             }
             ExprKind::Binary(op, a, b) => {
-                let a = Self::infer_closed_loop_value(a, state)?;
-                let b = Self::infer_closed_loop_value(b, state)?;
-                if a != b { return None; }
-                match (op, a) {
-                    (BinOp::Add | BinOp::Sub | BinOp::Mul, Type::Int | Type::Float) => Some(a),
-                    (BinOp::Add, Type::Str) => Some(a),
-                    (BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::LShr | BinOp::AShr, Type::Int) => Some(a),
-                    (BinOp::Eq | BinOp::Ne, _) => Some(Type::Bool),
-                    (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, Type::Int | Type::Float | Type::Str) => Some(Type::Bool),
-                    (BinOp::And | BinOp::Or, Type::Bool) => Some(Type::Bool),
+                let a = Self::scalar_loop_result_hint(a, state)?;
+                let b = Self::scalar_loop_result_hint(b, state)?;
+                match op {
+                    Add | Sub | Mul if a == b && matches!(a, Type::Int | Type::Float) => Some(a),
+                    Add if a == Type::Str && b == Type::Str => Some(Type::Str),
+                    Eq | Ne | Lt | Le | Gt | Ge if a == b => Some(Type::Bool),
+                    And | Or if a == Type::Bool && b == Type::Bool => Some(Type::Bool),
+                    BitAnd | BitOr | BitXor | Shl | LShr | AShr if a == Type::Int && b == Type::Int => Some(Type::Int),
                     _ => None,
                 }
             }
-            ExprKind::Ternary(c, a, b) => {
-                if Self::infer_closed_loop_value(c, state)? != Type::Bool { return None; }
-                let a = Self::infer_closed_loop_value(a, state)?;
-                (Self::infer_closed_loop_value(b, state)? == a).then_some(a)
+            ExprKind::Ternary(cond, yes, no) => {
+                if Self::scalar_loop_result_hint(cond, state)? != Type::Bool { return None; }
+                let yes = Self::scalar_loop_result_hint(yes, state)?;
+                (Self::scalar_loop_result_hint(no, state)? == yes).then_some(yes)
             }
             _ => None,
         }
     }
 
     /// (body, all paths exit, contains recur, contains valued break).
-    fn parse_state_loop_body(&mut self, state: &[(String, Type)], result_slot: Option<&str>, inferred: &mut Option<Type>, infer_result: bool) -> R<(Vec<Stmt>, bool, bool, bool)> {
+    fn parse_state_loop_body(&mut self, state: &[(String, Type)], result_slot: Option<&str>, infer: bool, result_ty: &mut Option<Type>) -> R<(Vec<Stmt>, bool, bool, bool)> {
         self.expect(Tok::LBrace, "'{' for state loop")?;
         self.enter()?;
         let result = (|| {
@@ -3439,13 +3438,13 @@ impl Parser {
                     let value = self.parse_expr()?;
                     if !Self::state_loop_scalar(&value, state) { return Err(unsupported(at, "state loop break outside closed scalar profile")); }
                     self.terminator()?;
-                    if infer_result {
-                        let ty = Self::infer_closed_loop_value(&value, state)
-                            .ok_or_else(|| unsupported(at, "value-loop result needs explicit type outside closed inference profile"))?;
-                        if inferred.is_some_and(|previous| previous != ty) {
-                            return Err(Diagnostic::new(at, "E_TYPE", "valued breaks must agree on the inferred result type"));
+                    if infer {
+                        let ty = Self::scalar_loop_result_hint(&value, state)
+                            .ok_or_else(|| unsupported(at, "inferred loop result needs an unambiguous scalar type"))?;
+                        if result_ty.is_some_and(|old| old != ty) {
+                            return Err(Diagnostic::new(at, "E_TYPE", "valued breaks have different result types"));
                         }
-                        *inferred = Some(ty);
+                        *result_ty = Some(ty);
                     }
                     if let Some(slot) = result_slot {
                         body.push(Stmt::Assign { name: slot.to_owned(), value, pos: at });
@@ -3480,9 +3479,9 @@ impl Parser {
                 } else if self.eat_word("if") {
                     let cond = self.parse_cond_head()?;
                     if !Self::state_loop_scalar(&cond, state) { return Err(unsupported(at, "state loop predicate outside closed scalar profile")); }
-                    let (yes, yt, yr, yb) = self.parse_state_loop_body(state, result_slot, inferred, infer_result)?;
+                    let (yes, yt, yr, yb) = self.parse_state_loop_body(state, result_slot, infer, result_ty)?;
                     let (other, nt, nr, nb) = if self.eat_word("else") {
-                        let (no, t, r, b) = self.parse_state_loop_body(state, result_slot, inferred, infer_result)?;
+                        let (no, t, r, b) = self.parse_state_loop_body(state, result_slot, infer, result_ty)?;
                         (Some(no), t, r, b)
                     } else { (None, false, false, false) };
                     self.eat_word("fi");
