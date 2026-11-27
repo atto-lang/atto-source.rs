@@ -109,6 +109,8 @@ pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
 pub mod tuple_ownership_ir;
 pub mod target_typed;
+/// Isolated coroutine codegen; only the narrow scoped-resource profile is gated in.
+pub mod v2;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;
@@ -259,6 +261,35 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
         }
     }
     compile_prelexed_target(tokens, logical_path, javascript)
+}
+
+/// Never use the recovered v2 backend as a fallback for arbitrary errors.
+/// Only a source explicitly requesting a suspending, imported using/timeout
+/// profile is eligible. All modern preflight and lowering gates still run.
+fn is_scoped_span_guest(tokens: &[lexer::Token]) -> bool {
+    use lexer::Tok;
+    let word = |t: &lexer::Token, name: &str| matches!(&t.tok, Tok::Ident(s) if s == name);
+    let has_main = tokens.windows(4).any(|w|
+        word(&w[0], "pub") && word(&w[1], "suspends")
+        && word(&w[2], "fnc") && word(&w[3], "main"));
+    let has_package = tokens.windows(2).any(|w| word(&w[0], "from") && word(&w[1], "pkg"));
+    let has_timeout = tokens.windows(2).any(|w| word(&w[0], "with") && word(&w[1], "timeout"));
+    const BANNED: &[&str] = &[
+        "task", "spawn", "actor", "supervisor", "channel", "rx", "Observable",
+        "Future", "AsyncGenerator", "ActorRef", "define", "declare", "class",
+        "struct", "interface", "trait", "module", "namespace", "new", "yield",
+        "try", "catch", "throw", "raise", "panic", "trap", "defer", "recover",
+        "select", "readch", "writech", "nb", "cb", "critical", "pipe",
+        "export", "external", "internal", "protected",
+    ];
+    has_main && has_package && has_timeout
+        && tokens.iter().any(|t| word(t, "using"))
+        && tokens.iter().any(|t| word(t, "await"))
+        && tokens.iter().filter(|t| word(t, "fnc")).count() == 1
+        && !tokens.iter().any(|t| match &t.tok {
+            Tok::Ident(s) => BANNED.contains(&s.as_str()),
+            _ => false,
+        })
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
@@ -489,6 +520,17 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
         }
         return Err(Diagnostic::new(io.pos, "E_UNSUPPORTED",
             "I/O direction shorthand recognized, but this capability is not supported by the browser compiler; only standalone stdio.out writes are executable"));
+    }
+    // Forward-port admission: the public compiler's current lexer, safety
+    // checks, nominal and collection lowerings have already run. Do not
+    // reinterpret unrelated legacy errors as executable async code.
+    if is_scoped_span_guest(&toks) {
+        let bytes = v2::compile(toks)?;
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
     }
     // Detect target declarations at any file-scope position, not only at
     // source byte zero. Ignore comments/strings (the lexer already tokenizes
