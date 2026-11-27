@@ -2243,6 +2243,21 @@ impl Parser {
                 self.parse_telemetry_scope(pos),
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
+            // Explicit local replacement, without granting new mutation authority.
+            // Legacy assignment remains until the strict-edition migration.
+            Some("set") if matches!(self.peek_at(1), Tok::Ident(_) | Tok::Bang) => {
+                self.advance();
+                let bang = self.eat(&Tok::Bang);
+                let wrapped = bang && self.eat(&Tok::LParen);
+                let (name, _) = self.ident("an existing local binding name")?;
+                self.expect(Tok::Assign, "'=' after rebind target")?;
+                let value = self.parse_expr()?;
+                if wrapped {
+                    self.expect(Tok::RParen, "')' after rebind expression")?;
+                }
+                self.terminator()?;
+                Ok(Stmt::Assign { name, value, pos })
+            }
             Some("val" | "const" | "let") => {
                 let s = self.parse_binding()?;
                 self.terminator()?;
