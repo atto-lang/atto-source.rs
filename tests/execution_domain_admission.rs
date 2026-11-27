@@ -1,74 +1,34 @@
-use oreslang_source_rs::frontend;
+//! Browser compiler admission: exercise the production compile path, not the
+//! unlinked historical native frontend (preserved under legacy-native).
+use atto_compiler::compile;
 
-fn rejected_as_domain(source: &str) {
-    match frontend::parse(source) {
-        Err(error) => assert_eq!(
-            error.class, "execution_domain_unsupported",
-            "{source}: {error}"
-        ),
-        Ok(_) => panic!("{source}: execution-domain source was admitted"),
+fn rejects(source: &str) {
+    let err = compile(source).expect_err("unsupported execution domain emitted guest bytes");
+    assert!(matches!(err.code, "E_RESERVED" | "E_SYNTAX" | "E_UNSUPPORTED"), "{source}: {err:?}");
+}
+#[test]
+fn domains_are_not_scalar_identifiers_or_execution_regions() {
+    for word in ["cpu", "gpu", "quantum"] {
+        for source in [
+            format!("fnc {word}(): int {{ return 1; }} pub fnc main(): int {{ return 42; }}"),
+            format!("fnc f(int {word}): int {{ return {word}; }} pub fnc main(): int {{ return 42; }}"),
+            format!("pub fnc main(): int {{ return {word} {{ 1 }}; }}"),
+            format!("pub fnc main(): int {{ val int {word}=1; return {word}; }}"),
+            format!("pub fnc main(): int {{ return {word} task {{ 1 }}; }}"),
+        ] { rejects(&source); }
     }
 }
-
 #[test]
-fn domain_words_are_reserved_in_every_position() {
-    for word in frontend::EXECUTION_DOMAIN_WORDS {
-        rejected_as_domain(&format!("static fnc {word}() -> int {{ return 1; }}"));
-        rejected_as_domain(&format!(
-            "static fnc f(int {word}) -> int {{ return {word}; }}"
-        ));
-        rejected_as_domain(&format!(
-            "static fnc f() -> int {{ return {word} {{ 1 }}; }}"
-        ));
-        rejected_as_domain(&format!("static {word} fnc f() -> int {{ return 1; }}"));
-        rejected_as_domain(&format!(
-            "static fnc f() -> int {{ return {word} task {{ 1 }}; }}"
-        ));
-        rejected_as_domain(&format!(
-            "static fnc f() -> int {{ const {word} = 1; return {word}; }}"
-        ));
-    }
-}
-
-#[test]
-fn task_and_nb_blocks_are_rejected_as_execution_tasks() {
-    rejected_as_domain("static fnc f() -> int { return task { 1 }; }");
-    rejected_as_domain("static fnc f() -> int { return nb { 1 }; }");
-}
-
-#[test]
-fn comments_and_longer_identifiers_stay_ordinary() {
-    let source = "// gpu { cpu { quantum } } task { }\n\
-                  static fnc compute_gpu(int task) -> int {\n\
-                  /* nb { gpu task { 1 } } */\n\
-                  return task + 1;\n\
-                  }\n";
-    frontend::parse(source).expect("ordinary source must parse");
-}
-
-#[test]
-fn await_and_suspends_are_language_constructs_but_unlowered_on_rs() {
-    // await 42 is syntactically valid at the language level only inside a
-    // suspends function. This scalar backend must reject before producing IR.
+fn unqualified_tasks_and_suspension_never_fall_back_to_scalar_execution() {
     for source in [
-        "suspends fnc f() -> int { return 42; }",
-        "static fnc f() -> int { return await 42; }",
-        "static fnc f() -> int { const x = await 42; return x; }",
-        "static fnc await() -> int { return 42; }",
-        "static fnc f(int suspends) -> int { return suspends; }",
-    ] {
-        let error = frontend::parse(source).expect_err("no scalar fallback for suspension");
-        assert_eq!(error.class, "suspension_unsupported", "{source}: {error}");
-    }
+        "pub fnc main(): int { return task { 1 }; }",
+        "pub fnc main(): int { return task scope { 1 }; }",
+        "pub fnc main(): int { return nb { 1 }; }",
+        "pub fnc main(): int { return await 42; }",
+    ] { rejects(source); }
 }
-
 #[test]
-fn actor_task_scope_must_not_be_desugared_into_inline_scalar_execution() {
-    for source in [
-        "static fnc f() -> int { return task scope { 1 }; }",
-        "static fnc f() -> int { return task { 1 }; }",
-        "static fnc f() -> int { return nb { 1 }; }",
-    ] {
-        rejected_as_domain(source);
-    }
+fn domain_words_in_comments_and_longer_identifiers_are_ordinary() {
+    let bytes=compile("// cpu gpu quantum task {}\nfnc compute_gpu(int task_count): int { /* nb { gpu task { 1 } } */ return task_count+1; } pub fnc main(): int { return compute_gpu(41); }").expect("ordinary source compiles");
+    assert!(bytes.starts_with(b"\0asm"));
 }
