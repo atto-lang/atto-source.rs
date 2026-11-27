@@ -1,0 +1,5 @@
+// expect-exit: 42
+// java: rejects
+define class Scores as pub let int n = 20; end
+define class Person as pub val Scores scores = new Scores(); pub let int age = 1; end
+pub fnc main(): int { let mut Person a = new Person(); let mut Person b = copy! a; let mut Person c = copy!! b; a.age = 2; return a.scores.n + c.scores.n + a.age; }

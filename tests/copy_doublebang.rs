@@ -123,3 +123,9 @@ fn lexical_copy_groups_restore_only_last_alias_authority() {
     assert_eq!(compile(include_str!("fixtures/fail/1018-copy-untracked-temp.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
     assert_eq!(compile(include_str!("fixtures/fail/1019-copy-root-call-boundary.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
 }
+
+#[test]
+fn fixed_nested_slot_remains_fixed_on_shallow_and_deep_copy() {
+    wasm(include_str!("fixtures/pass/1020-copy-fixed-slot.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1021-copy-fixed-slot-replace.atto")).unwrap_err().code, "E_COPY_READONLY_SLOT");
+}

@@ -24,6 +24,7 @@ const positives = [
   '1010-copy-lexical-release.atto',
   '1011-copy-lexical-third-release.atto',
   '1012-copy-source-recovery-on-detach.atto',
+  '1020-copy-fixed-slot.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
@@ -47,6 +48,7 @@ const negatives = [
   '1017-copy-root-rebind.atto',
   '1018-copy-untracked-temp.atto',
   '1019-copy-root-call-boundary.atto',
+  '1021-copy-fixed-slot-replace.atto',
 ];
 const imports = {
   atto: {
