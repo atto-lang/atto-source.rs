@@ -2285,6 +2285,11 @@ impl Parser {
                 "guard requires a braced failure branch"));
         }
         let failure = self.parse_block()?;
+        // The guard contract has no Swift-style else arm; diagnose it here.
+        if self.is_word("else") {
+            return Err(Diagnostic::new(self.pos(), "E_GUARD_ELSE_NOT_REQUIRED",
+                "guard already uses its braced body as the failure branch; remove 'else'"));
+        }
         if !guard_failure_exits(&failure) {
             return Err(Diagnostic::new(pos, "E_GUARD",
                 "guard failure branch must exit the enclosing function on every path"));
