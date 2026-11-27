@@ -62,18 +62,26 @@ fn split_context<'a>(t: &'a [Token], anchor: &Token) -> Result<Vec<&'a [Token]>,
 
 fn plain(t: &[Token], owner: &str, aliases: &BTreeMap<String,Vec<String>>, anchor: &Token, context: bool) -> Result<(), Diagnostic> {
     if context && t.is_empty() { return Err(err(anchor, "exactly one context expression is required")); }
-    let mut depth = 0usize;
+    let mut delimiters = Vec::new();
     for x in t {
         if word(x).is_some_and(|s| s == owner || aliases.contains_key(s)) ||
             matches!(x.tok, Tok::ColonColon | Tok::LBrace | Tok::RBrace | Tok::Pipe | Tok::FatArrow | Tok::Semi) {
             return Err(err(x, "nested contextual binding/call or capture is outside scalar profile"));
         }
         match x.tok {
-            Tok::LParen | Tok::LBracket => depth += 1,
-            Tok::RParen | Tok::RBracket => depth = depth.saturating_sub(1),
-            Tok::Comma | Tok::Assign if context && depth == 0 => return Err(err(x, "one positional context expression required")),
+            Tok::LParen => delimiters.push(Tok::RParen),
+            Tok::LBracket => delimiters.push(Tok::RBracket),
+            Tok::RParen | Tok::RBracket => {
+                if delimiters.pop().as_ref() != Some(&x.tok) {
+                    return Err(err(x, "mismatched contextual expression delimiter"));
+                }
+            }
+            Tok::Comma | Tok::Assign if context && delimiters.is_empty() => return Err(err(x, "one positional context expression required")),
             _ => {}
         }
+    }
+    if !delimiters.is_empty() {
+        return Err(err(anchor, "unclosed contextual expression delimiter"));
     }
     Ok(())
 }
@@ -253,6 +261,7 @@ mod tests {
             (program("let n = 3; const x = Scale::(n); n = 9; const a = x.apply(4); const b = x.apply(5); return a + b + Scale::(2).apply(7);"), "41"),
             (program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);"), "20"),
             (program("return Scale::(6).apply(7);"), "42"),
+            (program("let n = 3; const x = Scale::(n + 1); n = 9; return x.apply(n) + Scale::(n - 7).apply(3);"), "42"),
             (multi_program("let n = 3; const x = Scale::(n, n + 1); n = 9; return x.apply(5) + Scale::(2, 1).apply(7);"), "34"),
             (multi_program("const x = Scale::(2, 3); const y = Scale::(4, 5); return x.apply(7) + y.apply(7);"), "50"),
         ] {
@@ -282,6 +291,27 @@ mod tests {
             "return Scale::(,2).apply(3);",
             "const x = Scale::(factor=2, offset=1); return x.apply(3);",
         ] { assert!(crate::compile(&multi_program(body)).is_err(), "{body}"); }
+    }
+    #[test] fn reject_mismatched_ordinary_arguments_before_rewrite() {
+        for body in [
+            "return Scale::(2).apply([3);",
+            "return Scale::(2).apply(3]);",
+            "const x = Scale::(2); return x.apply([3);",
+        ] {
+            let tokens = crate::lexer::lex(&program(body)).expect("lexical tokens");
+            assert!(lower(tokens).is_err(), "{body}");
+        }
+    }
+    #[test] fn bounded_context_schema_and_alias_count() {
+        let header = (0..8).map(|i| format!("int c{i}")).collect::<Vec<_>>().join(", ");
+        let args = (0..8).map(|_| "1").collect::<Vec<_>>().join(", ");
+        let src = format!("define class Scale as pub static fnc apply::({header})(int value) -> int {{ return c0 + c7 + value; }} end fnc main() -> int {{ return Scale::({args}).apply(40); }}");
+        assert!(crate::compile(&src).is_ok());
+        let denied = src.replace(&header, &format!("{header}, int c8")).replace(&args, &format!("{args}, 1"));
+        assert!(lower(crate::lexer::lex(&denied).unwrap()).is_err());
+        let body: String = (0..64).map(|i| format!("const cap{i} = Scale::(2, 3); ")).collect();
+        assert!(lower(crate::lexer::lex(&multi_program(&format!("{body}return cap63.apply(3);"))).unwrap()).is_ok());
+        assert!(lower(crate::lexer::lex(&multi_program(&format!("{body}const extra = Scale::(2, 3); return extra.apply(3);"))).unwrap()).is_err());
     }
     #[test] fn separate_bindings_compile() {
         assert!(crate::compile(&program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);")).is_ok());
