@@ -529,9 +529,10 @@ impl Parser {
                 self.expect(Tok::Gt, "'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
+                    Type::Bool => Type::OptionBool,
                     Type::ResultIntStr => Type::OptionResultIntStr,
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
+                        "browser ADT admits only Option<int>, Option<bool> and Option<Result<int,string>>")),
                 }
             }
             "Generator" => {
@@ -553,10 +554,11 @@ impl Parser {
                 match (good, bad) {
                     (Type::Int, Type::Str) => Type::ResultIntStr,
                     (Type::Int, Type::Error) => Type::ResultIntError,
+                    (Type::Bool, Type::Error) => Type::ResultBoolError,
                     (Type::OptionInt, Type::Error) => Type::ResultOptionIntError,
                     (Type::Void, Type::Error) => Type::ResultVoidError,
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser Result admits int,string or int/Option<int>/void,Error; other joins require verified generic lowering")),
+                        "browser Result admits int,string or int/bool/Option<int>/void,Error; other joins require verified generic lowering")),
                 }
             },
             "Error" => Type::Error,

@@ -95,8 +95,8 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
-            Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError => Some(I32),
+        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionBool | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -880,7 +880,7 @@ impl Emit<'_> {
                 self.active_traps += 1;
                 self.expr(value); // evaluate exactly once
                 self.active_traps -= 1;
-                if matches!(value.ty, Type::ResultIntError |
+                if matches!(value.ty, Type::ResultBoolError | Type::ResultIntError |
                     Type::ResultOptionIntError | Type::ResultVoidError) {
                     // Already Result: retain the ORIGINAL tagged pointer,
                     // including any Err(Error) with its exact identity.
@@ -993,8 +993,8 @@ impl Emit<'_> {
                 self.get(*error_tmp);
                 self.op(0xa7);
                 self.i32c(match source.ty {
-                    Type::OptionInt => 1,
-                    Type::ResultIntError | Type::ResultOptionIntError => 2,
+                    Type::OptionInt | Type::OptionBool => 1,
+                    Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError => 2,
                     Type::ResultIntStr => 3,
                     _ => unreachable!("unverified checked unwrap type"),
                 });
@@ -1006,11 +1006,11 @@ impl Emit<'_> {
                 self.get(*error_tmp);
                 self.op(0xa7);
                 match source.ty {
-                    Type::OptionInt => {
+                    Type::OptionInt | Type::OptionBool => {
                         self.i64c(0);
                         field_op(&mut self.code, Type::Int, 16, true);
                     }
-                    Type::ResultIntError | Type::ResultOptionIntError | Type::ResultIntStr => {
+                    Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultIntStr => {
                         let payload_ty = if source.ty == Type::ResultIntStr { Type::Str } else { Type::Error };
                         self.get(*tmp);
                         field_op(&mut self.code, payload_ty, 8, false);

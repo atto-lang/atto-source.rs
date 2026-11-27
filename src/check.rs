@@ -2977,7 +2977,7 @@ impl<'a> FnCx<'a> {
                 // cleanup. Callable-valued expressions must not be silently
                 // interpreted as delayed statements either.
                 if self.cleanup_depth > 0 && matches!(v.ty,
-                    Type::ResultIntError | Type::ResultOptionIntError |
+                    Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError |
                     Type::ResultVoidError | Type::ResultIntStr |
                     Type::OptionResultIntStr | Type::Callable(_))
                 {
@@ -3161,8 +3161,8 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
-            Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError) {
+        if matches!(sty, Type::OptionBool | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -3386,12 +3386,16 @@ impl<'a> FnCx<'a> {
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
                         (Type::ResultIntError, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntError, "Err") => (1, Some(Type::Error)),
+                        (Type::ResultBoolError, "Ok") => (0, Some(Type::Bool)),
+                        (Type::ResultBoolError, "Err") => (1, Some(Type::Error)),
                         (Type::ResultOptionIntError, "Ok") => (0, Some(Type::OptionInt)),
                         (Type::ResultOptionIntError, "Err") => (1, Some(Type::Error)),
                         (Type::ResultVoidError, "Ok") => (0, None),
                         (Type::ResultVoidError, "Err") => (1, Some(Type::Error)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+                        (Type::OptionBool, "None") => (0, None),
+                        (Type::OptionBool, "Some") => (1, Some(Type::Bool)),
                         (Type::OptionResultIntStr, "None") => (0, None),
                         (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
                         _ => return Err(type_err(arm.pos,
@@ -3662,12 +3666,16 @@ impl<'a> FnCx<'a> {
             (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
             (Type::ResultIntError, "Ok") => (0, Some(Type::Int)),
             (Type::ResultIntError, "Err") => (1, Some(Type::Error)),
+            (Type::ResultBoolError, "Ok") => (0, Some(Type::Bool)),
+            (Type::ResultBoolError, "Err") => (1, Some(Type::Error)),
             (Type::ResultOptionIntError, "Ok") => (0, Some(Type::OptionInt)),
             (Type::ResultOptionIntError, "Err") => (1, Some(Type::Error)),
             (Type::ResultVoidError, "Ok") => (0, None),
             (Type::ResultVoidError, "Err") => (1, Some(Type::Error)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+            (Type::OptionBool, "None") => (0, None),
+            (Type::OptionBool, "Some") => (1, Some(Type::Bool)),
             (Type::OptionResultIntStr, "None") => (0, None),
             (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
             _ => return Err(type_err(e.pos,
@@ -3940,9 +3948,11 @@ impl<'a> FnCx<'a> {
         let value = self.expr(inner)?;
         let result_ty = match value.ty {
             Type::Int => Type::ResultIntError,
+            Type::Bool => Type::ResultBoolError,
             Type::OptionInt => Type::ResultOptionIntError,
             Type::Void => Type::ResultVoidError,
             Type::ResultIntError => Type::ResultIntError,
+            Type::ResultBoolError => Type::ResultBoolError,
             Type::ResultOptionIntError => Type::ResultOptionIntError,
             Type::ResultVoidError => Type::ResultVoidError,
             Type::ResultIntStr => return Err(Diagnostic::new(pos, "E_TRAP_ERROR_JOIN",
@@ -3951,7 +3961,7 @@ impl<'a> FnCx<'a> {
                 format!("trap of {} needs a verified Result error representation", self.tn(value.ty)))),
         };
         let value_tmp = match value.ty {
-            Type::Void | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError => None,
+            Type::Void | Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError => None,
             t => Some(self.temp(t, pos)?),
         };
         let some_tmp = self.temp(result_ty, pos)?;
@@ -4035,6 +4045,8 @@ impl<'a> FnCx<'a> {
                     Type::ResultOptionIntError => (0, Type::OptionInt),
                     Type::ResultVoidError => (0, Type::Void),
                     Type::OptionInt => (1, Type::Int),
+                    Type::OptionBool => (1, Type::Bool),
+                    Type::ResultBoolError => (0, Type::Bool),
                     _ => return Err(type_err(e.pos,
                         format!("postfix '?' requires an admitted Option or Result payload, found {}", self.tn(value.ty)))),
                 };
@@ -4238,8 +4250,8 @@ impl<'a> FnCx<'a> {
                         ));
                     }
                     if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::Error |
-                        Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
-                        Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError) {
+                        Type::OptionBool | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+                        Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
@@ -4869,17 +4881,17 @@ impl<'a> FnCx<'a> {
     fn method_on(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         // Reuse the existing discriminant test, never read an inactive payload.
         let predicate_tag = match (recv.ty, name) {
-            (Type::OptionInt | Type::OptionResultIntStr, "is_none") => Some(0),
-            (Type::OptionInt | Type::OptionResultIntStr, "is_some") => Some(1),
-            (Type::ResultIntStr | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError, "is_ok") => Some(0),
-            (Type::ResultIntStr | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError, "is_err") => Some(1),
+            (Type::OptionBool | Type::OptionInt | Type::OptionResultIntStr, "is_none") => Some(0),
+            (Type::OptionBool | Type::OptionInt | Type::OptionResultIntStr, "is_some") => Some(1),
+            (Type::ResultIntStr | Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError, "is_ok") => Some(0),
+            (Type::ResultIntStr | Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError, "is_err") => Some(1),
             _ => None,
         };
         if let Some(tag) = predicate_tag {
             self.arity(name, 0, args.len(), pos)?;
             return Ok(TE { e: TExpr::AdtIs { obj: Box::new(recv), tag }, ty: Type::Bool });
         }
-        if (name == "unwrap" || name == "expect") && matches!(recv.ty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntError | Type::ResultOptionIntError) {
+        if (name == "unwrap" || name == "expect") && matches!(recv.ty, Type::OptionBool | Type::OptionInt | Type::ResultIntStr | Type::ResultBoolError | Type::ResultIntError | Type::ResultOptionIntError) {
             if self.owner != Owner::TopLevel || self.cleanup_depth > 0 || self.finally_depth > 0
                 || self.loops != 0 {
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
@@ -4888,12 +4900,12 @@ impl<'a> FnCx<'a> {
             let terminal = name == "expect";
             if terminal { self.arity("Option/Result.expect", 1, args.len(), pos)?; }
             else { self.arity("Option/Result.unwrap", 0, args.len(), pos)?; }
-            let (success_tag, message) = if recv.ty == Type::OptionInt {
+            let (success_tag, message) = if matches!(recv.ty, Type::OptionInt | Type::OptionBool) {
                 (1, "called Option::unwrap() on a None value")
             } else {
                 (0, "called Result::unwrap() on an Err value")
             };
-            let payload_ty = if recv.ty == Type::ResultOptionIntError { Type::OptionInt } else { Type::Int };
+            let payload_ty = match recv.ty { Type::ResultOptionIntError => Type::OptionInt, Type::OptionBool | Type::ResultBoolError => Type::Bool, _ => Type::Int };
             let tmp = self.temp(recv.ty, pos)?;
             let error_tmp = self.temp(Type::Error, pos)?;
             let message = if terminal {

@@ -35,10 +35,12 @@ pub enum Type {
     /// First executable ADT profiles; their payloads use the checked module heap.
     /// Other generic instantiations reject without emitting an artifact.
     OptionInt,
+    OptionBool,
     /// First-class built-in guest Error: a single opaque owned heap identity.
     Error,
     /// Result with error payload retaining the Error identity and message.
     ResultIntError,
+    ResultBoolError,
     ResultOptionIntError,
     ResultVoidError,
     ResultIntStr,
@@ -60,8 +62,10 @@ impl Type {
             Type::Float => "float",
             Type::Str => "string",
             Type::OptionInt => "Option<int>",
+            Type::OptionBool => "Option<bool>",
             Type::Error => "Error",
             Type::ResultIntError => "Result<int,Error>",
+            Type::ResultBoolError => "Result<bool,Error>",
             Type::ResultOptionIntError => "Result<Option<int>,Error>",
             Type::ResultVoidError => "Result<void,Error>",
             Type::ResultIntStr => "Result<int,string>",
