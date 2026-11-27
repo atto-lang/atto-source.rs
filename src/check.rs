@@ -1018,18 +1018,22 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // The full family is kept for any name with an omittable formal.
     // Do not let the legacy name/arity table bypass provenance lowering.
+    if p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.omittable)) || c.methods.iter().any(|m| m.params.iter().any(|q| q.omittable)))
+        || p.actors.iter().any(|a| a.methods.iter().any(|m| m.params.iter().any(|q| q.omittable))) {
+        return Err(Diagnostic::new(Pos::default(), "E_UNSUPPORTED", "omittable method and constructor ABI is not implemented"));
+    }
     let mut presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>> = BTreeMap::new();
     for f in &p.funcs {
         if f.params.iter().any(|q| q.omittable) {
-            if f.name == "main" || f.is_generator {
-                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "entrypoints and generators cannot have omittable parameters in this slice"));
+            if f.name == "main" || f.is_generator || f.params.len() + f.params.iter().filter(|q| q.omittable).count() > crate::parser::MAX_PARAMS {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "entrypoints, generators and over-budget hidden parameter frames cannot have omittable parameters in this slice"));
             }
             presence_families.entry(f.name.clone()).or_default();
         }
     }
     for (i, f) in p.funcs.iter().enumerate() {
         if let Some(family) = presence_families.get_mut(&f.name) {
-            if f.is_generator || f.params.iter().any(|q| q.omittable &&
+            if f.is_generator || f.params.iter().any(|q| !matches!(q.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::OptionInt | Type::OptionResultIntStr)) || f.params.iter().any(|q| q.omittable &&
                 (q.mutable || !matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr))) {
                 return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "unsupported omittable overload family"));
             }
