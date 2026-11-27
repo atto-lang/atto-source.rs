@@ -196,6 +196,8 @@ fn nominal_events_resolve_from_actual_source_declarations() {
     assert_eq!(machine.declarations, vec!["Start".to_string(), "Stop".to_string()]);
     assert_eq!(machine.table.events(), &["Start".to_string(), "Stop".to_string()]);
     assert_eq!(machine.declaration_ids, vec![0, 1]);
+    // Stop is declared first in source, although Start sorts first in the graph.
+    assert_eq!(machine.checker_class_ids, vec![1, 0]);
     assert!(compile(source).is_err());
 }
 
