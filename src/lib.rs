@@ -56,7 +56,6 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let source_tokens = lexer::lex(source)?;
-    let source_tokens = pair_local_lower::lower(source_tokens)?;
     // Never allow users to refer to compiler-owned synthetic record types,
     // parameters or temporaries, even when those names occur in dead code.
     for token in &source_tokens {
@@ -67,6 +66,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             }
         }
     }
+    let source_tokens = pair_local_lower::lower(source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
