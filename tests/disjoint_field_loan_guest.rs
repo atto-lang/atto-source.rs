@@ -25,6 +25,8 @@ fn disjoint_scalar_field_borrows_compile_to_guest_wasm() {
         ("last_use_same_field", include_str!("fixtures/pass/field-loan-nll-same-field-after-last-use.atto")),
         ("branch_join", include_str!("fixtures/pass/field-loan-nll-branch-join.atto")),
         ("class_reader_then_writer", include_str!("fixtures/pass/field-loan-nll-whole-class-reader-then-writer.atto")),
+        ("copy_after_last_mut_use", include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto")),
+        ("copy_after_unused_mut", include_str!("fixtures/pass/field-loan-nll-copy-after-unused-mut.atto")),
     ] {
         accepted(name, src);
     }
@@ -43,6 +45,7 @@ fn overlapping_or_unauthenticated_field_operations_fail_closed() {
         ("later_branch_use", include_str!("fixtures/fail/field-loan-nll-reject-later-branch-use.atto"), "E_BORROW"),
         ("class_alias_cannot_take", include_str!("fixtures/fail/field-loan-nll-borrowed-class-never-becomes-owner.atto"), "E_BORROW"),
         ("rhs_moves_owner", include_str!("fixtures/fail/field-loan-reject-owner-moved-during-rhs.atto"), "E_MOVED"),
+        ("copy_doublebang_exclusive_loan", include_str!("fixtures/fail/996-copy-doublebang-exclusive-loan.atto"), "E_BORROW"),
     ] {
         rejected(name, src, diagnostic);
     }
