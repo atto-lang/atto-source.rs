@@ -48,7 +48,33 @@ const overloadMain = `pub fnc main(): int {
 const branching = decl.replace('self.x = x; self.y = y;', 'if x > 0 { self.x = x; } else { self.x = 0 - x; } fi self.y = self.x + y;');
 const nestedBranching = decl.replace('self.x = x; self.y = y;', 'if x > 0 { if y > 0 { self.x = x; } else { self.x = y; } fi } else { self.x = 0; } fi self.y = self.x + y;');
 const skippedTrap = decl.replace('self.x = x; self.y = y;', 'if x > 0 { self.x = x; } else { self.x = 9223372036854775807 + (y + 1); } fi self.y = y;');
+const mutating = decl.replace('    mtd int • sum()', `    mut mtd shift(int n): void { self.x = self.x + n; self.y = self.y + n; }
+    mut mtd swap(int old_x, int old_y): void { self.x = old_y; self.y = old_x; return; }
+    mtd int • sum()`);
+const mutationMain = `pub fnc main(): int {
+    let mut p = Point(10, 20);
+    let q = p;
+    let mut r = copy! p;
+    p.shift(5);
+    r.shift(2);
+    stdio.println(p.sum());
+    stdio.println(q.sum());
+    stdio.println(r.sum());
+    return 0;
+}`;
+const snapshotMain = `pub fnc main(): int {
+    let mut p = Point(10, 20);
+    p.swap(p.sum(), p.product());
+    stdio.println(p.product());
+    stdio.println(p.sum());
+    stdio.println(p.is_origin());
+    return 0;
+}`;
 const positives = [
+    ['mutable-copy-isolation', mutating + '\n' + mutationMain, '40\n30\n34\n'],
+    ['mutable-snapshot-arguments', mutating + '\n' + snapshotMain, '6000\n230\nfalse\n'],
+    ['mutable-val-authority', mutating + '\n' + mutationMain.replace('let mut p =', 'val p ='), '40\n30\n34\n'],
+
     ['constructor-branch-true', branching + '\n' + main, '40\n300\nfalse\n'],
     ['constructor-branch-false', branching + '\n' + main.replace('10, 20', '-10, 20'), '40\n300\nfalse\n'],
     ['constructor-nested-branch', nestedBranching + '\n' + main.replace('10, 20', '10, -2'), '-6\n8\nfalse\n'],
@@ -69,6 +95,17 @@ const positives = [
     ['origin', decl + '\n' + main.replace('10, 20', '0, 0'), '0\n0\ntrue\n'],
 ];
 const negatives = [
+    ['mut-readonly-owner', mutating + '\n' + mutationMain.replace('let mut p =', 'let p =')],
+    ['mut-readonly-copy', mutating + '\n' + mutationMain.replace('p.shift(5);', 'q.shift(5);')],
+    ['mut-wrong-argument', mutating + '\n' + mutationMain.replace('p.shift(5)', 'p.shift(true)')],
+    ['mut-escape-borrow', mutating + '\n' + mutationMain.replace('let q = p;', 'let q = borrow! mut p;')],
+    ['mut-unused-invalid-body', mutating.replace('self.x = old_y;', 'self.x = true;') + '\n' + mutationMain],
+    ['mut-unknown-field', mutating.replace('self.x = old_y;', 'self.z = old_y;') + '\n' + mutationMain],
+    ['mut-no-expression-result', mutating + '\n' + mutationMain.replace('p.shift(5);', 'let v = p.shift(5);')],
+    ['mut-no-unmarked-write', mutating.replace('mut mtd shift', 'mtd shift') + '\n' + mutationMain],
+    ['mut-no-callback', mutating.replace('self.x = old_y;', 'self.x = self.sum();') + '\n' + mutationMain],
+    ['mut-duplicate-readonly-signature', mutating.replace('mut mtd shift', 'mtd int • shift(int n) { return n; } mut mtd shift') + '\n' + mutationMain],
+
     ['constructor-missing-branch-field', branching.replace('else { self.x = 0 - x; }', 'else {}') + '\n' + main],
     ['constructor-branch-read-before-init', branching.replace('self.x = 0 - x;', 'self.x = self.y;') + '\n' + main],
     ['constructor-branch-double-init', branching.replace('self.y = self.x + y;', 'self.x = x; self.y = y;') + '\n' + main],
@@ -98,6 +135,16 @@ const negatives = [
     ['wrong-receiver', decl + '\n' + main.replace('p.sum()', '10.sum()')],
     ['duplicate-method', decl.replace('int <- product()', 'int <- sum()') + '\n' + main],
 ];
+// A compact source must not amplify repeated mutating method bodies without bound.
+const largeMutator = decl.replace('    mtd int • sum()', '    mut mtd bump():void { ' +
+    'self.x = self.x + 1; '.repeat(128) + '}\n    mtd int • sum()');
+const expansionSource = largeMutator + '\npub fnc main():int { let mut p = Point(0, 0); ' +
+    'p.bump(); '.repeat(128) + 'return 0; }';
+negatives.push(['mut-expansion-budget', expansionSource, /E_SOURCE_LIMIT: attached struct expansion node budget exceeded/]);
+positives.push(['mut-expansion-below-budget', largeMutator +
+    '\npub fnc main():int { let mut p = Point(0, 0); p.bump(); p.bump(); stdio.println(p.sum()); return 0; }', '256\n']);
+const fixtureIds = [...positives, ...negatives].map(([id]) => id);
+assert.equal(new Set(fixtureIds).size, fixtureIds.length, 'duplicate guest fixture ID');
 const attoc = process.env.ATTOC || './target/debug/attoc';
 const work = await mkdtemp(join(tmpdir(), 'atto-struct-value-'));
 async function build(name, source) {
@@ -108,6 +155,8 @@ async function build(name, source) {
 try {
     for (const [name, source, expected] of positives) {
         const { result, output } = await build(name, source);
+        assert.ifError(result.error);
+        assert.equal(result.signal, null, name + ': compiler terminated');
         assert.equal(result.status, 0, name + ': ' + result.stderr);
         const bytes = await readFile(output);
         const module = new WebAssembly.Module(bytes);
@@ -130,10 +179,12 @@ try {
         assert.deepEqual(await readFile(again.output), bytes, name + ': nondeterministic guest');
         console.log('PASS actual struct guest', name, JSON.stringify(stdout));
     }
-    for (const [name, source] of negatives) {
+    for (const [name, source, diagnostic = /E_[A-Z_]+/] of negatives) {
         const { result, output } = await build(name, source);
+        assert.ifError(result.error);
+        assert.equal(result.signal, null, name + ': compiler terminated');
         assert.equal(result.status, 1, name + ': ' + result.stderr);
-        assert.match(result.stderr, /E_[A-Z_]+/, name);
+        assert.match(result.stderr, diagnostic, name);
         await assert.rejects(stat(output), {code:'ENOENT'}, name + ': rejected program emitted artifact');
         console.log('PASS rejected struct source', name);
     }
