@@ -7,6 +7,7 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+pub mod layout_trace;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.

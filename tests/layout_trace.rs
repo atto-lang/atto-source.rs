@@ -1,4 +1,4 @@
-use oreslang_source_rs::layout_trace::{LayoutAccessTrace, LayoutHint, LayoutTraceError};
+use atto_compiler::layout_trace::{LayoutAccessTrace, LayoutHint, LayoutTraceError};
 
 #[test]
 fn llvm_compatible_access_shapes_remain_advisory() {
