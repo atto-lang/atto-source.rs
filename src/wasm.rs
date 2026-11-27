@@ -225,6 +225,9 @@ impl Emit<'_> {
     fn state_method_receiver(&self) -> Option<Type> {
         self.state_authority.and_then(|(p, i)| p.state_method_receiver(i))
     }
+    fn state_local_slot(&self, slot: u32, ty: Type, tail_store: bool) -> bool {
+        self.state_authority.is_some_and(|(p, i)| p.state_local_slot(i, slot, ty, tail_store))
+    }
     fn state_field_slot(&self, offset: u32, ty: Type, write: bool) -> bool {
         self.state_authority.is_some_and(|(p, i)| p.state_field_slot(i, offset, ty, write))
     }
@@ -514,6 +517,10 @@ impl Emit<'_> {
     fn stmt(&mut self, s: &TStmt) {
         match s {
             TStmt::Set(slot, v) => {
+                if self.state_write_depth > 0 {
+                    assert!(self.state_local_slot(*slot, v.ty, true),
+                        "invalid protected state result scratch slot");
+                }
                 self.expr(v);
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
@@ -751,6 +758,10 @@ impl Emit<'_> {
             }
             TExpr::Bool(b) => self.i32c(*b as i32),
             TExpr::Local(slot) => {
+                if self.state_write_depth > 0 && *slot != 0 {
+                    assert!(self.state_local_slot(*slot, v.ty, false),
+                        "invalid protected state scalar local");
+                }
                 self.op(0x20);
                 uleb(&mut self.code, *slot as u64);
             }

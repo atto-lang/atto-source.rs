@@ -384,6 +384,9 @@ pub struct TActor {
 struct StateMethodLayout {
     receiver: Type,
     fields: Vec<(u32, Type, bool)>,
+    params: Vec<Type>,
+    locals: Vec<Type>,
+    tail_slots: BTreeSet<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -415,7 +418,21 @@ impl TProgram {
     pub(crate) fn state_method_receiver(&self, function: usize) -> Option<Type> {
         let layout = self.state_methods.get(&function)?;
         let f = self.funcs.get(function)?;
-        (f.params.first() == Some(&layout.receiver)).then_some(layout.receiver)
+        (f.params.first() == Some(&layout.receiver) && f.params == layout.params
+            && f.locals == layout.locals).then_some(layout.receiver)
+    }
+
+    pub(crate) fn state_local_slot(&self, function: usize, slot: u32, ty: Type, tail_store: bool) -> bool {
+        if slot == 0 || self.state_method_receiver(function).is_none()
+            || !matches!(ty, Type::Int | Type::Bool | Type::Float) {
+            return false;
+        }
+        let Some(layout) = self.state_methods.get(&function) else { return false; };
+        if tail_store && (!matches!(ty, Type::Int | Type::Bool) || !layout.tail_slots.contains(&slot)) {
+            return false;
+        }
+        let slot_index = slot as usize;
+        layout.params.iter().chain(layout.locals.iter()).nth(slot_index) == Some(&ty)
     }
 
     pub(crate) fn state_field_slot(&self, function: usize, offset: u32, ty: Type, write: bool) -> bool {
@@ -1629,8 +1646,22 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 .filter(|f| f.mode == FieldMode::ActorState && matches!(f.ty, Type::Int | Type::Bool))
                 .map(|f| (f.slot, f.ty, f.binding.rebindable())).collect();
             for method in class.methods.iter().filter(|m| !m.is_static) {
+                let function = &funcs[method.idx as usize];
+                // Capture only the checker-generated result slots of legacy
+                // return-position write regions, not arbitrary scalar locals.
+                let tail_slots = std::cell::RefCell::new(BTreeSet::new());
+                stmt_exists(&function.body, &|stmt| {
+                    if let TStmt::StateCriticalWrite(body) = stmt {
+                        if let Some(TStmt::Set(slot, _)) = body.last() {
+                            tail_slots.borrow_mut().insert(*slot);
+                        }
+                    }
+                    false // visit every statement, including nested blocks
+                });
                 state_methods.insert(method.idx as usize, StateMethodLayout {
                     receiver: Type::Class(ci as u32), fields: fields.clone(),
+                    params: function.params.clone(), locals: function.locals.clone(),
+                    tail_slots: tail_slots.into_inner(),
                 });
             }
         }
