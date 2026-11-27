@@ -1467,7 +1467,62 @@ fn verified_two_borrow_call(
     Some(plan)
 }
 
+/// A forwarding edge is admitted only if the entire function returns a
+/// call with its original readonly formal, unchanged, and the exact same
+/// scalar result type. No effects, locals, argument permutation or cleanup.
+fn verified_readonly_forward(f: &TFunc) -> Option<(Type, Type, usize)> {
+    let [Type::Class(class)] = f.params.as_slice() else { return None };
+    let owner = Type::Class(*class);
+    if !matches!(f.param_ownership.as_slice(), [ParamOwnership::BorrowRead])
+        || !f.locals.is_empty()
+        || !matches!(f.ret, Type::Int | Type::Bool | Type::Float) {
+        return None;
+    }
+    let [TStmt::Return(Some(TE { e: TExpr::Call(callee, args), ty }))] =
+        f.body.as_slice() else { return None };
+    let [arg] = args.as_slice() else { return None };
+    if *ty != f.ret || arg.ty != owner || !matches!(&arg.e, TExpr::Local(0)) {
+        return None;
+    }
+    Some((owner, *ty, *callee as usize))
+}
+
+type GetterProof = Option<(Type, Type, u32)>;
+type IntPairProof = Option<(Type, BinOp, u32, u32)>;
+
+/// Seed with terminal proofs only. Propagate across at most eight call
+/// edges, synchronously by round, so declaration order cannot change the
+/// result. Cycles without a proven terminal never acquire a proof; no
+/// recursive compiler walk or unbounded IR expansion is introduced.
+fn transitive_readonly_proofs(funcs: &[TFunc]) -> (Vec<GetterProof>, Vec<IntPairProof>) {
+    let mut getters: Vec<_> = funcs.iter().map(verified_borrow_getter).collect();
+    let mut pairs: Vec<_> = funcs.iter().map(verified_borrow_int_pair).collect();
+    let edges: Vec<_> = funcs.iter().map(verified_readonly_forward).collect();
+    for _ in 0..8 {
+        let mut next_getters = getters.clone();
+        let mut next_pairs = pairs.clone();
+        for (i, edge) in edges.iter().enumerate() {
+            let Some((owner, result, callee)) = *edge else { continue };
+            if let Some(Some((target_owner, target_result, offset))) = getters.get(callee).copied() {
+                if owner == target_owner && result == target_result {
+                    next_getters[i] = Some((owner, result, offset));
+                }
+            }
+            if let Some(Some((target_owner, op, lhs, rhs))) = pairs.get(callee).copied() {
+                if owner == target_owner && result == Type::Int {
+                    next_pairs[i] = Some((owner, op, lhs, rhs));
+                }
+            }
+        }
+        if next_getters == getters && next_pairs == pairs { break; }
+        getters = next_getters;
+        pairs = next_pairs;
+    }
+    (getters, pairs)
+}
+
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    let (borrow_getters, borrow_int_pairs) = transitive_readonly_proofs(&p.funcs);
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
@@ -1483,8 +1538,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())
         ),
         raise_tag: p.raise_tag,
-        borrow_getters: p.funcs.iter().map(verified_borrow_getter).collect(),
-        borrow_int_pairs: p.funcs.iter().map(verified_borrow_int_pair).collect(),
+        borrow_getters,
+        borrow_int_pairs,
         borrow_two_args: p.funcs.iter().map(verified_two_borrow).collect(),
     };
     let mut types = Types(Vec::new());
@@ -1962,5 +2017,65 @@ mod borrow_int_pair_proof_tests {
             }
         }
         assert_eq!(verified_borrow_int_pair(&bad), None);
+    }
+}
+
+#[cfg(test)]
+mod transitive_borrow_proof_tests {
+    use super::*;
+
+    fn forward(target: u32) -> TFunc {
+        TFunc {
+            name: "forward".into(),
+            params: vec![Type::Class(0)],
+            param_ownership: vec![ParamOwnership::BorrowRead],
+            ret: Type::Int,
+            locals: vec![],
+            body: vec![TStmt::Return(Some(TE {
+                ty: Type::Int,
+                e: TExpr::Call(target, vec![TE { ty: Type::Class(0), e: TExpr::Local(0) }]),
+            }))],
+        }
+    }
+
+    fn terminal() -> TFunc {
+        let mut f = forward(0);
+        f.body = vec![TStmt::Return(Some(TE {
+            ty: Type::Int,
+            e: TExpr::FieldGet {
+                obj: Box::new(TE { ty: Type::Class(0), e: TExpr::Local(0) }),
+                offset: 8,
+            },
+        }))];
+        f
+    }
+
+    #[test]
+    fn transitive_proofs_have_terminal_seeds_and_bounded_depth() {
+        let mut funcs: Vec<_> = (0..10).map(|i| forward(i + 1)).collect();
+        funcs.push(terminal());
+        let (getters, pairs) = transitive_readonly_proofs(&funcs);
+        assert_eq!(getters[10], Some((Type::Class(0), Type::Int, 8)));
+        assert_eq!(getters[2], getters[10]);
+        assert_eq!(getters[1], None);
+        assert_eq!(getters[0], None);
+        assert!(pairs.iter().all(Option::is_none));
+        let (cycles, _) = transitive_readonly_proofs(&[forward(1), forward(0), forward(99)]);
+        assert!(cycles.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn transitive_proofs_reject_mismatched_or_effectful_edges() {
+        let mut wrong = forward(0);
+        wrong.params[0] = Type::Class(1);
+        if let TStmt::Return(Some(TE { e: TExpr::Call(_, args), .. })) = &mut wrong.body[0] {
+            args[0].ty = Type::Class(1);
+        }
+        let mut effect = forward(0);
+        effect.body.insert(0, TStmt::Expr(TE { ty: Type::Int, e: TExpr::I64(1) }));
+        let mut exclusive = forward(0);
+        exclusive.param_ownership[0] = ParamOwnership::BorrowWrite;
+        let (getters, _) = transitive_readonly_proofs(&[terminal(), wrong, effect, exclusive]);
+        assert!(getters[1..].iter().all(Option::is_none));
     }
 }
