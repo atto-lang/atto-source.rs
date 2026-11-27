@@ -1,0 +1,3 @@
+// expect-exit: 42
+// java: target-only
+pub fnc main(): int { val b = loop (val n: int = 0) { if n eq 2 { break n eq 2; } recur(n+1); }; return b ? 42 : 0; }
