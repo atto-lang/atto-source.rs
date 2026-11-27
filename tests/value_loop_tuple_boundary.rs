@@ -14,8 +14,8 @@ fn typed_state_loop_headers_are_not_tuple_destructuring() {
 
 #[test]
 fn actual_tuple_binders_remain_checked() {
-    let source = "(val int a, val int b) = (1, 2);";
+    let source = "(val a: int, val b: int) as val pair = (1, 2);";
     assert_eq!(inspect(&lex(source).unwrap()).unwrap().len(), 1);
-    let malformed = "(val Unsupported a, val int b) = (1, 2);";
+    let malformed = "(val a: Unsupported, val b: int) as val pair = (1, 2);";
     assert!(inspect(&lex(malformed).unwrap()).is_err());
 }

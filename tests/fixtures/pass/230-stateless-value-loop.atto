@@ -1,0 +1,6 @@
+// expect-exit: 42
+// java: target-only
+pub fnc main(): int {
+  val answer: int = loop { break 42; };
+  return answer;
+}
