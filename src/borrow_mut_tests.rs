@@ -300,3 +300,32 @@ fn readonly_formal_forwarding_allows_two_shared_reads_but_not_lexical_aliases() 
     let alias = source.replace("return forward(parcel);", "val alias = borrow! parcel; return forward(alias);");
     assert_eq!(crate::compile(&alias).expect_err("lexical alias remains unsupported").code, "E_BORROW");
 }
+
+
+#[test]
+fn bae_two_readonly_arguments_preserve_nominal_layout_and_operand_order() {
+    let source = include_str!("../tests/fixtures/pass/borrow-two-args-v1.atto");
+    let direct = source.replace("difference(left, borrow! right)", "right.value - left.value");
+    let alternate = source.replace("difference(left, borrow! right)", "difference(borrow! left, right)");
+    let bytes = crate::compile(source).expect("two readonly arguments");
+    assert_eq!(bytes, crate::compile(&direct).expect("direct reads"));
+    assert_eq!(bytes, crate::compile(&alternate).expect("alternate borrow spellings"));
+    let wrong = source.replace("difference(left, borrow! right)", "difference(right, borrow! left)");
+    assert!(crate::compile(&wrong).is_err(), "nominal type mismatch");
+    let effectful = source.replace("return b.value - a.value;", "stdio.print(1); return b.value - a.value;");
+    let effectful_direct = effectful.replace("difference(left, borrow! right)", "right.value - left.value");
+    assert_ne!(crate::compile(&effectful).expect("effectful call"),
+        crate::compile(&effectful_direct).expect("direct reads"));
+}
+
+#[test]
+fn bae_two_shared_arguments_may_alias_the_same_original_handle() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub let int value = 21; end
+        fnc sum(Parcel a, Parcel b): int { return a.value + b.value; }
+        pub fnc main(): int { let p = new Parcel(); return sum(p, borrow! p); }
+    "#;
+    let direct = source.replace("sum(p, borrow! p)", "p.value + p.value");
+    assert_eq!(crate::compile(source).expect("same-owner readonly arguments"),
+        crate::compile(&direct).expect("direct aliased reads"));
+}
