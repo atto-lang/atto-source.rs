@@ -3148,6 +3148,24 @@ impl Parser {
         })
     }
 
+    // In a keyword arm, an elif after a completed brace belongs to
+    // the brace chain only if its own condition has a braced delimiter.
+    // Do not consume the enclosing keyword branch marker by speculation.
+    fn braced_elif_head(&self) -> bool {
+        let mut depth = 0usize;
+        for token in self.toks.iter().skip(self.i + 1) {
+            match &token.tok {
+                Tok::LParen | Tok::LBracket => depth += 1,
+                Tok::RParen | Tok::RBracket if depth != 0 => depth -= 1,
+                Tok::LBrace if depth == 0 => return true,
+                Tok::Ident(w) if depth == 0 && matches!(w.as_str(), "then" | "do" | "fi" | "else" | "elif" | "elseif") => return false,
+                Tok::Semi | Tok::RBrace | Tok::Eof if depth == 0 => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn parse_if(&mut self, prefix_do: bool) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("if")?;
@@ -3158,9 +3176,10 @@ impl Parser {
         if braced {
             arms.push((cond, self.parse_block()?));
             loop {
-                if self.eat_word("elif")
-                    || self.eat_word("elseif")
-                    || (self.is_word("else") && self.word_at(1) == Some("if") && {
+                let braced_elif = (self.is_word("elif") || self.is_word("elseif"))
+                    && (!self.keyword_if_arm || self.braced_elif_head());
+                if (braced_elif && { self.advance(); true })
+                    || (!self.keyword_if_arm && self.is_word("else") && self.word_at(1) == Some("if") && {
                         self.advance();
                         self.advance();
                         true
@@ -3179,11 +3198,15 @@ impl Parser {
             }
         } else {
             self.eat(&Tok::Semi);
-            if prefix_do {
+            let suffix_do = if prefix_do {
                 self.expect_word("then")?;
-            } else if !(self.eat_word("then") || self.eat_word("do")) {
-                return Err(self.expected("'do' or legacy 'then'"));
-            }
+                false
+            } else if self.eat_word("do") {
+                true
+            } else {
+                self.expect_word("then")?; // migration statement form
+                false
+            };
             let stops = ["elif", "elseif", "else", "fi"];
             arms.push((cond, self.parse_stmts_until(&stops)?));
             loop {
@@ -3200,6 +3223,8 @@ impl Parser {
                     self.eat(&Tok::Semi);
                     if prefix_do {
                         self.expect_word("then")?;
+                    } else if suffix_do {
+                        self.expect_word("do")?;
                     } else if !(self.eat_word("then") || self.eat_word("do")) {
                         return Err(self.expected("'do' or legacy 'then'"));
                     }

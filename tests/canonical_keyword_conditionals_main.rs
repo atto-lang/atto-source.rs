@@ -23,6 +23,8 @@ fn keyword_conditionals_and_existing_ternaries_execute() {
         "pub fnc main(): int { if false { return 7; } fi return 42; }",
         "pub fnc main(): int { do if true then if false { return 7; } fi return 42; }",
         "pub fnc main(): int { do if false then if true { return 7; } else return 42; fi }",
+        "pub fnc main(): int { if false do if true { return 7; } elif true do return 42; else return 0; fi }",
+        "pub fnc main(): int { do if true then if false { return 7; } elif true { return 42; } fi return 0; }",
         "pub fnc main(): int { val int x = 9223372036854775807; return if false then x + 1 else 42 fi; }",
     ] {
         let wasm = compile(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
@@ -45,6 +47,7 @@ fn keyword_conditionals_reject_invalid_inputs() {
         "pub fnc main(): int { do if 1 then return 42; else return 7; fi }",
         "pub fnc main(): int { do if true do return 42; fi }",
         "pub fnc main(): int { do if true then return 42; elif false do return 7; fi }",
+        "pub fnc main(): int { if true do return 42; elif false then return 7; fi }",
         "pub fnc main(): int { return if true then 42 else 7; }",
     ] {
         assert!(compile(source).is_err(), "must reject: {source}");
