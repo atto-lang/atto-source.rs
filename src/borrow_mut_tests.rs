@@ -329,3 +329,22 @@ fn bae_two_shared_arguments_may_alias_the_same_original_handle() {
     assert_eq!(crate::compile(source).expect("same-owner readonly arguments"),
         crate::compile(&direct).expect("direct aliased reads"));
 }
+
+
+#[test]
+fn bae_transitive_forward_chain_matches_direct_original_field_reads() {
+    let source = include_str!("../tests/fixtures/pass/borrow-formal-forward-v1.atto");
+    let direct = source.replace("return outer(parcel);", "return parcel.left - parcel.right;");
+    assert_eq!(crate::compile(source).expect("forward chain"),
+        crate::compile(&direct).expect("direct original fields"),
+        "the complete bounded forwarding chain must elide at the caller");
+}
+
+#[test]
+fn bae_transitive_effectful_terminal_preserves_call() {
+    let source = include_str!("../tests/fixtures/pass/borrow-formal-forward-v1.atto")
+        .replace("return p.left - p.right;", "stdio.print(1); return p.left - p.right;");
+    let direct = source.replace("return outer(parcel);", "return parcel.left - parcel.right;");
+    assert_ne!(crate::compile(&source).expect("effectful chain"),
+        crate::compile(&direct).expect("direct fields"));
+}
