@@ -48,7 +48,10 @@ export function createStateRuntime({
       notifying = false;
     }
   };
-  const isPtr = ptr => Number.isInteger(ptr) && ptr >= 0 && ptr % 8 === 0;
+  // The preview ABI accepts nonnegative signed-i32 addresses only.
+  // Full unsigned memory32 addressing needs a separate ABI decision.
+  const isPtr = ptr => Number.isInteger(ptr) && ptr >= 0 &&
+    ptr <= 0x7fffffff && ptr % 8 === 0;
 
   function register(ptr) {
     assertNotNotifying();
