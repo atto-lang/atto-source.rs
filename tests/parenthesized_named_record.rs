@@ -247,7 +247,8 @@ fn parenthesized_record_compiles_via_existing_owned_scalar_guest_abi() {
         "pub fnc main():int {let y=(foo=42);return y.foo;}",
         "pub fnc main():int {let a=(foo=40,bar=2);let b={bar:2,foo:40};return a.foo+b.bar;}",
         "pub fnc main():int {let mut r=(foo=1,bar=2);r[\"foo\"]=40;return r.foo+r.bar;}",
-        "pub fnc main():int {val mut Record r=(foo=1);r.foo=42;return r[\"foo\"];}",
+        "pub fnc main():int {val Record r=(foo=1);r.foo=42;return r[\"foo\"];}",
+        "pub fnc main():int {const mut Record r=(foo=1);r.foo=42;return r[\"foo\"];}",
     ] {
         guest(src);
     }
@@ -359,4 +360,17 @@ fn new_record_separators_keep_map_tuple_and_duplicate_checks() {
     assert!(matches!(&p.funcs[1].body[0],Stmt::Return(Some(e),_)
         if matches!(&e.kind,ExprKind::Call(_,args)
             if args.len()==1 && matches!(&args[0].kind,ExprKind::Record(_)))));
+}
+
+#[test]
+fn inline_pair_fields_preserve_record_context_and_do_not_trigger_stored_pair_pass() {
+    for src in [
+        "pub fnc main():int {val Record r={foo:=40,bar:2};return r.foo+r.bar;}",
+        "pub fnc main():int {val Record r={foo:=40\nbar:=2};return r.foo+r.bar;}",
+        "pub fnc main():int {val Record r=(foo:=40,bar=2);return r.foo+r.bar;}",
+        "pub fnc main():int {val Record r=(foo:40,bar:=2);return r.foo+r.bar;}",
+    ] { guest(src); }
+    rejected("pub fnc main():int {val Record r={foo:=1,foo:2};return 0;}","E_DUPLICATE");
+    rejected("pub fnc main():int {val Record r=(foo:=1,bar:=2);return 0;}","E_LITERAL_KIND");
+    rejected("pub fnc main():int {val mut Record r=(foo=1);return 0;}","E_SYNTAX");
 }
