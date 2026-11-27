@@ -32,7 +32,7 @@ function guest(source, expected, explicit = false) {
 }
 function reject(source, code, explicit = false) {
   const { r, output } = build(source, explicit);
-  assert.equal(r.status, 1, r.stderr);
+  assert.equal(r.status, 1, source + ': ' + r.stderr);
   assert.match(r.stderr, new RegExp(code));
   assert.equal(existsSync(output), false);
 }
@@ -57,8 +57,13 @@ try {
   guest('pub fnc main(): int { let x = 40; set x++; set ++x; return x; }', 42, true);
   guest('pub fnc main(): int { let x = 44; set x--; set --x; return x; }', 42, true);
   guest('pub fnc main(): int { let x = 20; set x += 2; set x -= 1; set x *= 2; return x; }', 42, true);
-  // Spec S-25: integer division is unresolved; compound syntax cannot bypass it.
-  reject('pub fnc main(): int { let x = 84; set x /= 2; return x; }', 'E_UNSUPPORTED', true);
+  // The existing signed-division proof permits nonzero literal divisors.
+  // Compound updates must use precisely that proof, not a new trap policy.
+  guest('pub fnc main(): int { let x = 85; set x /= 2; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = -85; set x /= 2; return 84 + x; }', 42, true);
+  reject('pub fnc main(): int { let x = 84; set x /= 0; return x; }', 'E_UNSUPPORTED', true);
+  reject('pub fnc main(): int { let x = -9223372036854775808; set x /= -1; return x; }', 'E_UNSUPPORTED', true);
+  reject('fnc divide(int d): int { let x = 84; set x /= d; return x; } pub fnc main(): int { return divide(2); }', 'E_UNSUPPORTED', true);
   guest('pub fnc main(): int { let x = 32; for let i = 0; i < 10; set i++ { set x++; } return x; }', 42, true);
   guest('pub fnc main(): int { let x = 32; for (let i = 10; i > 0; set --i) { set x++; } return x; }', 42, true);
   guest('pub fnc main(): int { let x = 32; for let i = 0; i < 10; set i += 2 { set x += 2; } return x; }', 42, true);
