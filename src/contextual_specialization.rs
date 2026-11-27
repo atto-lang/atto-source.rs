@@ -154,6 +154,42 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     let mut writable = std::collections::BTreeSet::<String>::new();
     while i < main_end {
         let x = &t[i];
+        // Closed direct named return: no hoisting across a sibling expression.
+        // Capture RHSs in source order, then invoke with declaration-order slots.
+        if word(x)==Some("return") && w(&t,i+1)==Some(owner)
+            && is(&t,i+2,Tok::ColonColon) && is(&t,i+3,Tok::LParen) {
+            let close=pair(&t,i+3,Tok::LParen,Tok::RParen)?;
+            let parts=split_context(&t[i+4..close],x)?;
+            if parts.iter().any(|p| is(p,1,Tok::Assign)) {
+                if main_return_seen || (i!=main_at+1 && !is(&t,i-1,Tok::Semi))
+                    || parts.len()!=schema.len() { return Err(bad(i,"invalid direct named return")); }
+                let dot=close+1;
+                if !is(&t,dot,Tok::Dot)||w(&t,dot+1)!=Some(member)||!is(&t,dot+2,Tok::LParen) {
+                    return Err(bad(i,"expected declared contextual member"));
+                }
+                let end=pair(&t,dot+2,Tok::LParen,Tok::RParen)?;
+                if end+2!=main_end || !is(&t,end+1,Tok::Semi) {
+                    return Err(bad(i,"direct named invocation requires entire terminal return"));
+                }
+                let mut slots=vec![String::new();schema.len()];
+                for part in parts {
+                    if !is(part,1,Tok::Assign) { return Err(bad(i,"mixed named and positional context")); }
+                    let key=w(part,0).ok_or_else(||bad(i,"named context key required"))?;
+                    let j=schema.iter().position(|&(_,n)|n==key).ok_or_else(||bad(i,"unknown named context key"))?;
+                    if !slots[j].is_empty() {return Err(bad(i,"duplicate named context key"));}
+                    plain(&part[2..],owner,&aliases,x,true)?;
+                    let slot=format!("{PREFIX}direct_{}_{}",i,j);
+                    out.extend([ident(x,"const"),ident(x,&slot),token(x,Tok::Colon),ident(x,schema[j].0),token(x,Tok::Assign)]);
+                    out.extend_from_slice(&part[2..]);out.push(token(x,Tok::Semi));slots[j]=slot;
+                }
+                plain(&t[dot+3..end],owner,&aliases,x,false)?;
+                out.extend([x.clone(),ident(x,owner),t[dot].clone(),ident(x,&lowered),t[dot+2].clone()]);
+                for (j,slot) in slots.iter().enumerate(){if j>0{out.push(token(x,Tok::Comma));}out.push(ident(x,slot));}
+                if end!=dot+3{out.push(token(x,Tok::Comma));}
+                out.extend_from_slice(&t[dot+3..=end+1]);
+                i=end+2;continue;
+            }
+        }
         if word(x)==Some("return") { main_return_seen = true; }
         if matches!(x.tok, Tok::LBrace | Tok::RBrace | Tok::Pipe | Tok::FatArrow)
             || word(x).is_some_and(|s| matches!(s,"if"|"for"|"while"|"loop"|"do"|"match"|"switch"|"try"|"defer"|"recover"|"select"|"fnc"|"generator"|"block"|"then"|"else"|"end"|"async"|"suspend"|"using")) {
@@ -313,6 +349,7 @@ mod tests {
             (multi_program("let n = 3; const x = Scale::(n, n + 1); n = 9; return x.apply(5) + Scale::(2, 1).apply(7);"), "34"),
             (multi_program("const x = Scale::(2, 3); const y = Scale::(4, 5); return x.apply(7) + y.apply(7);"), "50"),
             (multi_program("const x = Scale::(offset=7,factor=5); return x.apply(7);"), "42"),
+            (multi_program("return Scale::(offset=7,factor=5).apply(7);"), "42"),
             (multi_program("let n = 3; const x = Scale::(offset=n+1,factor=n); set n = 9; return x.apply(5) + Scale::(2,1).apply(7);"), "34"),
         ] {
             let wasm = crate::compile(&source).expect("compile guest");
@@ -344,7 +381,9 @@ mod tests {
             "set n = 9; return Scale::(2,1).apply(3);",
             "const x = Scale::(offset=2, 1); return x.apply(3);",
             "const x = Scale::(unknown=2, factor=1); return x.apply(3);",
-            "return Scale::(offset=2, factor=1).apply(3);",
+            "return 1 + Scale::(offset=2, factor=1).apply(3);",
+            "return Scale::(offset=2, factor=1).apply(3) + 1;",
+            "return Scale::(offset=2, offset=1).apply(3);",
         ] { assert!(crate::compile(&multi_program(body)).is_err(), "{body}"); }
     }
     #[test] fn reject_mismatched_ordinary_arguments_before_rewrite() {
