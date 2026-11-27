@@ -2988,6 +2988,7 @@ impl Parser {
             } else {
                 self.parse_pattern()?
             };
+            let pattern = self.parse_scalar_match_alias(pattern)?;
             let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
             if *self.peek() == Tok::Assign && *self.peek_at(1) == Tok::Gt {
                 return Err(Diagnostic::new(
@@ -3047,6 +3048,7 @@ impl Parser {
                 self.expect_word("on")?;
                 self.parse_pattern()?
             };
+            let pattern = self.parse_scalar_match_alias(pattern)?;
             // The guard sees a pattern binding only after that pattern
             // matches. A guarded catch-all does not prove exhaustiveness.
             // The existing match type checker enforces these properties.
@@ -3091,6 +3093,32 @@ impl Parser {
         }
         self.terminator()?;
         Ok(Stmt::Match { subject, arms, pos })
+    }
+
+    /// No cast or ownership action; the checker verifies the actual subject type.
+    fn parse_scalar_match_alias(&mut self, pattern: Pattern) -> R<Pattern> {
+        if !self.eat_word("as") { return Ok(pattern); }
+        let pos = self.pos();
+        if !matches!(&pattern, Pattern::Wild | Pattern::Int(_) | Pattern::Bool(_)) {
+            return Err(unsupported(pos, "non-scalar or compound match alias pattern"));
+        }
+        let mut rebind = self.is_word("rebind") && self.word_at(1).is_some_and(|w| w != "when");
+        if rebind { self.advance(); }
+        if self.is_word("mut") { return Err(unsupported(pos, "match alias referent mutation")); }
+        if rebind && (self.is_word("const") || self.is_word("val") || self.is_word("let") ||
+            (self.is_word("rebind") && self.word_at(1).is_some_and(|w| w != "when"))) {
+            return Err(Diagnostic::new(pos, "E_SYNTAX", "duplicate or conflicting alias modifier"));
+        }
+        if self.eat_word("const") || self.eat_word("val") { /* fixed runtime alias */ }
+        else if self.eat_word("let") { rebind = true; }
+        if self.is_word("mut") { return Err(unsupported(pos, "match alias referent mutation")); }
+        let ty = if self.word_at(1).is_some_and(|w| w != "when") || *self.peek_at(1) == Tok::Lt {
+            Some(self.parse_type()?)
+        } else { None };
+        let (name, _) = self.ident("a match alias name")?;
+        if name == "_" { return Err(unsupported(pos, "discard as a whole-subject alias")); }
+        if self.is_word("as") { return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "duplicate match alias")); }
+        Ok(Pattern::Alias { inner: Box::new(pattern), name, ty, rebind })
     }
 
     /// Java Parser.parsePattern, restricted to the forms this compiler lowers.

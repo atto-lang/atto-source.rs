@@ -117,3 +117,17 @@ fn explicit_counter_and_compound_updates() {
         for source in positives { strict(source).unwrap_or_else(|e| panic!("{source}: {e}")); }
         for source in negatives { assert!(strict(source).is_err(), "{source}"); }
 }
+
+#[test]
+fn scalar_match_aliases_are_fixed_unless_rebind_is_explicit() {
+    valid("pub fnc main(): int { return match 42 over on _ as int z -> z end; }");
+    valid("pub fnc main(): int { return match 42 over on _ as const z -> z end; }");
+    valid("pub fnc main(): int { let int n = 20; let int r = 0; do match n over on _ as rebind int z -> { z = z + 2; r = z; } end return n + r; }");
+    valid("pub fnc main(): int { return match 42 over on 42 as rebind z when z eq 42 -> { z = z + 1; return z; } on _ -> 0 end; }");
+    valid("pub fnc main(): int { return match 42 over on 41 as z when z eq 42 -> 0, on _ as const z -> z end; }");
+    reject("pub fnc main(): int { do match 42 over on _ as int z -> { z = 0; } end return 0; }", "E_IMMUTABLE");
+    reject("pub fnc main(): int { return match 42 over on _ as bool z -> 0 end; }", "E_TYPE");
+    reject("pub fnc main(): int { return match 42 over on _ as rebind rebind int z -> z end; }", "E_SYNTAX");
+    reject("pub fnc main(): int { return match 42 over on _ as mut z -> 0 end; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { do match 42 over on _ as rebind z -> {} end return z; }", "E_UNBOUND");
+}

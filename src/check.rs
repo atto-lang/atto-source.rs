@@ -3199,8 +3199,22 @@ impl<'a> FnCx<'a> {
                     format!("unreachable match arm {}: earlier arms already match every value", i + 1),
                 ));
             }
+            let (pattern, alias) = match &arm.pattern {
+                Pattern::Alias { inner, name, ty, rebind } => {
+                    if !matches!(sty, Type::Int | Type::Bool | Type::Float) {
+                        return Err(Diagnostic::new(arm.pos, "E_UNSUPPORTED", "match aliases require a copied scalar subject"));
+                    }
+                    if let Some(t) = *ty {
+                        let t = self.resolve(t, arm.pos)?;
+                        if t != sty { return Err(type_err(arm.pos, "match alias annotation must equal the subject type")); }
+                    }
+                    (inner.as_ref(), Some((name.as_str(), *rebind)))
+                }
+                p => (p, None),
+            };
             // (pattern test, literal key for reachability, binding name)
-            let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match &arm.pattern {
+            let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match pattern {
+                Pattern::Alias { .. } => return Err(Diagnostic::new(arm.pos, "E_SYNTAX", "nested alias")),
                 Pattern::Wild => (None, None, None),
                 Pattern::Bind(n) => (None, None, Some(n.as_str())),
                 Pattern::Int(v) => {
@@ -3280,6 +3294,14 @@ impl<'a> FnCx<'a> {
             self.scopes.push(Vec::new());
             let r = (|| -> R<(TE, Vec<TStmt>)> {
                 let mut body = Vec::new();
+                let mut alias_slot = None;
+                if let Some((n, rebind)) = alias {
+                    let slot = self.declare(n, sty, false, arm.pos)?;
+                    alias_slot = Some((slot, rebind));
+                    let assignment = TStmt::Set(slot, get());
+                    if arm.guard.is_some() { match_setup.push(assignment); }
+                    else { body.push(assignment); }
+                }
                 if let Some(n) = bind {
                     let slot = self.declare(n, sty, false, arm.pos)?;
                     let assignment = TStmt::Set(slot, get());
@@ -3295,6 +3317,11 @@ impl<'a> FnCx<'a> {
                     Some(g) => Some(self.cond(g, "match guard")?),
                     None => None,
                 };
+                // Guards see fixed slots; only the selected body may reassign.
+                if let Some((slot, true)) = alias_slot {
+                    let local = self.scopes.last_mut().unwrap().iter_mut().find(|l| l.slot == slot).expect("alias local exists");
+                    local.mutable = true;
+                }
                 let at_arm = self.moved.clone();
                 body.extend(self.stmts(&arm.body)?);
                 if !returns(&body) {
@@ -3376,6 +3403,7 @@ impl<'a> FnCx<'a> {
                     format!("unreachable match arm {}: prior arms cover every variant", i + 1)));
             }
             let (key, payload_name, payload_ty) = match &arm.pattern {
+                Pattern::Alias { .. } => return Err(Diagnostic::new(arm.pos, "E_UNSUPPORTED", "whole ADT aliases require checked ownership")),
                 Pattern::Wild => (None, None, None),
                 Pattern::Bind(n) => (None, Some(n.as_str()), Some(sty)),
                 Pattern::Adt(name, bind) => {

@@ -64,7 +64,17 @@ try {
   reject('pub fnc main(): int { let x = 40; x += 2; return x; }', 'E_EXPLICIT_REBIND', true);
   reject('pub fnc main(): int { for let i = 0; i < 10; i++ {} return 42; }', 'E_EXPLICIT_REBIND', true);
   reject('pub fnc main(): int { const x = 40; set x++; return x; }', 'E_IMMUTABLE', true);
-  console.log('scalar rebind guest cases passed (including explicit binding preview)');
+  guest("pub fnc main(): int { return match 42 over on _ as int z -> z end; }", 42);
+  guest("pub fnc main(): int { return match 42 over on _ as const z -> z end; }", 42);
+  guest("pub fnc main(): int { let int n = 20; let int r = 0; do match n over on _ as rebind int z -> { z = z + 2; r = z; } end return n + r; }", 42);
+  guest("pub fnc main(): int { return match 42 over on 42 as rebind z when z eq 42 -> { z = z + 1; return z; } on _ -> 0 end; }", 43);
+  guest("pub fnc main(): int { return match 42 over on 41 as z when z eq 42 -> 0, on _ as const z -> z end; }", 42);
+  reject("pub fnc main(): int { do match 42 over on _ as int z -> { z = 0; } end return 0; }", "E_IMMUTABLE");
+  reject("pub fnc main(): int { return match 42 over on _ as bool z -> 0 end; }", "E_TYPE");
+  reject("pub fnc main(): int { return match 42 over on _ as rebind rebind int z -> z end; }", "E_SYNTAX");
+  reject("pub fnc main(): int { return match 42 over on _ as mut z -> 0 end; }", "E_UNSUPPORTED");
+  reject("pub fnc main(): int { do match 42 over on _ as rebind z -> {} end return z; }", "E_UNBOUND");
+  console.log('scalar rebind and match alias guest cases passed');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
