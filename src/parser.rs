@@ -3287,29 +3287,32 @@ impl Parser {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
                     "parenthesized Record exceeds 1024 fields"));
             }
+            let captured = self.eat(&Tok::Colon);
             let at = self.pos();
             let name = match self.peek().clone() {
                 Tok::Ident(name) if !is_reserved(&name) => name,
                 _ => return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                    "parenthesized Record fields require identifier=expression; use {...} for quoted labels")),
+                    "parenthesized Record fields require identifier=expression or :identifier")),
             };
             self.advance();
-            self.expect(Tok::Assign, "'=' after named Record field")?;
+            if !captured { self.expect(Tok::Assign, "'=' after named Record field")?; }
             if !seen.insert(name.clone()) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE",
                     format!("duplicate Record field '{name}'")));
             }
-            let value = self.parse_expr()?;
+            let value = if captured {
+                Expr { kind: ExprKind::Var(name.clone()), pos: at }
+            } else { self.parse_expr()? };
             fields.push((name, value));
             if self.eat(&Tok::Comma) {
                 if self.eat(&Tok::RParen) {
                     break;
                 }
-                if !matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    || *self.peek_at(1) != Tok::Assign
+                if *self.peek() != Tok::Colon && !(matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
+                    && *self.peek_at(1) == Tok::Assign)
                 {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix named Record fields and positional Tuple items; expected field=value"));
+                        "cannot mix named Record fields and positional Tuple items; expected field=value or :field"));
                 }
                 continue;
             }
@@ -3340,11 +3343,10 @@ impl Parser {
                 if self.eat(&Tok::RParen) {
                     return Ok(Expr { kind: ExprKind::Tuple(Vec::new()), pos });
                 }
-                // Only identifier '=' selects named-Record grammar.
-                // EqEq never selects this branch; parentheses otherwise
-                // preserve the Tuple/grouping grammar unchanged.
-                if matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && *self.peek_at(1) == Tok::Assign
+                // Identifier '=' or a leading capture ':' selects Record.
+                // Equality, Pair syntax and ordinary positional items do not.
+                if *self.peek() == Tok::Colon || (matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
+                    && *self.peek_at(1) == Tok::Assign)
                 {
                     return self.parse_named_record_parens(pos);
                 }
