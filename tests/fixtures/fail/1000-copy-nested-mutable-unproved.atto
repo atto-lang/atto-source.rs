@@ -1,0 +1,9 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// java: rejects
+define class Leaf as pub let int n = 42; end
+define class Root as pub let Leaf child = new Leaf(); end
+pub fnc main(): int {
+    let a = new Root();
+    let b = copy! a;
+    return b.child.n;
+}

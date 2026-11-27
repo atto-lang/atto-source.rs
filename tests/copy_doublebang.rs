@@ -89,3 +89,11 @@ fn shallow_copy_after_last_mutable_loan_use() {
     let source = include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto").replace("copy!! original","copy! original");
     wasm(&source);
 }
+
+#[test]
+fn nested_immutable_leaf_copy_and_projection_boundaries() {
+    wasm(include_str!("fixtures/pass/999-copy-immutable-leaf.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/999-copy-nested-handle-escape.atto")).unwrap_err().code, "E_BORROW");
+    assert_eq!(compile(include_str!("fixtures/fail/1000-copy-nested-mutable-unproved.atto")).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+    assert_eq!(compile(include_str!("fixtures/fail/1001-copy-nested-write.atto")).unwrap_err().code, "E_OWNERSHIP");
+}
