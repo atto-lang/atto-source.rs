@@ -304,3 +304,44 @@ fn protected_result_cannot_overwrite_parameter_or_host_ticket() {
             "forged result store {variant} emitted bytes");
     }
 }
+
+#[test]
+fn protected_scalar_regions_reject_malformed_recursive_opcode_signatures() {
+    use atto_compiler::{ast::BinOp, check::TE, wasm};
+    let i = || TE { e: TExpr::I64(7), ty: Type::Int };
+    let b = || TE { e: TExpr::Bool(true), ty: Type::Bool };
+    let float = || TE { e: TExpr::F64(2.0), ty: Type::Float };
+    let bin = |op, lhs, rhs, ty| TE {
+        e: TExpr::Bin(op, Box::new(lhs), Box::new(rhs)), ty
+    };
+    let invalid = [
+        bin(BinOp::Add, i(), b(), Type::Int),
+        bin(BinOp::Add, b(), b(), Type::Int),
+        bin(BinOp::Div, i(), i(), Type::Int),
+        bin(BinOp::Eq, i(), i(), Type::Int),
+        bin(BinOp::BitAnd, float(), float(), Type::Int),
+        TE { e: TExpr::Neg(Box::new(b())), ty: Type::Int },
+        TE { e: TExpr::IntToFloat(Box::new(b())), ty: Type::Float },
+        TE { e: TExpr::Ternary(Box::new(i()), Box::new(i()), Box::new(i())), ty: Type::Int },
+        TE { e: TExpr::Ternary(Box::new(b()), Box::new(i()), Box::new(b())), ty: Type::Int },
+    ];
+    // Wrap every malformed expression in a plausible outer integer result
+    // where necessary, so the recursive checker must inspect inner nodes.
+    for (index, bad) in invalid.into_iter().enumerate() {
+        let value = if bad.ty == Type::Float {
+            TE { e: TExpr::Ternary(
+                Box::new(bin(BinOp::Eq, bad, float(), Type::Bool)),
+                Box::new(i()), Box::new(i())), ty: Type::Int }
+        } else { bad };
+        let mut program = typed();
+        let method = program.funcs.iter_mut().find(|f| f.name == "Counter.increment").unwrap();
+        let body = method.body.iter_mut().find_map(|s| match s {
+            TStmt::StateCriticalWrite(body) => Some(body), _ => None,
+        }).unwrap();
+        let TStmt::StateFieldWrite { value: rhs, .. } = &mut body[0] else { panic!("expected write"); };
+        *rhs = value;
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),
+            "forged scalar opcode {index} emitted bytes");
+    }
+    assert!(!wasm::emit(&typed()).is_empty());
+}
