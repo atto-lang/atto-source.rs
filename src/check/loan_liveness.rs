@@ -9,6 +9,31 @@
 //! closure capture, suspension or cross-function lifetime contract here.
 use crate::ast::{Expr, ExprKind, LambdaBody, Stmt};
 
+/// Reuse a previously discovered possible future use while it remains ahead
+/// of the current statement. A witness may be conservative (budget exhausted);
+/// it never licenses an early loan end. Each scan advances past its old witness.
+/// The map belongs to one immutable statement body, keyed by compiler slots.
+pub(super) fn has_future_use(
+    body: &[Stmt],
+    current: usize,
+    slot: u32,
+    name: &str,
+    fuel: &mut usize,
+    witnesses: &mut std::collections::BTreeMap<u32, usize>,
+) -> bool {
+    if witnesses.get(&slot).is_some_and(|&next| next > current) {
+        return true;
+    }
+    witnesses.remove(&slot);
+    for (offset, stmt) in body[current + 1..].iter().enumerate() {
+        if stmt_mentions(stmt, name, fuel) {
+            witnesses.insert(slot, current + 1 + offset);
+            return true;
+        }
+    }
+    false
+}
+
 pub(super) fn stmt_mentions(stmt: &Stmt, target: &str, fuel: &mut usize) -> bool {
     if *fuel == 0 {
         return true;
@@ -200,4 +225,35 @@ mod tests {
         let mut fuel = 32;
         assert!(stmt_mentions(&stmt, "reader", &mut fuel));
     }
+    #[test]
+    fn witness_reuse_does_not_rescan_long_gaps_or_expire_before_use() {
+        let pos = Pos::default();
+        let literal = Stmt::Expr(Expr { kind: ExprKind::Int(Some(42)), pos });
+        let read = Stmt::Expr(Expr { kind: ExprKind::Var("view".into()), pos });
+        let mut body = vec![literal; 500];
+        body.push(read);
+        let mut fuel = 2000;
+        let mut witnesses = std::collections::BTreeMap::new();
+        assert!(has_future_use(&body, 0, 7, "view", &mut fuel, &mut witnesses));
+        let after_first = fuel;
+        for i in 1..500 {
+            assert!(has_future_use(&body, i, 7, "view", &mut fuel, &mut witnesses));
+        }
+        assert_eq!(fuel, after_first);
+        assert!(!has_future_use(&body, 500, 7, "view", &mut fuel, &mut witnesses));
+        assert!(witnesses.is_empty());
+    }
+
+    #[test]
+    fn uncertain_witness_never_grants_early_retirement() {
+        let pos = Pos::default();
+        let body = vec![Stmt::Expr(Expr { kind: ExprKind::Int(Some(1)), pos }); 4];
+        let mut fuel = 0;
+        let mut witnesses = std::collections::BTreeMap::new();
+        for i in 0..3 {
+            assert!(has_future_use(&body, i, 1, "view", &mut fuel, &mut witnesses));
+        }
+        assert!(!has_future_use(&body, 3, 1, "view", &mut fuel, &mut witnesses));
+    }
+
 }

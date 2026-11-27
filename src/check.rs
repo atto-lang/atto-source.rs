@@ -2736,6 +2736,9 @@ impl<'a> FnCx<'a> {
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         let mut checked = Vec::with_capacity(body.len());
+        // A syntactic future-use witness is stable within this immutable body.
+        // Slots (not names) distinguish shadowed or newly introduced loans.
+        let mut next_use = BTreeMap::new();
         for (i, stmt) in body.iter().enumerate() {
             checked.push(self.stmt(stmt)?);
             // Never retire an outer-scope loan inside a child scope.
@@ -2745,12 +2748,13 @@ impl<'a> FnCx<'a> {
             let fuel = &mut self.nll_fuel;
             let ended: Vec<u32> = self.scopes.last().unwrap().iter()
                 .filter(|local| loans.contains_key(&local.slot) &&
-                    !body[i + 1..].iter().any(|next|
-                        loan_liveness::stmt_mentions(next, &local.name, fuel)))
+                    !loan_liveness::has_future_use(body, i, local.slot, &local.name,
+                        fuel, &mut next_use))
                 .map(|local| local.slot)
                 .collect();
             if let Some(tr) = self.trace.as_mut() { tr.scope_ended(&ended, Pos::default()); }
             for alias in ended {
+                next_use.remove(&alias);
                 self.loans.remove(&alias);
                 // borrowed_slots is intentionally permanent through this
                 // scope: an expired class alias is NEVER an owner.
