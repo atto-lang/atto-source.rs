@@ -161,3 +161,25 @@ fn opt_in_file_v2_never_falls_back_to_a_shared_namespace_or_erases_errors() {
     assert!(compile_namespace_file_v2("use file namespace; pub fnc main(): int { return true; }").is_err());
     assert!(compile_namespace_file_v2("use file namespace; declare class Foo; pub fnc main(): int { return 42; }").is_err());
 }
+
+#[test]
+fn scope_key_requires_exact_package_and_source_membership() {
+    use atto_compiler::static_import_graph::PackageId;
+    use namespace::resolve_scope_key_v2;
+    let p = PackageId::new("@org/project/package", "1.0.0", &"a".repeat(64)).unwrap();
+    let q = PackageId::new("@org/project/package", "1.0.0", &"b".repeat(64)).unwrap();
+    let key = |src: &str, path: &str, pkg: &PackageId|
+        resolve_scope_key_v2(&lex(src).unwrap(), Path::new(path), pkg).unwrap();
+    let a = "src/network/http/a.atto";
+    let b = "src/network/http/b.atto";
+    assert_eq!(key("", a, &p), key("use file namespace;", a, &p));
+    assert_eq!(key("", a, &p), key("use default namespace;", a, &p));
+    assert_ne!(key("", a, &p), key("", b, &p));
+    assert_ne!(key("", a, &p), key("", a, &q));
+    assert_eq!(key("use folder namespace;", a, &p), key("use folder namespace;", b, &p));
+    assert_ne!(key("use folder namespace;", a, &p), key("use namespace src.network.http;", b, &p));
+    assert_eq!(key("use default namespace(2);", a, &p), key("use namespace network.http;", b, &p));
+    assert_ne!(key("use namespace network.http;", a, &p), key("use namespace network.http;", b, &q));
+    assert!(resolve_scope_key_v2(&lex("").unwrap(), Path::new("src/../a.atto"), &p).is_err());
+    assert!(resolve_scope_key_v2(&lex("use namespace parent;").unwrap(), Path::new(a), &p).is_err());
+}
