@@ -3436,7 +3436,7 @@ impl<'a> FnCx<'a> {
             ));
         }
         let (idx, params) = (info.new_idx, info.ctor_params.clone());
-        let targs = self.args(&format!("{class} constructor"), args, &params)?;
+        let targs = self.args(&format!("{class} constructor"), args, &params, false)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
             ty: Type::Class(ci),
@@ -3455,7 +3455,8 @@ impl<'a> FnCx<'a> {
     /// Each ephemeral loan gets an out-of-range, checker-only ID (never
     /// a runtime local or owned handle); no drop authority is created.
     #[inline(never)]
-    fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
+    fn args(&mut self, callee: &str, args: &[Expr], params: &[Type],
+            allow_readonly_formal_reborrow: bool) -> R<Vec<TE>> {
         let mut temporary_call_loans: Vec<u32> = Vec::new();
         let checked = (|| -> R<Vec<TE>> {
             let mut out = Vec::new();
@@ -3468,7 +3469,9 @@ impl<'a> FnCx<'a> {
                     // we must not invoke `explicit_ownership` for a class
                     // expression, which only admits lexical borrow bindings.
                     // In particular, never silently admit `borrow! mut`,
-                    // `borrow! make_temp()`, field projections or reborrows.
+                    // `borrow! make_temp()`, field projections or lexical
+                    // alias reborrows. Only the bounded formal case below
+                    // may reuse an incoming read-only loan.
                     let (name, owner_expr) = match &arg.kind {
                         ExprKind::Var(name) if !write => (name, arg),
                         ExprKind::Ownership(OwnershipOp::Borrow, false, inner) if !write =>
@@ -3504,8 +3507,24 @@ impl<'a> FnCx<'a> {
                             "exclusive mutable call conflicts with an already-live loan"));
                     }
                     if self.borrowed_slots.contains(&owner_slot) {
-                        return Err(Diagnostic::new(arg.pos, "E_BORROW",
-                            "reborrowing a borrowed alias/formal needs verified lifetime provenance"));
+                        // Only an original readonly formal has call-frame
+                        // provenance here. Never derive a new loan from a
+                        // lexical alias, an exclusive formal, a state
+                        // container or a cleanup capture.
+                        let safe_formal = allow_readonly_formal_reborrow
+                            && self.g.borrow_default_v1
+                            && self.owner == Owner::TopLevel
+                            && self.cleanup_depth == 0
+                            && owner_slot < self.nparams
+                            && !write
+                            && !self.exclusive_formals.contains(&owner_slot)
+                            && !self.loans.contains_key(&owner_slot)
+                            && matches!(local.ty, Type::Class(c)
+                                if !self.g.classes[c as usize].state_container);
+                        if !safe_formal {
+                            return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                                "reborrowing a borrowed alias/formal needs verified lifetime provenance"));
+                        }
                     }
                     // Evaluate the owner expression once. For explicit
                     // borrow! this is the inner named place, not a second
@@ -3770,7 +3789,7 @@ impl<'a> FnCx<'a> {
                     }
                     let label = format!("{n}.{name}");
                     self.arity(&label, m.params.len(), args.len(), pos)?;
-                    let targs = self.args(&label, args, &m.params)?;
+                    let targs = self.args(&label, args, &m.params, false)?;
                     return Ok(TE {
                         e: TExpr::Call(m.idx, targs),
                         ty: m.ret,
@@ -3812,7 +3831,7 @@ impl<'a> FnCx<'a> {
                     };
                     let label = format!("{}.{name}", actor.name);
                     self.arity(&label, m.params.len(), args.len(), pos)?;
-                    let targs = self.args(&label, args, &m.params)?;
+                    let targs = self.args(&label, args, &m.params, false)?;
                     return Ok(TE {
                         e: TExpr::Call(m.idx, targs),
                         ty: m.ret,
@@ -3920,7 +3939,7 @@ impl<'a> FnCx<'a> {
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
         let mut targs = vec![recv];
-        targs.extend(self.args(&label, args, &m.params)?);
+        targs.extend(self.args(&label, args, &m.params, false)?);
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,
@@ -4091,7 +4110,17 @@ impl<'a> FnCx<'a> {
                 })
             }
         };
-        let targs = self.args(name, args, &params)?;
+        // This call-only reborrow profile is restricted to synchronous
+        // top-level scalar-returning functions with readonly class and
+        // copied primitive inputs. No consuming, mutable, state, generator
+        // or lifetime-bearing result ABI can be admitted by this rule.
+        let reborrow = matches!(ret, Type::Int | Type::Bool | Type::Float)
+            && params.iter().all(|ty| match *ty {
+                Type::BorrowClass(c) => !self.g.classes[c as usize].state_container,
+                Type::Int | Type::Bool | Type::Float => true,
+                _ => false,
+            });
+        let targs = self.args(name, args, &params, reborrow)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
             ty: ret,
