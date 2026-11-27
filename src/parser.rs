@@ -2395,7 +2395,7 @@ impl Parser {
                 if *self.peek() == Tok::Eof {
                     return Err(self.expected("'}'"));
                 }
-                out.push(self.parse_stmt()?);
+                self.parse_stmt_into(&mut out)?;
             }
             self.advance();
             Ok(out)
@@ -2424,7 +2424,7 @@ impl Parser {
                 if *self.peek() == Tok::RBrace {
                     return Err(self.expected(&format!("'{}'", stops.last().unwrap())));
                 }
-                out.push(self.parse_stmt()?);
+                self.parse_stmt_into(&mut out)?;
             }
             Ok(out)
         })();
@@ -2514,6 +2514,48 @@ impl Parser {
         Ok(Stmt::Block(body))
     }
 
+    /// A statement list is the lexical scope of an immutable result binder.
+    /// Lower only an explicit primitive name-first val initializer; keep
+    /// the state aliases scoped to the loop and publish the user binder
+    /// exactly once after a valued break. The compiler-only result slot is
+    /// initialized for the existing IR, but no source path reads that
+    /// initial value: the closed tail proof requires every normal exit to
+    /// write the slot before breaking.
+    fn parse_stmt_into(&mut self, out: &mut Vec<Stmt>) -> R<()> {
+        let typed_loop = self.is_word("val")
+            && matches!(self.peek_at(1), Tok::Ident(_))
+            && *self.peek_at(2) == Tok::Colon
+            && matches!(self.word_at(3), Some("int" | "bool" | "float" | "string" | "String"))
+            && *self.peek_at(4) == Tok::Assign
+            && self.word_at(5) == Some("loop")
+            && *self.peek_at(6) == Tok::LParen;
+        if !typed_loop {
+            out.push(self.parse_stmt()?);
+            return Ok(());
+        }
+        let pos = self.pos();
+        let slot = format!("\0recur_result_{}", self.i);
+        self.expect_word("val")?;
+        let (name, _) = self.ident("a value-loop result binding")?;
+        self.expect(Tok::Colon, "':' after result binding")?;
+        let ty = self.parse_type()?;
+        let init = match ty {
+            Type::Int => ExprKind::Int(Some(0)),
+            Type::Bool => ExprKind::Bool(false),
+            Type::Float => ExprKind::Float(0),
+            Type::Str => ExprKind::Str(String::new()),
+            _ => return Err(unsupported(pos, "value-loop result requires primitive type")),
+        };
+        self.expect(Tok::Assign, "'=' before value loop")?;
+        let lowered = self.parse_scalar_state_loop(pos, Some(&slot))?;
+        out.push(Stmt::Bind { kind: BindKind::Let, name: slot.clone(), ty: Some(ty),
+            init: Expr { kind: init, pos }, pos });
+        out.push(lowered);
+        out.push(Stmt::Bind { kind: BindKind::Val, name, ty: Some(ty),
+            init: Expr { kind: ExprKind::Var(slot), pos }, pos });
+        Ok(())
+    }
+
     fn parse_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
         if *self.peek() == Tok::At {
@@ -2588,7 +2630,7 @@ impl Parser {
             Some("return") => {
                 self.advance();
                 if self.is_word("loop") && *self.peek_at(1) == Tok::LParen {
-                    return self.parse_return_state_loop(pos);
+                    return self.parse_scalar_state_loop(pos, None);
                 }
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
@@ -3262,12 +3304,11 @@ impl Parser {
     /// once-only subject evaluation, exhaustive pattern checker, strict return
     /// typing, unreachable-arm detection and Wasm branches. It does not
     /// pretend that arbitrary expressions are value matches.
-    /// Restricted return-position state loop. Since every valued break is
-    /// immediately returned by the enclosing callable, no result join is
-    /// needed in this slice. Lower to the existing typed lexical loop, with
-    /// immutable user aliases and compiler-only mutable slots. Other
-    /// expression contexts require general typed CFG lowering.
-    fn parse_return_state_loop(&mut self, pos: Pos) -> R<Stmt> {
+    /// Restricted scalar state loop in return or explicitly typed binding
+    /// position. A valued break returns directly or assigns the private
+    /// result slot then exits the lexical loop. Arbitrary expression
+    /// contexts still require typed CFG lowering.
+    fn parse_scalar_state_loop(&mut self, pos: Pos, result_slot: Option<&str>) -> R<Stmt> {
         if self.in_generator || self.state_method || self.erlang_body || self.struct_value_bindings.is_some() {
             return Err(unsupported(pos, "state loop in this callable profile"));
         }
@@ -3305,7 +3346,7 @@ impl Parser {
             if !self.eat(&Tok::Comma) { break; }
         }
         self.expect(Tok::RParen, "')' after state bindings")?;
-        let (mut body, terminal, _, has_break) = self.parse_state_loop_body(&state)?;
+        let (mut body, terminal, _, has_break) = self.parse_state_loop_body(&state, result_slot)?;
         if !terminal {
             return Err(Diagnostic::new(pos, "E_RECUR_TAIL", "state loop body may not fall through"));
         }
@@ -3338,7 +3379,7 @@ impl Parser {
     }
 
     /// (body, all paths exit, contains recur, contains valued break).
-    fn parse_state_loop_body(&mut self, state: &[(String, Type)]) -> R<(Vec<Stmt>, bool, bool, bool)> {
+    fn parse_state_loop_body(&mut self, state: &[(String, Type)], result_slot: Option<&str>) -> R<(Vec<Stmt>, bool, bool, bool)> {
         self.expect(Tok::LBrace, "'{' for state loop")?;
         self.enter()?;
         let result = (|| {
@@ -3356,7 +3397,12 @@ impl Parser {
                     let value = self.parse_expr()?;
                     if !Self::state_loop_scalar(&value, state) { return Err(unsupported(at, "state loop break outside closed scalar profile")); }
                     self.terminator()?;
-                    body.push(Stmt::Return(Some(value), at));
+                    if let Some(slot) = result_slot {
+                        body.push(Stmt::Assign { name: slot.to_owned(), value, pos: at });
+                        body.push(Stmt::Break(at));
+                    } else {
+                        body.push(Stmt::Return(Some(value), at));
+                    }
                     terminal = true;
                     has_break = true;
                 } else if self.eat_word("recur") {
@@ -3384,9 +3430,9 @@ impl Parser {
                 } else if self.eat_word("if") {
                     let cond = self.parse_cond_head()?;
                     if !Self::state_loop_scalar(&cond, state) { return Err(unsupported(at, "state loop predicate outside closed scalar profile")); }
-                    let (yes, yt, yr, yb) = self.parse_state_loop_body(state)?;
+                    let (yes, yt, yr, yb) = self.parse_state_loop_body(state, result_slot)?;
                     let (other, nt, nr, nb) = if self.eat_word("else") {
-                        let (no, t, r, b) = self.parse_state_loop_body(state)?;
+                        let (no, t, r, b) = self.parse_state_loop_body(state, result_slot)?;
                         (Some(no), t, r, b)
                     } else { (None, false, false, false) };
                     self.eat_word("fi");
