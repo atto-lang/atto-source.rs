@@ -409,11 +409,13 @@ struct ClassInfo {
     name: String,
     /// Distinct protected-state nominal declaration (single Worker-local profile).
     state_container: bool,
+    // Constructor-free, permanently immutable scalar storage only.
+    immutable_copy_leaf: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
     /// AOT-generated, private per-concrete-class copier, present only after
-    /// proving every stored field is a by-value/immutable scalar.
+    /// proving every slot is scalar or a permanently immutable leaf.
     deep_copy_idx: Option<u32>,
     shallow_copy_idx: Option<u32>,
     ctor_idx: Option<u32>,
@@ -793,6 +795,8 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: cr
             kind: match f.ty {
                 Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) =>
                     CopyFieldKind::Scalar,
+                Type::Class(child) if !f.referent_mutable && classes[child as usize].immutable_copy_leaf =>
+                    CopyFieldKind::ImmutableShared,
                 Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
                 _ => CopyFieldKind::Unresolved,
             },
@@ -815,9 +819,9 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: cr
         actor_send: false,
     }).map_err(|err| Diagnostic::new(pos, err.0,
         "class lacks a complete, concrete, closed-world compiler-generated mode-specific copy witness"))?;
-    // The current AOT backend generates flat-object copies only. Do not
-    // broaden witness admission to transitive graphs until the generated
-    // copier has an identity memo and a rollback-safe graph allocation plan.
+    // Only the fresh root is allocated. Proven permanently immutable leaves
+    // retain identity in both modes; mutable graph copies still require a
+    // separate identity memo and rollback-safe graph allocation plan.
     if plan.copied_type_ids != vec![requested] {
         return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
             "nested mutable class graph requires a memoized AOT copy runtime"));
@@ -1036,6 +1040,18 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         Ok(out)
     };
+    // Admit only permanently immutable leaf layouts; a fixed reference slot
+    // alone is never proof of immutability. No constructor or method can
+    // inject aliases or mutate this leaf. The source declaration, including
+    // private fields, supplies the entire closed-world witness.
+    let immutable_copy_leaves: Vec<bool> = p.classes.iter().map(|c| {
+        !c.state_container && !c.name.starts_with("__atto_tuple_private_") &&
+            c.ctor.is_none() && c.methods.is_empty() && c.fields.iter().all(|f|
+                !f.referent_mutable && !f.binding.rebindable() &&
+                f.mode == FieldMode::Final && f.init.as_ref().is_some_and(const_init) &&
+                res(f.ty).is_ok_and(|t| matches!(t,
+                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))))
+    }).collect();
     let fields_of = |owner: &str, fs: &[Field], actor: bool, global_base: u32| -> R<Vec<FieldInfo>> {
         let mut out: Vec<FieldInfo> = Vec::new();
         for (i, f) in fs.iter().enumerate() {
@@ -1071,6 +1087,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             let ok = match ty {
                 Type::Int | Type::Bool => true,
                 Type::Float | Type::Str | Type::Enum(_) => !actor,
+                Type::Class(child) => !actor && !f.referent_mutable && f.binding != FieldBinding::Const &&
+                    f.mode != FieldMode::ActorState && immutable_copy_leaves[child as usize] &&
+                    matches!(f.init.as_ref().map(|e| &e.kind), Some(ExprKind::New(name, args))
+                        if name == &class_names[child as usize] && args.is_empty()),
                 _ => false,
             };
             if !ok {
@@ -1101,8 +1121,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     };
 
     let mut classes = Vec::new();
-    for c in &p.classes {
+    for (ci, c) in p.classes.iter().enumerate() {
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
+        if fields.iter().any(|f| matches!(f.ty, Type::Class(_))) &&
+            (c.state_container || c.ctor.is_some() || !c.methods.is_empty() ||
+             c.name.starts_with("__atto_tuple_private_")) {
+            return Err(Diagnostic::new(c.pos, "E_COPY_UNPROVEN",
+                "nested immutable copy layout requires a constructor-free ordinary root without methods"));
+        }
         let mut methods = methods_of(&c.name, &c.methods, &c.fields)?;
         let new_idx = take();
         let ctor_idx = c.ctor.as_ref().map(|_| take());
@@ -1113,8 +1139,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         // identity-free slots. Class/actor/ADT handles require a graph memo,
         // and protected actor-state objects cannot bypass their sealed leases.
         // Custom copy_deep overrides need separate proof/hook chaining.
-        let flat = !c.state_container && fields.iter().all(|f| matches!(f.ty,
-                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
+        let flat = !c.state_container && fields.iter().all(|f| match f.ty {
+            Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
+            Type::Class(child) => !f.referent_mutable && immutable_copy_leaves[child as usize],
+            _ => false,
+        });
         let can_generate_deep_copy = flat && !c.methods.iter().any(|m| m.name == "copy_deep");
         let can_generate_shallow_copy = flat && !c.methods.iter().any(|m| m.name == "copy");
         let deep_copy_idx = if can_generate_deep_copy { Some(take()) } else { None };
@@ -1126,6 +1155,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         classes.push(ClassInfo {
             name: c.name.clone(),
             state_container: c.state_container,
+            immutable_copy_leaf: immutable_copy_leaves[ci],
             fields,
             methods,
             new_idx,
@@ -1808,6 +1838,14 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
         // assignment. No synthetic initializer or implicit default is emitted.
         return Ok(None);
     };
+    if let Type::Class(child) = ty {
+        let leaf = &g.classes[child as usize];
+        if !actor && !f.referent_mutable && leaf.immutable_copy_leaf &&
+            matches!(&init.kind, ExprKind::New(name, args) if name == &leaf.name && args.is_empty()) {
+            return Ok(Some(TE { e: TExpr::Call(leaf.new_idx, vec![]), ty }));
+        }
+        return Err(Diagnostic::new(init.pos, "E_COPY_UNPROVEN", "nested initializer lacks a verified immutable leaf witness"));
+    }
     if !const_init(init) {
         return Err(Diagnostic::new(
             init.pos,
@@ -2835,8 +2873,11 @@ impl<'a> FnCx<'a> {
                         TExpr::Call(index, _), Type::Class(ci)) => {
                         let class = &self.g.classes[ci as usize];
                         !class.state_container && !class.name.starts_with("__atto_tuple_private_") &&
-                            class.fields.iter().all(|f| matches!(f.ty,
-                                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))) &&
+                            class.fields.iter().all(|f| match f.ty {
+                                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
+                                Type::Class(child) => !f.referent_mutable && self.g.classes[child as usize].immutable_copy_leaf,
+                                _ => false,
+                            }) &&
                             (if *op == OwnershipOp::Copy { class.shallow_copy_idx } else { class.deep_copy_idx }) == Some(*index)
                     }
                     _ => false,
@@ -3624,9 +3665,17 @@ impl<'a> FnCx<'a> {
                         "cannot reassign val/final/const field"));
                 }
                 let (offset, fty) = (f.slot, f.ty);
-                if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                let fresh_immutable = match fty {
+                    Type::Class(child) => {
+                        let leaf = &self.g.classes[child as usize];
+                        !f.referent_mutable && leaf.immutable_copy_leaf &&
+                            matches!(&value.kind, ExprKind::New(name, args) if name == &leaf.name && args.is_empty())
+                    }
+                    _ => false,
+                };
+                if !fresh_immutable && !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                     return Err(Diagnostic::new(pos, "E_BORROW",
-                        "reference-valued class field assignment requires checked ownership transfer"));
+                        "reference-valued class field assignment requires a fresh verified immutable leaf"));
                 }
                 if self.loans.values().any(|loan| loan.owner == slot &&
                     (loan.field.is_none() || loan.field == Some(offset))) {
@@ -3997,6 +4046,11 @@ impl<'a> FnCx<'a> {
                 if matches!(action, OwnershipOp::Copy | OwnershipOp::DeepCopy) {
                     if let Type::Class(ci) = value.ty {
                         let shallow = action == OwnershipOp::Copy;
+                        if self.g.classes[ci as usize].fields.iter().any(|f| matches!(f.ty, Type::Class(_))) {
+                            if let Some(tr) = self.trace.as_mut() {
+                                tr.unavailable("nested immutable copy witness not represented in L3");
+                            }
+                        }
                         // Existing L3 wire format has no distinct shallow-class event.
                         // Do not mislabel it as DeepCopy or export a partial proof.
                         if shallow {
@@ -4695,7 +4749,14 @@ impl<'a> FnCx<'a> {
                     ty: Type::ActorRef(a),
                 }
             }
-            ExprKind::Member(base, name) => self.member(base, name, pos)?,
+            ExprKind::Member(base, name) => {
+                let projected = self.member(base, name, pos)?;
+                if matches!(projected.ty, Type::Class(_)) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "nested leaf reference is projection-only; owned extraction requires a lifetime witness"));
+                }
+                projected
+            },
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "array literals are parsed but not yet lowered to browser Wasm")),
@@ -4895,7 +4956,24 @@ impl<'a> FnCx<'a> {
                 _ => return Err(Diagnostic::new(base.pos, "E_UNBOUND", "unknown name 'self'")),
             }
         }
-        let obj = self.value(base)?;
+        // A class-valued field is not an owned expression. Only a scalar
+        // projection through a named root can read this shared immutable
+        // leaf; the ordinary expression arm rejects extraction.
+        let obj = if let ExprKind::Member(root, field) = &base.kind {
+            if !matches!(&root.kind, ExprKind::Var(_)) {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "nested projection requires a named root"));
+            }
+            let projected = self.member(root, field, base.pos)?;
+            if matches!(projected.ty, Type::Class(_)) {
+                if let Some(tr) = self.trace.as_mut() {
+                    tr.unavailable("nested immutable field projection not represented in L3");
+                }
+            }
+            projected
+        } else {
+            self.value(base)?
+        };
         self.member_on(obj, name, pos)
     }
 
