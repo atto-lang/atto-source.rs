@@ -244,12 +244,49 @@ pub fn resolve_mode_v2(t: &[Token], logical_source: Option<&Path>) -> R<Namespac
         logical_folder_v2(logical_source, pos)?;
     }
     let normalized = normalize(t, logical_source)?;
-    let names = normalized.iter().skip(2).take_while(|x| x.tok != Tok::Semi)
+    let names: Vec<String> = normalized.iter().skip(2).take_while(|x| x.tok != Tok::Semi)
         .filter_map(|x| match &x.tok {
             Tok::Ident(name) => Some(name.clone()),
             _ => None,
         }).collect();
+    if names.iter().any(|n| n == "parent" || n == "super" || n == "self" || n == "pkg"
+        || !(n == "types" || crate::static_import_graph::valid_component(n))) {
+        return Err(error(pos, if word(t, 1, "default") { "E_NAMESPACE_PATH" } else { "E_SYNTAX" },
+            "invalid v2 namespace component"));
+    }
     Ok(NamespaceModeV2::Named(names))
+}
+
+/// Scope identity within an authenticated package snapshot. File mode is never
+/// a shared singleton; the validated source-unit path is part of its key.
+/// The PackageId's authentication remains the caller's responsibility.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScopeIdentityV2 {
+    File(String),
+    Named(Vec<String>),
+    Folder(Vec<String>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeKeyV2 {
+    package: crate::static_import_graph::PackageId,
+    identity: ScopeIdentityV2,
+}
+
+pub fn resolve_scope_key_v2(
+    t: &[Token],
+    logical_source: &Path,
+    package: &crate::static_import_graph::PackageId,
+) -> R<ScopeKeyV2> {
+    logical_folder_v2(Some(logical_source), Pos::default())?;
+    let identity = match resolve_mode_v2(t, Some(logical_source))? {
+        NamespaceModeV2::File => ScopeIdentityV2::File(
+            logical_source.to_str().ok_or_else(|| error(Pos::default(), "E_NAMESPACE_PATH",
+                "source identity is not UTF-8"))?.to_owned()),
+        NamespaceModeV2::Named(names) => ScopeIdentityV2::Named(names),
+        NamespaceModeV2::Folder(parts) => ScopeIdentityV2::Folder(parts),
+    };
+    Ok(ScopeKeyV2 { package: package.clone(), identity })
 }
 
 /// Prepare a single-file v2 input for the existing, full compiler pipeline.
