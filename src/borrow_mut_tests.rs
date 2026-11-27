@@ -201,3 +201,17 @@ fn readonly_getter_elision_reloads_after_mutation_and_distinguishes_instances() 
         "elision must reload the field after mutation and retain each receiver identity"
     );
 }
+
+
+#[test]
+fn bae_distinguishes_nominal_layout_and_nonzero_field_offset() {
+    let source = include_str!("../tests/fixtures/pass/borrow-getter-elision-v1-layout.atto");
+    let direct = source.replace("read_left(left)", "left.value")
+        .replace("read_right(borrow! right)", "right.value");
+    let explicit = source.replace("read_left(left)", "read_left(borrow! left)")
+        .replace("read_right(borrow! right)", "read_right(right)");
+    let bytes = crate::compile(source).expect("typed getter calls");
+    assert_eq!(bytes, crate::compile(&direct).expect("direct field reads"),
+        "each nominal class's own field offset must be retained");
+    assert_eq!(bytes, crate::compile(&explicit).expect("alternate loan spellings"));
+}
