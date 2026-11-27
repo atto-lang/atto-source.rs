@@ -95,7 +95,39 @@ const twoMutMain = `pub fnc main(): int {
     stdio.println(r.sum());
     return 0;
 }`;
+
+const rectangle = `define struct Rectangle {
+    Point top_left;
+    Point bottom_right;
+} with {
+    constructor(Point a, Point b) { self.top_left = a; self.bottom_right = b; }
+    mtd area() -> int { return (self.bottom_right.x - self.top_left.x) * (self.bottom_right.y - self.top_left.y); }
+    mut mtd shift(int n): void { self.top_left.x = self.top_left.x + n; }
+}`;
+const nestedOwners = direct(mutating) + '\n' + rectangle;
+const nestedMain = `pub fnc main(): int {
+    let mut p = Point(1, 2);
+    let q = Point(4, 6);
+    let mut r = Rectangle(p, q);
+    let copy: Rectangle = copy! r;
+    p.shift(10);
+    stdio.println(r.area());
+    r.shift(1);
+    stdio.println(r.area());
+    stdio.println(copy.area());
+    return 0;
+}`.replace('let copy: Rectangle', 'let snapshot: Rectangle').replace('copy.area()', 'snapshot.area()');
+const boxOwner = `define struct BoxValue {
+    Rectangle inner;
+} with {
+    constructor(Rectangle r) { self.inner = r; }
+    mtd area() -> int { return (self.inner.bottom_right.x - self.inner.top_left.x) * (self.inner.bottom_right.y - self.inner.top_left.y); }
+}`;
+const threeLevelMain = nestedMain.replace('    p.shift(10);', '    let b = BoxValue(r);\n    p.shift(10);').replace('stdio.println(copy.area());','stdio.println(b.area());').replace('stdio.println(snapshot.area());','stdio.println(b.area());');
 const positives = [
+    ['nested-nominal-value-copy', nestedOwners + '\n' + nestedMain, '12\n8\n12\n'],
+    ['nested-three-level', nestedOwners + '\n' + boxOwner + '\n' + threeLevelMain, '12\n8\n12\n'],
+    ['nested-forward-owner', rectangle + '\n' + direct(mutating) + '\n' + nestedMain, '12\n8\n12\n'],
     ['distinct-nominal-owners', twoOwners + '\n' + twoOwnerMain, '30\n-10\n200\n'],
     ['distinct-mutable-owner-copies', twoMutOwners + '\n' + twoMutMain, '40\n4\n-10\n'],
     ['define-grouped-arrow', direct(decl) + '\n' + main, '30\n200\nfalse\n'],
@@ -125,6 +157,14 @@ const positives = [
     ['origin', decl + '\n' + main.replace('10, 20', '0, 0'), '0\n0\ntrue\n'],
 ];
 const negatives = [
+    ['nested-wrong-nominal-argument', nestedOwners + '\n' + secondOwner + '\n' + nestedMain.replace('let q = Point', 'let q = Offset'), /E_TYPE/],
+    ['nested-wrong-field-identity', nestedOwners.replace('Point bottom_right;', 'Offset bottom_right;') + '\n' + secondOwner + '\n' + nestedMain, /E_TYPE/],
+    ['nested-uninitialized-field', nestedOwners.replace('self.bottom_right = b;', '') + '\n' + nestedMain, /E_STRUCT_INIT/],
+    ['nested-duplicate-field', nestedOwners.replace('self.bottom_right = b;', 'self.top_left = b; self.bottom_right = b;') + '\n' + nestedMain, /E_STRUCT_INIT/],
+    ['nested-unknown-owner', nestedOwners.replace('Point top_left;', 'Missing top_left;') + '\n' + nestedMain, /E_TYPE/],
+    ['nested-cycle', nestedOwners.replace('Point top_left;', 'Rectangle top_left;') + '\n' + nestedMain, /E_STRUCT_LAYOUT_CYCLE/],
+    ['nested-missing-projection', nestedOwners.replace('self.bottom_right.x -', 'self.bottom_right.z -') + '\n' + nestedMain],
+    ['nested-immutable-receiver', nestedOwners + '\n' + nestedMain.replace('let mut r =', 'let r ='), /E_BORROW_MUT_REQUIRED/],
     ['wrong-second-owner-annotation', twoOwners + '\n' + twoOwnerMain.replace('let Offset q =', 'let Point q =')],
     ['wrong-second-owner-copy', twoOwners + '\n' + twoOwnerMain.replace('let Offset r =', 'let Point r =')],
     ['duplicate-nominal-owner', twoOwners.replaceAll('Offset', 'Point') + '\n' + twoOwnerMain],

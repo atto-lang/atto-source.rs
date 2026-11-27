@@ -161,6 +161,153 @@ fn mutating_statements(m: &Method, fields: &Slots, params: &Slots) -> R<Vec<Stmt
     Ok(out)
 }
 
+
+type LeafPlan = Vec<(String, Type)>;
+
+// Logical scalar slots only. No physical memory ABI is claimed.
+fn nominal_owner(ty: Type, names: &[(String, Pos)], decls: &[StructWithTarget], pos: Pos) -> R<usize> {
+    let Type::Named(index) = ty else { return Err(denied(pos, "expected nominal field type")); };
+    let (name, _) = names.get(index as usize).ok_or_else(|| denied(pos, "unknown nominal type index"))?;
+    decls.iter().position(|d| &d.name == name)
+        .ok_or_else(|| Diagnostic::new(pos, "E_TYPE", "unknown attached nominal type"))
+}
+fn layout_for(owner: usize, decls: &[StructWithTarget], names: &[(String, Pos)],
+    visiting: &mut [bool], cache: &mut [Option<LeafPlan>]) -> R<LeafPlan> {
+    let d = &decls[owner];
+    if visiting[owner] {
+        return Err(Diagnostic::new(d.pos, "E_STRUCT_LAYOUT_CYCLE", "recursive by-value nominal layout"));
+    }
+    if let Some(plan) = &cache[owner] { return Ok(plan.clone()); }
+    visiting[owner] = true;
+    let mut plan = Vec::new();
+    for (field, ty) in &d.fields {
+        if matches!(ty, Type::Int | Type::Bool) {
+            plan.push((field.clone(), *ty));
+        } else {
+            let child = nominal_owner(*ty, names, decls, d.pos)?;
+            let leaves = layout_for(child, decls, names, visiting, cache)?;
+            if leaves.is_empty() { return Err(denied(d.pos, "empty nested nominal value is outside this profile")); }
+            for (name, leaf) in leaves {
+                plan.push((format!("{field}.{name}"), leaf));
+            }
+        }
+        if plan.len() > MAX_PARAMS {
+            return Err(Diagnostic::new(d.pos, "E_SOURCE_LIMIT", "nested nominal scalar slot budget exceeded"));
+        }
+    }
+    visiting[owner] = false;
+    cache[owner] = Some(plan.clone());
+    Ok(plan)
+}
+
+// A projection path is built only from typed AST member nodes, not source rewriting.
+fn projection(e: &Expr) -> Option<(Expr, String)> {
+    match &e.kind {
+        ExprKind::SelfRef | ExprKind::Var(_) => Some((e.clone(), String::new())),
+        ExprKind::Member(base, field) => {
+            let (root, path) = projection(base)?;
+            Some((root, if path.is_empty() { field.clone() } else { format!("{path}.{field}") }))
+        }
+        _ => None,
+    }
+}
+fn flatten_expr(e: &Expr) -> R<Expr> {
+    let pos = e.pos;
+    let kind = match &e.kind {
+        ExprKind::Member(_, _) => {
+            let (root, path) = projection(e).ok_or_else(|| denied(pos, "invalid nested projection"))?;
+            match root.kind {
+                ExprKind::SelfRef => ExprKind::Member(Box::new(root), path),
+                ExprKind::Var(name) => ExprKind::Var(format!("{name}.{path}")),
+                _ => return Err(denied(pos, "invalid nested projection root")),
+            }
+        }
+        ExprKind::Unary(op, a) => ExprKind::Unary(*op, Box::new(flatten_expr(a)?)),
+        ExprKind::Binary(op, a, b) => ExprKind::Binary(*op, Box::new(flatten_expr(a)?), Box::new(flatten_expr(b)?)),
+        ExprKind::Ternary(c, a, b) => ExprKind::Ternary(Box::new(flatten_expr(c)?), Box::new(flatten_expr(a)?), Box::new(flatten_expr(b)?)),
+        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Var(_) => e.kind.clone(),
+        _ => return Err(denied(pos, "nested member expression must be a closed scalar expression")),
+    };
+    Ok(Expr { kind, pos })
+}
+
+fn flatten_declarations(source: &[StructWithTarget], names: &[(String, Pos)]) -> R<Vec<StructWithTarget>> {
+    let mut visiting = vec![false; source.len()];
+    let mut cache = vec![None; source.len()];
+    let plans = (0..source.len()).map(|i| layout_for(i, source, names, &mut visiting, &mut cache))
+        .collect::<R<Vec<_>>>()?;
+    let mut result = source.to_vec();
+    for (owner, d) in result.iter_mut().enumerate() {
+        let original = &source[owner];
+        d.fields = plans[owner].clone();
+        for (_, ctor) in &mut d.constructors {
+            let nested = original.fields.iter().any(|(_, t)| matches!(t, Type::Named(_)))
+                || ctor.params.iter().any(|p| matches!(p.ty, Type::Named(_)));
+            if !nested { continue; }
+            let orig_params = ctor.params.clone();
+            let mut flat_params = Vec::new();
+            for p in &orig_params {
+                if p.mutable { return Err(denied(p.pos, "mutable constructor parameter outside nested value profile")); }
+                if matches!(p.ty, Type::Int | Type::Bool) { flat_params.push(p.clone()); }
+                else {
+                    let child = nominal_owner(p.ty, names, source, p.pos)?;
+                    if plans[child].is_empty() { return Err(denied(p.pos, "empty nested parameter")); }
+                    for (leaf, ty) in &plans[child] {
+                        flat_params.push(Param { name: format!("{}.{leaf}", p.name), ty: *ty, mutable: false, pos: p.pos });
+                    }
+                }
+                if flat_params.len() > MAX_PARAMS { return Err(denied(p.pos, "nested constructor scalar parameter budget exceeded")); }
+            }
+            let mut body = Vec::new();
+            for stmt in &ctor.body {
+                let Stmt::FieldAssign { target, field, value, pos } = stmt else {
+                    return Err(denied(ctor.pos, "nested constructor requires straight-line whole-field initialization"));
+                };
+                if !matches!(&target.kind, ExprKind::SelfRef) { return Err(denied(*pos, "nested constructor must initialize whole fields")); }
+                let (_, ty) = original.fields.iter().find(|(n, _)| n == field)
+                    .ok_or_else(|| Diagnostic::new(*pos, "E_STRUCT_INIT", "unknown struct field"))?;
+                if matches!(ty, Type::Int | Type::Bool) {
+                    body.push(Stmt::FieldAssign { target: target.clone(), field: field.clone(), value: flatten_expr(value)?, pos: *pos });
+                } else {
+                    let ExprKind::Var(param) = &value.kind else { return Err(denied(*pos, "nested field requires an exact nominal constructor parameter")); };
+                    let p = orig_params.iter().find(|p| &p.name == param).ok_or_else(|| denied(*pos, "unknown nested constructor parameter"))?;
+                    let child = nominal_owner(*ty, names, source, *pos)?;
+                    if nominal_owner(p.ty, names, source, *pos)? != child {
+                        return Err(Diagnostic::new(*pos, "E_TYPE", "nested field nominal identity mismatch"));
+                    }
+                    for (leaf, _) in &plans[child] {
+                        body.push(Stmt::FieldAssign { target: target.clone(), field: format!("{field}.{leaf}"),
+                            value: variable(&format!("{param}.{leaf}"), value.pos), pos: *pos });
+                    }
+                }
+            }
+            Parser::prove_struct_constructor(&d.fields, &flat_params, &body, ctor.pos)?;
+            ctor.params = flat_params;
+            ctor.body = body;
+        }
+        if original.fields.iter().any(|(_, t)| matches!(t, Type::Named(_))) {
+            for m in &mut d.methods {
+                let mut body = Vec::new();
+                for stmt in &m.body {
+                    body.push(match stmt {
+                        Stmt::Return(Some(e), at) => Stmt::Return(Some(flatten_expr(e)?), *at),
+                        Stmt::Return(None, at) => Stmt::Return(None, *at),
+                        Stmt::FieldAssign { target, field, value, pos } => {
+                            let (root, path) = projection(target).ok_or_else(|| denied(*pos, "invalid nested mutable projection"))?;
+                            if !matches!(&root.kind, ExprKind::SelfRef) { return Err(denied(*pos, "nested writes require self")); }
+                            let field = if path.is_empty() { field.clone() } else { format!("{path}.{field}") };
+                            Stmt::FieldAssign { target: root, field, value: flatten_expr(value)?, pos: *pos }
+                        }
+                        _ => return Err(denied(m.pos, "nested method requires closed scalar reads or writes")),
+                    });
+                }
+                m.body = body;
+            }
+        }
+    }
+    Ok(result)
+}
+
 struct MethodEntry {
     function: String,
     arity: usize,
@@ -175,6 +322,7 @@ struct LocalValue {
 }
 struct MainLower<'a> {
     decls: &'a [StructWithTarget],
+    source_decls: &'a [StructWithTarget],
     methods: &'a BTreeMap<(usize, String, usize), Vec<MethodEntry>>,
     type_names: &'a [(String, Pos)],
     writable_bindings: &'a [Pos],
@@ -265,18 +413,39 @@ impl MainLower<'_> {
     fn construct(&mut self, owner: usize, name: &str, args: &[Expr], pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
         let decl = &self.decls[owner];
         let writable = self.writable_bindings.contains(&pos);
-        let lowered = args.iter().map(|arg| self.expr(arg)).collect::<R<Vec<_>>>()?;
-        let types = lowered.iter().map(|arg| self.scalar_type(arg)).collect::<R<Vec<_>>>()?;
-        let mut candidates = decl.constructors.iter().filter(|(_, c)|
-            c.params.iter().map(|p| p.ty).eq(types.iter().copied()));
-        let (_, ctor) = candidates.next().ok_or_else(|| {
-            let same_arity = decl.constructors.iter().any(|(_, c)| c.params.len() == args.len());
-            Diagnostic::new(pos, if same_arity { "E_TYPE" } else { "E_ARITY" },
-                "no matching attached struct constructor signature")
-        })?;
-        if candidates.next().is_some() {
-            return Err(denied(pos, "ambiguous attached struct constructor signature"));
+        // Select by original nominal identities before expanding any scalar slots.
+        let original = &self.source_decls[owner];
+        let mut actual = Vec::new();
+        for arg in args {
+            if let ExprKind::Var(n) = &arg.kind {
+                if let Some(v) = self.values.get(n) {
+                    actual.push((Some(v.owner), None, v.fields.iter().map(|f| variable(f, arg.pos)).collect::<Vec<_>>()));
+                    continue;
+                }
+            }
+            let e = self.expr(arg)?;
+            let ty = self.scalar_type(&e)?;
+            actual.push((None, Some(ty), vec![e]));
         }
+        let mut candidates = Vec::new();
+        for (i, (_, c)) in original.constructors.iter().enumerate() {
+            if c.params.len() != actual.len() { continue; }
+            let mut compatible = true;
+            for (p, (owner, ty, _)) in c.params.iter().zip(&actual) {
+                compatible &= match p.ty {
+                    Type::Named(_) => *owner == Some(nominal_owner(p.ty, self.type_names, self.source_decls, p.pos)?),
+                    _ => owner.is_none() && *ty == Some(p.ty),
+                };
+            }
+            if compatible { candidates.push(i); }
+        }
+        let [selected] = candidates.as_slice() else {
+            let same_arity = original.constructors.iter().any(|(_, c)| c.params.len() == args.len());
+            return Err(Diagnostic::new(pos, if same_arity { "E_TYPE" } else { "E_ARITY" }, "no unique matching nominal constructor signature"));
+        };
+        let ctor = &decl.constructors[*selected].1;
+        let lowered: Vec<_> = actual.into_iter().flat_map(|(_, _, leaves)| leaves).collect();
+        if lowered.len() != ctor.params.len() { return Err(denied(pos, "invalid flattened constructor argument plan")); }
         charge_expansion(&mut self.expansion_nodes, body_cost(&ctor.body)
             .saturating_add(4 * (decl.fields.len() + args.len())), pos)?;
         if ctor.params.iter().any(|p| p.mutable) {
@@ -486,8 +655,9 @@ impl MainLower<'_> {
 pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
     let source_nodes = tokens.len();
     let mut parser = Parser::new(tokens);
-    let decls = parser.parse_struct_value_targets()?;
+    let source_decls = parser.parse_struct_value_targets()?;
     let (mut program, writable_bindings) = parser.parse_struct_value_program()?;
+    let decls = flatten_declarations(&source_decls, &program.type_names)?;
     if !program.classes.is_empty() || !program.enums.is_empty() || !program.actors.is_empty()
         || program.actor_interface.is_some() || !program.array_types.is_empty()
         || program.funcs.len() != 1 {
@@ -562,7 +732,7 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
         }
     }
     }
-    let mut lower = MainLower { decls: &decls, methods: &methods, type_names: &program.type_names, writable_bindings: &writable_bindings, names: BTreeSet::new(),
+    let mut lower = MainLower { decls: &decls, source_decls: &source_decls, methods: &methods, type_names: &program.type_names, writable_bindings: &writable_bindings, names: BTreeSet::new(),
         scalars: BTreeMap::new(), values: BTreeMap::new(), next: 0, expansion_nodes: source_nodes };
     program.funcs[0].body = lower.body(&program.funcs[0].body)?;
     program.funcs.extend(lowered);
