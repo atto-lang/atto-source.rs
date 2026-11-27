@@ -1,5 +1,5 @@
 // Compiles real .atto copy! and copy!! programs using native attoc and executes guest
-// WebAssembly. This is a BOUNDED flat-class test, not a recursive graph proof.
+// WebAssembly. Bounded scalar, flat-class and immutable leaf cases; not a mutable graph proof.
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
@@ -18,6 +18,7 @@ const positives = [
   '996-copy-doublebang-constructor-state.atto',
   '997-copy-doublebang-private-state.atto',
   '998-copy-shallow-flat-class.atto',
+  'copy-immutable-nested-root.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
