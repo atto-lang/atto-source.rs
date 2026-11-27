@@ -3054,7 +3054,7 @@ impl Parser {
     /// Local binding: qualifier (IDENT (":"|"as") type_ref | [type_ref] IDENT) "=" expression.
     fn parse_binding(&mut self) -> R<Stmt> {
         let pos = self.pos();
-        let kind = if self.eat_word("val") {
+        let mut kind = if self.eat_word("val") {
             BindKind::Val
         } else if self.eat_word("const") {
             BindKind::Const
@@ -3076,6 +3076,10 @@ impl Parser {
                 ));
             }
             self.advance();
+            if kind == BindKind::Const {
+                // Same fixed binding and checker path as explicit val.
+                kind = BindKind::Val;
+            }
         }
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_))
             && (*self.peek_at(1) == Tok::Colon || self.word_at(1) == Some("as"))
