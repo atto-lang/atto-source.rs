@@ -36,6 +36,7 @@ pub mod borrow_export;
 pub mod core_future_ownership;
 pub mod check;
 pub mod diag;
+pub mod lsp_diagnostics;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
