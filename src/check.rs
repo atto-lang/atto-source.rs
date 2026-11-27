@@ -5232,6 +5232,30 @@ impl<'a> FnCx<'a> {
                 return Ok(accumulated);
             }
         }
+        if matches!(name, "stdio.out.write" | "process.stdout.write") {
+            let root = if name == "stdio.out.write" { "stdio" } else { "process" };
+            // A browser host import is not an ambient actor/process capability.
+            // Do not extend the old print path into isolated cleanup scopes or
+            // class/actor methods until their authority model is proved.
+            if self.owner != Owner::TopLevel || self.cleanup_depth != 0 {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "canonical stdout requires an authorized root browser callable"));
+            }
+            if self.lookup(root).is_some() || self.g.names.contains_key(root)
+                || self.g.class(root).is_some() || self.g.enum_(root).is_some()
+                || self.g.actor(root).is_some()
+                || self.g.type_names.iter().any(|(n, _)| n == root) {
+                return Err(Diagnostic::new(pos, "E_IO_SHADOW", "canonical stdout capability is shadowed"));
+            }
+            if args.len() != 1 {
+                return Err(Diagnostic::new(pos, "E_ARITY", "canonical stdout requires exactly one argument"));
+            }
+            if let ExprKind::Str(s) = &args[0].kind {
+                let (offset, len) = self.string(s, pos)?;
+                self.imports.push(Import::PrintStr);
+                return Ok(TE { e: TExpr::PrintStr { offset, len, newline: false }, ty: Type::Void });
+            }
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "browser stdout method currently requires a string literal"));
+        }
         if name == "stdio.print" || name == "stdio.println" {
             // The parser desugars `stdio.out << value` and the explicit
             // `writech stdio.out, value` through this checked builtin.

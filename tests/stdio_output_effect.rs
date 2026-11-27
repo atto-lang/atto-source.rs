@@ -50,3 +50,24 @@ fn stdout_non_suspending_exception_is_not_generalized_to_other_streams() {
             "{statement}: {err}");
     }
 }
+
+#[test]
+fn canonical_stdout_methods_share_raw_string_print_lowering() {
+    let source = r#"pub fnc main(): int { stdio.out.write("A"); process.stdout.write("B"); return 42; }"#;
+    let legacy = r#"pub fnc main(): int { stdio.print("A"); stdio.print("B"); return 42; }"#;
+    assert_eq!(compile(source).unwrap(), compile(legacy).unwrap());
+}
+
+#[test]
+fn canonical_stdout_does_not_bypass_shadowing_purity_or_arity() {
+    for (source, expected) in [
+        (r#"pub fnc main(): int { val int process = 1; process.stdout.write("A"); return 42; }"#, "E_IO_SHADOW"),
+        (r#"pub fnc main(): int { val int stdio = 1; stdio.out.write("A"); return 42; }"#, "E_IO_SHADOW"),
+        (r#"pub pure fnc main(): int { process.stdout.write("A"); return 42; }"#, "E_PURE"),
+        (r#"pub fnc main(): int { stdio.out.write("A","B"); return 42; }"#, "E_ARITY"),
+        (r#"pub fnc main(): int { process.stdout.write(42); return 42; }"#, "E_UNSUPPORTED"),
+    ] {
+        let err = compile(source).expect_err("must fail closed");
+        assert_eq!(err.code, expected, "{source}: {err}");
+    }
+}
