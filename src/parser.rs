@@ -3385,7 +3385,7 @@ impl Parser {
         self.enter()?;
         let parsed = (|| -> R<Expr> {
             if *self.peek() == close {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "empty comma sequence"));
+                return Err(Diagnostic::new(self.pos(), "E_EMPTY_SEQUENCE", "empty comma sequence"));
             }
             let mut steps = Vec::new();
             loop {
