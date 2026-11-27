@@ -44,6 +44,8 @@ pub const PANIC_STACK: i32 = 6;
 pub const PANIC_REFINEMENT: i32 = 7;
 /// Checked shift distance outside 0..63; terminal guest panic, not a masked shift.
 pub const PANIC_SHIFT_DISTANCE: i32 = 8;
+/// Terminal ADT expectation failure; distinct from refinement and shift panics.
+pub const PANIC_EXPECT: i32 = 9;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -974,6 +976,19 @@ impl Emit<'_> {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, 8, false);
             },
+            TExpr::AdtExpect { source, tmp, success_tag } => {
+                self.expr(source);
+                self.set(*tmp);
+                self.get(*tmp);
+                field_op(&mut self.code, Type::Bool, 0, false);
+                self.i32c(*success_tag as i32);
+                self.op(0x47);
+                self.open(0x04, 0x40, Frame::Other);
+                panic(&mut self.code, PANIC_EXPECT);
+                self.close();
+                self.get(*tmp);
+                field_op(&mut self.code, v.ty, 8, false);
+            }
             TExpr::AdtPropagate { source, tmp, success_tag } => {
                 // Source (and all of its effects) is evaluated exactly once.
                 self.expr(source);
