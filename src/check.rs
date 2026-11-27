@@ -2380,7 +2380,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
 }
 
 /// Whether any expression node in `body` satisfies `f`.
-fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
+pub(crate) fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
@@ -4370,11 +4370,26 @@ impl<'a> FnCx<'a> {
                 }
                 if a.ty == Type::Int && b.ty == Type::Int {
                     if *op == BinOp::Div {
-                        return Err(Diagnostic::new(
-                            pos,
-                            "E_UNSUPPORTED",
-                            "'/' on two ints is not admitted: whether int / int yields float or int is undecided (spec S-25); write a float operand, e.g. 7.0 / 2",
-                        ));
+                        // Same proof boundary as the LLVM bundled frontend.
+                        // Never substitute a terminal Wasm trap for a guest
+                        // ordinary error on an unproven divisor.
+                        let literal = |v: &TE| match &v.e {
+                            TExpr::I64(n) => Some(*n),
+                            TExpr::Neg(inner) => match &inner.e {
+                                TExpr::I64(n) => n.checked_neg(),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let safe = match literal(&b) {
+                            Some(0) | None => false,
+                            Some(-1) => literal(&a).is_some_and(|n| n != i64::MIN),
+                            Some(_) => true,
+                        };
+                        if !safe {
+                            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                                "checked integer division requires a proven nonzero divisor and no MIN/-1 overflow, or typed ordinary-error lowering"));
+                        }
                     }
                 } else {
                     // Java binary numeric promotion: an int operand widens to float.
@@ -4400,8 +4415,7 @@ impl<'a> FnCx<'a> {
                 }
             }
             let ty = match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
-                BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => Type::Int,
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr =>
                     unreachable!("bitwise operations handled before numeric promotion"),
