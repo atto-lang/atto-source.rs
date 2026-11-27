@@ -152,6 +152,50 @@ try {
     assert.ok(built.stderr.includes('E_UNSUPPORTED'),source+': '+built.stderr);
     await assert.rejects(stat(out),{code:'ENOENT'});
   }
+  // Named fnc stage proof: actual compiler and bounded separate Wasm process.
+  // The expensive fib(55) source is compiled in Rust tests, not run in smoke CI.
+  const namedStage = n => 'pub fnc main(): int { return '+n+' |> fnc fib(int v): int { ^ match v over on 0 -> 0, on 1 -> 1, on _ -> fib(v - 2) + fib(v - 1) end }; }';
+  const namedCases = [
+    ['zero',namedStage(0),'0'],
+    ['one',namedStage(1),'1'],
+    ['ten',namedStage(10),'55'],
+    ['twenty',namedStage(20),'6765'],
+    ['semicolon',namedStage(10).replace(' end }',' end; }'),'55'],
+    ['homonym','fnc fib(int v): int { return 999; } '+namedStage(10),'55'],
+    ['two-identities','pub fnc main(): int { return 1 |> fnc f(int v): int { return v+2; } |> fnc f(int v): int { return v*14; }; }','42'],
+    ['stack-quota','pub fnc main(): int { return 2048 |> fnc f(int v): int { return f(v-1); }; }','stack'],
+  ];
+  for(const [id,src,want] of namedCases) {
+    const source=join(work,'named-stage-'+id+'.atto'),out=source+'.wasm';
+    await writeFile(source,src);
+    const built=run(source,out);
+    assert.equal(built.error,undefined,id+': compile subprocess failure');
+    assert.equal(built.status,0,id+': '+built.stderr);
+    const worker=`import {readFileSync} from 'node:fs';
+const bytes=readFileSync(process.argv[1]);if(!WebAssembly.validate(bytes))throw Error('invalid Wasm');
+const m=new WebAssembly.Module(bytes);if(WebAssembly.Module.imports(m).length)throw Error('unexpected host imports');
+const i=new WebAssembly.Instance(m,{});
+try{const n=i.exports.main();if(typeof n!=='bigint'||i.exports.panic_code.value!==0)throw Error('wrong result ABI');console.log(String(n));}
+catch(e){if(!(e instanceof WebAssembly.RuntimeError)||i.exports.panic_code.value!==6)throw e;console.log('stack');}`;
+    const guest=spawnSync(process.execPath,['--input-type=module','-e',worker,out],{encoding:'utf8',timeout:5000,maxBuffer:1<<20});
+    assert.equal(guest.error,undefined,id+': guest subprocess failure');
+    assert.equal(guest.status,0,id+': '+guest.stderr);
+    assert.equal(guest.stdout,want+'\n',id+': wrong guest result');
+    console.log('PASS named recursive guest',id,want);
+  }
+  for(const [id,src,code] of [
+    ['escape','pub fnc main(): int { val x = 1 |> fnc f(int v): int { return v; }; return f(x); }','E_UNBOUND'],
+    ['capture','pub fnc main(): int { val x = 1; return 1 |> fnc f(int v): int { return v+x; }; }','E_UNSUPPORTED'],
+    ['arity','pub fnc main(): int { return 1 |> fnc f(int v): int { return f(v,v); }; }','E_ARITY'],
+  ]) {
+    const source=join(work,'named-stage-negative-'+id+'.atto'),out=source+'.wasm';
+    await writeFile(source,src);
+    const built=run(source,out);
+    assert.equal(built.error,undefined,id+': compile infrastructure');
+    assert.equal(built.status,1,id+': '+built.stderr);
+    assert.match(built.stderr,new RegExp('\\b'+code+':'));
+    await assert.rejects(stat(out),{code:'ENOENT'});
+  }
   for (const name of negative) {
     const path = fileURLToPath(new URL('./fixtures/fail/' + name, import.meta.url));
     const source = await readFile(path, 'utf8');
