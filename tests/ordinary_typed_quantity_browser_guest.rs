@@ -39,3 +39,27 @@ fn typed_quantity_errors_fail_closed_without_changing_unrelated_admission() {
     let malformed=format!("{PRE}\npub fnc main() -> int {{ return 42; }} trailing");
     assert!(compile(&malformed).is_err());
 }
+
+#[test]
+fn import_capable_entry_preserves_file_local_quantity_guest_without_loading() {
+    use atto_compiler::compile_with_imports;
+    use std::path::Path;
+    let source = format!("{PRE}\npub fnc main() -> int {{ val Positive a = 42<Second>; return a / 1<Second>; }}");
+    let expected = compile(&source).expect("ordinary typed source");
+    let actual = compile_with_imports(&source, Path::new("main.atto"), |_| panic!("file-local quantity must not load dependencies")).expect("CLI-linked typed source");
+    assert_eq!(actual, expected);
+    let malformed = format!("{source} import other from './other.atto';");
+    assert!(compile_with_imports(&malformed, Path::new("main.atto"), |_| panic!("unsupported quantity import must not load dependencies")).is_err());
+}
+#[test]
+fn actual_cli_emits_same_typed_quantity_guest() {
+    let source = include_str!("fixtures/typed-quantity-cli.atto");
+    let expected = compile(source).expect("ordinary typed source");
+    let output = Command::new(env!("CARGO_BIN_EXE_attoc"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .arg("tests/fixtures/typed-quantity-cli.atto")
+        .output().expect("attoc must be launchable");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.stdout, expected);
+    assert!(output.stderr.is_empty());
+}

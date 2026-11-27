@@ -1,0 +1,4 @@
+define dimension Time;
+define unit Second: Time;
+type Positive = int where self > 0 and units in Second;
+pub fnc main() -> int { val Positive a = 42<Second>; return a / 1<Second>; }
