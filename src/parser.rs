@@ -3204,7 +3204,7 @@ impl Parser {
                     "brace literal exceeds 1024 entries"));
             }
             let identifier_field = matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                && matches!(self.peek_at(1), Tok::Colon | Tok::Assign);
+                && matches!(self.peek_at(1), Tok::Colon | Tok::Assign | Tok::ColonEqual);
             let quoted_map_key = matches!(self.peek(), Tok::Str(_))
                 && *self.peek_at(1) == Tok::Colon;
             let captured_field = *self.peek() == Tok::Colon;
@@ -3223,7 +3223,9 @@ impl Parser {
                 };
                 self.advance();
                 if !captured_field {
-                    if !self.eat(&Tok::Assign) { self.expect(Tok::Colon, "':' or '=' after record field")?; }
+                    if !self.eat(&Tok::Assign) && !self.eat(&Tok::ColonEqual) {
+                        self.expect(Tok::Colon, "':' or '=' or ':=' after record field")?;
+                    }
                 }
                 if !seen_record_names.insert(name.clone()) {
                     return Err(Diagnostic::new(at, "E_DUPLICATE",
@@ -3297,6 +3299,7 @@ impl Parser {
     fn parse_named_record_parens(&mut self, pos: Pos) -> R<Expr> {
         let mut fields: Vec<(String, Expr)> = Vec::new();
         let mut seen = BTreeSet::<String>::new();
+        let mut ordinary_field = false;
         loop {
             if fields.len() >= 1024 {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
@@ -3310,7 +3313,13 @@ impl Parser {
                     "parenthesized Record fields require identifier=expression, identifier:expression or :identifier")),
             };
             self.advance();
-            if !captured && !self.eat(&Tok::Assign) { self.expect(Tok::Colon, "'=' or ':' after named Record field")?; }
+            if captured { ordinary_field = true; }
+            else if !self.eat(&Tok::ColonEqual) {
+                ordinary_field = true;
+                if !self.eat(&Tok::Assign) {
+                    self.expect(Tok::Colon, "'=' or ':' after named Record field")?;
+                }
+            }
             if !seen.insert(name.clone()) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE",
                     format!("duplicate Record field '{name}'")));
@@ -3324,15 +3333,19 @@ impl Parser {
                     break;
                 }
                 if *self.peek() != Tok::Colon && !(matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon | Tok::ColonEqual))
                 {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix named Record fields and positional Tuple items; expected field=value, field:value or :field"));
+                        "cannot mix named Record fields and positional Tuple items; expected field=value, field:value, field:=value or :field"));
                 }
                 continue;
             }
             self.expect(Tok::RParen, "')' after parenthesized Record")?;
             break;
+        }
+        if !ordinary_field {
+            return Err(Diagnostic::new(pos, "E_LITERAL_KIND",
+                "Pair-only parentheses are not a Record"));
         }
         Ok(Expr { kind: ExprKind::Record(fields), pos })
     }
@@ -3361,7 +3374,7 @@ impl Parser {
                 // Identifier '=' or a leading capture ':' selects Record.
                 // Equality, Pair syntax and ordinary positional items do not.
                 if *self.peek() == Tok::Colon || (matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon | Tok::ColonEqual))
                 {
                     return self.parse_named_record_parens(pos);
                 }
