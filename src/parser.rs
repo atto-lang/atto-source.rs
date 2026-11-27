@@ -2117,6 +2117,10 @@ impl Parser {
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
         }
+        if *self.peek() == Tok::ColonEqual {
+            return Err(Diagnostic::new(self.pos(), "E_PAIR_STORAGE_UNSUPPORTED",
+                "stored Pair bindings require nominal typed lowering"));
+        }
         if *self.peek() != Tok::Assign {
             return Err(Diagnostic::new(
                 self.pos(),
@@ -2608,6 +2612,10 @@ impl Parser {
         let r = self.parse_ternary();
         self.cond = saved;
         self.leave();
+        if r.is_ok() && *self.peek() == Tok::ColonEqual {
+            return Err(Diagnostic::new(self.pos(), "E_PAIR_STORAGE_UNSUPPORTED",
+                "standalone Pair values require nominal typed lowering"));
+        }
         r
     }
 
@@ -3501,6 +3509,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Comma => ",",
                 Tok::Colon => ":",
                 Tok::ColonColon => "::",
+                Tok::ColonEqual => ":=",
                 Tok::Arrow => "->",
                 Tok::FatArrow => "=>",
                 Tok::Dot => ".",
@@ -3528,6 +3537,23 @@ fn describe(t: &Tok) -> String {
                 _ => "?",
             };
             format!("'{s}'")
+        }
+    }
+}
+
+#[cfg(test)]
+mod pair_binding_tests {
+    use super::*;
+    use crate::lexer::lex;
+    #[test]
+    fn both_stored_forms_fail_closed_at_pair_token() {
+        for body in ["const x := 5;", "const x = x := 5;", "val x := 5;", "val x = x := 5;"] {
+            let source = format!("pub fnc main(): int {{ {body} return 5; }}");
+            let mut parser = Parser::new(lex(&source).unwrap());
+            let result = parser.parse_program();
+            assert!(result.is_err(), "unexpected acceptance of {body}");
+            let err = result.err().unwrap();
+            assert!(format!("{err:?}").contains("E_PAIR_STORAGE_UNSUPPORTED"), "{err:?}");
         }
     }
 }
