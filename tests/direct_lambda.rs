@@ -330,3 +330,48 @@ fn named_scalar_pipeline_rejects_scope_escape_and_unproved_captures() {
         assert_eq!(error.code, code, "{src}: {error}");
     }
 }
+
+
+#[test]
+fn named_stage_mixed_profiles_and_nested_lambda_fail_closed() {
+    for source in [
+        "routine r(): int { return 1 |> fnc f(int v): int { return f(v); }; } pub fnc main(): int { return r(); }",
+        "routine r(): int { return helper(); } fnc helper(): int { return 1 |> fnc f(int v): int { return f(v); }; } pub fnc main(): int { return r(); }",
+        "pub fnc main(): int { val outer = |n| : int -> n |> fnc f(int v): int { return v; }; return outer(1); }",
+        "pub fnc main(): int { return 1 |> fnc f(int v): int { return v; }; } define module M as fnc g(): int { return 1; } end",
+        "fnc f<T>(T v): T { return v; } pub fnc main(): int { return 1 |> fnc f(int v): int { return f(v); }; }",
+    ] {
+        let diagnostic = atto_compiler::compile(source).expect_err("mixed profile must not lower");
+        assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{source}: {diagnostic}");
+    }
+    // Comments and strings are not syntax-profile markers.
+    let ordinary = "pub fnc main(): int { /* routine module type */ return 1 |> fnc f(int v): int { return v + 41; }; }";
+    assert!(atto_compiler::compile(ordinary).is_ok());
+}
+
+#[test]
+fn named_stage_closed_body_limits_and_recovery() {
+    for source in [
+        "pub fnc main(): int { return 1 |> fnc f(int mut v): int { return v; }; }",
+        "pub fnc main(): int { return 1 |> fnc f(int v): int { return stdio.print(v); }; }",
+        "pub fnc main(): int { return 1 |> fnc f(int v): int { ^ match v over on 0 -> 0 end }; }",
+        "pub fnc main(): int { return 1 |> fnc f(int v): int { ^ match v over on 0 -> 0, on 0 -> 1, on _ -> 2 end }; }",
+        "pub fnc main(): int { return true |> fnc f(int v): int { return v; }; }",
+        "pub fnc main(): int { return 1 |> fnc f(int v): int { ^ match v over on n -> n end }; }",
+        "pub fnc main(): int { return 1 |> fnc f(int v): int { return v; return 0; }; }",
+    ] {
+        assert!(atto_compiler::compile(source).is_err(), "{source}");
+    }
+    // No source identifier may impersonate a compiler-private helper.
+    let forged = "pub fnc main(): int { return $named_stage_0(1); }";
+    assert_eq!(atto_compiler::compile(forged).unwrap_err().code, "E_TOKEN");
+    // Independent helpers count across source functions, not just one body.
+    use std::fmt::Write as _;
+    let mut source = String::new();
+    for n in 0..65 {
+        writeln!(&mut source, "fnc f{n}(): int {{ return 1 |> fnc stage(int v): int {{ return v; }}; }}").unwrap();
+    }
+    source.push_str("pub fnc main(): int { return 0; }");
+    assert_eq!(atto_compiler::compile(&source).unwrap_err().code, "E_SOURCE_LIMIT");
+    assert!(atto_compiler::compile("pub fnc main(): int { return 42 |> fnc f(int v): int { return v; }; }").is_ok());
+}
