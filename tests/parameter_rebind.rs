@@ -68,3 +68,24 @@ fn explicit_set_respects_fixed_and_nearest_binding() {
         assert!(compile(source).is_err(), "{source}");
     }
 }
+
+#[test]
+fn explicit_binding_preview_checks_original_source() {
+    use atto_compiler::compile_explicit_rebinding;
+    let old = "pub fnc main(): int { let x = 40; x = x + 2; return x; }";
+    let explicit = old.replace("x = x + 2", "set x = x + 2");
+    let expected = compile(old).unwrap();
+    assert_eq!(compile_explicit_rebinding(&explicit).unwrap(), expected);
+    for source in [
+        old,
+        "pub fnc main(): int { let x = 0; for (x = 1; x < 2; x++) {} return x; }",
+        "pub fnc main(): int { let x = 0; for (; x < 2; x = x + 1) {} return x; }",
+    ] {
+        assert_eq!(compile_explicit_rebinding(source).unwrap_err().code,
+            "E_EXPLICIT_REBIND", "{source}");
+    }
+    let source = "pub fnc main(): int { let x = 0; for (set x = 40; x < 42; set! (x = x + 1)) {} return x; }";
+    assert!(compile_explicit_rebinding(source).is_ok());
+    let fixed = "pub fnc main(): int { const x = 40; set x = 42; return x; }";
+    assert_eq!(compile_explicit_rebinding(fixed).unwrap_err().code,"E_IMMUTABLE");
+}
