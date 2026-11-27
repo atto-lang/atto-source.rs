@@ -255,6 +255,8 @@ pub struct Parser {
     lambda_nesting: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    // Closed file-prefix scalar denotations, no nominal or generic erasure.
+    scalar_denotations: std::collections::BTreeMap<String, (Type, Pos)>,
     /// Canonically interned nominal Array<T, layout=...> type parameters.
     array_types: Vec<ArrayType>,
     /// Scope of an explicit generator function body.
@@ -394,6 +396,7 @@ impl Parser {
             ascription_colon: true,
             lambda_nesting: 0,
             type_names: Vec::new(),
+            scalar_denotations: std::collections::BTreeMap::new(),
             array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
@@ -659,6 +662,7 @@ impl Parser {
                     "ActorMail<T> is only the parameter type of an actor receive handler",
                 ))
             }
+            n if self.scalar_denotations.contains_key(n) => self.scalar_denotations[n].0,
             n if is_reserved(n) => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
@@ -709,6 +713,7 @@ impl Parser {
     pub fn parse_program(&mut self) -> R<Program> {
         let mut prog = Program::default();
         let mut decls = 0usize;
+        let mut denotation_prefix = true;
         while *self.peek() != Tok::Eof {
             if decls >= MAX_FUNCS {
                 return Err(Diagnostic::new(
@@ -718,6 +723,14 @@ impl Parser {
                 ));
             }
             decls += 1;
+            if self.is_word("denote") && self.word_at(1).is_some_and(|w| matches!(w, "type" | "pub" | "private")) {
+                if !denotation_prefix {
+                    return Err(unsupported(self.pos(), "denotations after other file declarations"));
+                }
+                self.parse_scalar_denotation()?;
+                continue;
+            }
+            denotation_prefix = false;
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
@@ -797,9 +810,62 @@ impl Parser {
                 _ => prog.funcs.push(self.parse_func()?),
             }
         }
+        // The checker uses distinct nominal references: never let a scalar
+        // alias silently shadow a later class, actor, or enum declaration.
+        for name in prog.classes.iter().map(|d| &d.name)
+            .chain(prog.actors.iter().map(|d| &d.name))
+            .chain(prog.enums.iter().map(|d| &d.name)) {
+            if let Some((_, pos)) = self.scalar_denotations.get(name) {
+                return Err(Diagnostic::new(*pos, "E_DUPLICATE",
+                    format!("denotation '{name}' collides with a nominal type")));
+            }
+        }
         prog.type_names = std::mem::take(&mut self.type_names);
         prog.array_types = std::mem::take(&mut self.array_types);
         Ok(prog)
+    }
+
+    /// Admit only already-resolved scalar aliases at the file prefix. A
+    /// single type token is intentional: no arbitrary RHS parsing, recursive
+    /// expansion, forward reference, or generic/union widening in this slice.
+    fn parse_scalar_denotation(&mut self) -> R<()> {
+        self.advance(); // contextual denote
+        if self.is_word("pub") || self.is_word("private") {
+            return Err(unsupported(self.pos(), "denotation visibility"));
+        }
+        if !self.eat_word("type") { return Err(self.expected("'type' after denote")); }
+        let (name, pos) = self.ident("a denoted type name")?;
+        // Restrict the first profile to user type names beginning uppercase;
+        // protect every known core spelling (including unsupported intrinsics).
+        if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+            || matches!(name.as_str(), "String" | "Object" | "Actor" | "ActorRef" | "ActorMail"
+                | "Generator" | "Error" | "Newable" | "Sendable" | "Serializable"
+                | "Copyable" | "DeepCopyable" | "Any" | "Never" | "Record" | "Entry" | "Pair"
+                | "Channel" | "Future" | "Task" | "Duration" | "UUID")
+            || UNSUPPORTED_TYPES.contains(&name.as_str())
+            || UNLOWERED_OWNERSHIP_TYPES.contains(&name.as_str())
+            || self.scalar_denotations.contains_key(&name) {
+            return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                "denotation name must be a fresh, non-core uppercase type identifier"));
+        }
+        self.expect(Tok::Assign, "'=' after denoted type name")?;
+        let rhs_pos = self.pos();
+        let rhs = match self.peek() {
+            Tok::Ident(w) => w.clone(),
+            _ => return Err(unsupported(rhs_pos, "non-scalar denotation RHS")),
+        };
+        let ty = match rhs.as_str() {
+            "int" => Type::Int,
+            "bool" | "boolean" => Type::Bool,
+            "float" | "f64" => Type::Float,
+            "string" | "String" => Type::Str,
+            _ => self.scalar_denotations.get(&rhs).map(|(t, _)| *t)
+                .ok_or_else(|| unsupported(rhs_pos, "unresolved or non-scalar denotation RHS"))?,
+        };
+        self.advance();
+        self.expect(Tok::Semi, "';' after scalar denotation")?;
+        self.scalar_denotations.insert(name, (ty, pos));
+        Ok(())
     }
 
     /// Parse a bounded scalar struct declaration and its grouped/chained
