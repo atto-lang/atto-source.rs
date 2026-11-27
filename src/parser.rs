@@ -663,8 +663,18 @@ impl Parser {
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
+        // Type-position '?' is Option sugar, never formal omission or
+        // expression propagation. Reuse the existing executable ADT ABI only.
+        let ty = if self.eat(&Tok::Question) {
+            match ty {
+                Type::Int => Type::OptionInt,
+                Type::ResultIntStr => Type::OptionResultIntStr,
+                _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    "type suffix '?' requires a supported Option payload in this backend")),
+            }
+        } else { ty };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
-            return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
+            return Err(unsupported(self.pos(), "generic, nested optional, union and sequence types"));
         }
         Ok(ty)
     }
