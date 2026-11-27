@@ -1248,6 +1248,16 @@ impl Parser {
                         if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
                             return Err(unsupported(parsed.field.pos, "non-scalar sealed actor state"));
                         }
+                        // Match the Java preflight: this profile retains only
+                        // literal scalar initializers, not untyped call/effect ASTs.
+                        let literal_matches = match (parsed.field.ty, parsed.field.init.as_ref().map(|e| &e.kind)) {
+                            (Type::Int, Some(ExprKind::Int(Some(n)))) => *n <= i64::MAX as u64,
+                            (Type::Bool, Some(ExprKind::Bool(_))) => true,
+                            _ => false,
+                        };
+                        if !literal_matches {
+                            return Err(Diagnostic::new(parsed.field.pos, "E_STATE", "sealed actor state initializer must be a matching scalar literal"));
+                        }
                         if fields.iter().any(|f| f.name == parsed.field.name) {
                             return Err(Diagnostic::new(parsed.field.pos, "E_DUPLICATE", "duplicate sealed state field"));
                         }
