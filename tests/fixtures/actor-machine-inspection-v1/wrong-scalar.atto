@@ -1,0 +1,1 @@
+define actor Foo as state { let int count: true; } end
