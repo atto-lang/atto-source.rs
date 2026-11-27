@@ -272,8 +272,10 @@ fn lexical_capture_matches_explicit_record_ast_and_type() {
     assert!(matches!(&fields[0].1.kind, ExprKind::Var(n) if n=="name"));
     assert!(matches!(&fields[1].1.kind, ExprKind::Var(n) if n=="age"));
     let typed = collection_types::analyze(&p).unwrap();
-    assert_eq!(typed[2].value.ty, typed[3].value.ty);
-    assert_eq!(typed[2].value.source_to_record_slot, typed[3].value.source_to_record_slot);
+    let a = typed.iter().find(|b| b.name == "a").expect("missing typed Record a");
+    let b = typed.iter().find(|b| b.name == "b").expect("missing typed Record b");
+    assert_eq!(a.value.ty, b.value.ty);
+    assert_eq!(a.value.source_to_record_slot, b.value.source_to_record_slot);
 }
 
 #[test]
