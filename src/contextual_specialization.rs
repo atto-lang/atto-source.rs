@@ -58,7 +58,7 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     }
     let owner = w(&t,2).ok_or_else(|| bad(2,"nominal owner required"))?;
     let member = w(&t,7).ok_or_else(|| bad(7,"method name required"))?;
-    if crate::parser::is_reserved(owner) || (crate::parser::is_reserved(member) && member != "new" && member != "make") {
+    if crate::parser::is_reserved(owner) || crate::parser::is_reserved(member) || matches!(member, "new" | "make") {
         return Err(bad(7,"invalid contextual owner or member name"));
     }
     let ctx_end = pair(&t,9,Tok::LParen,Tok::RParen)?;
@@ -178,7 +178,7 @@ mod tests {
     #[test] fn stored_capture_and_direct_compile() {
         let src=program("let n = 3; const x = Scale::(n); n = 9; const a = x.apply(4); const b = x.apply(5); return a + b + Scale::(2).apply(7);");
         let bytes=crate::compile(&src).expect("checked contextual guest compilation");
-        assert_eq!(&bytes[..4],b"\\0asm");
+        assert_eq!(&bytes[..4],b"\0asm");
     }
     #[test] fn separate_bindings_compile() {
         assert!(crate::compile(&program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);")).is_ok());
