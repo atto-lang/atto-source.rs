@@ -2372,7 +2372,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
 }
 
 /// Whether any expression node in `body` satisfies `f`.
-fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
+pub(crate) fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
