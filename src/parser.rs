@@ -268,6 +268,8 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    // The nearest statement sequence owns a keyword conditional delimiter.
+    keyword_if_arm: bool,
     state_method: bool,
     state_binder: Option<String>,
     struct_value_bindings: Option<Vec<Pos>>,
@@ -403,6 +405,7 @@ impl Parser {
             array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            keyword_if_arm: false,
             state_method: false,
             state_binder: None,
             struct_value_bindings: None,
@@ -2494,6 +2497,8 @@ impl Parser {
         self.enter()?;
         let previous = self.erlang_body;
         self.erlang_body = false;
+        let previous_keyword_arm = self.keyword_if_arm;
+        self.keyword_if_arm = false;
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out = Vec::new();
             while *self.peek() != Tok::RBrace {
@@ -2506,6 +2511,7 @@ impl Parser {
             Ok(out)
         })();
         self.erlang_body = previous;
+        self.keyword_if_arm = previous_keyword_arm;
         self.leave();
         parsed
     }
@@ -2514,6 +2520,8 @@ impl Parser {
         self.enter()?;
         let previous = self.erlang_body;
         self.erlang_body = false;
+        let previous_keyword_arm = self.keyword_if_arm;
+        self.keyword_if_arm = stops.contains(&"fi");
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out = Vec::new();
             loop {
@@ -2534,6 +2542,7 @@ impl Parser {
             Ok(out)
         })();
         self.erlang_body = previous;
+        self.keyword_if_arm = previous_keyword_arm;
         self.leave();
         parsed
     }
@@ -2789,7 +2798,11 @@ impl Parser {
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
-            Some("if") => self.parse_if(),
+            Some("if") => self.parse_if(false),
+            Some("do") if self.word_at(1) == Some("if") => {
+                self.advance();
+                self.parse_if(true)
+            }
             Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
@@ -3260,18 +3273,38 @@ impl Parser {
         })
     }
 
-    fn parse_if(&mut self) -> R<Stmt> {
+    // In a keyword arm, an elif after a completed brace belongs to
+    // the brace chain only if its own condition has a braced delimiter.
+    // Do not consume the enclosing keyword branch marker by speculation.
+    fn braced_elif_head(&self) -> bool {
+        let mut depth = 0usize;
+        for token in self.toks.iter().skip(self.i + 1) {
+            match &token.tok {
+                Tok::LParen | Tok::LBracket => depth += 1,
+                Tok::RParen | Tok::RBracket if depth != 0 => depth -= 1,
+                Tok::LBrace if depth == 0 => return true,
+                Tok::Ident(w) if depth == 0 && matches!(w.as_str(), "then" | "do" | "fi" | "else" | "elif" | "elseif") => return false,
+                Tok::Semi | Tok::RBrace | Tok::Eof if depth == 0 => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn parse_if(&mut self, prefix_do: bool) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("if")?;
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        let braced = !prefix_do && *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
-                if self.eat_word("elif")
-                    || self.eat_word("elseif")
-                    || (self.is_word("else") && self.word_at(1) == Some("if") && {
+                let braced_elif = (self.is_word("elif") || self.is_word("elseif"))
+                    && (!self.keyword_if_arm || self.braced_elif_head());
+                if (braced_elif && { self.advance(); true })
+                    || (!self.keyword_if_arm && self.is_word("else") && self.word_at(1) == Some("if") && {
                         self.advance();
                         self.advance();
                         true
@@ -3280,7 +3313,8 @@ impl Parser {
                     self.grow(1)?;
                     let c = self.parse_cond_head()?;
                     arms.push((c, self.parse_block()?));
-                } else if self.eat_word("else") {
+                } else if self.is_word("else") && (!self.keyword_if_arm || *self.peek_at(1) == Tok::LBrace) {
+                    self.advance();
                     otherwise = Some(self.parse_block()?);
                     break;
                 } else {
@@ -3289,9 +3323,15 @@ impl Parser {
             }
         } else {
             self.eat(&Tok::Semi);
-            if !(self.eat_word("then") || self.eat_word("do")) {
-                return Err(self.expected("'then'"));
-            }
+            let suffix_do = if prefix_do {
+                self.expect_word("then")?;
+                false
+            } else if self.eat_word("do") {
+                true
+            } else {
+                self.expect_word("then")?; // migration statement form
+                false
+            };
             let stops = ["elif", "elseif", "else", "fi"];
             arms.push((cond, self.parse_stmts_until(&stops)?));
             loop {
@@ -3306,8 +3346,12 @@ impl Parser {
                     self.grow(1)?;
                     let c = self.parse_cond_head()?;
                     self.eat(&Tok::Semi);
-                    if !(self.eat_word("then") || self.eat_word("do")) {
-                        return Err(self.expected("'then'"));
+                    if prefix_do {
+                        self.expect_word("then")?;
+                    } else if suffix_do {
+                        self.expect_word("do")?;
+                    } else if !(self.eat_word("then") || self.eat_word("do")) {
+                        return Err(self.expected("'do' or legacy 'then'"));
                     }
                     arms.push((c, self.parse_stmts_until(&stops)?));
                 } else if self.eat_word("else") {
@@ -3318,7 +3362,11 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        // Braces are self-delimiting. The migration spelling `} fi` is
+        // accepted only if the nearest enclosing keyword arm does not own fi.
+        if braced {
+            if !self.keyword_if_arm { self.eat_word("fi"); }
+        } else if !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
@@ -4597,14 +4645,20 @@ impl Parser {
     // boundary and do not accidentally search into the next statement.
     fn question_opens_ternary(&self) -> bool {
         let mut depth = 0usize;
+        let mut keyword_if_depth = 0usize;
         for t in self.toks.iter().skip(self.i + 1) {
             match &t.tok {
                 Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
                 Tok::RParen | Tok::RBracket | Tok::RBrace if depth == 0 => return false,
                 Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
-                Tok::Colon if depth == 0 => return true,
-                Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
-                Tok::Ident(w) if depth == 0 && matches!(
+                Tok::Ident(w) if depth == 0 && w == "if" => keyword_if_depth += 1,
+                Tok::Ident(w) if depth == 0 && w == "fi" && keyword_if_depth != 0 => {
+                    keyword_if_depth -= 1;
+                }
+                Tok::Colon if depth == 0 && keyword_if_depth == 0 => return true,
+                Tok::Semi | Tok::Comma if depth == 0 && keyword_if_depth == 0 => return false,
+                Tok::Eof => return false,
+                Tok::Ident(w) if depth == 0 && keyword_if_depth == 0 && matches!(
                     w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
                 ) => return false,
                 _ => {}
@@ -4862,6 +4916,42 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+    // Single-expression keyword arms share typed, lazy ternary lowering.
+    // Multi-statement value sequences are a separate checked-lowering gate.
+    fn parse_value_if(&mut self) -> R<Expr> {
+        let pos = self.pos();
+        self.expect_word("if")?;
+        let mut arms = Vec::new();
+        loop {
+            if arms.len() >= 127 {
+                return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                    "value if exceeds 128 total arms"));
+            }
+            self.grow(1)?;
+            let cond = self.parse_cond_head()?;
+            self.expect_word("then")?;
+            let value = self.parse_expr()?;
+            arms.push((cond, value));
+            if !self.eat_word("elif") {
+                break;
+            }
+        }
+        if !self.eat_word("else") {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "value if requires an else arm"));
+        }
+        let mut result = self.parse_expr()?;
+        self.expect_word("fi")?;
+        self.height -= arms.len() as u32;
+        for (cond, value) in arms.into_iter().rev() {
+            result = Expr {
+                kind: ExprKind::Ternary(Box::new(cond), Box::new(value), Box::new(result)),
+                pos,
+            };
+        }
+        Ok(result)
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -4897,6 +4987,7 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "if" => return self.parse_value_if(),
                 // A stateless, single-break value loop has no observable
                 // backedge or local bindings. Normalize only this exact
                 // braced form to its operand; ordinary checker/effect/loan
