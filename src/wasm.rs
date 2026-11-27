@@ -1988,3 +1988,6 @@ mod allocator_safety_tests {
         assert!(!admitted(256, u32::MAX - 255)); // wrapped p + size
     }
 }
+
+// Explicit isolated continuation ABI; ordinary emission remains unchanged.
+pub(crate) mod owned_unwind_v1;

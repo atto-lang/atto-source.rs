@@ -123,6 +123,11 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Compile the opt-in owned Future cleanup/recovery continuation profile.
+pub fn compile_owned_unwind_v1(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    wasm::owned_unwind_v1::compile(source)
+}
+
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let source = library::expand(source)?;

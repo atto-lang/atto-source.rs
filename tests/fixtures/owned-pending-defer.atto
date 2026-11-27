@@ -1,0 +1,5 @@
+pub suspends fnc run(take! Future<int> first, take! Future<int> second): int {
+    defer await first;
+    defer await second;
+    return 42;
+}
