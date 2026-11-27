@@ -409,6 +409,8 @@ struct ClassInfo {
     name: String,
     /// Distinct protected-state nominal declaration (single Worker-local profile).
     state_container: bool,
+    // Closed immutable leaf witness: no methods, constructor, or writable fields.
+    immutable_leaf: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
@@ -793,6 +795,8 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: cr
             kind: match f.ty {
                 Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) =>
                     CopyFieldKind::Scalar,
+                Type::Class(child) if classes[child as usize].immutable_leaf && !f.referent_mutable =>
+                    CopyFieldKind::ImmutableShared,
                 Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
                 _ => CopyFieldKind::Unresolved,
             },
@@ -1036,6 +1040,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         Ok(out)
     };
+    // No annotation or nominal field modifier alone grants sharing. The
+    // admitted leaf has only fixed scalar slots and no user code capable of
+    // publishing self or changing its state. No recursive layout admission.
+    let immutable_leaves: Vec<bool> = p.classes.iter().map(|c| {
+        !c.state_container && c.ctor.is_none() && c.methods.is_empty()
+            && c.fields.iter().all(|f| !f.binding.rebindable()
+                && !f.referent_mutable && f.init.as_ref().is_some_and(const_init)
+                && res(f.ty).is_ok_and(|t| matches!(t,
+                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))))
+    }).collect();
     let fields_of = |owner: &str, fs: &[Field], actor: bool, global_base: u32| -> R<Vec<FieldInfo>> {
         let mut out: Vec<FieldInfo> = Vec::new();
         for (i, f) in fs.iter().enumerate() {
@@ -1071,6 +1085,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             let ok = match ty {
                 Type::Int | Type::Bool => true,
                 Type::Float | Type::Str | Type::Enum(_) => !actor,
+                Type::Class(ci) => !actor
+                    && !f.referent_mutable && f.binding != FieldBinding::Const
+                    && immutable_leaves[ci as usize]
+                    && f.init.as_ref().is_some_and(|e| matches!(&e.kind,
+                        ExprKind::New(name, args) if name == &class_names[ci as usize] && args.is_empty())),
                 _ => false,
             };
             if !ok {
@@ -1101,8 +1120,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     };
 
     let mut classes = Vec::new();
-    for c in &p.classes {
+    for (ci, c) in p.classes.iter().enumerate() {
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
+        if c.state_container && fields.iter().any(|f| matches!(f.ty, Type::Class(_))) {
+            return Err(Diagnostic::new(c.pos, "E_STATE_BORROW", "nested reference state is not admitted"));
+        }
         let mut methods = methods_of(&c.name, &c.methods, &c.fields)?;
         let new_idx = take();
         let ctor_idx = c.ctor.as_ref().map(|_| take());
@@ -1113,8 +1135,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         // identity-free slots. Class/actor/ADT handles require a graph memo,
         // and protected actor-state objects cannot bypass their sealed leases.
         // Custom copy_deep overrides need separate proof/hook chaining.
-        let flat = !c.state_container && fields.iter().all(|f| matches!(f.ty,
-                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
+        let flat = !c.state_container && fields.iter().all(|f| match f.ty {
+            Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
+            Type::Class(child) => immutable_leaves[child as usize] && !f.referent_mutable,
+            _ => false,
+        });
         let deep_copy_idx = if flat && !c.methods.iter().any(|m| m.name == "copy_deep") { Some(take()) } else { None };
         let shallow_copy_idx = if flat && !c.methods.iter().any(|m| m.name == "copy") { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
@@ -1124,6 +1149,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         classes.push(ClassInfo {
             name: c.name.clone(),
             state_container: c.state_container,
+            immutable_leaf: immutable_leaves[ci],
             fields,
             methods,
             new_idx,
@@ -1806,6 +1832,15 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
         // assignment. No synthetic initializer or implicit default is emitted.
         return Ok(None);
     };
+    if let Type::Class(ci) = ty {
+        let info = &g.classes[ci as usize];
+        if !actor && info.immutable_leaf && !f.referent_mutable
+            && matches!(&init.kind, ExprKind::New(name, args) if name == &info.name && args.is_empty())
+        {
+            return Ok(Some(TE { e: TExpr::Call(info.new_idx, Vec::new()), ty }));
+        }
+        return Err(Diagnostic::new(init.pos, "E_COPY_UNPROVEN", "nested field requires a fresh immutable leaf"));
+    }
     if !const_init(init) {
         return Err(Diagnostic::new(
             init.pos,
@@ -2825,7 +2860,8 @@ impl<'a> FnCx<'a> {
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
-                if matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_)) {
+                if matches!(v.ty, Type::Class(_)) && matches!(init.kind,
+                    ExprKind::New(..) | ExprKind::Ownership(OwnershipOp::Copy | OwnershipOp::DeepCopy, _, _)) {
                     self.fresh_class_roots.insert(slot);
                 }
                 if let Some(tr) = self.trace.as_mut() {
@@ -3608,9 +3644,22 @@ impl<'a> FnCx<'a> {
                         "cannot reassign val/final/const field"));
                 }
                 let (offset, fty) = (f.slot, f.ty);
-                if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                let fresh_leaf_replacement = match fty {
+                    Type::Class(ci) => {
+                        let leaf = &self.g.classes[ci as usize];
+                        leaf.immutable_leaf && !f.referent_mutable &&
+                            matches!(&value.kind, ExprKind::New(n, args) if n == &leaf.name && args.is_empty())
+                    }
+                    _ => false,
+                };
+                if !fresh_leaf_replacement && !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                     return Err(Diagnostic::new(pos, "E_BORROW",
                         "reference-valued class field assignment requires checked ownership transfer"));
+                }
+                if fresh_leaf_replacement {
+                    if let Some(tr) = self.trace.as_mut() {
+                        tr.unavailable("nested immutable field replacement lacks canonical place provenance");
+                    }
                 }
                 if self.loans.values().any(|loan| loan.owner == slot &&
                     (loan.field.is_none() || loan.field == Some(offset))) {
@@ -3662,6 +3711,10 @@ impl<'a> FnCx<'a> {
                     }
                 };
                 let (offset, fty, mode) = (f.slot, f.ty, f.mode);
+                if matches!(fty, Type::Class(_)) {
+                    return Err(Diagnostic::new(pos, "E_COPY_UNPROVEN",
+                        "nested field constructor reassignment is not admitted"));
+                }
                 // Deferred final fields are the sole immutable exception:
                 // the separate flow-sensitive AST gate proved exactly one
                 // constructor write on all successful paths. Initialized
@@ -3788,6 +3841,10 @@ impl<'a> FnCx<'a> {
     /// An expression used as a value (not void).
     fn value(&mut self, e: &Expr) -> R<TE> {
         let v = self.expr(e)?;
+        if matches!(v.ty, Type::Class(_)) && matches!(v.e, TExpr::FieldGet { .. }) {
+            return Err(Diagnostic::new(e.pos, "E_BORROW",
+                "nested reference projections cannot escape as owned handles"));
+        }
         if v.ty == Type::Void {
             return Err(type_err(e.pos, "a void call has no value"));
         }
@@ -4881,7 +4938,9 @@ impl<'a> FnCx<'a> {
                 _ => return Err(Diagnostic::new(base.pos, "E_UNBOUND", "unknown name 'self'")),
             }
         }
-        let obj = self.value(base)?;
+        // Only a further field read may consume a nested reference
+        // projection. It never becomes an owned local or call argument.
+        let obj = if matches!(base.kind, ExprKind::Member(..)) { self.expr(base)? } else { self.value(base)? };
         self.member_on(obj, name, pos)
     }
 
@@ -4957,6 +5016,11 @@ impl<'a> FnCx<'a> {
         }
         // Class privacy does not grant sealed state access: require a
         // compiler-recognized lease on the exact receiver instance.
+        if matches!(f.ty, Type::Class(_)) {
+            if let Some(tr) = self.trace.as_mut() {
+                tr.unavailable("nested reference projection lacks canonical place provenance");
+            }
+        }
         let protected = f.mode == FieldMode::ActorState && class.state_container;
         if protected {
             let same_receiver = matches!(&obj.e, TExpr::Local(0))
@@ -5429,6 +5493,9 @@ impl<'a> FnCx<'a> {
         };
         let mut plan: Vec<(String, Option<(u32, Type)>)> = Vec::new();
         for (i, f) in class.fields.iter().enumerate() {
+            if matches!(f.ty, Type::Class(_)) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "printing nested object fields is not supported"));
+            }
             if let Type::Enum(_) = f.ty {
                 return Err(Diagnostic::new(
                     pos,
