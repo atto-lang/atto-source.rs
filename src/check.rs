@@ -1032,7 +1032,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // The full family is kept for any name with an omittable formal.
     // Do not let the legacy name/arity table bypass provenance lowering.
-    if p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some())) || c.methods.iter().any(|m| m.params.iter().any(|q| q.omittable)))
+    if p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some())) || c.methods.iter().any(|m| m.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some())))
         || p.actors.iter().any(|a| a.methods.iter().any(|m| m.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some()))) {
         return Err(Diagnostic::new(Pos::default(), "E_UNSUPPORTED", "omittable method and constructor ABI is not implemented"));
     }
