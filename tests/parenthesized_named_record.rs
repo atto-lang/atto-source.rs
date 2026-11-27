@@ -103,7 +103,6 @@ fn named_record_mixes_duplicates_and_quoted_labels_reject_before_wasm() {
     for (expr, code) in [
         ("(foo=1,foo=2)","E_DUPLICATE"),
         ("(foo=1,2)","E_LITERAL_KIND"),
-        ("(foo=1,bar:2)","E_LITERAL_KIND"),
         ("(foo=1,\"bar\"=2)","E_LITERAL_KIND"),
         ("(\"foo\"=1)","E_LITERAL_KIND"),
         ("(foo=1,,bar=2)","E_LITERAL_KIND"),
@@ -180,7 +179,6 @@ fn parser_rejects_ambiguous_nested_and_mixed_named_syntax() {
         "(foo=1,bar)",
         "(foo=1,bar==2)",
         "(foo=1,if=2)",
-        "(foo=1,bar:2)",
         "(foo=1,\"bar\"=2)",
         "(foo=1,bar=2,3)",
     ] {
@@ -334,4 +332,49 @@ fn parenthesized_capture_rejects_duplicate_positional_and_path_items() {
         let source=format!("pub fnc main():int {{ const age=42; val z={expr}; return 0; }}");
         assert!(compile(&source).is_err(),"{source}");
     }
+}
+
+#[test]
+fn mixed_colon_equals_records_share_typed_shape_and_guest_codegen() {
+    let p = binding("let a={foo=40,bar:2}; let b=(foo:40,bar=2); let c={foo:40,bar:2};");
+    let typed = collection_types::analyze(&p).unwrap();
+    assert_eq!(typed.len(), 3);
+    assert_eq!(typed[0].value.ty, typed[1].value.ty);
+    assert_eq!(typed[1].value.ty, typed[2].value.ty);
+    for expr in ["{foo=40,bar:2}", "(foo:40,bar=2)", "{foo=40,bar=2,}"] {
+        guest(&format!("pub fnc main():int {{let r={expr};return r.foo+r.bar;}}"));
+    }
+}
+
+#[test]
+fn new_record_separators_keep_map_tuple_and_duplicate_checks() {
+    for expr in ["{foo=1,foo:2}", "(foo:1,foo=2)"] {
+        rejected(&format!("pub fnc main():int {{let r={expr};return 0;}}"), "E_DUPLICATE");
+    }
+    for expr in ["{foo=1,\"bar\":2}", "(foo:1,2)"] {
+        rejected(&format!("pub fnc main():int {{let r={expr};return 0;}}"), "E_LITERAL_KIND");
+    }
+    assert!(compile("pub fnc main():int {let r={foo=1\nbar=2};return 0;}").is_err());
+    let p = parse("fnc f(int foo):int {return foo;} pub fnc main():int {return f((foo:1));}");
+    assert!(matches!(&p.funcs[1].body[0],Stmt::Return(Some(e),_)
+        if matches!(&e.kind,ExprKind::Call(_,args)
+            if args.len()==1 && matches!(&args[0].kind,ExprKind::Record(_)))));
+}
+
+#[test]
+fn portable_brace_record_call_keeps_single_positional_slot() {
+    // Parser proof only; direct Record ABI and named calls are separate gates.
+    let p = parse("fnc f(int x,int y):int {return x+y;} pub fnc main():int {let x=100;return f({x=4,y=8});}");
+    let Stmt::Return(Some(e),_) = &p.funcs[1].body[1] else {panic!("missing call")};
+    let ExprKind::Call(name,args) = &e.kind else {panic!("not a call")};
+    assert_eq!(name,"f");
+    assert_eq!(args.len(),1);
+    let ExprKind::Record(fields) = &args[0].kind else {panic!("not a Record")};
+    assert_eq!(fields.len(),2);
+    assert_eq!(fields[0].0,"x");
+    assert_eq!(fields[1].0,"y");
+    assert!(matches!(&fields[0].1.kind, ExprKind::Int(Some(4))));
+    assert!(matches!(&fields[1].1.kind, ExprKind::Int(Some(8))));
+    assert!(compile("fnc f(int x,int y):int {return x+y;} pub fnc main():int {return f({x=4,y=8});}").is_err());
+    rejected("fnc f(int x):int {return x;} pub fnc main():int {return f({x=4,x=8});}", "E_DUPLICATE");
 }
