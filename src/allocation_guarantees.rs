@@ -37,7 +37,7 @@ pub(crate) fn compile(tokens: Vec<Token>) -> Result<Vec<u8>, Diagnostic> {
     while i < tokens.len() {
         if tokens[i].tok == Tok::At {
             let pos = tokens[i].pos;
-            if depth != 0 || !plain.last().map_or(true, |t: &Token| t.tok == Tok::RBrace) {
+            if depth != 0 || !plain.last().is_none_or(|t: &Token| t.tok == Tok::RBrace) {
                 return Err(Diagnostic::new(pos, "E_ANNOTATION", "guarantee must precede a top-level brace callable"));
             }
             let mut seen = [false; 2];

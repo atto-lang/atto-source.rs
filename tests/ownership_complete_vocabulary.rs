@@ -134,7 +134,7 @@ pub fnc main(): int {
   val owner = new Data();
   val loan = borrow! owner;
   drop! owner;
-  return 0;
+  return loan.value;
 }"#;
     error(src, "E_BORROW");
 }

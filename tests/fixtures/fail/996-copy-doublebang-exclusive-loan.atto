@@ -9,6 +9,7 @@ pub fnc main(): int {
     block {
         val borrowed = borrow! mut original;
         val clone = copy!! original;
-        return clone.value;
+        // A subsequent use is essential: without it NLL ends the unused loan.
+        return clone.value + borrowed.value;
     }
 }
