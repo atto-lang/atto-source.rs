@@ -115,6 +115,24 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     compile_inner(&source, None)
 }
 
+/// Bounded single-source migration profile for explicit local reassignment.
+/// Check the original tokens with the real parser before any rewriting or
+/// alternate lowering; retain the ordinary compiler's existing admission and
+/// ownership checks for emission. Package and import compilation are separate
+/// gates, not silently routed through this preview.
+pub fn compile_explicit_rebinding(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    let pos = Pos { line: 1, col: 1 };
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds explicit binding input cap"));
+    }
+    let tokens = lexer::lex(source)?;
+    if tokens.iter().any(|t| matches!(&t.tok, lexer::Tok::Ident(w) if w == "import")) {
+        return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "explicit binding preview does not admit imports"));
+    }
+    parser::Parser::new(tokens).with_explicit_rebinding().parse_program()?;
+    compile(source)
+}
+
 /// Opt-in verified scalar profile. The ordinary compiler and linked-source
 /// paths remain unchanged. Strict requests never fall back to ordinary emission.
 pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
