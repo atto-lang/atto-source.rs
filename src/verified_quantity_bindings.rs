@@ -756,7 +756,7 @@ fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
     }
     if p.token().tok == Tok::Dot && !p.tokens.get(p.at+1).is_some_and(|t| t.tok == Tok::Lt) {
         p.at += 1;
-        if min || value.unit == Unit::scalar() {
+        if value.unit == Unit::scalar() {
             return Err(p.err("E_UNSUPPORTED", "conversion requires ordinary quantity literal"));
         }
         p.expect_word("to_unit")?;
