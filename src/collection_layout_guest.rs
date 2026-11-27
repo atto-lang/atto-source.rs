@@ -115,7 +115,13 @@ struct Seed {
 fn bundle_name(p: &mut Parser<'_>) -> Result<String, Diagnostic> {
     let pos = p.pos();
     let name = p.ident()?;
-    if crate::parser::is_reserved(&name) || matches!(name.as_str(), "Array" | "infer" | "from" | "make" | "new" | "int" | "type") {
+    if name.len() > 96 || crate::parser::is_reserved(&name)
+        || crate::parser::is_unlowered_ownership_intrinsic(&name)
+        || matches!(name.as_str(), "Array" | "infer" | "from" | "make" | "new" | "type"
+            | "int" | "bool" | "string" | "byte" | "char" | "float" | "double"
+            | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
+            | "Map" | "Set" | "List" | "Vector" | "Record" | "Tuple" | "Option" | "Result"
+            | "Pointer" | "Channel" | "Future" | "Symbol") {
         return Err(error(pos, "E_GENERIC_NAME", "invalid bundle identifier"));
     }
     Ok(name)
@@ -444,6 +450,24 @@ fnc main() -> int {
         let b = compiler(&PROGRAM.replace("Array<Particle, layout=soa>",
             "Array<layout=soa, T=Particle>")).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn seeded_bundle_scope_and_initialization_are_checked() {
+        let source = PROGRAM.replace("fnc main()", "type Base = <T=Particle,size=5,layout=soa>;\nfnc main()")
+            .replace("Array<Particle, layout=soa>", "Array<infer X from Base>")
+            .replace("    ];", "    ] with {size=infer};");
+        assert_eq!(compiler(&source).unwrap(), compiler(PROGRAM).unwrap());
+        for replacement in ["infer Base from Base", "infer Particle from Base", "infer particles from Base",
+            "infer bool from Base", "infer Option from Base", "infer Atomic from Base"] {
+            assert_eq!(compiler(&source.replace("infer X from Base", replacement)).unwrap_err().code,
+                if matches!(replacement, "infer Base from Base" | "infer Particle from Base" | "infer particles from Base") {
+                    "E_GENERIC_DUP"
+                } else { "E_GENERIC_NAME" });
+        }
+        assert_eq!(compiler(&source.replace(" with {size=infer}", "")).unwrap_err().code, "E_ARRAY_SIZE_MISMATCH");
+        assert_eq!(compiler(&source.replace("size=infer", "size=2")).unwrap(), compiler(PROGRAM).unwrap());
+        assert!(compiler(&source.replace("Particle(x=10, y=20, velocity=1)", "make {x:X.size,y:20,velocity:1}")).is_err());
     }
 
     #[test]
