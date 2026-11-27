@@ -269,3 +269,64 @@ fn separate_statement_body_is_supported_for_independent_siblings() {
     let src = "pub fnc main(): int { val a = |n| -> n+1; val b = (|n| -> return n+2;); return a(19)+b(20); }";
     assert!(atto_compiler::compile(src).is_ok(),"{src}");
 }
+
+
+// Named pipeline expressions are separate from ordinary local lambdas.
+// Compile through the production parser, type checker and Wasm emitter.
+#[test]
+fn named_scalar_pipeline_uses_exact_lexical_recursive_identity() {
+    let src = r#"
+fnc fib(int v): int { return v + 1000; }
+pub fnc main(): int {
+    return 10 |> fnc fib(int v): int {
+        ^ match v over
+            on 0 -> 0,
+            on 1 -> 1,
+            on _ -> fib(v - 2) + fib(v - 1)
+        end
+    };
+}
+"#;
+    let p = checked(src);
+    assert_eq!(p.funcs.len(), 3);
+    assert_eq!(p.funcs[2].name, "$named_stage_0");
+    assert_eq!(p.funcs[2].params, [Type::Int]);
+    assert_eq!(p.funcs[2].ret, Type::Int);
+    let TStmt::Return(Some(value)) = &p.funcs[1].body[0] else {
+        panic!("expected direct call return")
+    };
+    assert!(matches!(&value.e, TExpr::Call(2, args) if args.len() == 1));
+    let wasm = atto_compiler::compile(src).expect("production compiler emits guest");
+    assert_eq!(atto_compiler::compile(src).unwrap(), wasm);
+}
+
+#[test]
+fn named_scalar_pipeline_accepts_exact_fib55_source_without_running_it() {
+    let src = r#"pub fnc main(): int {
+    return 55 |> fnc fib(int v): int {
+        ^ match v over
+            on 0 -> 0,
+            on 1 -> 1,
+            on _ -> fib(v - 2) + fib(v - 1)
+        end
+    };
+}
+"#;
+    assert!(atto_compiler::compile(src).unwrap().starts_with(b"\0asm"));
+}
+
+#[test]
+fn named_scalar_pipeline_rejects_scope_escape_and_unproved_captures() {
+    for (src, code) in [
+        ("pub fnc main(): int { val x = 1 |> fnc f(int v): int { return v; }; return f(x); }", "E_UNBOUND"),
+        ("pub fnc main(): int { val x = 1; return 1 |> fnc f(int v): int { return v + x; }; }", "E_UNSUPPORTED"),
+        ("fnc x(int n): int { return n; } pub fnc main(): int { return 1 |> fnc f(int v): int { return x(v); }; }", "E_UNSUPPORTED"),
+        ("pub fnc main(): int { return 1 |> fnc f(int f): int { return f; }; }", "E_DUPLICATE"),
+        ("pub fnc main(): int { return 1 |> fnc f(int v): int { return f(v, v); }; }", "E_ARITY"),
+        ("pub fnc main(): int { return 1 |> fnc f(int v) { return v; }; }", "E_RETURN_ANNOTATION"),
+        ("pub fnc main(): int { return 1 |> fnc f(int v): int { return v |> fnc g(int x): int { return x; }; }; }", "E_UNSUPPORTED"),
+    ] {
+        let error = atto_compiler::compile(src).expect_err("invalid closed named stage");
+        assert_eq!(error.code, code, "{src}: {error}");
+    }
+}
