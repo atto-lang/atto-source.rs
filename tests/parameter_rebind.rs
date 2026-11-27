@@ -89,3 +89,31 @@ fn explicit_binding_preview_checks_original_source() {
     let fixed = "pub fnc main(): int { const x = 40; set x = 42; return x; }";
     assert_eq!(compile_explicit_rebinding(fixed).unwrap_err().code,"E_IMMUTABLE");
 }
+
+#[test]
+fn explicit_counter_and_compound_updates() {
+    let strict = atto_compiler::compile_explicit_rebinding;
+        let positives = [
+            "pub fnc main(): int { let x = 40; set x++; set ++x; return x; }",
+            "pub fnc main(): int { let x = 44; set x--; set --x; return x; }",
+            "pub fnc main(): int { let x = 20; set x += 2; set x -= 1; set x *= 2; return x; }",
+            "pub fnc main(): int { let x = 32; for let i = 0; i < 10; set i++ { set x++; } return x; }",
+            "pub fnc main(): int { let x = 32; for (let i = 10; i > 0; set --i) { set x++; } return x; }",
+            "pub fnc main(): int { let x = 32; for let i = 0; i < 10; set i += 2 { set x += 2; } return x; }",
+        ];
+        let negatives = [
+            "pub fnc main(): int { let x = 40; x++; return x; }",
+            "pub fnc main(): int { let x = 40; x += 2; return x; }",
+            "pub fnc main(): int { let x = 40; ++x; return x; }",
+            "pub fnc main(): int { for let i = 0; i < 10; i++ {} return 42; }",
+            "pub fnc main(): int { for let i = 0; i < 10; let i++ {} return 42; }",
+            "pub fnc main(): int { const x = 40; set x++; return x; }",
+            "pub fnc main(): int { set ++x; return 42; }",
+            "pub fnc main(): int { let x = true; set x++; return 42; }",
+            "pub fnc main(): int { let x = 40; set x - = 2; return x; }",
+            "pub fnc main(): int { let x = 40; set x * /* gap */ = 2; return x; }",
+            "pub fnc main(): int { let x = 40; set ++x++; return x; }",
+        ];
+        for source in positives { strict(source).unwrap_or_else(|e| panic!("{source}: {e}")); }
+        for source in negatives { assert!(strict(source).is_err(), "{source}"); }
+}
