@@ -689,12 +689,12 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
         for (j, (name, ty)) in decl.fields.iter().enumerate() {
             let local = internal("receiver", i, j);
             fields.insert(name.clone(), local.clone());
-            flat.push(Param { name: local, ty: *ty, mutable: false, pos: m.pos });
+            flat.push(Param { omittable: false, name: local, ty: *ty, mutable: false, pos: m.pos });
         }
         for (j, p) in m.params.iter().enumerate() {
             let local = internal("param", i, j);
             params.insert(p.name.clone(), local.clone());
-            flat.push(Param { name: local, ty: p.ty, mutable: false, pos: p.pos });
+            flat.push(Param { omittable: false, name: local, ty: p.ty, mutable: false, pos: p.pos });
         }
         let function = internal("method", i, 0);
         let entry = MethodEntry { function: function.clone(), arity: flat.len(),
