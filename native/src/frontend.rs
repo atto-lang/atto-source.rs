@@ -389,11 +389,21 @@ fn parse_scalar(source: &str, unsigned: bool) -> Result<Program, ParseError> {
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
     for (kind, range) in Kind::lexer(&prepared).spanned() {
-        let kind = kind.map_err(|_| ParseError {
-            offset: range.start,
-            class: "syntax_error",
-            message: "unsupported token".into(),
-        })?;
+        let kind = match kind {
+            Ok(kind) => kind,
+            Err(_) => {
+                // A complete unsupported declaration header must retain its
+                // typed denial even when its body uses tokens outside this
+                // scalar lexer (e.g. ActorMail<int>). Only the already lexed
+                // prefix is inspected, never raw source or fabricated tokens.
+                reject_http_actor_declarations(&tokens)?;
+                return Err(ParseError {
+                    offset: range.start,
+                    class: "syntax_error",
+                    message: "unsupported token".into(),
+                });
+            }
+        };
         if tokens.len() >= MAX_TOKENS {
             return Err(ParseError {
                 offset: range.start,

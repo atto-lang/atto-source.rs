@@ -2120,7 +2120,15 @@ impl Parser {
             let args = self.parse_args()?;
             (params, body, args)
         } else {
-            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+            // Initial braceless profile: only literal stdout writes; no implicit
+            // arbitrary callback invocation, captures or suspension.
+            let expr = self.parse_expr()?;
+            if !matches!(&expr.kind, ExprKind::Call(name, args)
+                if matches!(name.as_str(), "stdio.stdout.write" | "process.stdout.write")
+                    && matches!(args.as_slice(), [Expr { kind: ExprKind::Str(_), .. }])) {
+                return Err(unsupported(pos, "braceless defer outside literal stdout write profile"));
+            }
+            (Vec::new(), vec![Stmt::Expr(expr)], Vec::new())
         };
         self.terminator()?;
         Ok(Stmt::Defer { params, body, args, pos })
@@ -4446,6 +4454,16 @@ impl Parser {
                 Tok::Dot => {
                     let dot = self.pos();
                     if let ExprKind::Var(base) = &e.kind {
+                        if ((base == "stdio" && matches!(self.word_at(1), Some("out" | "stdout"))) || (base == "process" && self.word_at(1) == Some("stdout")))
+                            && self.word_at(3) == Some("write") {
+                            let qualified = format!("{base}.stdout.write");
+                            self.advance(); self.advance();
+                            if *self.peek() != Tok::Dot { return Err(self.expected("'.'")); }
+                            self.advance(); self.advance();
+                            if *self.peek() != Tok::LParen { return Err(self.expected("'('")); }
+                            e = Expr { kind: ExprKind::Var(qualified), pos };
+                            continue;
+                        }
                         if base == "stdio" {
                             if let Some(m @ ("print" | "println")) = self.word_at(1) {
                                 let qualified = format!("stdio.{m}");

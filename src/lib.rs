@@ -45,6 +45,7 @@ mod struct_value_guest;
 pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
 pub mod scalar_generic;
+mod contextual_specialization;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
@@ -231,6 +232,9 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
     }
+    if contextual_specialization::present(&tokens) {
+        return compile_prelexed_target(tokens, logical_path, javascript);
+    }
     // Admit bounded typed quantity/refinement sources and explicitly
     // contracted private scalar headers. The typed lowerer checks the entire
     // file; errors never fall back to the ordinary parser or host evaluation.
@@ -262,6 +266,7 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
     }
+    let tokens = contextual_specialization::lower(tokens)?;
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
