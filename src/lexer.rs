@@ -28,6 +28,8 @@ pub enum Tok {
     Comma,
     Colon,
     ColonColon,
+    /// Contiguous Pair construction; never a Record or named argument separator.
+    ColonEqual,
     Arrow,
     FatArrow,
     Dot,
@@ -335,6 +337,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             (';', _) => (Tok::Semi, 1),
             (',', _) => (Tok::Comma, 1),
             (':', Some(':')) => (Tok::ColonColon, 2),
+            (':', Some('=')) => (Tok::ColonEqual, 2),
             (':', _) => (Tok::Colon, 1),
             ('-', Some('>')) => (Tok::Arrow, 2),
             ('-', Some('-')) => (Tok::MinusMinus, 2),
@@ -385,4 +388,17 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         pos: Pos { line, col },
     });
     Ok(out)
+}
+
+#[cfg(test)]
+mod pair_token_tests {
+    use super::*;
+    #[test]
+    fn pair_token_is_contiguous_and_distinct() {
+        let tokens = lex("x:=5 x: =5 x:/* gap */=5 x::y").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.tok).collect();
+        assert_eq!(kinds.iter().filter(|t| ***t == Tok::ColonEqual).count(), 1);
+        assert_eq!(kinds.iter().filter(|t| ***t == Tok::Colon).count(), 2);
+        assert_eq!(kinds.iter().filter(|t| ***t == Tok::ColonColon).count(), 1);
+    }
 }
