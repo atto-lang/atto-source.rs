@@ -18,6 +18,7 @@ pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
+mod pair_local_lower;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
@@ -55,6 +56,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let source_tokens = lexer::lex(source)?;
+    let source_tokens = pair_local_lower::lower(source_tokens)?;
     // Never allow users to refer to compiler-owned synthetic record types,
     // parameters or temporaries, even when those names occur in dead code.
     for token in &source_tokens {
