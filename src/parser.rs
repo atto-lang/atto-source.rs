@@ -2794,8 +2794,7 @@ impl Parser {
         self.expect_word("guard")?;
         let predicate = lazy_guard_predicate(self.parse_cond_head()?);
         let failure = if *self.peek() == Tok::LBrace {
-            let failure = self.parse_block()?;
-            failure
+            self.parse_block()?
         } else if self.eat_word("else") {
             let failure = self.parse_stmts_until(&["end"])?;
             self.expect_word("end")?;

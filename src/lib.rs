@@ -35,6 +35,7 @@ pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
+mod js_scalar;
 pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
@@ -114,6 +115,13 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let source = library::expand(source)?;
     compile_inner(&source, None)
+}
+
+/// Compile the checked scalar ESM profile; unsupported IR fails closed.
+pub fn compile_js(source: &str) -> Result<String, Diagnostic> {
+    let source = library::expand(source)?;
+    let bytes = compile_inner_target(&source, None, true)?;
+    String::from_utf8(bytes).map_err(|_| js_scalar::unsupported())
 }
 
 /// Opt-in verified scalar profile. The ordinary compiler and linked-source
@@ -205,6 +213,11 @@ fn typed_quantity_header(tokens: &[lexer::Token]) -> bool {
 
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    compile_inner_target(source, logical_path, false)
+}
+
+fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, javascript: bool)
+    -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -214,12 +227,14 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     }
     let tokens = lexer::lex(source)?;
     if allocation_guarantees::present(&tokens) {
+        if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
     }
     // Admit bounded typed quantity/refinement sources and explicitly
     // contracted private scalar headers. The typed lowerer checks the entire
     // file; errors never fall back to the ordinary parser or host evaluation.
     if verified_quantities::scalar_contract_header(&tokens) || typed_quantity_header(&tokens) {
+        if javascript { return Err(js_scalar::unsupported()); }
         let pos = tokens[0].pos;
         match verified_quantities::lower(source, &tokens)? {
             Some(verified_quantities::Lowered::Typed(program)) => {
@@ -232,12 +247,18 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             _ => return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "scalar contract did not produce a typed program")),
         }
     }
-    compile_prelexed(tokens, logical_path)
+    compile_prelexed_target(tokens, logical_path, javascript)
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    compile_prelexed_target(tokens, logical_path, false)
+}
+
+fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>, javascript: bool)
+    -> Result<Vec<u8>, Diagnostic> {
     if allocation_guarantees::present(&tokens) {
+        if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
     }
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
@@ -262,6 +283,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
+        if javascript { return Err(js_scalar::unsupported()); }
         actor_stack_bound::verify(&program)?;
         let bytes = wasm::emit(&program);
         if bytes.len() > wasm::MAX_OUTPUT {
@@ -469,6 +491,10 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
     actor_stack_bound::verify(&typed)?;
+    if javascript {
+        if !visibility.exports.is_empty() { return Err(js_scalar::unsupported()); }
+        return js_scalar::emit(&typed).map(String::into_bytes);
+    }
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
@@ -538,15 +564,20 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
-        compile_mode(length, false)
+        compile_mode(length, 0)
     }
 
     #[no_mangle]
     pub extern "C" fn compile_strict_i64(length: i32) -> i32 {
-        compile_mode(length, true)
+        compile_mode(length, 1)
     }
 
-    fn compile_mode(length: i32, strict: bool) -> i32 {
+    #[no_mangle]
+    pub extern "C" fn compile_js(length: i32) -> i32 {
+        compile_mode(length, 2)
+    }
+
+    fn compile_mode(length: i32, mode: u8) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -587,7 +618,11 @@ mod abi {
                     )
                 }
             };
-            let result = if strict { super::compile_verified_strict(source) } else { super::compile(source) };
+            let result = match mode {
+                1 => super::compile_verified_strict(source),
+                2 => super::compile_js(source).map(String::into_bytes),
+                _ => super::compile(source),
+            };
             match result {
                 Ok(bytes) => {
                     st.bytes = bytes;
