@@ -37,7 +37,7 @@ pub fn bind<V: Clone>(
         let mut values = vec![None; schema.len()];
         for (name, value) in args {
             let i = *names
-                .get(name)
+                .get(*name)
                 .ok_or_else(|| BindError::UnknownFormal((*name).into()))?;
             if values[i].is_some() {
                 return Err(BindError::DuplicateArgument((*name).into()));
@@ -77,8 +77,8 @@ pub fn refine_inferred<V: Clone>(
     let observed = bind(schema, evidence, &[], Mode::Application)?;
     let mut requested = BTreeSet::new();
     for &hole in holes {
-        if !requested.insert(hole) || !base.iter().any(|(n, _)| n == hole)
-            || explicit.iter().any(|(n, _)| n == hole)
+        if !requested.insert(hole) || !base.iter().any(|(n, _)| n.as_str() == hole)
+            || explicit.iter().any(|(n, _)| n.as_str() == hole)
         {
             return Err(BindError::InvalidArgument(hole.into()));
         }
@@ -115,7 +115,7 @@ mod tests {
     fn seed_refinement_is_canonical_and_non_mutating() {
         let schema = schema();
         let seed = [("size", Size(5)), ("type", Type("int"))];
-        let expected = vec![("type".into(), Type("int")), ("size".into(), Size(6))];
+        let expected: Vec<(String, Value)> = vec![(String::from("type"), Type("int")), (String::from("size"), Size(6))];
         let mut result = bind(&schema, &seed, &[("size", Size(6))], Mode::Refinement).unwrap();
         assert_eq!(result, expected);
         assert_eq!(seed[0].1, Size(5));
@@ -132,7 +132,7 @@ mod tests {
         let schema = schema();
         let seed = [("size", Size(5)), ("type", Type("int"))];
         assert_eq!(bind(&schema, &seed[1..], &[("size", Size(6))], Mode::Application).unwrap(),
-            vec![("type".into(), Type("int")), ("size".into(), Size(6))]);
+            vec![(String::from("type"), Type("int")), (String::from("size"), Size(6))]);
         assert_eq!(bind(&schema, &seed, &[], Mode::Application).unwrap()[1].1, Size(5));
         for n in [5, 6] {
             assert_eq!(bind(&schema, &seed, &[("size", Size(n))], Mode::Application),
@@ -149,7 +149,7 @@ mod tests {
         let run = |replacements: &[(&str, Value)], holes: &[&str], evidence: &[(&str, Value)]|
             refine_inferred(&schema, &seed, replacements, holes, evidence);
         assert_eq!(run(&[], &["size"], &[("size", Size(3))]).unwrap(),
-            vec![("type".into(), Type("int")), ("size".into(), Size(3))]);
+            vec![(String::from("type"), Type("int")), (String::from("size"), Size(3))]);
         assert_eq!(seed[0].1, Size(5));
         assert_eq!(run(&[], &["size"], &[("size", Size(0))]).unwrap()[1].1, Size(0));
         assert!(run(&[], &["size"], &[]).is_err());
