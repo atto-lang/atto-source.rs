@@ -1085,7 +1085,7 @@ impl Parser {
                 return Err(Diagnostic::new(pos, "E_SYNTAX", "constructor cannot have a mutable receiver modifier"));
             }
             self.expect(Tok::LParen, "'(' after constructor")?;
-            let params = self.parse_params()?;
+            let params = self.parse_params(false)?;
             if !(scalar_params(&params) || allow_nominal && params.iter().all(|p| matches!(p.ty, Type::Int | Type::Bool | Type::Named(_)))) {
                 return Err(unsupported(pos, "unsupported attached constructor parameters"));
             }
