@@ -94,6 +94,8 @@ pub mod visibility_lower;
 pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
+/// Owner-thread-only bounded stdio admission; not a guest transport.
+pub mod buffered_stdio;
 pub mod target_syntax;
 /// File-scoped namespace headers derived from a package-relative source path.
 pub mod namespace;
