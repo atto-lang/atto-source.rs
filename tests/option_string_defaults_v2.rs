@@ -2,7 +2,7 @@ use atto_compiler::compile;
 #[test]
 fn string_defaults_and_overloads() {
     for f in ["x?: string? ?= \"bar\" ??= \"star\"", "string? x? ?? \"bar\" ??= \"star\"", "x?: Option<string> ?= Some(\"bar\") ??= Some(\"star\")"] {
-        let s = format!("fnc f({f}): int {{ match x over on None -> {{ return 0; }} on Some(v) -> {{ return v.len(); }} end }} pub fnc main(): int {{ return f()+f(None)+f(Some(\"\")); }}");
+        let s = format!("fnc f({f}): int {{ match x over on None -> {{ return 0; }} on Some(v) -> {{ return v eq \"star\" ? 4 : (v eq \"bar\" ? 3 : (v eq \"\" ? 0 : 99)); }} end }} pub fnc main(): int {{ return f()+f(None)+f(Some(\"\")); }}");
         assert!(compile(&s).is_ok(), "{s}: {:?}", compile(&s));
     }
     let s = "fnc foo(x?: int? ?= 3 ??= 4): int { return 20; } fnc foo(x?: string? ?= \"bar\" ??= \"star\"): int { return 22; } pub fnc main(): int { return foo(Some(1))+foo(Some(\"x\")); }";
