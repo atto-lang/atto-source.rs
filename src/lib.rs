@@ -662,6 +662,12 @@ mod abi {
         compile_mode(length, 2)
     }
 
+    /// Explicit binding preview is opt-in, with no fallback to ordinary mode.
+    #[no_mangle]
+    pub extern "C" fn compile_explicit_rebinding(length: i32) -> i32 {
+        compile_mode(length, 3)
+    }
+
     fn compile_mode(length: i32, mode: u8) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
@@ -706,6 +712,7 @@ mod abi {
             let result = match mode {
                 1 => super::compile_verified_strict(source),
                 2 => super::compile_js(source).map(String::into_bytes),
+                3 => super::compile_explicit_rebinding(source),
                 _ => super::compile(source),
             };
             match result {
