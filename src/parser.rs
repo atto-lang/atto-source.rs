@@ -3390,6 +3390,14 @@ impl Parser {
             ExprKind::Float(_) => Some(Type::Float),
             ExprKind::Str(_) => Some(Type::Str),
             ExprKind::Var(n) => state.iter().find(|(name, _)| name == n).map(|(_, ty)| *ty),
+            ExprKind::Unary(op, a) => {
+                let ty = Self::scalar_loop_result_hint(a, state)?;
+                match (op, ty) {
+                    (UnOp::Neg | UnOp::Plus, Type::Int | Type::Float) => Some(ty),
+                    (UnOp::Not, Type::Bool) | (UnOp::BitNot, Type::Int) => Some(ty),
+                    _ => None,
+                }
+            }
             ExprKind::Binary(op, a, b) => {
                 let a = Self::scalar_loop_result_hint(a, state)?;
                 let b = Self::scalar_loop_result_hint(b, state)?;
