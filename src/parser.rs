@@ -266,7 +266,7 @@ pub struct Parser {
     state_binder: Option<String>,
     struct_value_bindings: Option<Vec<Pos>>,
     // Prior, file-local public-field scalar constructors proven to be bijective.
-    contextual_new_fields: std::collections::BTreeMap<String, Vec<String>>,
+    contextual_new_fields: std::collections::BTreeMap<String, Vec<(String, Type)>>,
 }
 
 struct TypeFirstField {
@@ -2554,6 +2554,14 @@ impl Parser {
             && self.word_at(3) == Some("loop")
             && *self.peek_at(4) == Tok::LParen;
         if !typed_loop && !inferred_loop {
+            if matches!(self.word_at(0), Some("val" | "const" | "let")) {
+                let mut prefix = Vec::new();
+                let binding = self.parse_binding_with_prefix(Some(&mut prefix))?;
+                self.terminator()?;
+                out.extend(prefix);
+                out.push(binding);
+                return Ok(());
+            }
             out.push(self.parse_stmt()?);
             return Ok(());
         }
@@ -3061,7 +3069,7 @@ impl Parser {
     /// Only direct, one-to-one initialization of every public deferred-final
     /// scalar field is admitted. This does not invent field access or bypass
     /// the ordinary constructor, ownership checker or allocator.
-    fn contextual_new_schema(decl: &ClassDecl) -> Option<Vec<String>> {
+    fn contextual_new_schema(decl: &ClassDecl) -> Option<Vec<(String, Type)>> {
         let ctor = decl.ctor.as_ref()?;
         if decl.state_container || decl.fields.is_empty() || decl.fields.len() > 32
             || decl.fields.len() != ctor.params.len() || ctor.body.len() != ctor.params.len()
@@ -3080,15 +3088,16 @@ impl Parser {
             let index = ctor.params.iter().position(|p| &p.name == param)?;
             let destination = decl.fields.iter().find(|f| &f.name == field)?;
             if destination.ty != ctor.params[index].ty || !initialized.insert(field.as_str())
-                || ordered[index].replace(field.clone()).is_some() { return None; }
+                || ordered[index].replace((field.clone(), destination.ty)).is_some() { return None; }
         }
         ordered.into_iter().collect()
     }
 
-    /// Initial typed-local slice. Arbitrary order is admitted only for
-    /// inert scalar literals. Nonliteral expressions keep lexical order;
-    /// general reorder requires an evaluated-temporary / named-call IR.
-    fn parse_contextual_new(&mut self, expected: Option<Type>) -> R<Expr> {
+    /// Lower reordered scalar initializers into inaccessible typed locals in
+    /// lexical statement order before ordinary constructor argument binding.
+    /// Contexts without a statement-list lowering boundary stay fail closed.
+    fn parse_contextual_new(&mut self, expected: Option<Type>, prefix: Option<&mut Vec<Stmt>>) -> R<Expr> {
+        let site = self.i;
         let pos = self.pos();
         let deny = || Diagnostic::new(pos, "E_CONTEXTUAL_NEW",
             "contextual new requires a typed local and a prior public-field scalar constructor");
@@ -3102,7 +3111,7 @@ impl Parser {
         for i in 0..fields.len() {
             if i != 0 { self.expect(Tok::Comma, "',' between contextual fields")?; }
             let (written, field_pos) = self.ident("a contextual constructor field")?;
-            let slot = fields.iter().position(|field| field == &written)
+            let slot = fields.iter().position(|(field, _)| field == &written)
                 .ok_or_else(|| Diagnostic::new(field_pos, "E_CONTEXTUAL_NEW", "unknown contextual field"))?;
             if !seen.insert(slot) {
                 return Err(Diagnostic::new(field_pos, "E_CONTEXTUAL_NEW", "duplicate contextual field"));
@@ -3112,12 +3121,18 @@ impl Parser {
         }
         self.expect(Tok::RBrace, "'}' after complete contextual construction")?;
         if written_args.iter().enumerate().any(|(i, (slot, _))| i != *slot) {
-            // A positive, representable integer or boolean literal has no
-            // evaluation effects, traps or reads. Everything else stays
-            // rejected, including overflow expressions and callable results.
             if !written_args.iter().all(|(_, e)| matches!(&e.kind, ExprKind::Int(Some(_)) | ExprKind::Bool(_))) {
-                return Err(Diagnostic::new(pos, "E_CONTEXTUAL_NEW_ORDER",
-                    "reordered nonliteral initializers require source-order constructor lowering"));
+                let out = prefix.ok_or_else(|| Diagnostic::new(pos, "E_CONTEXTUAL_NEW_ORDER",
+                    "reordered nonliteral initializers require a statement-list lowering boundary"))?;
+                // The lexer cannot produce NUL-prefixed names. The source
+                // token index is unique within this parser, including nested
+                // lexical scopes. No source binding can read these temporaries.
+                for (i, (slot, expr)) in written_args.iter_mut().enumerate() {
+                    let name = format!("\0contextual_new_{site}_{i}");
+                    let at = expr.pos;
+                    let init = std::mem::replace(expr, Expr { kind: ExprKind::Var(name.clone()), pos: at });
+                    out.push(Stmt::Bind { kind: BindKind::Val, name, ty: Some(fields[*slot].1), init, pos: at });
+                }
             }
             written_args.sort_by_key(|(slot, _)| *slot);
         }
@@ -3127,6 +3142,10 @@ impl Parser {
 
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
     fn parse_binding(&mut self) -> R<Stmt> {
+        self.parse_binding_with_prefix(None)
+    }
+
+    fn parse_binding_with_prefix(&mut self, prefix: Option<&mut Vec<Stmt>>) -> R<Stmt> {
         let pos = self.pos();
         let kind = if self.eat_word("val") {
             BindKind::Val
@@ -3185,7 +3204,7 @@ impl Parser {
         }
         self.advance();
         let init = if self.is_word("new") && *self.peek_at(1) == Tok::LBrace {
-            self.parse_contextual_new(ty)?
+            self.parse_contextual_new(ty, if kind == BindKind::Const { None } else { prefix })?
         } else {
             self.parse_expr()?
         };
