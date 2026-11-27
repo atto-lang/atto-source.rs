@@ -249,18 +249,20 @@ mod tests {
     fn guest_capture() {
         use std::io::Write;
         use std::process::{Command, Stdio};
-        for (body, expected) in [
-            ("let n = 3; const x = Scale::(n); n = 9; const a = x.apply(4); const b = x.apply(5); return a + b + Scale::(2).apply(7);", "41"),
-            ("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);", "20"),
-            ("return Scale::(6).apply(7);", "42"),
+        for (source, expected) in [
+            (program("let n = 3; const x = Scale::(n); n = 9; const a = x.apply(4); const b = x.apply(5); return a + b + Scale::(2).apply(7);"), "41"),
+            (program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);"), "20"),
+            (program("return Scale::(6).apply(7);"), "42"),
+            (multi_program("let n = 3; const x = Scale::(n, n + 1); n = 9; return x.apply(5) + Scale::(2, 1).apply(7);"), "34"),
+            (multi_program("const x = Scale::(2, 3); const y = Scale::(4, 5); return x.apply(7) + y.apply(7);"), "50"),
         ] {
-            let wasm = crate::compile(&program(body)).expect("compile guest");
+            let wasm = crate::compile(&source).expect("compile guest");
             let mut child = Command::new("node").args(["-e",
                 "const fs=require('fs');const m=new WebAssembly.Module(fs.readFileSync(0));const i=new WebAssembly.Instance(m,{});process.stdout.write(String(i.exports.main()));"])
                 .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("Node.js required");
             child.stdin.take().unwrap().write_all(&wasm).unwrap();
             let result = child.wait_with_output().unwrap();
-            assert!(result.status.success(), "guest failed: {body}");
+            assert!(result.status.success(), "guest failed: {source}");
             assert_eq!(String::from_utf8(result.stdout).unwrap(), expected);
         }
     }
