@@ -4165,14 +4165,20 @@ impl Parser {
     // boundary and do not accidentally search into the next statement.
     fn question_opens_ternary(&self) -> bool {
         let mut depth = 0usize;
+        let mut keyword_if_depth = 0usize;
         for t in self.toks.iter().skip(self.i + 1) {
             match &t.tok {
                 Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
                 Tok::RParen | Tok::RBracket | Tok::RBrace if depth == 0 => return false,
                 Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
-                Tok::Colon if depth == 0 => return true,
-                Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
-                Tok::Ident(w) if depth == 0 && matches!(
+                Tok::Ident(w) if depth == 0 && w == "if" => keyword_if_depth += 1,
+                Tok::Ident(w) if depth == 0 && w == "fi" && keyword_if_depth != 0 => {
+                    keyword_if_depth -= 1;
+                }
+                Tok::Colon if depth == 0 && keyword_if_depth == 0 => return true,
+                Tok::Semi | Tok::Comma if depth == 0 && keyword_if_depth == 0 => return false,
+                Tok::Eof => return false,
+                Tok::Ident(w) if depth == 0 && keyword_if_depth == 0 && matches!(
                     w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
                 ) => return false,
                 _ => {}
