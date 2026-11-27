@@ -20,6 +20,9 @@ pub enum PointKind {
     Set(u32),
     Eval,
     Branch,
+    LoopHead,
+    Break,
+    Continue,
     Return,
     Exit,
 }
@@ -110,7 +113,8 @@ impl Builder<'_> {
         Ok(id)
     }
 
-    fn block(&mut self, body: &[TStmt], continuation: usize, depth: usize)
+    fn block(&mut self, body: &[TStmt], continuation: usize, depth: usize,
+        loop_targets: Option<(usize, usize)>)
         -> Result<usize, Diagnostic>
     {
         if depth >= MAX_DEPTH || body.len() > MAX_POINTS {
@@ -137,23 +141,51 @@ impl Builder<'_> {
                     }
                     self.point(PointKind::Return, value.as_ref(), vec![])?
                 }
-                TStmt::Block(inner) => self.block(inner, next, depth + 1)?,
+                TStmt::Block(inner) => self.block(inner, next, depth + 1, loop_targets)?,
                 TStmt::If(arms, otherwise) => {
                     if arms.is_empty() || arms.len() > MAX_POINTS {
                         return Err(denied("invalid branch census"));
                     }
                     let mut other = match otherwise {
-                        Some(body) => self.block(body, next, depth + 1)?,
+                        Some(body) => self.block(body, next, depth + 1, loop_targets)?,
                         None => next,
                     };
                     for (cond, body) in arms.iter().rev() {
                         if cond.ty != Type::Bool {
                             return Err(denied("non-boolean branch"));
                         }
-                        let yes = self.block(body, next, depth + 1)?;
+                        let yes = self.block(body, next, depth + 1, loop_targets)?;
                         other = self.point(PointKind::Branch, Some(cond), vec![yes, other])?;
                     }
                     other
+                }
+                TStmt::Loop { cond, body, update } => {
+                    if cond.as_ref().is_some_and(|c| c.ty != Type::Bool) {
+                        return Err(denied("non-boolean loop condition"));
+                    }
+                    // Reserve the header before descending, so backedges use
+                    // an existing stable point ID. Continue reaches update,
+                    // then the header; break reaches the loop continuation.
+                    let head = self.point(PointKind::LoopHead, cond.as_ref(), vec![])?;
+                    // The admitted update profile contains no direct loop
+                    // transfers; nested loops still get their own targets.
+                    let update_entry = self.block(update, head, depth + 1, None)?;
+                    let body_entry = self.block(body, update_entry, depth + 1,
+                        Some((next, update_entry)))?;
+                    self.points[head].successors = if cond.is_some() {
+                        vec![body_entry, next]
+                    } else {
+                        vec![body_entry]
+                    };
+                    head
+                }
+                TStmt::Break => {
+                    let (target, _) = loop_targets.ok_or_else(|| denied("unbound break"))?;
+                    self.point(PointKind::Break, None, vec![target])?
+                }
+                TStmt::Continue => {
+                    let (_, target) = loop_targets.ok_or_else(|| denied("unbound continue"))?;
+                    self.point(PointKind::Continue, None, vec![target])?
                 }
                 _ => return Err(denied("unmodelled control flow, memory or cleanup")),
             };
@@ -189,7 +221,7 @@ pub fn from_checked_program(program: &TProgram) -> Result<Vec<FunctionCensus>, D
             remaining_points: &mut points, remaining_visits: &mut visits,
         };
         let exit = builder.point(PointKind::Exit, None, vec![])?;
-        let entry = builder.block(&function.body, exit, 0)?;
+        let entry = builder.block(&function.body, exit, 0, None)?;
         result.push(FunctionCensus {
             name: function.name.clone(), entry, points: builder.points,
         });
