@@ -393,6 +393,7 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             for a in args { rewrite_expr(a, d)?; }
             Ok(())
         }
+        ExprKind::InlineTask(_) => Ok(()), // restricted checker rejects arbitrary calls/captures inside task
         ExprKind::Lambda { .. } => Err(error(e.pos, "E_UNSUPPORTED",
             "nested or escaping lambda needs closure lowering")),
         ExprKind::StateRead(_) => Err(error(e.pos, "E_UNSUPPORTED",
@@ -446,6 +447,7 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // Capturing or moving ownership through a generated lambda requires
         // a verified lifetime/effect model. Refuse rather than accidentally
         // skipping an owned free variable during closure conversion.
+        ExprKind::InlineTask(_) => return Err(error(e.pos, "E_UNSUPPORTED", "inline task capture in direct lambda is not verified")),
         ExprKind::Ownership(_, _, _) => return Err(error(e.pos, "E_UNSUPPORTED",
             "explicit ownership inside a direct lambda requires verified capture lifetimes")),
         ExprKind::StateRead(_) => return Err(error(e.pos, "E_UNSUPPORTED",

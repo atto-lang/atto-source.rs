@@ -704,6 +704,22 @@ impl Emit<'_> {
 
     fn expr(&mut self, v: &TE) {
         match &v.e {
+            TExpr::TaskSet { slot, value, next } => {
+                self.expr(value); self.set(*slot); self.expr(next);
+            }
+            TExpr::TaskCleanup { cleanup, next, saved, result } => {
+                self.depth_save(*saved);
+                self.open(0x06, 0x40, Frame::Other);
+                self.expr(next); self.set(*result);
+                self.op(0x19); // catch_all, preserving the original guest exception
+                self.landing(); self.depth_restore(*saved);
+                self.expr(cleanup);
+                self.op(0x09); uleb(&mut self.code, 0);
+                self.close();
+                self.depth_restore(*saved);
+                self.expr(cleanup);
+                self.get(*result);
+            }
             TExpr::I64(n) => self.i64c(*n),
             TExpr::F64(x) => {
                 self.op(0x44);

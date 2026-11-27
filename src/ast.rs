@@ -528,6 +528,8 @@ pub enum ExprKind {
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
+    /// Non-escaping synchronous scalar task; no scheduler or Future admission.
+    InlineTask(Vec<Stmt>),
     /// Prefix ownership: borrow! x, borrow! mut x, copy! x, copy!! x,
     /// take! x, share! x, freeze! x, weak! x, pin! x, drop! x.
     /// lt! a is a lifetime binder, never a runtime expression.

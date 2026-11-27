@@ -177,6 +177,8 @@ pub enum TExpr {
     IntParse { value: Box<TE>, error_offset: u32, error_len: u32 },
     /// Compare the discriminant with a known variant tag.
     AdtIs { obj: Box<TE>, tag: u32 },
+    TaskSet { slot: u32, value: Box<TE>, next: Box<TE> },
+    TaskCleanup { cleanup: Box<TE>, next: Box<TE>, saved: u32, result: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
     /// Evaluate a tagged ADT once. On failure return its original handle from
@@ -1533,7 +1535,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } |
             TExpr::ErrorNew { .. } | TExpr::IntParse { .. } | TExpr::AdtUnwrap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
-        || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. } | TExpr::AdtUnwrap { .. })));
+        || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. } | TExpr::AdtUnwrap { .. } | TExpr::TaskCleanup { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
     let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     Ok(TProgram {
@@ -1597,6 +1599,8 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
             expr_escape_effects(source, effects).union(EscapeEffects { throws: !*terminal, raises: false }),
         TExpr::Trap { value: v, .. } =>
             expr_escape_effects(v, effects).without_throw(),
+        TExpr::TaskSet { value, next, .. } => combine([value.as_ref(), next.as_ref()], effects),
+        TExpr::TaskCleanup { cleanup, next, .. } => combine([cleanup.as_ref(), next.as_ref()], effects),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b)
         | TExpr::ErrorSameIdentity(a, b)
         | TExpr::Send { target: a, value: b } =>
@@ -1858,6 +1862,7 @@ struct ConstructorInitFlow {
 
 fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) -> R<()> {
     match &e.kind {
+        ExprKind::InlineTask(_) => Err(Diagnostic::new(e.pos, "E_UNSUPPORTED", "sync task in constructor")),
         ExprKind::Member(base, name) if matches!(base.kind, ExprKind::SelfRef) => {
             if fields.iter().any(|f| f.deferred_final && f.name == *name)
                 && !flow.definite.contains(name) {
@@ -2089,6 +2094,7 @@ fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
     let denied = || Diagnostic::new(e.pos, "E_OWNERSHIP",
         "under-construction self cannot escape, be captured or dispatch methods");
     match &e.kind {
+        ExprKind::InlineTask(_) => Err(denied()),
         ExprKind::SelfRef => Err(denied()),
         ExprKind::Member(base, _) if matches!(base.kind, ExprKind::SelfRef) => {
             if captured { Err(denied()) } else { Ok(()) }
@@ -2358,6 +2364,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         // Disallowed effects include heap mutation/allocations, object/actor
         // state reads, I/O, actor operations, guest exception handling and
         // propagation. Keep these explicit when evolving the language.
+        TExpr::TaskSet { .. } | TExpr::TaskCleanup { .. } |
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
@@ -2426,6 +2433,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
+        TExpr::TaskSet { value, next, .. } => any_in(value, f) || any_in(next, f),
+        TExpr::TaskCleanup { cleanup, next, .. } => any_in(cleanup, f) || any_in(next, f),
         TExpr::ErrorNew { message, .. } => any_in(message, f),
         TExpr::ErrorMessage(obj) => any_in(obj, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
@@ -3972,6 +3981,59 @@ impl<'a> FnCx<'a> {
     }
 
     #[inline(never)]
+    fn inline_task(&mut self, body: &[Stmt], pos: Pos) -> R<TE> {
+        fn scalar(e: &Expr) -> bool {
+            match &e.kind {
+                ExprKind::Int(_) | ExprKind::Var(_) => true,
+                ExprKind::Unary(_, x) => scalar(x),
+                ExprKind::Binary(_, x, y) => scalar(x) && scalar(y),
+                ExprKind::MethodCall(x, name, args) => name == "unwrap" && args.is_empty() && matches!(x.kind, ExprKind::Var(_)),
+                _ => false,
+            }
+        }
+        let deny = || Diagnostic::new(pos, "E_SYNC_TASK_PROFILE", "only bounded top-level scalar sync task with explicit return and literal stdout cleanup is admitted");
+        if self.owner != Owner::TopLevel || self.cleanup_depth != 0 || self.finally_depth != 0 || self.loops != 0 || body.len() > 64 { return Err(deny()); }
+        let Some((Stmt::Return(Some(value), _), steps)) = body.split_last() else { return Err(deny()); };
+        if !scalar(value) { return Err(deny()); }
+        self.scopes.push(Vec::new());
+        let checked = (|| -> R<TE> {
+            let mut lowered = Vec::new();
+            for stmt in steps {
+                match stmt {
+                    Stmt::Bind { kind: BindKind::Val, ty: Some(Type::Int), init, .. } if scalar(init) => {
+                        let TStmt::Set(slot, value) = self.stmt(stmt)? else { return Err(deny()); };
+                        lowered.push((Some(slot), value));
+                    }
+                    Stmt::Assign { name, value, .. } if scalar(value) && self.lookup(name).is_some_and(|l| l.ty == Type::Int && l.mutable) => {
+                        let TStmt::Set(slot, value) = self.stmt(stmt)? else { return Err(deny()); };
+                        lowered.push((Some(slot), value));
+                    }
+                    Stmt::Defer { params, body, args, .. } if params.is_empty() && args.is_empty() => {
+                        let [Stmt::Expr(e)] = body.as_slice() else { return Err(deny()); };
+                        let ExprKind::Call(name, args) = &e.kind else { return Err(deny()); };
+                        if !matches!(name.as_str(), "stdio.stdout.write" | "process.stdout.write") || !matches!(args.as_slice(), [Expr { kind: ExprKind::Str(_), .. }]) { return Err(deny()); }
+                        let cleanup = self.expr(e)?;
+                        if cleanup.ty != Type::Void { return Err(deny()); }
+                        lowered.push((None, cleanup));
+                    }
+                    _ => return Err(deny()),
+                }
+            }
+            let mut next = self.value(value)?;
+            if next.ty != Type::Int { return Err(deny()); }
+            for (slot, value) in lowered.into_iter().rev() {
+                next = TE { ty: Type::Int, e: if let Some(slot) = slot {
+                    TExpr::TaskSet { slot, value: Box::new(value), next: Box::new(next) }
+                } else {
+                    TExpr::TaskCleanup { cleanup: Box::new(value), next: Box::new(next), saved: self.temp(Type::Bool, pos)?, result: self.temp(Type::Int, pos)? }
+                }};
+            }
+            Ok(next)
+        })();
+        self.pop_scope();
+        checked
+    }
+
     fn guest_throw(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
         Ok(TStmt::Throw(self.guest_error_message(error, "throw", pos)?))
     }
@@ -4004,6 +4066,7 @@ impl<'a> FnCx<'a> {
             }),
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
+            ExprKind::InlineTask(body) => self.inline_task(body, e.pos),
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
@@ -4410,7 +4473,7 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            ExprKind::InlineTask(..) | ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) | ExprKind::Ascribe(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),

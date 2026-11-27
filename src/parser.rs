@@ -4121,6 +4121,13 @@ impl Parser {
                     let args = self.parse_args()?;
                     ExprKind::New(class, args)
                 }
+                "sync" if self.word_at(1) == Some("task") => {
+                    self.advance(); self.advance();
+                    self.expect(Tok::Lt, "'<' after sync task")?;
+                    if self.parse_type()? != Type::Int { return Err(unsupported(pos, "sync task payload other than int")); }
+                    self.expect(Tok::Gt, "'>' after sync task payload")?;
+                    ExprKind::InlineTask(self.parse_block()?)
+                }
                 "spawn" => {
                     self.advance();
                     let (actor, _) = self.ident("an actor name after 'spawn'")?;
