@@ -19,6 +19,8 @@ fn contextual_new_reuses_existing_checked_constructor_and_emitter() {
     let explicit = atto_compiler::compile(EXPLICIT).expect("existing constructor");
     let contextual = EXPLICIT.replace("new Point(40, 2)", "new {x:40,y:2}");
     assert_eq!(atto_compiler::compile(&contextual).expect("contextual constructor"), explicit);
+    let reordered = contextual.replace("x:40,y:2", "y:2,x:40");
+    assert_eq!(atto_compiler::compile(&reordered).expect("inert reordered fields"), explicit);
     let type_first = contextual.replace("p: Point", "Point p");
     assert_eq!(atto_compiler::compile(&type_first).expect("type-first constructor"), explicit);
 }
@@ -27,7 +29,7 @@ fn contextual_new_rejects_unproved_categories_and_fields() {
     let good = EXPLICIT.replace("new Point(40, 2)", "new {x:40,y:2}");
     for bad in [
         good.replace("p: Point", "p"),
-        good.replace("x:40,y:2", "y:2,x:40"),
+        good.replace("x:40,y:2", "y:1+1,x:40"),
         good.replace("x:40,y:2", "x:40"),
         good.replace("x:40,y:2", "x:40,x:2"),
         good.replace("x:40,y:2", "x:40,z:2"),
