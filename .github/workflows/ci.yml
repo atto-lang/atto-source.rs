@@ -39,6 +39,10 @@ jobs:
         env:
           RUST_MIN_STACK: "16777216"
         run: cargo test --locked --verbose
+      - name: Execute contextual specialization guests and verify captured scalar values
+        env:
+          RUST_MIN_STACK: "16777216"
+        run: cargo test --locked --lib contextual_specialization::tests::guest_capture -- --ignored
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
