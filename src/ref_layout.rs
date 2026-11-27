@@ -2,6 +2,9 @@
 //! No native pointer or ActorRef is represented by this type.
 use std::num::NonZeroU32;
 
+/// Storage ABI identifier; not an ActorRef token or network wire format.
+pub const REF32_OFFSET8_PLUS_ONE_ABI_V1: &str = "offset8_plus_one";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefMode {
     Compressed32,
@@ -301,6 +304,23 @@ mod tests {
             ManagedRefLayout::compressed32(16),
             Err(RefError::BadAlignment)
         );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn full_unsigned_high_bit_ref32_range_is_not_a_signed_pointer() {
+        assert_eq!(REF32_OFFSET8_PLUS_ONE_ABI_V1, "offset8_plus_one");
+        let max = ((u32::MAX as u64) - 1) * 8;
+        assert_eq!(max, 34_359_738_352);
+        let r = Region::new(0, (max + 8) as usize, 3).unwrap();
+        assert_eq!(r.decode_offset(CompressedRef::NULL), Ok(None));
+        for word in [1u32, 2, 0x7fff_ffff, 0x8000_0000, 0xffff_fffe, u32::MAX] {
+            let encoded = CompressedRef::from_raw(word);
+            let offset = r.decode_offset(encoded).unwrap().unwrap();
+            assert_eq!(r.encode_offset(offset).unwrap().raw(), word);
+        }
+        assert_eq!(r.encode_offset((max + 8) as usize), Err(RefError::OutOfRange));
+        assert_eq!(r.encode_offset((max - 1) as usize), Err(RefError::BadAlignment));
     }
 
     #[test]

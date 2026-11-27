@@ -7,6 +7,10 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Checked actor-relative Ref32 offset layout; host/runtime model only, not guest allocation.
+pub mod ref_layout;
+/// Four-byte CONTROL-plane generation12/slot20 word codec, not an actor reference or guest heap.
+pub mod control_ref32;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Bounded 32-bit actor slab heap (Offset32/Handle32), C++/wasm32 parity.
