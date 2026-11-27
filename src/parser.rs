@@ -4467,8 +4467,16 @@ impl Parser {
                     let operand = operand?;
                     self.terminator()?;
                     self.expect(Tok::RBrace, "'}' after the single value break")?;
-                    // A value loop is a computed expression, never a direct
-                    // name-based call or a pipeline function designator.
+                    // Restrict this early normalization to ordinary scalar
+                    // expression shapes. A bare variable, call or member
+                    // would be reinterpreted by name-based call/pipeline
+                    // parsing rather than remaining a computed value.
+                    if !matches!(&operand.kind,
+                        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+                        ExprKind::Str(_) | ExprKind::Unary(..) | ExprKind::Binary(..) |
+                        ExprKind::Ternary(..) | ExprKind::Ascribe(..)) {
+                        return Err(unsupported(pos, "value-loop operand requires typed CFG lowering"));
+                    }
                     if *self.peek() == Tok::LParen {
                         return Err(unsupported(self.pos(), "calling a computed value loop"));
                     }
