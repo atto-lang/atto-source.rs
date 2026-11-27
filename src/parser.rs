@@ -3257,15 +3257,18 @@ impl Parser {
             }
             self.grow(1)?;
             let apos = self.pos();
-            if over && !self.eat_word("on") {
+            let membership = over && self.eat_word("in");
+            if over && !membership && !self.eat_word("on") {
                 let msg = if self.is_word("else") || self.is_word("default") {
                     "match has no default/else keyword; use 'on _ -> { ... }'"
                 } else {
-                    "every 'match ... over' arm must start with contextual keyword 'on'"
+                    "every 'match ... over' arm must start with 'on' or 'in'"
                 };
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX", msg));
             }
-            let pattern = if !over && self.eat_word("else") {
+            let pattern = if membership {
+                self.parse_int_membership()?
+            } else if !over && self.eat_word("else") {
                 Pattern::Wild
             } else {
                 self.parse_pattern()?
@@ -3523,6 +3526,8 @@ impl Parser {
             let apos = self.pos();
             let pattern = if self.eat_word("default") {
                 Pattern::Wild
+            } else if self.eat_word("in") {
+                self.parse_int_membership()?
             } else {
                 self.expect_word("on")?;
                 self.parse_pattern()?
@@ -3571,6 +3576,41 @@ impl Parser {
         }
         self.terminator()?;
         Ok(Stmt::Match { subject, arms, pos })
+    }
+
+    /// First membership slice: a bounded, nonempty literal int list.
+    /// No dynamic collection expression or implicit runtime array allocation.
+    fn parse_int_membership(&mut self) -> R<Pattern> {
+        let pos = self.pos();
+        if !self.eat(&Tok::LBracket) {
+            return Err(unsupported(pos, "runtime collection membership arms"));
+        }
+        if self.eat(&Tok::RBracket) {
+            return Err(Diagnostic::new(pos, "E_MATCH", "empty membership arm cannot match any value"));
+        }
+        let mut values = Vec::new();
+        loop {
+            if values.len() == 64 {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "membership arm exceeds 64 literal values"));
+            }
+            let at = self.pos();
+            let negative = self.eat(&Tok::Minus);
+            let value = match self.peek().clone() {
+                Tok::Int(Some(v)) => if negative { -(v as i64) } else { v as i64 },
+                Tok::Int(None) if negative => i64::MIN,
+                Tok::Int(None) => return Err(Diagnostic::new(at, "E_INTEGER_RANGE", "integer literal out of range")),
+                _ => return Err(unsupported(at, "nonliteral or noninteger membership element")),
+            };
+            self.advance();
+            if values.contains(&value) {
+                return Err(Diagnostic::new(at, "E_MATCH", "duplicate integer membership element"));
+            }
+            values.push(value);
+            if self.eat(&Tok::RBracket) { break; }
+            self.expect(Tok::Comma, "comma between membership values")?;
+            if self.eat(&Tok::RBracket) { break; }
+        }
+        Ok(Pattern::InInts(values))
     }
 
     /// Java Parser.parsePattern, restricted to the forms this compiler lowers.

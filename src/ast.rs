@@ -413,6 +413,8 @@ pub enum Pattern {
     /// `_`, or `else` in the legacy form
     Wild,
     Int(i64),
+    /// Bounded constant integer membership, not an array-valued pattern.
+    InInts(Vec<i64>),
     Bool(bool),
     /// lower-case name: binds the subject
     Bind(String),

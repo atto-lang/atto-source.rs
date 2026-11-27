@@ -3233,7 +3233,7 @@ impl<'a> FnCx<'a> {
                 ));
             }
             // (pattern test, literal key for reachability, binding name)
-            let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match &arm.pattern {
+            let (test, keys, bind): (Option<TE>, Option<Vec<i64>>, Option<&str>) = match &arm.pattern {
                 Pattern::Wild => (None, None, None),
                 Pattern::Bind(n) => (None, None, Some(n.as_str())),
                 Pattern::Int(v) => {
@@ -3249,9 +3249,34 @@ impl<'a> FnCx<'a> {
                             e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)),
                             ty: Type::Bool,
                         }),
-                        Some(*v),
+                        Some(vec![*v]),
                         None,
                     )
+                }
+                Pattern::InInts(values) => {
+                    if sty != Type::Int {
+                        return Err(type_err(arm.pos, "int membership requires an int subject"));
+                    }
+                    if values.is_empty() || values.len() > 64 {
+                        return Err(Diagnostic::new(arm.pos, "E_MATCH", "invalid membership list size"));
+                    }
+                    // Reuse the once-evaluated scrutinee and existing lazy
+                    // conditional IR; emit one body, no temporary guest array.
+                    let mut test = TE { e: TExpr::Bool(false), ty: Type::Bool };
+                    for v in values.iter().rev() {
+                        let eq = TE {
+                            e: TExpr::Bin(BinOp::Eq, Box::new(get()),
+                                Box::new(TE { e: TExpr::I64(*v), ty: Type::Int })),
+                            ty: Type::Bool,
+                        };
+                        test = TE {
+                            e: TExpr::Ternary(Box::new(eq),
+                                Box::new(TE { e: TExpr::Bool(true), ty: Type::Bool }),
+                                Box::new(test)),
+                            ty: Type::Bool,
+                        };
+                    }
+                    (Some(test), Some(values.clone()), None)
                 }
                 Pattern::Bool(b) => {
                     if sty != Type::Bool {
@@ -3266,7 +3291,7 @@ impl<'a> FnCx<'a> {
                             e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)),
                             ty: Type::Bool,
                         }),
-                        Some(*b as i64),
+                        Some(vec![*b as i64]),
                         None,
                     )
                 }
@@ -3293,13 +3318,13 @@ impl<'a> FnCx<'a> {
                             e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(ev)),
                             ty: Type::Bool,
                         }),
-                        Some(ord),
+                        Some(vec![ord]),
                         None,
                     )
                 }
             };
-            if let Some(k) = key {
-                if seen.contains(&k) {
+            if let Some(keys) = &keys {
+                if keys.iter().all(|k| seen.contains(k)) {
                     return Err(Diagnostic::new(
                         arm.pos,
                         "E_MATCH",
@@ -3360,9 +3385,9 @@ impl<'a> FnCx<'a> {
             self.pop_scope();
             let (cond, body) = r?;
             if arm.guard.is_none() {
-                match key {
-                    Some(k) => {
-                        seen.insert(k);
+                match keys {
+                    Some(keys) => {
+                        seen.extend(keys);
                         if seen.len() == variants {
                             covered = true;
                         }
