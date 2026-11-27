@@ -103,6 +103,37 @@ const cases=[
     "panic": false
   }
 ];
+// Exact new corpus from conformance #703; historic v6 pins untouched.
+cases.push(...[
+  {
+    "name": "canonical-stdout-v1-stdio-direct.atto",
+    "source": "pub fnc main(): int {\n  stdio.out.write(\"A\");\n  stdio.out.write(\"B\");\n  return 42;\n}\n",
+    "blob": "fcb8c1b56322b1b068007513cd60791504de5918",
+    "stdout": "AB",
+    "panic": false
+  },
+  {
+    "name": "canonical-stdout-v1-process-direct.atto",
+    "source": "pub fnc main(): int {\n  process.stdout.write(\"A\");\n  process.stdout.write(\"B\");\n  return 42;\n}\n",
+    "blob": "0d4a07d1c1ccf6c9f1083816a3740091a8467641",
+    "stdout": "AB",
+    "panic": false
+  },
+  {
+    "name": "canonical-stdout-v1-mixed-defer.atto",
+    "source": "pub fnc main(): int {\n  defer stdio.out.write(\"A\");\n  defer process.stdout.write(\"B\");\n  stdio.out.write(\"C\");\n  return 42;\n}\n",
+    "blob": "7d1868164d3263bb8158c590a7ad0c36e069bb56",
+    "stdout": "CBA",
+    "panic": false
+  },
+  {
+    "name": "canonical-stdout-v1-mixed-trapped-task.atto",
+    "source": "pub fnc main(): int {\n  let int count = 0;\n  val Option<int> missing = None;\n  val Result<int, Error> failure = trap! sync task<int> {\n    count = count + 2;\n    defer stdio.out.write(\"D\");\n    defer process.stdout.write(\"E\");\n    val int value = missing.unwrap();\n    count = count + 100;\n    return value;\n  };\n  guard failure.is_err(), count eq 2 { return 1; }\n  return count + 40;\n}\n",
+    "blob": "5b122c0396240cee7d0be125f952655560b1e78d",
+    "stdout": "ED",
+    "panic": false
+  }
+]);
 function runGuest(bytes) {
   assert.ok(WebAssembly.validate(bytes), 'invalid guest');
   const module = new WebAssembly.Module(bytes);
