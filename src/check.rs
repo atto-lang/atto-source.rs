@@ -4278,7 +4278,9 @@ impl<'a> FnCx<'a> {
             }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
-                let obj = self.value(base)?;
+                let obj = if matches!(base.kind, ExprKind::Member(..)) {
+                    self.expr(base)?
+                } else { self.value(base)? };
                 self.member_on(obj, name, e.pos)
             }
             ExprKind::MethodCall(base, name, args) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
