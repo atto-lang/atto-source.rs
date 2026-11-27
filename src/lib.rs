@@ -40,6 +40,7 @@ pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+mod struct_value_guest;
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
@@ -265,6 +266,63 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.
     core_future_ownership::preflight(&original_tokens)?;
+    // Attached nominal struct syntax has its own target AST. Never route it
+    // through identity-bearing class or structural shape lowering. Locate
+    // top-level declaration headers using lexer tokens, not source text.
+    let mut depth = 0usize;
+    let mut pending_struct = None;
+    for (i, token) in original_tokens.iter().enumerate() {
+        if depth == 0 && (matches!(original_tokens.get(i..i.saturating_add(5)),
+            Some([lexer::Token { tok: lexer::Tok::Ident(a), .. },
+                  lexer::Token { tok: lexer::Tok::Ident(_), .. },
+                  lexer::Token { tok: lexer::Tok::Assign, .. },
+                  lexer::Token { tok: lexer::Tok::Ident(b), .. },
+                  lexer::Token { tok: lexer::Tok::LBrace, .. }])
+                if a == "type" && b == "struct")
+            || matches!(original_tokens.get(i..i.saturating_add(4)),
+                Some([lexer::Token { tok: lexer::Tok::Ident(a), .. },
+                      lexer::Token { tok: lexer::Tok::Ident(b), .. },
+                      lexer::Token { tok: lexer::Tok::Ident(_), .. },
+                      lexer::Token { tok: lexer::Tok::LBrace, .. }])
+                    if a == "define" && b == "struct")) {
+            pending_struct = Some(i);
+        }
+        match &token.tok {
+            lexer::Tok::LBrace => depth += 1,
+            lexer::Tok::RBrace => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some(start) = pending_struct.take() {
+                        if matches!(original_tokens.get(i+1).map(|t| &t.tok),
+                            Some(lexer::Tok::Ident(w)) if w == "with") {
+                            if start != 0 || !matches!(tokens.first().map(|t| &t.tok),
+                                Some(lexer::Tok::Ident(w)) if w == "type" || w == "define") {
+                                return Err(Diagnostic::new(original_tokens[start].pos, "E_UNSUPPORTED",
+                                    "attached struct execution requires leading file-local declarations"));
+                            }
+                            let program = struct_value_guest::lower(original_tokens.clone())?;
+                            let typed = check::check(&program)?;
+                            actor_stack_bound::verify(&typed)?;
+                            if typed.heap || typed.strings || !typed.actors.is_empty() {
+                                return Err(Diagnostic::new(original_tokens[start].pos, "E_UNSUPPORTED",
+                                    "scalar struct lowering must not allocate a class, heap, string or actor"));
+                            }
+                            if javascript {
+                                return js_scalar::emit(&typed).map(String::into_bytes);
+                            }
+                            let bytes = wasm::emit(&typed);
+                            if bytes.len() > wasm::MAX_OUTPUT {
+                                return Err(Diagnostic::new(original_tokens[start].pos, "E_OUTPUT_LIMIT",
+                                    "generated module exceeds 1 MiB"));
+                            }
+                            return Ok(bytes);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;

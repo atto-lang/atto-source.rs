@@ -22,7 +22,7 @@ pub fnc main(): int {
     let (a,b) as foo = (1,2);
     val hold = borrow! foo;
     foo = (3,4);
-    return a+b;
+    return a+b+hold.e0;
 }
 "#;
     assert_eq!(compile(source).unwrap_err().code, "E_BORROW",
@@ -89,4 +89,17 @@ pub fnc main(): int {
 }
 "#;
     assert!(compile(source).is_ok());
+}
+
+#[test]
+fn unused_shared_tuple_loan_expires_before_rebinding() {
+    let source = r#"
+pub fnc main(): int {
+    let (a,b) as foo = (1,2);
+    val hold = borrow! foo;
+    foo = (3,4);
+    return a+b;
+}
+"#;
+    assert!(compile(source).is_ok(), "unused shared loan must not block root rebinding");
 }

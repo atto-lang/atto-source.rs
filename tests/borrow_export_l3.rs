@@ -71,7 +71,7 @@ fn access_through_a_mutable_binder_is_write_through() {
 
 #[test]
 fn owner_read_during_mutable_loan_rejects_at_the_read() {
-    let r = main_record("pub fnc main(): int { let c = new C(); val w = borrow! mut c; return c.x; }");
+    let r = main_record("pub fnc main(): int { let c = new C(); val w = borrow! mut c; return c.x + w.x; }");
     assert_eq!(code(&r), Some("E_BORROW"));
     assert_eq!(ops(&r), ["Init(1)", "Borrow(1,2,mut)", "Read(1)", "EndBorrow(2)", "Return"]);
 }
@@ -249,4 +249,17 @@ fn compiler_limits_export_a_faithful_witness() {
     let temp = main_record("pub fnc main(): int { val r = borrow! new C(); return 1; }");
     assert_eq!(code(&temp), Some("E_BORROW"));
     assert_eq!(ops(&temp), ["Init(1000001)", "Borrow(1000001,1,shared)", "EndBorrow(1)", "Return"]);
+}
+
+#[test]
+fn unused_exclusive_loan_ends_before_owner_read_in_export() {
+    let r = main_record("pub fnc main(): int { let c = new C(); val w = borrow! mut c; return c.x; }");
+    assert_eq!(code(&r), None);
+    assert_eq!(ops(&r), ["Init(1)", "Borrow(1,2,mut)", "EndBorrow(2)", "Read(1)", "Return"]);
+}
+#[test]
+fn projected_loan_is_not_exported_as_a_whole_owner_proof() {
+    let r = main_record("pub fnc main(): int { let c = new C(); val x = borrow! c.x; return x; }");
+    assert_eq!(code(&r), None);
+    assert!(matches!(&r.mir, Err(why) if why.contains("field projection")));
 }
