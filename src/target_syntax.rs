@@ -30,6 +30,18 @@ pub struct ReceiverHeader {
 pub struct ReceiverSite {
     pub declaration_start: usize,
     pub method_start: usize,
+    /// Start of the checked body, before any brace or expression delimiter.
+    pub body_start: usize,
+    pub end: usize,
+}
+
+/// Parser-owned source offsets for a top-level routine. Native backends
+/// consume this ledger instead of guessing a declaration boundary by
+/// scanning backwards for an identifier that happens to spell "fnc".
+#[derive(Clone, Debug)]
+pub struct FunctionSite {
+    pub declaration_start: usize,
+    pub body_start: usize,
     pub end: usize,
 }
 
@@ -79,6 +91,8 @@ pub struct TargetHeaders {
     pub class_ends: Vec<usize>,
     /// Receiver declaration and body token offsets, in receivers order.
     pub receiver_sites: Vec<ReceiverSite>,
+    /// Checked top-level callable token ranges in source declaration order.
+    pub function_sites: Vec<FunctionSite>,
     /// Real concrete actor syntax trees parsed by the production parser.
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
@@ -492,7 +506,6 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     let mut c = Cursor { toks, i: 0 };
     let mut out = TargetHeaders::default();
     let mut spans: Vec<(usize, usize, usize)> = Vec::new();
-    let mut function_spans: Vec<(usize, usize)> = Vec::new();
     let mut function_names: Vec<String> = Vec::new();
     let mut import_sites: Vec<(String, Pos)> = Vec::new();
     let mut saw_declaration = false;
@@ -773,7 +786,7 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 }
                 spans.push((out.receivers.len(), start, end));
                 out.receiver_sites.push(ReceiverSite {
-                    declaration_start, method_start, end,
+                    declaration_start, method_start, body_start: start, end,
                 });
                 out.receivers.push(method);
             } else if c.take_word("constructor") {
@@ -786,13 +799,17 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
             } else if c.take_word("fnc") || c.take_word("routine") {
                 let (name, start, end) = c.function()?;
                 function_names.push(name);
-                function_spans.push((start, end));
+                out.function_sites.push(FunctionSite {
+                    declaration_start, body_start: start, end,
+                });
             } else if c.return_first_header() {
                 // A keyword-free T <- name(...) callable is unambiguous in
                 // declaration scope, and has the same owner/name/arity identity.
                 let (name, start, end) = c.function()?;
                 function_names.push(name);
-                function_spans.push((start, end));
+                out.function_sites.push(FunctionSite {
+                    declaration_start, body_start: start, end,
+                });
             } else {
                 return Err(c.err("E_SYNTAX",
                     "expected namespace header, module import, declared/concrete actor, receiver method, or fnc"));
@@ -882,8 +899,11 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     for (i, start, end) in spans {
         validate_receiver_body(toks, &out, i, start, end)?;
     }
-    for (start, end) in function_spans {
-        validate_spawned_actor_calls(toks, &out, start, end)?;
+    // The same parser-owned ledger drives both semantic validation and all
+    // native backend consumers. Never maintain a second unsynchronized span
+    // list, even for the source-only target syntax checker.
+    for site in &out.function_sites {
+        validate_spawned_actor_calls(toks, &out, site.body_start, site.end)?;
     }
     Ok(out)
 }
