@@ -1,0 +1,7 @@
+// expect-error: E_RECUR_TAIL
+// java: target-only
+pub fnc main(): int {
+  return loop (val a: int = 0) {
+    if a eq 0 { break a; }
+  };
+}

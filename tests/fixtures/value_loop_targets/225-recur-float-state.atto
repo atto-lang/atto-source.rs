@@ -1,0 +1,10 @@
+// expect-exit: 4
+// java: target-only
+pub fnc main(): int {
+  val result: float = loop (val x: float = 1.0, val i: int = 0) {
+    if i >= 3 { break x; }
+    recur(x + 1.0, i + 1);
+  };
+  if result eq 4.0 { return 4; }
+  return 0;
+}
