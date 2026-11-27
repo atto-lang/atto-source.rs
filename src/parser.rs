@@ -235,6 +235,29 @@ pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
 
+/// Resolved graph metadata for inspection only. This is not executable MIR.
+#[derive(Clone, Debug)]
+pub struct FlatActorMachine {
+    pub pos: Pos,
+    pub initial: usize,
+    pub nodes: Vec<FlatMachineNode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FlatMachineNode {
+    pub name: String,
+    pub terminal: bool,
+    pub transitions: Vec<(String, usize)>,
+}
+
+/// Actor-local declarations kept separate from legacy executable fields.
+#[derive(Clone, Debug)]
+pub struct ActorMachineInspection {
+    pub actor: String,
+    pub storage: Option<Vec<Field>>,
+    pub machine: Option<FlatActorMachine>,
+}
+
 #[derive(Clone)]
 pub struct Parser {
     toks: Vec<Token>,
@@ -261,6 +284,8 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    inspect_machines: bool,
+    machine_inspections: Vec<ActorMachineInspection>,
 }
 
 struct TypeFirstField {
@@ -291,6 +316,8 @@ struct Members {
     methods: Vec<Method>,
     receive: Option<Receive>,
     persistence_hooks: Vec<ActorPersistenceHook>,
+    machine: Option<FlatActorMachine>,
+    storage: Option<(Pos, Vec<Field>)>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -333,6 +360,8 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            inspect_machines: false,
+            machine_inspections: Vec::new(),
         }
     }
 
@@ -628,6 +657,18 @@ impl Parser {
         Ok((decl, p.i))
     }
 
+    /// Parse via the production parser, returning only source metadata, never a Program.
+    /// Inspection cannot be selected by a code-generation caller on an existing Parser.
+    pub fn inspect_actor_machines(source: &str) -> R<Vec<ActorMachineInspection>> {
+        if source.len() > crate::SOURCE_CAP {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT", "source exceeds input cap"));
+        }
+        let mut parser = Self::new(crate::lexer::lex(source)?);
+        parser.inspect_machines = true;
+        let _ = parser.parse_program()?;
+        Ok(parser.machine_inspections)
+    }
+
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
@@ -851,6 +892,18 @@ impl Parser {
             return Err(Diagnostic::new(pos, "E_DURABLE_HOOK_OVERRIDE",
                 "durable actor persistence is runtime-managed, not overridden by hooks"));
         }
+        if self.inspect_machines {
+            if m.machine.is_some() || m.storage.is_some() {
+                self.machine_inspections.push(ActorMachineInspection {
+                    actor: name.clone(), storage: m.storage.map(|(_, fields)| fields), machine: m.machine,
+                });
+            }
+        } else if let Some(machine) = &m.machine {
+            return Err(Diagnostic::new(machine.pos, "E_MACHINE_LOWERING_UNSUPPORTED",
+                "flat actor state machine parsed; typed ownership/effect lowering is not implemented"));
+        } else if let Some((at, _)) = &m.storage {
+            return Err(Diagnostic::new(*at, "E_UNSUPPORTED", "inline actor storage lowering is not implemented in this profile"));
+        }
         Ok(ActorDecl {
             name,
             pos,
@@ -1005,7 +1058,7 @@ impl Parser {
 
     /// Restricted, non-emitting grammar probe for an actor-local flat machine.
     /// No state schema, runtime dispatch, effect or ownership authority is created.
-    fn parse_flat_actor_machine(&mut self) -> R<()> {
+    fn parse_flat_actor_machine(&mut self) -> R<FlatActorMachine> {
         use std::collections::{BTreeMap, BTreeSet};
         let pos = self.pos();
         self.expect_word("state")?;
@@ -1014,6 +1067,7 @@ impl Parser {
         let mut initial = None;
         let mut nodes = BTreeMap::<String, BTreeMap<String, String>>::new();
         let mut edge_count = 0usize;
+        let mut terminals = BTreeSet::new();
         while !self.eat_word("end") {
             if self.eat_word("initial") {
                 self.expect_word("state")?;
@@ -1035,6 +1089,7 @@ impl Parser {
             }
             let mut edges = BTreeMap::new();
             if terminal {
+                terminals.insert(name.clone());
                 self.expect(Tok::Semi, "';'")?;
             } else {
                 self.expect_word("as")?;
@@ -1064,7 +1119,7 @@ impl Parser {
             return Err(Diagnostic::new(pos, "E_MACHINE_GRAPH", "unknown initial or successor state"));
         }
         let mut seen = BTreeSet::new();
-        let mut pending = vec![initial];
+        let mut pending = vec![initial.clone()];
         while let Some(name) = pending.pop() {
             if seen.insert(name.clone()) {
                 pending.extend(nodes[&name].values().cloned());
@@ -1073,14 +1128,20 @@ impl Parser {
         if seen.len() != nodes.len() {
             return Err(Diagnostic::new(pos, "E_MACHINE_GRAPH", "unreachable behavioral state"));
         }
-        Ok(())
+        let ids: BTreeMap<String, usize> = nodes.keys().cloned().enumerate().map(|(i, n)| (n, i)).collect();
+        let initial = ids[&initial];
+        let nodes = nodes.into_iter().map(|(name, edges)| {
+            let terminal = terminals.contains(&name);
+            let transitions = edges.into_iter().map(|(event, target)| (event, ids[&target])).collect();
+            FlatMachineNode { name, terminal, transitions }
+        }).collect();
+        Ok(FlatActorMachine { pos, initial, nodes })
     }
 
     /// Class or actor members up to and including `close` (`end` or `}`).
     fn parse_members(&mut self, owner: &str, actor: bool, close: &str) -> R<Members> {
         let kind = if actor { "actor" } else { "class" };
         let mut m = Members::default();
-        let mut machine_pos = None;
         let mut count = 0usize;
         loop {
             if self.at_close(close) {
@@ -1166,10 +1227,33 @@ impl Parser {
                     if explicit_visibility {
                         return Err(Diagnostic::new(mpos, "E_SYNTAX", "state machine cannot have visibility modifiers"));
                     }
-                    if machine_pos.replace(mpos).is_some() {
+                    if m.machine.is_some() {
                         return Err(Diagnostic::new(mpos, "E_MACHINE_GRAPH", "duplicate state machine"));
                     }
-                    self.parse_flat_actor_machine()?;
+                    m.machine = Some(self.parse_flat_actor_machine()?);
+                }
+                Some("state") if actor && *self.peek_at(1) == Tok::LBrace => {
+                    if explicit_visibility || m.storage.is_some() {
+                        return Err(Diagnostic::new(mpos, "E_SYNTAX", "duplicate or modified actor state container"));
+                    }
+                    self.advance();
+                    self.expect(Tok::LBrace, "'{' after state")?;
+                    let mut fields: Vec<Field> = Vec::new();
+                    while !self.eat(&Tok::RBrace) {
+                        if fields.len() >= 64 {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many sealed state fields"));
+                        }
+                        self.expect_word("let")?;
+                        let parsed = self.parse_type_first_field(FieldVisibility::Private, FieldMode::ActorState, FieldBinding::ActorState, false)?;
+                        if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
+                            return Err(unsupported(parsed.field.pos, "non-scalar sealed actor state"));
+                        }
+                        if fields.iter().any(|f| f.name == parsed.field.name) {
+                            return Err(Diagnostic::new(parsed.field.pos, "E_DUPLICATE", "duplicate sealed state field"));
+                        }
+                        fields.push(parsed.field);
+                    }
+                    m.storage = Some((mpos, fields));
                 }
                 Some("state") if actor => {
                     self.advance();
@@ -1303,9 +1387,10 @@ impl Parser {
                 }
             }
         }
-        if let Some(pos) = machine_pos {
-            return Err(Diagnostic::new(pos, "E_MACHINE_LOWERING_UNSUPPORTED",
-                "flat actor state machine parsed; typed ownership/effect lowering is not implemented"));
+        if let Some((pos, _)) = &m.storage {
+            if !m.fields.is_empty() {
+                return Err(Diagnostic::new(*pos, "E_SYNTAX", "sealed actor storage cannot mix legacy fields"));
+            }
         }
         Ok(m)
     }
