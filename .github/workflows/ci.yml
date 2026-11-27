@@ -28,8 +28,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git hash-object src/copy_graph_v1.rs)" = "3008a139cfba41131839de3567a263163152cf00"
-          echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=3008a139cfba41131839de3567a263163152cf00"
+          test "$(git hash-object src/copy_graph_v1.rs)" = "c167fe483abed0d38d5c8a25777e529d705ba48c"
+          echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=c167fe483abed0d38d5c8a25777e529d705ba48c"
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
@@ -133,6 +133,7 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: |
+          node --test tests/copy_guest_receipt.test.mjs
           node --check tests/copy_doublebang_guest.mjs
           node tests/copy_doublebang_guest.mjs
       - name: Execute defer/recover/try/raise unwind guests against spec trace oracles

@@ -1,0 +1,21 @@
+// expect-exit: 42
+// java: rejects
+define class Parcel as
+    pub let int value = 1;
+end
+pub fnc main(): int {
+    let original = new Parcel();
+    let cloned = copy! original;
+    block {
+        val writer = borrow! mut original;
+        writer.value = 20;
+    }
+    block {
+        val writer = borrow! mut cloned;
+        writer.value = 22;
+    }
+    original.value = 19;
+    cloned.value = 23;
+    val observed = borrow! cloned.value;
+    return original.value + observed;
+}

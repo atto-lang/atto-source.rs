@@ -413,12 +413,15 @@ struct ClassInfo {
     name: String,
     /// Distinct protected-state nominal declaration (single Worker-local profile).
     state_container: bool,
+    // Constructor-free, permanently immutable scalar storage only.
+    immutable_copy_leaf: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
     /// AOT-generated, private per-concrete-class copier, present only after
-    /// proving every stored field is a by-value/immutable scalar.
+    /// proving every slot is scalar or a permanently immutable leaf.
     deep_copy_idx: Option<u32>,
+    shallow_copy_idx: Option<u32>,
     ctor_idx: Option<u32>,
     ctor_params: Vec<Type>,
 }
@@ -783,9 +786,9 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 /// AOT descriptor checker, vendored byte-identically from the independently
 /// tested atto-borrow-checker.rs copy_graph_v1 module. No user annotations or
 /// method names can mint a witness, and this does not admit actor sends.
-fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()> {
+fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: crate::copy_graph_v1::CopyMode) -> R<()> {
     use crate::copy_graph_v1::{
-        admit_copy, CopyMode, CopyRequest, Field as CopyField,
+        admit_copy, CopyRequest, Field as CopyField,
         FieldKind as CopyFieldKind, TypeDescriptor,
     };
 
@@ -796,6 +799,8 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
             kind: match f.ty {
                 Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) =>
                     CopyFieldKind::Scalar,
+                Type::Class(child) if !f.referent_mutable && classes[child as usize].immutable_copy_leaf =>
+                    CopyFieldKind::ImmutableShared,
                 Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
                 _ => CopyFieldKind::Unresolved,
             },
@@ -805,7 +810,7 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
             parent: None, // the browser compiler does not admit inheritance
             fields,
             deep_copy_witness: class.deep_copy_idx.is_some() && !class.state_container,
-            shallow_copy_witness: false, // a deep witness does not grant copy!
+            shallow_copy_witness: class.shallow_copy_idx.is_some() && !class.state_container,
             sendable: false, // actor Sendable is a separate, unimplemented proof
         });
     }
@@ -814,13 +819,13 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
     let plan = admit_copy(&layouts, CopyRequest {
         concrete_type: requested,
         static_type: requested,
-        mode: CopyMode::Deep,
+        mode,
         actor_send: false,
     }).map_err(|err| Diagnostic::new(pos, err.0,
-        "class lacks a complete, concrete, closed-world compiler-generated deep copy witness"))?;
-    // The current AOT backend generates flat-object copies only. Do not
-    // broaden witness admission to transitive graphs until the generated
-    // copier has an identity memo and a rollback-safe graph allocation plan.
+        "class lacks a complete, concrete, closed-world compiler-generated mode-specific copy witness"))?;
+    // Only the fresh root is allocated. Proven permanently immutable leaves
+    // retain identity in both modes; mutable graph copies still require a
+    // separate identity memo and rollback-safe graph allocation plan.
     if plan.copied_type_ids != vec![requested] {
         return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
             "nested mutable class graph requires a memoized AOT copy runtime"));
@@ -1039,6 +1044,18 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         Ok(out)
     };
+    // Admit only permanently immutable leaf layouts; a fixed reference slot
+    // alone is never proof of immutability. No constructor or method can
+    // inject aliases or mutate this leaf. The source declaration, including
+    // private fields, supplies the entire closed-world witness.
+    let immutable_copy_leaves: Vec<bool> = p.classes.iter().map(|c| {
+        !c.state_container && !c.name.starts_with("__atto_tuple_private_") &&
+            c.ctor.is_none() && c.methods.is_empty() && c.fields.iter().all(|f|
+                !f.referent_mutable && !f.binding.rebindable() &&
+                f.mode == FieldMode::Final && f.init.as_ref().is_some_and(const_init) &&
+                res(f.ty).is_ok_and(|t| matches!(t,
+                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))))
+    }).collect();
     let fields_of = |owner: &str, fs: &[Field], actor: bool, global_base: u32| -> R<Vec<FieldInfo>> {
         let mut out: Vec<FieldInfo> = Vec::new();
         for (i, f) in fs.iter().enumerate() {
@@ -1074,6 +1091,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             let ok = match ty {
                 Type::Int | Type::Bool => true,
                 Type::Float | Type::Str | Type::Enum(_) => !actor,
+                Type::Class(child) => !actor && !f.referent_mutable && f.binding != FieldBinding::Const &&
+                    f.mode != FieldMode::ActorState && immutable_copy_leaves[child as usize] &&
+                    matches!(f.init.as_ref().map(|e| &e.kind), Some(ExprKind::New(name, args))
+                        if name == &class_names[child as usize] && args.is_empty()),
                 _ => false,
             };
             if !ok {
@@ -1104,23 +1125,33 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     };
 
     let mut classes = Vec::new();
-    for c in &p.classes {
+    for (ci, c) in p.classes.iter().enumerate() {
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
+        if fields.iter().any(|f| matches!(f.ty, Type::Class(_))) &&
+            (c.state_container || c.ctor.is_some() || !c.methods.is_empty() ||
+             c.name.starts_with("__atto_tuple_private_")) {
+            return Err(Diagnostic::new(c.pos, "E_COPY_UNPROVEN",
+                "nested immutable copy layout requires a constructor-free ordinary root without methods"));
+        }
         let mut methods = methods_of(&c.name, &c.methods, &c.fields)?;
         let new_idx = take();
         let ctor_idx = c.ctor.as_ref().map(|_| take());
         for m in &mut methods {
             m.idx = take();
         }
-        // This first AOT profile may copy only a flat class of verified
-        // identity-free slots. Class/actor/ADT handles require a graph memo,
+        // This bounded AOT profile permits scalar slots and proven immutable
+        // leaves only. Mutable class/actor/ADT handles require further proof,
         // and protected actor-state objects cannot bypass their sealed leases.
         // Custom copy_deep overrides need separate proof/hook chaining.
-        let can_generate_deep_copy = !c.state_container
-            && !c.methods.iter().any(|m| m.name == "copy_deep")
-            && fields.iter().all(|f| matches!(f.ty,
-                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
+        let flat = !c.state_container && fields.iter().all(|f| match f.ty {
+            Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
+            Type::Class(child) => !f.referent_mutable && immutable_copy_leaves[child as usize],
+            _ => false,
+        });
+        let can_generate_deep_copy = flat && !c.methods.iter().any(|m| m.name == "copy_deep");
+        let can_generate_shallow_copy = flat && !c.methods.iter().any(|m| m.name == "copy");
         let deep_copy_idx = if can_generate_deep_copy { Some(take()) } else { None };
+        let shallow_copy_idx = if can_generate_shallow_copy { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
@@ -1128,10 +1159,12 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         classes.push(ClassInfo {
             name: c.name.clone(),
             state_container: c.state_container,
+            immutable_copy_leaf: immutable_copy_leaves[ci],
             fields,
             methods,
             new_idx,
             deep_copy_idx,
+            shallow_copy_idx,
             ctor_idx,
             ctor_params,
         });
@@ -1388,12 +1421,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             body,
         });
         // Generated source-independent whole-concrete-type copy plan. The
-        // checker has proved that each slot can be copied by value; emitting
+        // checker has proved each slot is scalar or permanently immutable; emitting
         // an allocation plus typed field loads/stores creates a fresh object
         // without invoking any initializer or user constructor a second time.
         // The copy function is private and has no reflective field access.
-        if let Some(copy_idx) = info.deep_copy_idx {
-            authenticate_flat_copy_aot(&g.classes, ci as u32, c.pos)?;
+        for (copy_idx, mode, method_name) in [
+            (info.deep_copy_idx, crate::copy_graph_v1::CopyMode::Deep, "copy_deep"),
+            (info.shallow_copy_idx, crate::copy_graph_v1::CopyMode::Shallow, "copy"),
+        ] {
+            let Some(copy_idx) = copy_idx else { continue; };
+            authenticate_flat_copy_aot(&g.classes, ci as u32, c.pos, mode)?;
             let source = TE { e: TExpr::Local(0), ty: me };
             let cloned = TE { e: TExpr::Local(1), ty: me };
             let mut body = vec![TStmt::Set(1, TE {
@@ -1412,7 +1449,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
             body.push(TStmt::Return(Some(cloned)));
             funcs[copy_idx as usize] = Some(TFunc {
-                name: format!("{}.copy_deep$generated", c.name),
+                name: format!("{}.{method_name}$generated", c.name),
                 params: vec![me], ret: me, locals: vec![me], body,
             });
         }
@@ -1826,6 +1863,14 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
         // assignment. No synthetic initializer or implicit default is emitted.
         return Ok(None);
     };
+    if let Type::Class(child) = ty {
+        let leaf = &g.classes[child as usize];
+        if !actor && !f.referent_mutable && leaf.immutable_copy_leaf &&
+            matches!(&init.kind, ExprKind::New(name, args) if name == &leaf.name && args.is_empty()) {
+            return Ok(Some(TE { e: TExpr::Call(leaf.new_idx, vec![]), ty }));
+        }
+        return Err(Diagnostic::new(init.pos, "E_COPY_UNPROVEN", "nested initializer lacks a verified immutable leaf witness"));
+    }
     if !const_init(init) {
         return Err(Diagnostic::new(
             init.pos,
@@ -2849,7 +2894,24 @@ impl<'a> FnCx<'a> {
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
-                if matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_)) {
+                // A verified generated flat-class copier allocates a new root,
+                // just like direct construction. Check the actual lowered call
+                // index, not merely the spelling of a user-defined function.
+                let fresh_copy = match (&init.kind, &v.e, v.ty) {
+                    (ExprKind::Ownership(op @ (OwnershipOp::Copy | OwnershipOp::DeepCopy), false, _),
+                        TExpr::Call(index, _), Type::Class(ci)) => {
+                        let class = &self.g.classes[ci as usize];
+                        !class.state_container && !class.name.starts_with("__atto_tuple_private_") &&
+                            class.fields.iter().all(|f| match f.ty {
+                                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
+                                Type::Class(child) => !f.referent_mutable && self.g.classes[child as usize].immutable_copy_leaf,
+                                _ => false,
+                            }) &&
+                            (if *op == OwnershipOp::Copy { class.shallow_copy_idx } else { class.deep_copy_idx }) == Some(*index)
+                    }
+                    _ => false,
+                };
+                if fresh_copy || (matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_))) {
                     self.fresh_class_roots.insert(slot);
                 }
                 if let Some(tr) = self.trace.as_mut() {
@@ -3632,9 +3694,17 @@ impl<'a> FnCx<'a> {
                         "cannot reassign val/final/const field"));
                 }
                 let (offset, fty) = (f.slot, f.ty);
-                if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                let fresh_immutable = match fty {
+                    Type::Class(child) => {
+                        let leaf = &self.g.classes[child as usize];
+                        !f.referent_mutable && leaf.immutable_copy_leaf &&
+                            matches!(&value.kind, ExprKind::New(name, args) if name == &leaf.name && args.is_empty())
+                    }
+                    _ => false,
+                };
+                if !fresh_immutable && !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                     return Err(Diagnostic::new(pos, "E_BORROW",
-                        "reference-valued class field assignment requires checked ownership transfer"));
+                        "reference-valued class field assignment requires a fresh verified immutable leaf"));
                 }
                 if self.loans.values().any(|loan| loan.owner == slot &&
                     (loan.field.is_none() || loan.field == Some(offset))) {
@@ -3998,33 +4068,51 @@ impl<'a> FnCx<'a> {
             OwnershipOp::Copy | OwnershipOp::DeepCopy | OwnershipOp::Share => {
                 // Identity-free admitted scalars have no mutable descendants:
                 // shallow and deep copies are the same guest value operation.
-                // Copy!! can also use a *compiler-emitted* AOT copier for an
+                // Both copy modes can use a mode-specific *compiler-emitted* AOT copier for an
                 // ordinary flat class whose full stored field layout was
                 // independently checked before this expression was lowered.
                 let value = self.value(inner)?;
-                if action == OwnershipOp::DeepCopy {
+                if matches!(action, OwnershipOp::Copy | OwnershipOp::DeepCopy) {
                     if let Type::Class(ci) = value.ty {
+                        let shallow = action == OwnershipOp::Copy;
+                        if self.g.classes[ci as usize].fields.iter().any(|f| matches!(f.ty, Type::Class(_))) {
+                            if let Some(tr) = self.trace.as_mut() {
+                                tr.unavailable("nested immutable copy witness not represented in L3");
+                            }
+                        }
+                        // Existing L3 wire format has no distinct shallow-class event.
+                        // Do not mislabel it as DeepCopy or export a partial proof.
+                        if shallow {
+                            if let Some(tr) = self.trace.as_mut() {
+                                tr.unavailable("mode-specific shallow class copy witness not in L3 wire profile");
+                            }
+                        }
                         if let ExprKind::Var(name) = &inner.kind {
                             if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
-                                if let Some(tr) = self.trace.as_mut() { tr.deep_copied(owner_slot, pos); }
+                                if !shallow {
+                                    if let Some(tr) = self.trace.as_mut() { tr.deep_copied(owner_slot, pos); }
+                                }
                                 if self.loans.contains_key(&owner_slot)
                                     || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
                                 {
                                     return Err(Diagnostic::new(pos, "E_BORROW",
-                                        "copy!! cannot read a mutable/exclusive borrowed class owner"));
+                                        "copy cannot read a mutable/exclusive borrowed class owner"));
                                 }
                             }
                         }
                         let class = &self.g.classes[ci as usize];
-                        if class.methods.iter().any(|m| m.name == "copy_deep") {
+                        let method = if shallow { "copy" } else { "copy_deep" };
+                        if class.methods.iter().any(|m| m.name == method) {
                             return Err(Diagnostic::new(pos, "E_COPY_OVERRIDE",
-                                "custom copy_deep overrides need verified complete-plan/hook support"));
+                                "custom copy overrides need verified complete-plan/hook support"));
                         }
-                        let Some(copy_idx) = class.deep_copy_idx else {
-                            return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
-                                "copy!! class graph contains unproved mutable/reference slots or protected actor state"));
+                        let index = if shallow { class.shallow_copy_idx } else { class.deep_copy_idx };
+                        let Some(copy_idx) = index else {
+                            return Err(Diagnostic::new(pos, if shallow { "E_COPY_SHALLOW_ALIAS" } else { "E_COPY_DEEP_UNSUPPORTED" },
+                                "class graph contains unproved mutable/reference slots or protected actor state"));
                         };
-                        authenticate_flat_copy_aot(&self.g.classes, ci, pos)?;
+                        let mode = if shallow { crate::copy_graph_v1::CopyMode::Shallow } else { crate::copy_graph_v1::CopyMode::Deep };
+                        authenticate_flat_copy_aot(&self.g.classes, ci, pos, mode)?;
                         return Ok(TE { e: TExpr::Call(copy_idx, vec![value]), ty: Type::Class(ci) });
                     }
                 }
@@ -4690,7 +4778,14 @@ impl<'a> FnCx<'a> {
                     ty: Type::ActorRef(a),
                 }
             }
-            ExprKind::Member(base, name) => self.member(base, name, pos)?,
+            ExprKind::Member(base, name) => {
+                let projected = self.member(base, name, pos)?;
+                if matches!(projected.ty, Type::Class(_)) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "nested leaf reference is projection-only; owned extraction requires a lifetime witness"));
+                }
+                projected
+            },
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "array literals are parsed but not yet lowered to browser Wasm")),
@@ -4751,6 +4846,11 @@ impl<'a> FnCx<'a> {
             ));
         }
         let (idx, params) = (info.new_idx, info.ctor_params.clone());
+        if info.fields.iter().any(|f| matches!(f.ty, Type::Class(_))) {
+            if let Some(tr) = self.trace.as_mut() {
+                tr.unavailable("nested immutable allocation layout not represented in L3");
+            }
+        }
         let targs = self.args(&format!("{class} constructor"), args, &params)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
@@ -4890,7 +4990,24 @@ impl<'a> FnCx<'a> {
                 _ => return Err(Diagnostic::new(base.pos, "E_UNBOUND", "unknown name 'self'")),
             }
         }
-        let obj = self.value(base)?;
+        // A class-valued field is not an owned expression. Only a scalar
+        // projection through a named root can read this shared immutable
+        // leaf; the ordinary expression arm rejects extraction.
+        let obj = if let ExprKind::Member(root, field) = &base.kind {
+            if !matches!(&root.kind, ExprKind::Var(_)) {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "nested projection requires a named root"));
+            }
+            let projected = self.member(root, field, base.pos)?;
+            if matches!(projected.ty, Type::Class(_)) {
+                if let Some(tr) = self.trace.as_mut() {
+                    tr.unavailable("nested immutable field projection not represented in L3");
+                }
+            }
+            projected
+        } else {
+            self.value(base)?
+        };
         self.member_on(obj, name, pos)
     }
 
