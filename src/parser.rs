@@ -353,7 +353,8 @@ impl Parser {
     }
 
     fn explicit_rebind_here(&self) -> bool {
-        self.is_word("set") && matches!(self.peek_at(1), Tok::Ident(_) | Tok::Bang)
+        self.is_word("set") && matches!(self.peek_at(1),
+            Tok::Ident(_) | Tok::Bang | Tok::PlusPlus | Tok::MinusMinus)
     }
 
     fn parse_explicit_rebind(&mut self) -> R<Stmt> {
@@ -361,13 +362,52 @@ impl Parser {
         self.expect_word("set")?;
         let bang = self.eat(&Tok::Bang);
         let wrapped = bang && self.eat(&Tok::LParen);
+        let prefix = if self.eat(&Tok::PlusPlus) { Some(BinOp::Add) }
+            else if self.eat(&Tok::MinusMinus) { Some(BinOp::Sub) }
+            else { None };
         let (name, _) = self.ident("an existing local binding name")?;
-        self.expect(Tok::Assign, "'=' after rebind target")?;
-        let value = self.parse_expr()?;
+        let stmt = if let Some(op) = prefix {
+            incr(name, pos, op)
+        } else if self.eat(&Tok::PlusPlus) {
+            incr(name, pos, BinOp::Add)
+        } else if self.eat(&Tok::MinusMinus) {
+            incr(name, pos, BinOp::Sub)
+        } else {
+            let compound = if self.eat(&Tok::PlusAssign) {
+                Some(BinOp::Add)
+            } else {
+                // Existing lexer emits two tokens for these compounds.
+                // Require physical adjacency, not merely token adjacency.
+                let at = self.pos();
+                let next = self.toks.get(self.i + 1).map(|t| t.pos);
+                let op = match self.peek() {
+                    Tok::Minus => Some(BinOp::Sub),
+                    Tok::Star => Some(BinOp::Mul),
+                    Tok::Slash => Some(BinOp::Div),
+                    _ => None,
+                };
+                if op.is_some() && *self.peek_at(1) == Tok::Assign
+                    && next.is_some_and(|p| p.line == at.line && p.col == at.col + 1) {
+                    self.advance();
+                    self.advance();
+                    op
+                } else {
+                    self.expect(Tok::Assign, "'=', increment or compound update after rebind target")?;
+                    None
+                }
+            };
+            let rhs = self.parse_expr()?;
+            let value = if let Some(op) = compound {
+                Expr { kind: ExprKind::Binary(op,
+                    Box::new(Expr { kind: ExprKind::Var(name.clone()), pos }),
+                    Box::new(rhs)), pos }
+            } else { rhs };
+            Stmt::Assign { name, value, pos }
+        };
         if wrapped {
             self.expect(Tok::RParen, "')' after rebind expression")?;
         }
-        Ok(Stmt::Assign { name, value, pos })
+        Ok(stmt)
     }
 
     fn peek(&self) -> &Tok {
@@ -2505,6 +2545,7 @@ impl Parser {
                     } else { None };
                     if let Some((op, count)) = candidate {
                         let at = self.toks[self.i + 1].pos;
+                        self.require_explicit_rebind(at)?;
                         self.advance(); // lhs
                         for _ in 0..count { self.advance(); }
                         let value = self.parse_expr()?;
@@ -2526,6 +2567,7 @@ impl Parser {
                 // Restrict it to locals: field/index targets need once-only lvalue lowering.
                 if *self.peek() == Tok::PlusAssign {
                     let at = self.pos();
+                    self.require_explicit_rebind(at)?;
                     self.advance();
                     let value = self.parse_expr()?;
                     self.terminator()?;
@@ -3194,8 +3236,10 @@ impl Parser {
             let upos = self.pos();
             let (name, _) = self.ident("a loop variable")?;
             if self.eat(&Tok::PlusPlus) {
+                self.require_explicit_rebind(upos)?;
                 Some(Box::new(incr(name, upos, BinOp::Add)))
             } else if self.eat(&Tok::MinusMinus) {
+                self.require_explicit_rebind(upos)?;
                 Some(Box::new(incr(name, upos, BinOp::Sub)))
             } else {
                 self.expect(Tok::Assign, "'++', '--' or '='")?;
