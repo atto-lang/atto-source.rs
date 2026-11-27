@@ -298,7 +298,7 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
                             if start != 0 || !matches!(tokens.first().map(|t| &t.tok),
                                 Some(lexer::Tok::Ident(w)) if w == "type" || w == "define") {
                                 return Err(Diagnostic::new(original_tokens[start].pos, "E_UNSUPPORTED",
-                                    "attached struct execution is restricted to one standalone file-local declaration"));
+                                    "attached struct execution requires leading file-local declarations"));
                             }
                             let program = struct_value_guest::lower(original_tokens.clone())?;
                             let typed = check::check(&program)?;

@@ -71,7 +71,33 @@ const snapshotMain = `pub fnc main(): int {
     return 0;
 }`;
 const direct = s => s.replace('type Point = struct', 'define struct Point').replace('is_origin() : bool', 'is_origin() -> bool');
+// Equal field shapes and signatures must not share nominal dispatch or storage.
+const secondOwner = direct(decl).replaceAll('Point', 'Offset').replace('return self.x + self.y;', 'return self.x - self.y;');
+const twoOwners = direct(decl) + '\n' + secondOwner;
+const twoOwnerMain = `pub fnc main(): int {
+    let Point p = Point(10, 20);
+    let Offset q = Offset(10, 20);
+    let Offset r = copy! q;
+    stdio.println(p.sum());
+    stdio.println(q.sum());
+    stdio.println(r.product());
+    return 0;
+}`;
+const twoMutOwners = direct(mutating) + '\n' + direct(mutating).replaceAll('Point', 'Offset').replace('return self.x + self.y;', 'return self.x - self.y;');
+const twoMutMain = `pub fnc main(): int {
+    let mut p = Point(10, 20);
+    let mut q = Offset(10, 20);
+    let r = q;
+    p.shift(5);
+    q.swap(3, 7);
+    stdio.println(p.sum());
+    stdio.println(q.sum());
+    stdio.println(r.sum());
+    return 0;
+}`;
 const positives = [
+    ['distinct-nominal-owners', twoOwners + '\n' + twoOwnerMain, '30\n-10\n200\n'],
+    ['distinct-mutable-owner-copies', twoMutOwners + '\n' + twoMutMain, '40\n4\n-10\n'],
     ['define-grouped-arrow', direct(decl) + '\n' + main, '30\n200\nfalse\n'],
     ['define-chained-arrow', direct(chained) + '\n' + main, '30\n200\nfalse\n'],
     ['define-all-right-arrow', direct(decl).replace('int • sum()', 'sum() -> int').replace('int <- product()', 'product() -> int') + '\n' + main, '30\n200\nfalse\n'],
@@ -99,6 +125,12 @@ const positives = [
     ['origin', decl + '\n' + main.replace('10, 20', '0, 0'), '0\n0\ntrue\n'],
 ];
 const negatives = [
+    ['wrong-second-owner-annotation', twoOwners + '\n' + twoOwnerMain.replace('let Offset q =', 'let Point q =')],
+    ['wrong-second-owner-copy', twoOwners + '\n' + twoOwnerMain.replace('let Offset r =', 'let Point r =')],
+    ['duplicate-nominal-owner', twoOwners.replaceAll('Offset', 'Point') + '\n' + twoOwnerMain],
+    ['owner-method-not-structural', twoOwners.replace('mtd int • sum() { return self.x - self.y; }', 'mtd int • other() { return self.x - self.y; }') + '\n' + twoOwnerMain],
+    ['owner-shadow', twoOwners + '\n' + twoOwnerMain.replace('let Point p =', 'let Point Offset =')],
+    ['owner-count-limit', Array.from({length:17}, (_,i)=>direct(decl).replaceAll('Point', 'Point'+i)).join('\n')+'\n'+main, /E_SOURCE_LIMIT/],
     ['define-duplicate-arrow', direct(decl).replace('int <- product()', 'sum() -> int') + '\n' + main],
     ['define-duplicate-result-annotation', direct(decl).replace('is_origin() -> bool', 'is_origin() -> bool: bool') + '\n' + main],
     ['define-nested-layout-unimplemented', direct(decl).replace('int x;', 'Point x;') + '\n' + main],

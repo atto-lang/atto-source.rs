@@ -750,6 +750,28 @@ impl Parser {
 
     /// Parse a bounded scalar struct declaration and its grouped/chained
     /// attachments. This does not certify initialization, layout or guest execution.
+    pub(crate) fn parse_struct_value_targets(&mut self) -> R<Vec<StructWithTarget>> {
+        let mut decls = Vec::new();
+        let mut owners = std::collections::BTreeSet::new();
+        loop {
+            if decls.len() >= 16 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many attached nominal owners"));
+            }
+            let decl = self.parse_struct_with_target()?;
+            if !owners.insert(decl.name.clone()) {
+                return Err(Diagnostic::new(decl.pos, "E_DUPLICATE", "duplicate attached nominal owner"));
+            }
+            decls.push(decl);
+            let next = (self.word_at(0) == Some("define") && self.word_at(1) == Some("struct")
+                && self.word_at(2).is_some() && *self.peek_at(3) == Tok::LBrace)
+                || (self.word_at(0) == Some("type") && self.word_at(1).is_some()
+                    && *self.peek_at(2) == Tok::Assign && self.word_at(3) == Some("struct")
+                    && *self.peek_at(4) == Tok::LBrace);
+            if !next { break; }
+        }
+        Ok(decls)
+    }
+
     pub fn parse_struct_with_target(&mut self) -> R<StructWithTarget> {
         let direct = self.eat_word("define");
         if direct { self.expect_word("struct")?; } else { self.expect_word("type")?; }

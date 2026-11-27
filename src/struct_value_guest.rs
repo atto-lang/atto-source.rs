@@ -1,4 +1,4 @@
-//! Bounded executable attached-struct profile: one file-local nominal owner,
+//! Bounded executable attached-struct profile: distinct file-local nominal owners,
 //! scalar fields and parameters, readonly returns and bounded mutable methods,
 //! straight-line main. Values live in independent typed scalar locals.
 //! Never use the identity-bearing class ABI or an interpreter.
@@ -169,12 +169,13 @@ struct MethodEntry {
     mutable_index: Option<usize>,
 }
 struct LocalValue {
+    owner: usize,
     fields: Vec<String>,
     writable: bool,
 }
 struct MainLower<'a> {
-    decl: &'a StructWithTarget,
-    methods: &'a BTreeMap<(String, usize), Vec<MethodEntry>>,
+    decls: &'a [StructWithTarget],
+    methods: &'a BTreeMap<(usize, String, usize), Vec<MethodEntry>>,
     type_names: &'a [(String, Pos)],
     writable_bindings: &'a [Pos],
     names: BTreeSet<String>,
@@ -239,7 +240,7 @@ impl MainLower<'_> {
                 };
                 let value = self.values.get(owner).ok_or_else(||
                     denied(pos, "method receiver is not a local value of the declared nominal struct"))?;
-                let methods = self.methods.get(&(name.clone(), args.len())).ok_or_else(||
+                let methods = self.methods.get(&(value.owner, name.clone(), args.len())).ok_or_else(||
                     Diagnostic::new(pos, "E_ARITY", "no matching attached struct method arity"))?;
                 let lowered = args.iter().map(|arg| self.expr(arg)).collect::<R<Vec<_>>>()?;
                 let types = lowered.iter().map(|arg| self.scalar_type(arg)).collect::<R<Vec<_>>>()?;
@@ -261,14 +262,15 @@ impl MainLower<'_> {
         Ok(Expr { kind, pos })
     }
 
-    fn construct(&mut self, name: &str, args: &[Expr], pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
+    fn construct(&mut self, owner: usize, name: &str, args: &[Expr], pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
+        let decl = &self.decls[owner];
         let writable = self.writable_bindings.contains(&pos);
         let lowered = args.iter().map(|arg| self.expr(arg)).collect::<R<Vec<_>>>()?;
         let types = lowered.iter().map(|arg| self.scalar_type(arg)).collect::<R<Vec<_>>>()?;
-        let mut candidates = self.decl.constructors.iter().filter(|(_, c)|
+        let mut candidates = decl.constructors.iter().filter(|(_, c)|
             c.params.iter().map(|p| p.ty).eq(types.iter().copied()));
         let (_, ctor) = candidates.next().ok_or_else(|| {
-            let same_arity = self.decl.constructors.iter().any(|(_, c)| c.params.len() == args.len());
+            let same_arity = decl.constructors.iter().any(|(_, c)| c.params.len() == args.len());
             Diagnostic::new(pos, if same_arity { "E_TYPE" } else { "E_ARITY" },
                 "no matching attached struct constructor signature")
         })?;
@@ -276,7 +278,7 @@ impl MainLower<'_> {
             return Err(denied(pos, "ambiguous attached struct constructor signature"));
         }
         charge_expansion(&mut self.expansion_nodes, body_cost(&ctor.body)
-            .saturating_add(4 * (self.decl.fields.len() + args.len())), pos)?;
+            .saturating_add(4 * (decl.fields.len() + args.len())), pos)?;
         if ctor.params.iter().any(|p| p.mutable) {
             return Err(denied(pos, "mutable constructor parameter outside scalar profile"));
         }
@@ -295,7 +297,7 @@ impl MainLower<'_> {
         }
         if ctor.body.iter().any(|stmt| matches!(stmt, Stmt::If { .. })) {
             let mut slots = Slots::new();
-            for (i, (field, ty)) in self.decl.fields.iter().enumerate() {
+            for (i, (field, ty)) in decl.fields.iter().enumerate() {
                 let local = internal("scratch", id, i);
                 // Explicit private scratch initialization is required by
                 // the ordinary scalar checker. It is not a source struct
@@ -310,17 +312,17 @@ impl MainLower<'_> {
                 slots.insert(field.clone(), local);
             }
             constructor_block(&ctor.body, &params, &slots, &mut initialized, out, pos)?;
-            if initialized.len() != self.decl.fields.len() {
+            if initialized.len() != decl.fields.len() {
                 return Err(denied(pos, "constructor fallthrough leaves a field uninitialized"));
             }
             let mut fields = Vec::new();
-            for (i, (field, ty)) in self.decl.fields.iter().enumerate() {
+            for (i, (field, ty)) in decl.fields.iter().enumerate() {
                 let scratch = initialized.get(field).ok_or_else(|| denied(pos, "missing constructor field"))?;
                 let local = internal("field", id, i);
                 out.push(field_binding(local.clone(), *ty, variable(scratch, pos), pos, writable));
                 fields.push(local);
             }
-            self.values.insert(name.to_owned(), LocalValue { fields, writable });
+            self.values.insert(name.to_owned(), LocalValue { owner, fields, writable });
             return Ok(());
         }
         for stmt in &ctor.body {
@@ -330,27 +332,27 @@ impl MainLower<'_> {
             if !matches!(&target.kind, ExprKind::SelfRef) || initialized.contains_key(field) {
                 return Err(denied(*at, "invalid constructor field write"));
             }
-            let (i, (_, ty)) = self.decl.fields.iter().enumerate().find(|(_, (n, _))| n == field)
+            let (i, (_, ty)) = decl.fields.iter().enumerate().find(|(_, (n, _))| n == field)
                 .ok_or_else(|| denied(*at, "unknown constructor field"))?;
             let local = internal("field", id, i);
             let init = member_expr(value, &params, &initialized)?;
             out.push(field_binding(local.clone(), *ty, init, *at, writable));
             initialized.insert(field.clone(), local);
         }
-        let fields = self.decl.fields.iter().map(|(n, _)| initialized.get(n).cloned()
+        let fields = decl.fields.iter().map(|(n, _)| initialized.get(n).cloned()
             .ok_or_else(|| denied(pos, "constructor leaves uninitialized field"))).collect::<R<Vec<_>>>()?;
-        self.values.insert(name.to_owned(), LocalValue { fields, writable });
+        self.values.insert(name.to_owned(), LocalValue { owner, fields, writable });
         Ok(())
     }
 
-    fn validate_value_binding(&self, ty: Option<Type>, kind: BindKind, pos: Pos) -> R<()> {
+    fn validate_value_binding(&self, owner: usize, ty: Option<Type>, kind: BindKind, pos: Pos) -> R<()> {
         if kind == BindKind::Const {
             return Err(denied(pos, "runtime struct value is not a compile-time const"));
         }
         if let Some(t) = ty {
             let matches_owner = match t {
                 Type::Named(index) => self.type_names.get(index as usize)
-                    .is_some_and(|(name, _)| name == &self.decl.name),
+                    .is_some_and(|(name, _)| name == &self.decls[owner].name),
                 _ => false,
             };
             if !matches_owner {
@@ -365,19 +367,21 @@ impl MainLower<'_> {
     fn copy_value(&mut self, name: &str, source: &str, pos: Pos, out: &mut Vec<Stmt>) -> R<()> {
         let writable = self.writable_bindings.contains(&pos);
         let value = self.values.get(source).ok_or_else(|| denied(pos, "copy requires a local scalar struct"))?;
-        charge_expansion(&mut self.expansion_nodes, 4 * self.decl.fields.len(), pos)?;
-        if value.fields.len() != self.decl.fields.len() {
+        let owner = value.owner;
+        let decl = &self.decls[owner];
+        charge_expansion(&mut self.expansion_nodes, 4 * decl.fields.len(), pos)?;
+        if value.fields.len() != decl.fields.len() {
             return Err(denied(pos, "invalid struct field plan"));
         }
         let id = self.next;
         self.next += 1;
         let mut fields = Vec::with_capacity(value.fields.len());
-        for (i, (old, (_, ty))) in value.fields.iter().zip(&self.decl.fields).enumerate() {
+        for (i, (old, (_, ty))) in value.fields.iter().zip(&decl.fields).enumerate() {
             let local = internal("copy", id, i);
             out.push(field_binding(local.clone(), *ty, variable(old, pos), pos, writable));
             fields.push(local);
         }
-        self.values.insert(name.to_owned(), LocalValue { fields, writable });
+        self.values.insert(name.to_owned(), LocalValue { owner, fields, writable });
         Ok(())
     }
 
@@ -393,11 +397,12 @@ impl MainLower<'_> {
         if !value.writable {
             return Err(Diagnostic::new(pos, "E_BORROW_MUT_REQUIRED", "mutable method needs writable local receiver authority"));
         }
-        let fields: Slots = self.decl.fields.iter().zip(&value.fields)
+        let decl = &self.decls[value.owner];
+        let fields: Slots = decl.fields.iter().zip(&value.fields)
             .map(|((name, _), local)| (name.clone(), local.clone())).collect();
         let lowered = args.iter().map(|arg| self.expr(arg)).collect::<R<Vec<_>>>()?;
         let types = lowered.iter().map(|arg| self.scalar_type(arg)).collect::<R<Vec<_>>>()?;
-        let entries = self.methods.get(&(name.to_owned(), args.len())).ok_or_else(||
+        let entries = self.methods.get(&(value.owner, name.to_owned(), args.len())).ok_or_else(||
             Diagnostic::new(pos, "E_ARITY", "no matching attached method arity"))?;
         let mut selected = entries.iter().filter(|entry| entry.parameter_types == types);
         let entry = selected.next().ok_or_else(|| Diagnostic::new(pos, "E_TYPE", "no matching attached method signature"))?;
@@ -405,7 +410,7 @@ impl MainLower<'_> {
             return Err(denied(pos, "ambiguous attached method"));
         }
         let index = entry.mutable_index.ok_or_else(|| denied(pos, "readonly value method is not a mutable statement"))?;
-        let m = &self.decl.methods[index];
+        let m = &decl.methods[index];
         charge_expansion(&mut self.expansion_nodes, body_cost(&m.body)
             .saturating_add(4 * args.len()), pos)?;
         let id = self.next;
@@ -426,13 +431,13 @@ impl MainLower<'_> {
         for stmt in body {
             match stmt {
                 Stmt::Bind { kind, name, ty, init, pos } => {
-                    if name == &self.decl.name || !self.names.insert(name.clone()) {
+                    if self.decls.iter().any(|decl| &decl.name == name) || !self.names.insert(name.clone()) {
                         return Err(Diagnostic::new(*pos, "E_DUPLICATE", "duplicate local or nominal owner shadow"));
                     }
                     if let ExprKind::Call(owner, args) = &init.kind {
-                        if owner == &self.decl.name {
-                            self.validate_value_binding(*ty, *kind, *pos)?;
-                            self.construct(name, args, *pos, &mut out)?;
+                        if let Some(owner) = self.decls.iter().position(|decl| &decl.name == owner) {
+                            self.validate_value_binding(owner, *ty, *kind, *pos)?;
+                            self.construct(owner, name, args, *pos, &mut out)?;
                             continue;
                         }
                     }
@@ -445,7 +450,7 @@ impl MainLower<'_> {
                         _ => None,
                     };
                     if let Some(source) = copy_source {
-                        self.validate_value_binding(*ty, *kind, *pos)?;
+                        self.validate_value_binding(self.values[source].owner, *ty, *kind, *pos)?;
                         self.copy_value(name, source, *pos, &mut out)?;
                         continue;
                     }
@@ -468,11 +473,11 @@ impl MainLower<'_> {
                 Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, name, args), pos }) =>
                     self.mutate(base, name, args, *pos, &mut out)?,
                 Stmt::Return(Some(e), pos) => out.push(Stmt::Return(Some(self.expr(e)?), *pos)),
-                _ => return Err(denied(self.decl.pos, "only immutable scalar/struct local construction, scalar println and return are admitted")),
+                _ => return Err(denied(self.decls[0].pos, "only immutable scalar/struct local construction, scalar println and return are admitted")),
             }
         }
         if self.values.is_empty() {
-            return Err(denied(self.decl.pos, "scalar struct guest requires a local constructor invocation"));
+            return Err(denied(self.decls[0].pos, "scalar struct guest requires a local constructor invocation"));
         }
         Ok(out)
     }
@@ -481,25 +486,29 @@ impl MainLower<'_> {
 pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
     let source_nodes = tokens.len();
     let mut parser = Parser::new(tokens);
-    let decl = parser.parse_struct_with_target()?;
+    let decls = parser.parse_struct_value_targets()?;
     let (mut program, writable_bindings) = parser.parse_struct_value_program()?;
     if !program.classes.is_empty() || !program.enums.is_empty() || !program.actors.is_empty()
         || program.actor_interface.is_some() || !program.array_types.is_empty()
         || program.funcs.len() != 1 {
-        return Err(denied(decl.pos, "scalar struct guest requires exactly one standalone main and one nominal owner"));
+        return Err(denied(decls[0].pos, "scalar struct guest requires exactly one standalone main and file-local nominal owners"));
     }
     let main = &program.funcs[0];
     if main.name != "main" || !main.params.is_empty() || main.ret != Type::Int
         || main.is_generator || main.is_pure || main.declared_effects.is_some() {
         return Err(denied(main.pos, "scalar struct guest requires plain main(): int"));
     }
-    if decl.methods.len() > 64 || decl.fields.len() > MAX_PARAMS || decl.constructors.is_empty() {
-        return Err(denied(decl.pos, "scalar struct guest declaration exceeds bounded profile"));
-    }
     let mut methods = BTreeMap::new();
     let mut lowered = Vec::new();
-    for (i, m) in decl.methods.iter().enumerate() {
-        let is_mutable = decl.mutable_methods.contains(&i);
+    let mut proofs = BTreeSet::new();
+    for (owner, decl) in decls.iter().enumerate() {
+        if decl.methods.len().saturating_add(lowered.len()) > 64 || decl.fields.len() > MAX_PARAMS
+            || decl.constructors.is_empty() || decl.constructors.iter().any(|(_, c)| c.params.iter().any(|p| p.mutable)) {
+            return Err(denied(decl.pos, "scalar struct guest declaration exceeds bounded profile or has mutable constructor parameters"));
+        }
+        for (method_index, m) in decl.methods.iter().enumerate() {
+        let i = lowered.len();
+        let is_mutable = decl.mutable_methods.contains(&method_index);
         if m.is_static || m.params.iter().any(|p| p.mutable) || (is_mutable != (m.ret == Type::Void))
             || decl.fields.len() + m.params.len() > MAX_PARAMS {
             return Err(denied(m.pos, "attached method outside scalar readonly profile"));
@@ -520,13 +529,14 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
         let function = internal("method", i, 0);
         let entry = MethodEntry { function: function.clone(), arity: flat.len(),
             parameter_types: m.params.iter().map(|p| p.ty).collect(), result: m.ret,
-            mutable_index: is_mutable.then_some(i) };
-        let overloads = methods.entry((m.name.clone(), m.params.len())).or_insert_with(Vec::new);
+            mutable_index: is_mutable.then_some(method_index) };
+        let overloads = methods.entry((owner, m.name.clone(), m.params.len())).or_insert_with(Vec::new);
         if overloads.iter().any(|prior: &MethodEntry| prior.parameter_types == entry.parameter_types) {
             return Err(denied(m.pos, "duplicate exact attached method parameter signature"));
         }
         overloads.push(entry);
         if is_mutable {
+            proofs.insert(function.clone());
             // Validate even an unused method with the ordinary checker.
             // Its private proof function writes only local scalar scratch
             // copies, and is removed from the emitted program below.
@@ -551,16 +561,16 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
                 body: vec![Stmt::Return(Some(member_expr(e, &params, &fields)?), *ret_pos)] });
         }
     }
-    let mut lower = MainLower { decl: &decl, methods: &methods, type_names: &program.type_names, writable_bindings: &writable_bindings, names: BTreeSet::new(),
+    }
+    let mut lower = MainLower { decls: &decls, methods: &methods, type_names: &program.type_names, writable_bindings: &writable_bindings, names: BTreeSet::new(),
         scalars: BTreeMap::new(), values: BTreeMap::new(), next: 0, expansion_nodes: source_nodes };
     program.funcs[0].body = lower.body(&program.funcs[0].body)?;
     program.funcs.extend(lowered);
     // The proof functions allow the real typed checker to validate all
     // mutating bodies, including unused declarations. They are deliberately
     // not part of the actual emitted guest, and cannot be called from source.
-    if !decl.mutable_methods.is_empty() {
+    if !proofs.is_empty() {
         crate::check::check(&program)?;
-        let proofs: BTreeSet<_> = decl.mutable_methods.iter().map(|&i| internal("method", i, 0)).collect();
         program.funcs.retain(|f| !proofs.contains(&f.name));
     }
     Ok(program)
