@@ -1,0 +1,8 @@
+pub fnc main(): int {
+    let int n = 20;
+    let int result = 0;
+    do match n over
+        on _ as rebind int z -> { z = z + 2; result = z; }
+    end
+    return n + result;
+}

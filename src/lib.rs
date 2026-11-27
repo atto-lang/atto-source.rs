@@ -130,6 +130,24 @@ pub fn compile_js(source: &str) -> Result<String, Diagnostic> {
     String::from_utf8(bytes).map_err(|_| js_scalar::unsupported())
 }
 
+/// Bounded single-source migration profile for explicit local reassignment.
+/// Check the original tokens with the real parser before any rewriting or
+/// alternate lowering; retain the ordinary compiler's existing admission and
+/// ownership checks for emission. Package and import compilation are separate
+/// gates, not silently routed through this preview.
+pub fn compile_explicit_rebinding(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    let pos = Pos { line: 1, col: 1 };
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds explicit binding input cap"));
+    }
+    let tokens = lexer::lex(source)?;
+    if tokens.iter().any(|t| matches!(&t.tok, lexer::Tok::Ident(w) if w == "import")) {
+        return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "explicit binding preview does not admit imports"));
+    }
+    parser::Parser::new(tokens).with_explicit_rebinding().parse_program()?;
+    compile(source)
+}
+
 /// Opt-in verified scalar profile. The ordinary compiler and linked-source
 /// paths remain unchanged. Strict requests never fall back to ordinary emission.
 pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
@@ -644,6 +662,12 @@ mod abi {
         compile_mode(length, 2)
     }
 
+    /// Explicit binding preview is opt-in, with no fallback to ordinary mode.
+    #[no_mangle]
+    pub extern "C" fn compile_explicit_rebinding(length: i32) -> i32 {
+        compile_mode(length, 3)
+    }
+
     fn compile_mode(length: i32, mode: u8) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
@@ -688,6 +712,7 @@ mod abi {
             let result = match mode {
                 1 => super::compile_verified_strict(source),
                 2 => super::compile_js(source).map(String::into_bytes),
+                3 => super::compile_explicit_rebinding(source),
                 _ => super::compile(source),
             };
             match result {

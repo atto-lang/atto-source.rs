@@ -416,6 +416,8 @@ pub enum Pattern {
     Bool(bool),
     /// lower-case name: binds the subject
     Bind(String),
+    /// Whole-subject alias for the copied-scalar match profile.
+    Alias { inner: Box<Pattern>, name: String, ty: Option<Type>, rebind: bool },
     /// `Enum.Variant` (oreslang-source.llvm v1 enum design spelling)
     Variant(String, String),
     /// Tagged built-in ADT variant, optionally binding the payload.

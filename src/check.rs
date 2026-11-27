@@ -2645,12 +2645,26 @@ impl<'a> FnCx<'a> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        self.declare_local(name, ty, mutable, false, pos)
+    }
+
+    // Fresh copied-scalar let versions only; preserve capability/loan gates.
+    fn declare_local(&mut self, name: &str, ty: Type, mutable: bool,
+                     scalar_let_shadow: bool, pos: Pos) -> R<u32> {
         if self.telemetry_aliases.iter().any(|alias| alias == name) {
             return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
                 format!("opaque span alias '{name}' cannot be shadowed")));
         }
-        if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
-            return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+        if let Some(previous) = self.scopes.last().unwrap().iter().rev().find(|l| l.name == name) {
+            let eligible = scalar_let_shadow && mutable && previous.mutable
+                && previous.mail.is_none() && previous.slot >= self.nparams
+                && matches!(previous.ty, Type::Int | Type::Bool)
+                && matches!(ty, Type::Int | Type::Bool)
+                && !self.loans.contains_key(&previous.slot)
+                && !self.loans.values().any(|loan| loan.owner == previous.slot);
+            if !eligible {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+            }
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
@@ -2823,7 +2837,8 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
-                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                let is_let = *kind == BindKind::Let;
+                let slot = self.declare_local(name, v.ty, is_let, is_let, *pos)?;
                 if matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_)) {
                     self.fresh_class_roots.insert(slot);
                 }
@@ -3236,8 +3251,22 @@ impl<'a> FnCx<'a> {
                     format!("unreachable match arm {}: earlier arms already match every value", i + 1),
                 ));
             }
+            let (pattern, alias) = match &arm.pattern {
+                Pattern::Alias { inner, name, ty, rebind } => {
+                    if !matches!(sty, Type::Int | Type::Bool | Type::Float) {
+                        return Err(Diagnostic::new(arm.pos, "E_UNSUPPORTED", "match aliases require a copied scalar subject"));
+                    }
+                    if let Some(t) = *ty {
+                        let t = self.resolve(t, arm.pos)?;
+                        if t != sty { return Err(type_err(arm.pos, "match alias annotation must equal the subject type")); }
+                    }
+                    (inner.as_ref(), Some((name.as_str(), *rebind)))
+                }
+                p => (p, None),
+            };
             // (pattern test, literal key for reachability, binding name)
-            let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match &arm.pattern {
+            let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match pattern {
+                Pattern::Alias { .. } => return Err(Diagnostic::new(arm.pos, "E_SYNTAX", "nested alias")),
                 Pattern::Wild => (None, None, None),
                 Pattern::Bind(n) => (None, None, Some(n.as_str())),
                 Pattern::Int(v) => {
@@ -3317,6 +3346,14 @@ impl<'a> FnCx<'a> {
             self.scopes.push(Vec::new());
             let r = (|| -> R<(TE, Vec<TStmt>)> {
                 let mut body = Vec::new();
+                let mut alias_slot = None;
+                if let Some((n, rebind)) = alias {
+                    let slot = self.declare(n, sty, false, arm.pos)?;
+                    alias_slot = Some((slot, rebind));
+                    let assignment = TStmt::Set(slot, get());
+                    if arm.guard.is_some() { match_setup.push(assignment); }
+                    else { body.push(assignment); }
+                }
                 if let Some(n) = bind {
                     let slot = self.declare(n, sty, false, arm.pos)?;
                     let assignment = TStmt::Set(slot, get());
@@ -3332,6 +3369,11 @@ impl<'a> FnCx<'a> {
                     Some(g) => Some(self.cond(g, "match guard")?),
                     None => None,
                 };
+                // Guards see fixed slots; only the selected body may reassign.
+                if let Some((slot, true)) = alias_slot {
+                    let local = self.scopes.last_mut().unwrap().iter_mut().find(|l| l.slot == slot).expect("alias local exists");
+                    local.mutable = true;
+                }
                 let at_arm = self.moved.clone();
                 body.extend(self.stmts(&arm.body)?);
                 if !returns(&body) {
@@ -3413,6 +3455,7 @@ impl<'a> FnCx<'a> {
                     format!("unreachable match arm {}: prior arms cover every variant", i + 1)));
             }
             let (key, payload_name, payload_ty) = match &arm.pattern {
+                Pattern::Alias { .. } => return Err(Diagnostic::new(arm.pos, "E_UNSUPPORTED", "whole ADT aliases require checked ownership")),
                 Pattern::Wild => (None, None, None),
                 Pattern::Bind(n) => (None, Some(n.as_str()), Some(sty)),
                 Pattern::Adt(name, bind) => {
