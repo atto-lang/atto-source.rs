@@ -13,9 +13,13 @@ fn pull_push_syntax_fails_closed_in_rust_scalar_frontend() {
         "pub fnc main(): int { return (rt take x); }",
     ];
     for source in unsupported {
-        assert!(frontend::parse(source).is_err() || compile(source).is_err(),
-            "unsupported demand/actor source unexpectedly compiled: {source}");
+        assert!(
+            frontend::parse(source).is_err() || compile(source).is_err(),
+            "unsupported demand/actor source unexpectedly compiled: {source}"
+        );
     }
-    assert!(compile("pub fnc main(): int { return 42; }").is_ok(),
-        "negative gate must not reject already-supported scalar programs");
+    assert!(
+        compile("pub fnc main(): int { return 42; }").is_ok(),
+        "negative gate must not reject already-supported scalar programs"
+    );
 }
