@@ -3258,11 +3258,12 @@ impl Parser {
             self.grow(1)?;
             let apos = self.pos();
             let membership = over && self.eat_word("in");
-            if over && !membership && !self.eat_word("on") {
+            let type_test = over && self.is_word("is");
+            if over && !membership && !type_test && !self.eat_word("on") {
                 let msg = if self.is_word("else") || self.is_word("default") {
                     "match has no default/else keyword; use 'on _ -> { ... }'"
                 } else {
-                    "every 'match ... over' arm must start with 'on' or 'in'"
+                    "every 'match ... over' arm must start with 'on', 'in', or 'is'"
                 };
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX", msg));
             }
@@ -3528,6 +3529,8 @@ impl Parser {
                 Pattern::Wild
             } else if self.eat_word("in") {
                 self.parse_int_membership()?
+            } else if self.is_word("is") {
+                self.parse_static_type_pattern()?
             } else {
                 self.expect_word("on")?;
                 self.parse_pattern()?
@@ -3613,6 +3616,39 @@ impl Parser {
         Ok(Pattern::InInts(values))
     }
 
+    /// Static scalar type disjunction. The ordinary checker verifies the
+    /// subject type and every reachable body before emitting any guest.
+    fn parse_static_type_pattern(&mut self) -> R<Pattern> {
+        let pos = self.pos();
+        self.expect_word("is")?;
+        let plural = self.eat_word("in");
+        if plural { self.expect(Tok::LBracket, "'[' in type list")?; }
+        let mut types = Vec::new();
+        loop {
+            if *self.peek() == Tok::RBracket {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "type list must contain a type"));
+            }
+            let ty = match self.peek() {
+                Tok::Ident(w) if w == "int" => Type::Int,
+                Tok::Ident(w) if w == "bool" || w == "boolean" => Type::Bool,
+                Tok::Ident(w) if w == "float" || w == "f64" => Type::Float,
+                Tok::Ident(w) if w == "string" || w == "String" => Type::Str,
+                _ => return Err(unsupported(self.pos(), "non-scalar or unresolved type pattern")),
+            };
+            if types.contains(&ty) {
+                return Err(Diagnostic::new(self.pos(), "E_MATCH", "duplicate canonical type in type list"));
+            }
+            self.advance();
+            types.push(ty);
+            if !plural || self.eat(&Tok::RBracket) { break; }
+            self.expect(Tok::Comma, "comma between type alternatives")?;
+        }
+        if self.is_word("as") {
+            return Err(unsupported(pos, "static type-list binding requires dedicated narrowing"));
+        }
+        Ok(Pattern::StaticTypes(types))
+    }
+
     /// Java Parser.parsePattern, restricted to the forms this compiler lowers.
     fn parse_pattern(&mut self) -> R<Pattern> {
         let pos = self.pos();
@@ -3662,7 +3698,8 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Wild)
                 }
-                "is" | "structural" => Err(unsupported(pos, "type patterns")),
+                "is" => self.parse_static_type_pattern(),
+                "structural" => Err(unsupported(pos, "structural type patterns")),
                 _ => {
                     self.advance();
                     if *self.peek() == Tok::Dot {

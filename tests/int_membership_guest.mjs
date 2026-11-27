@@ -9,6 +9,10 @@ const program = (subject, arms) => 'pub fnc main(): int { return match ' + subje
 const pass = [
   program('2','in [0,1,2] -> 42, on _ -> 0'),
   program('7','in [0,1,2] -> 0, on _ -> 42'),
+  program('7','is in [int, string] -> 42'),
+  program('true','is in [int, bool] -> 42'),
+  program('2','on 0 -> 0, is in [int, bool] -> 42'),
+  program('7','in [0,1,2] when (1 / 0) eq 1 -> 0, on _ -> 42'),
   program('2','on 2 -> 42, in [1,2,3] -> 0, on _ -> 0'),
   program('2','in [1,2] when false -> 0, in [1,2] -> 42, on _ -> 0'),
   program('-9223372036854775808','in [-9223372036854775808, 0] -> 42, on _ -> 0'),
@@ -16,6 +20,12 @@ const pass = [
 ];
 const fail = [
   program('2','in [2,2] -> 42, on _ -> 0'),
+  program('7','is in [int,int] -> 42'),
+  program('7','is in [string,String] -> 42'),
+  program('7','is in [] -> 42'),
+  program('7','is in [int,42] -> 42'),
+  program('7','is in [int,bool] -> 42, on _ -> 0'),
+  program('7','is in [string,bool] -> 42, on _ -> 0'),
   program('2','in [] -> 42, on _ -> 0'),
   program('2','in [1,2] -> 42, on 2 -> 0, on _ -> 0'),
   program('2','in [1,2] -> 42'),
