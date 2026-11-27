@@ -15,6 +15,12 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 const programs = [
   {
+    name: 'seeded-make-soa-15',
+    filename: 'collection-layout-seeded-make-soa-15.atto',
+    expectedReturn: 15n,
+    expectedWords: [15n, 30n, 20n, 40n, 1n, 2n],
+  },
+  {
     name: 'contextual-make-soa-15',
     filename: 'collection-layout-contextual-make-soa-15.atto',
     expectedReturn: 15n,
@@ -100,11 +106,40 @@ try {
     });
   }
 
+  // Both lexical projections must be independently proven by compiled guests.
+  const seededProjection = readFileSync(resolve(here, 'fixtures/pass/collection-layout-seeded-make-soa-15.atto'), 'utf8');
+  for (const [alias, expected] of [['X', 2n], ['Base', 5n]]) {
+    const source = seededProjection.replace('return particles.columns.x[0];', `return ${alias}.size;`);
+    const input = join(temp, `project-${alias}.atto`);
+    const output = join(temp, `project-${alias}.wasm`);
+    writeFileSync(input, source);
+    const compiled = run(input, output);
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const wasm = readFileSync(output);
+    assert.ok(WebAssembly.validate(wasm));
+    const mod = new WebAssembly.Module(wasm);
+    assert.deepEqual(WebAssembly.Module.imports(mod), []);
+    const instance = new WebAssembly.Instance(mod, {});
+    assert.equal(instance.exports.main(), expected);
+    assert.equal(instance.exports.panic_code.value, 0);
+    receipts.push({kind: 'SOURCE_COMPILED_WASM_GUEST', case: `project-${alias}`,
+      source_sha256: sha256(source), wasm_sha256: sha256(wasm), return_value: String(expected), guest_executed: true});
+  }
+
   // Prove fail-closed compiler negatives with no generated guest artifact.
   const milestone = readFileSync(resolve(here, 'fixtures/pass/collection-layout-soa-15.atto'), 'utf8');
   const fixed = readFileSync(resolve(here, 'fixtures/pass/collection-layout-fixed-size-soa-15.atto'), 'utf8');
   const contextual = readFileSync(resolve(here, 'fixtures/pass/collection-layout-contextual-make-soa-15.atto'), 'utf8');
+  const seeded = readFileSync(resolve(here, 'fixtures/pass/collection-layout-seeded-make-soa-15.atto'), 'utf8');
   const invalid = [
+    ['seed-size-inherited-mismatch', seeded.replace(' with {size=infer}', ''), 'E_ARRAY_SIZE_MISMATCH'],
+    ['seed-size-invalid', seeded.replace('size=5', 'size=-1'), 'E_LAYOUT_SIZE'],
+    ['seed-wrong-nominal', seeded.replace('T=Particle', 'T=Other'), 'E_UNKNOWN_TYPE'],
+    ['seed-duplicate-slot', seeded.replace('size=5', 'size=5,size=5'), 'E_GENERIC_DUP'],
+    ['seed-capture-collision', seeded.replace('infer X from Base', 'infer Base from Base'), 'E_GENERIC_DUP'],
+    ['seed-unknown-source', seeded.replace('from Base>', 'from Unknown>'), 'E_LAYOUT_SYNTAX'],
+    ['seed-new-inline', seeded.replace('make {', 'new {'), 'E_CONSTRUCTION_CATEGORY'],
     ['contextual-new-in-inline-slot', contextual.replace('make {', 'new {'), 'E_CONSTRUCTION_CATEGORY'],
     ['contextual-make-missing', contextual.replace('x:10, y:20, velocity:1', 'x:10, y:20'), 'E_STRUCT_FIELD'],
     ['contextual-make-duplicate', contextual.replace('x:10, y:20, velocity:1', 'x:10, x:20, velocity:1'), 'E_STRUCT_FIELD'],
