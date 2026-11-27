@@ -245,9 +245,9 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
-    /// At this expression nesting depth, a single bar closes a standalone match subject.
-    /// Nested grouped expressions and call arguments retain ordinary operators.
-    delimited_match_depth: Option<u32>,
+    /// Exact token index of a standalone match subject's closing single bar.
+    /// Recursive ternary parsing is not a grouping boundary.
+    delimited_match_end: Option<usize>,
     /// A ternary's middle arm must leave ':' to its ternary separator.
     ascription_colon: bool,
     /// Explicit lambda nesting is independently bounded to avoid stack
@@ -390,7 +390,7 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
-            delimited_match_depth: None,
+            delimited_match_end: None,
             ascription_colon: true,
             lambda_nesting: 0,
             type_names: Vec::new(),
@@ -3243,16 +3243,54 @@ impl Parser {
         if matches!(self.peek(), Tok::Pipe | Tok::Comma | Tok::Eof) {
             return Err(self.expected("a nonempty delimited match subject"));
         }
-        let previous = self.delimited_match_depth;
-        self.delimited_match_depth = Some(self.depth + 1);
+        let closing = self.find_delimited_match_end()?;
+        let previous = self.delimited_match_end;
+        self.delimited_match_end = Some(closing);
         let result = self.parse_expr();
-        self.delimited_match_depth = previous;
+        self.delimited_match_end = previous;
         let subject = result?;
         if *self.peek() == Tok::Comma {
             return Err(unsupported(self.pos(), "multiple delimited match subjects"));
         }
+        if self.i != closing {
+            return Err(self.expected("closing bar of delimited match subject"));
+        }
         self.expect(Tok::Pipe, "'|' after delimited match subject")?;
         Ok((subject, true))
+    }
+
+    // Find the first single bar outside explicit grouping. Keep the ordinary
+    // expression parser authoritative; this bounded scan only locates its end.
+    fn find_delimited_match_end(&self) -> R<usize> {
+        let mut closers = Vec::new();
+        let mut i = self.i;
+        let limit = self.toks.len().min(self.i.saturating_add(4096));
+        while i < limit {
+            let token = &self.toks[i];
+            match &token.tok {
+                Tok::LParen => closers.push(Tok::RParen),
+                Tok::LBracket => closers.push(Tok::RBracket),
+                Tok::LBrace => closers.push(Tok::RBrace),
+                Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                    if closers.pop().as_ref() != Some(&token.tok) {
+                        return Err(Diagnostic::new(token.pos, "E_SYNTAX",
+                            "unbalanced delimited match subject"));
+                    }
+                }
+                Tok::Pipe if closers.is_empty() => {
+                    if self.toks.get(i + 1).is_some_and(|next| next.tok == Tok::Pipe) {
+                        i += 1;
+                    } else {
+                        return Ok(i);
+                    }
+                }
+                Tok::Eof => break,
+                _ => {}
+            }
+            i += 1;
+        }
+        Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+            "missing closing bar or delimited match subject exceeds token budget"))
     }
 
     fn parse_match(&mut self, procedural: bool) -> R<Stmt> {
@@ -3331,6 +3369,7 @@ impl Parser {
         if arms.is_empty() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "match requires at least one arm"));
         }
+        if delimited { self.eat(&Tok::Semi); }
         Ok(Stmt::Match { subject, arms, pos })
     }
 
@@ -3941,7 +3980,7 @@ impl Parser {
             self.height -= 1;
         }
         match self.peek() {
-            Tok::Pipe if self.delimited_match_depth != Some(self.depth) => {
+            Tok::Pipe if self.delimited_match_end != Some(self.i) => {
                 return Err(Diagnostic::new(
                     self.pos(),
                     "E_UNSUPPORTED",
@@ -4010,7 +4049,7 @@ impl Parser {
     fn parse_logical_or(&mut self) -> R<Expr> {
         let mut left = self.parse_logical_and()?;
         let mut links = 0;
-        while *self.peek() == Tok::Pipe && *self.peek_at(1) == Tok::Pipe {
+        while self.delimited_match_end != Some(self.i) && *self.peek() == Tok::Pipe && *self.peek_at(1) == Tok::Pipe {
             let pos = self.pos();
             self.advance();
             self.advance();
@@ -4065,7 +4104,7 @@ impl Parser {
         let mut left = self.parse_bitwise_xor()?;
         let mut links = 0;
         while self.cond == 0
-            && self.delimited_match_depth != Some(self.depth)
+            && self.delimited_match_end != Some(self.i)
             && *self.peek() == Tok::Pipe
             && *self.peek_at(1) != Tok::Pipe
         {
