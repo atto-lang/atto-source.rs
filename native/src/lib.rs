@@ -12,6 +12,14 @@ pub mod safety;
 pub mod static_facts;
 pub mod tiering;
 
+/// Compile a closed, uniformly unsigned scalar module to a native object.
+/// The entry symbol is atto_guest_main (u64), not process main. Arithmetic
+/// traps are target-native; no typed guest Error or effect certificate.
+pub fn compile_checked_u64(source: &str) -> Result<Vec<u8>, String> {
+    let module = mir::lower_unsigned(source)?;
+    codegen::emit_unsigned_object(&module)
+}
+
 /// Compile the current scalar grammar with opt-in signed i64 overflow traps.
 /// No safety/effect certificate is emitted: those IR schemas cannot yet
 /// express the new conditional integer-overflow failure edges.

@@ -9,16 +9,34 @@ fn forward_and_backward_exports_have_the_same_symbol_semantics() {
     let top = parse(&format!("export pub fnc helper;\nexport pub main;\n{DECL}")).unwrap();
     let bottom = parse(&format!("{DECL}export pub fnc helper;\nexport pub main;\n")).unwrap();
     assert_eq!(top.functions, bottom.functions);
-    assert_eq!(top.exports.iter().map(|e| (&e.name, e.scope, &e.kind)).collect::<Vec<_>>(),
-               bottom.exports.iter().map(|e| (&e.name, e.scope, &e.kind)).collect::<Vec<_>>());
-    assert!(top.functions.iter().any(|f| f.name == "helper" && f.exported));
+    assert_eq!(
+        top.exports
+            .iter()
+            .map(|e| (&e.name, e.scope, &e.kind))
+            .collect::<Vec<_>>(),
+        bottom
+            .exports
+            .iter()
+            .map(|e| (&e.name, e.scope, &e.kind))
+            .collect::<Vec<_>>()
+    );
+    assert!(top
+        .functions
+        .iter()
+        .any(|f| f.name == "helper" && f.exported));
 }
 
 #[test]
 fn package_export_is_not_public_elf_linkage() {
     let p = parse(&format!("export pub[pkg] fnc helper;\n{DECL}")).unwrap();
     assert_eq!(p.exports[0].scope, ExportScope::Package);
-    assert!(!p.functions.iter().find(|f| f.name == "helper").unwrap().exported);
+    assert!(
+        !p.functions
+            .iter()
+            .find(|f| f.name == "helper")
+            .unwrap()
+            .exported
+    );
 }
 
 #[test]
@@ -26,8 +44,14 @@ fn exports_fail_closed_on_unbound_wrong_kind_and_duplicate() {
     for (export, code) in [
         ("export pub Missing;", "export_unresolved"),
         ("export pub class helper;", "export_kind_mismatch"),
-        ("export pub helper; export pub fnc helper;", "duplicate_export"),
-        ("export pub[pkg] helper; pub fnc helper(): int { return 0; }", "export_visibility_conflict"),
+        (
+            "export pub helper; export pub fnc helper;",
+            "duplicate_export",
+        ),
+        (
+            "export pub[pkg] helper; pub fnc helper(): int { return 0; }",
+            "export_visibility_conflict",
+        ),
     ] {
         let source = if export.contains("pub fnc helper():") {
             format!("{export}\nfnc main(): int {{ return helper(); }}")
@@ -51,7 +75,14 @@ fn mir_preserves_package_manifest_without_public_linkage() {
     assert_eq!(typed.exports.len(), 1, "pkg visibility must survive lower");
     assert_eq!(typed.exports[0].name, "helper");
     assert_eq!(typed.exports[0].scope, ExportScope::Package);
-    assert!(!typed.functions.iter().find(|f| f.symbol == "helper").unwrap().exported);
+    assert!(
+        !typed
+            .functions
+            .iter()
+            .find(|f| f.symbol == "helper")
+            .unwrap()
+            .exported
+    );
 }
 
 #[test]
@@ -106,10 +137,7 @@ fn strict_aot_native_object_keeps_package_export_local() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "oresc-pkg-export-{}-{nonce}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("oresc-pkg-export-{}-{nonce}", std::process::id()));
     fs::create_dir(&dir).unwrap();
     let source = dir.join("package.atto");
     let object = dir.join("package.o");
@@ -145,7 +173,11 @@ fnc dead_private(): int { return 9; }\n",
         .find(|line| line.split_whitespace().last() == Some("package_api"))
         .expect("package export was stripped from native object");
     let parts: Vec<_> = package_line.split_whitespace().collect();
-    assert_eq!(parts[parts.len() - 2], "t", "package API leaked as public: {symbols}");
+    assert_eq!(
+        parts[parts.len() - 2],
+        "t",
+        "package API leaked as public: {symbols}"
+    );
     assert!(
         !symbols.contains("dead_private"),
         "ordinary private dead function was not pruned: {symbols}"
@@ -156,7 +188,10 @@ fnc dead_private(): int { return 9; }\n",
 #[test]
 fn package_visibility_cannot_hide_an_implicit_native_entry_point() {
     let source = "export pub[pkg] fnc main; fnc main(): int { return 42; }";
-    assert_eq!(parse(source).unwrap_err().class, "export_visibility_conflict");
+    assert_eq!(
+        parse(source).unwrap_err().class,
+        "export_visibility_conflict"
+    );
     assert!(oreslang_source_rs::compile(source).is_err());
 }
 

@@ -18,7 +18,9 @@ fn rejected(source: &str) {
 
 #[test]
 fn shared_http_actor_3x4_atto_fixture_fails_closed() {
-    rejected(include_str!("../../tests/fixtures/http-actor-unsupported.atto"));
+    rejected(include_str!(
+        "../../tests/fixtures/http-actor-unsupported.atto"
+    ));
 }
 
 #[test]
@@ -69,7 +71,9 @@ fn unicode_line_separators_cannot_hide_http_actor_after_comment() {
              pub fnc main(): int {{ return http(); }}"
         );
         assert!(frontend::parse(&valid).is_ok(), "separator: {separator:?}");
-        assert!(!compile(&valid).expect("valid http identifier source").is_empty());
+        assert!(!compile(&valid)
+            .expect("valid http identifier source")
+            .is_empty());
     }
 }
 
