@@ -221,8 +221,6 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
-        ExprKind::Var(name) => scalar_locals.get(name).cloned().ok_or_else(||
-            diag(e.pos, "E_UNSUPPORTED", "collection capture needs a proven local scalar binding"))?,
         ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
@@ -257,7 +255,14 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
             }
             let mut typed_fields = Vec::new();
             for (field, value) in fields {
-                let child = inferred(value, None, depth + 1, scalar_locals)?;
+                let child = if let ExprKind::Var(name) = &value.kind {
+                    let ty = scalar_locals.get(name).cloned().ok_or_else(||
+                        diag(value.pos, "E_UNSUPPORTED", "Record field needs a proven local scalar binding"))?;
+                    TypedLiteral { pos: value.pos, ty, children: Vec::new(),
+                        source_to_record_slot: Vec::new() }
+                } else {
+                    inferred(value, None, depth + 1, scalar_locals)?
+                };
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
             }
@@ -387,7 +392,11 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
                     // use site. Only scalar literal or already-proven scalar
                     // local inference is used when no annotation is present.
                     let known = if ty.is_some() { wanted } else {
-                        inferred(init,None,0,&scalar_locals).ok().map(|v| v.ty)
+                        if let ExprKind::Var(source) = &init.kind {
+                            scalar_locals.get(source).cloned()
+                        } else {
+                            inferred(init,None,0,&scalar_locals).ok().map(|v| v.ty)
+                        }
                     };
                     match known {
                         Some(t @ (LiteralType::Int | LiteralType::Bool |
