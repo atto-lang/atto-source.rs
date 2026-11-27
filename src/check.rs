@@ -2827,7 +2827,21 @@ impl<'a> FnCx<'a> {
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
-                if matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_)) {
+                // A verified generated flat-class copier allocates a new root,
+                // just like direct construction. Check the actual lowered call
+                // index, not merely the spelling of a user-defined function.
+                let fresh_copy = match (&init.kind, &v.e, v.ty) {
+                    (ExprKind::Ownership(op @ (OwnershipOp::Copy | OwnershipOp::DeepCopy), false, _),
+                        TExpr::Call(index, _), Type::Class(ci)) => {
+                        let class = &self.g.classes[ci as usize];
+                        !class.state_container && !class.name.starts_with("__atto_tuple_private_") &&
+                            class.fields.iter().all(|f| matches!(f.ty,
+                                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))) &&
+                            (if *op == OwnershipOp::Copy { class.shallow_copy_idx } else { class.deep_copy_idx }) == Some(*index)
+                    }
+                    _ => false,
+                };
+                if fresh_copy || (matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_))) {
                     self.fresh_class_roots.insert(slot);
                 }
                 if let Some(tr) = self.trace.as_mut() {
