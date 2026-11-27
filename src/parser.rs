@@ -3085,27 +3085,43 @@ impl Parser {
         ordered.into_iter().collect()
     }
 
-    /// Initial typed-local slice. Written field order must match the proven
-    /// constructor parameter order until an order-preserving named-call IR
-    /// exists. Never reorder effects or infer owners from field shapes.
+    /// Initial typed-local slice. Arbitrary order is admitted only for
+    /// inert scalar literals. Nonliteral expressions keep lexical order;
+    /// general reorder requires an evaluated-temporary / named-call IR.
     fn parse_contextual_new(&mut self, expected: Option<Type>) -> R<Expr> {
         let pos = self.pos();
         let deny = || Diagnostic::new(pos, "E_CONTEXTUAL_NEW",
-            "contextual new requires a typed local and a prior public-field scalar constructor; use constructor field order");
+            "contextual new requires a typed local and a prior public-field scalar constructor");
         let Some(Type::Named(index)) = expected else { return Err(deny()); };
         let owner = self.type_names.get(index as usize).map(|(n, _)| n.clone()).ok_or_else(deny)?;
         let fields = self.contextual_new_fields.get(&owner).cloned().ok_or_else(deny)?;
         self.expect_word("new")?;
         self.expect(Tok::LBrace, "'{' after contextual new")?;
-        let mut args = Vec::with_capacity(fields.len());
-        for (i, field) in fields.iter().enumerate() {
+        let mut written_args = Vec::with_capacity(fields.len());
+        let mut seen = std::collections::BTreeSet::new();
+        for i in 0..fields.len() {
             if i != 0 { self.expect(Tok::Comma, "',' between contextual fields")?; }
-            let (written, _) = self.ident("a contextual constructor field")?;
-            if &written != field { return Err(deny()); }
+            let (written, field_pos) = self.ident("a contextual constructor field")?;
+            let slot = fields.iter().position(|field| field == &written)
+                .ok_or_else(|| Diagnostic::new(field_pos, "E_CONTEXTUAL_NEW", "unknown contextual field"))?;
+            if !seen.insert(slot) {
+                return Err(Diagnostic::new(field_pos, "E_CONTEXTUAL_NEW", "duplicate contextual field"));
+            }
             self.expect(Tok::Colon, "':' after contextual field")?;
-            args.push(self.parse_expr()?);
+            written_args.push((slot, self.parse_expr()?));
         }
         self.expect(Tok::RBrace, "'}' after complete contextual construction")?;
+        if written_args.iter().enumerate().any(|(i, (slot, _))| i != *slot) {
+            // A positive, representable integer or boolean literal has no
+            // evaluation effects, traps or reads. Everything else stays
+            // rejected, including overflow expressions and callable results.
+            if !written_args.iter().all(|(_, e)| matches!(&e.kind, ExprKind::Int(Some(_)) | ExprKind::Bool(_))) {
+                return Err(Diagnostic::new(pos, "E_CONTEXTUAL_NEW_ORDER",
+                    "reordered nonliteral initializers require source-order constructor lowering"));
+            }
+            written_args.sort_by_key(|(slot, _)| *slot);
+        }
+        let args = written_args.into_iter().map(|(_, expr)| expr).collect();
         Ok(Expr { kind: ExprKind::New(owner, args), pos })
     }
 
