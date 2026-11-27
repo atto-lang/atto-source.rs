@@ -68,7 +68,7 @@ impl Cursor<'_> {
                 "ref" | "deref" | "unref" | "Pointer" | "int" |
                 "pub" | "fnc" | "main" | "return" | "mut" |
                 "drop" | "copy" | "share");
-        if !valid {
+        if !valid || crate::parser::is_reserved(name) || matches!(name.as_str(), "null" | "to" | "empty" | "true" | "false") {
             return Err(failure(t.pos, "E_POINTER_PROFILE", "unsupported local identifier in bounded pointer profile"));
         }
         self.at += 1;
@@ -102,6 +102,13 @@ impl Cursor<'_> {
         let bang = self.eat(Tok::Bang, "E_POINTER_SYNTAX")?;
         if bang.pos.line != first.pos.line || bang.pos.col != first.pos.col + op.len() as u32 {
             return Err(failure(bang.pos, "E_POINTER_SYNTAX", "ownership bang must be adjacent to the operator"));
+        }
+        // Reject glued operands before any token erasure. The production lexer
+        // already enforces its own whitespace rules; token positions alone
+        // cannot authenticate the contents of a skipped comment.
+        let next = self.token();
+        if next.pos.line == bang.pos.line && next.pos.col <= bang.pos.col + 1 {
+            return Err(failure(next.pos, "E_POINTER_SYNTAX", "ownership bang requires an operand separator"));
         }
         Ok(first.pos)
     }
