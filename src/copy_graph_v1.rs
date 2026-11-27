@@ -25,8 +25,10 @@ pub enum FieldKind {
     ImmutableShared,
     /// Exclusively-owned mutable object: cannot be duplicated by copy!.
     OwnedMutable(TypeId),
-    /// Explicitly share-authorized mutable object: copy! may retain identity,
-    /// but copy!! must recursively detach it.
+    /// Mutable object with ordinary sharing authority. This is NOT a
+    /// transitive read-only loan witness. copy! must reject it until the
+    /// compiler proves and installs a scoped read-only transition; copy!!
+    /// must recursively detach it.
     SharedMutable(TypeId),
     Borrowed,
     Resource,
@@ -123,15 +125,16 @@ fn check_type(
         match field.kind {
             FieldKind::Scalar | FieldKind::ImmutableShared => {}
             FieldKind::SharedMutable(nested) if mode == CopyMode::Shallow => {
-                // Shallow references are permitted only because the frontend
-                // supplied a verified shared-mutable field kind. They remain
-                // subject to the actor-send restriction below.
+                // Descriptor membership and ordinary mutable sharing do not
+                // prove symmetric, transitive read-only authority. Until a
+                // compiler-bound loan transition is available, reject.
                 if actor_send {
                     return Err(Error("E_COPY_ACTOR_ISOLATION"));
                 }
                 if nested == 0 || !all.contains_key(&nested) {
                     return Err(Error("E_COPY_AOT_WITNESS"));
                 }
+                return Err(Error("E_COPY_SHALLOW_ALIAS"));
             }
             FieldKind::OwnedMutable(_) if mode == CopyMode::Shallow => {
                 return Err(Error("E_COPY_SHALLOW_ALIAS"));
