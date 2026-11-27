@@ -47,7 +47,7 @@ pub enum Error {
     Ambiguous,
 }
 fn option(ty: Type) -> bool {
-    matches!(ty, Type::OptionInt | Type::OptionResultIntStr)
+    matches!(ty, Type::OptionInt | Type::OptionStr | Type::OptionResultIntStr)
 }
 fn validate(formals: &[Formal]) -> Result<(), Error> {
     for f in formals {

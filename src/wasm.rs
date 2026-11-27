@@ -97,7 +97,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr => Some(I32),
+        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::OptionStr | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -999,7 +999,7 @@ impl Emit<'_> {
                 self.close();
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
-                field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
+                field_op(&mut self.code, v.ty, 8, false); // typed Ok/Some payload
             },
             TExpr::CollectionLoad { array, offset } => {
                 self.expr(array);
