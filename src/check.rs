@@ -21,6 +21,9 @@ mod loan_liveness;
 pub mod typed_cfg_census;
 pub mod lambda_types;
 mod direct_lambda;
+mod task_desugar;
+mod task_plan;
+pub use task_plan::MAX_TASK_SLOTS;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
@@ -300,6 +303,46 @@ pub enum TStmt {
     Block(Vec<TStmt>),
     /// a path the checker proved impossible (after an exhaustive match)
     Unreachable,
+    /// Suspension point inside a `susp` callable (atto.task.v1). Only the
+    /// task planner consumes it; `dest` receives the resumed value.
+    Suspend { op: TSuspend, dest: Option<u32> },
+}
+
+/// What a suspension asks the host OresScheduler to do.
+#[derive(Clone, Debug)]
+pub enum TSuspend {
+    /// `await f(args)` of a suspending callable: run it, resume with its result.
+    Call { function: u32, args: Vec<TE> },
+    /// `await future`: park until the Future<int> token settles.
+    Await(TE),
+    /// `task { }` / `do task { }`: start a synthetic suspending callable.
+    Spawn { function: u32, args: Vec<TE>, detached: bool },
+    /// `await sleeper(ms)`: park on a host reactor timer.
+    Sleep(TE),
+}
+
+/// One step of a planned task state machine; addressed by its resume PC.
+#[derive(Clone, Debug)]
+pub enum TTaskStep {
+    /// Straight-line typed statements with no suspension, return or escaping
+    /// branch: emitted by the ordinary statement emitter, then PC+1.
+    Run(Vec<TStmt>),
+    Guard { condition: TE, on_false: u32 },
+    /// `back` edges spend the per-turn fuel and may cooperate.
+    Jump { to: u32, back: bool },
+    /// Persist locals, publish the request, return the step status.
+    Suspend(TSuspend),
+    /// First step after a suspension: store the host-delivered wake value.
+    Receive { dest: u32, ty: Type },
+    Return(Option<TE>),
+    Unreachable,
+}
+
+/// A suspending callable lowered to a resumable state machine.
+#[derive(Clone, Debug)]
+pub struct TTask {
+    pub function: u32,
+    pub steps: Vec<TTaskStep>,
 }
 
 #[derive(Clone, Debug)]
@@ -357,6 +400,10 @@ pub struct TActor {
 pub struct TProgram {
     pub funcs: Vec<TFunc>,
     pub generators: Vec<TGenerator>,
+    /// Planned suspending callables (atto.task.v1); task type = index.
+    pub tasks: Vec<TTask>,
+    /// main is suspending: export the task ABI instead of `main`.
+    pub task_main: bool,
     pub main: u32,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
@@ -431,6 +478,8 @@ struct ActorInfo {
 /// Program-wide declaration tables shared by every body check.
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    /// (name, arity) of top-level `susp`/`suspends` callables.
+    suspending: BTreeSet<(String, usize)>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -508,6 +557,10 @@ struct FnCx<'a> {
     recover_error: Option<String>,
     /// Opt-in L3 ownership-event export (`borrow_export`); `None` normally.
     trace: Option<crate::borrow_export::FnTrace>,
+    /// Checking the body of a top-level `susp` callable: await is legal.
+    suspending: bool,
+    /// Resolving the operand of `await`: the only admitted use of a Future.
+    consuming_future: bool,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -826,7 +879,8 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
-    let lowered = direct_lambda::lower(p)?;
+    let desugared = task_desugar::desugar(p)?;
+    let lowered = direct_lambda::lower(&desugared)?;
     check_lowered(&lowered)
 }
 
@@ -1184,6 +1238,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         enums: &p.enums,
         actors,
         type_names: tn,
+        suspending: p.funcs.iter().filter(|f| f.is_suspending)
+            .map(|f| (f.name.clone(), f.params.len())).collect(),
     };
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
@@ -1218,6 +1274,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // ---- top-level functions
     let mut generators = Vec::new();
+    let mut tasks: Vec<TTask> = Vec::new();
     for (i, f) in p.funcs.iter().enumerate() {
         let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
         if f.is_generator {
@@ -1272,13 +1329,26 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             },
             &mut imports, &mut data,
         )?;
-        funcs[i] = Some(TFunc {
+        let tfunc = TFunc {
             name: f.name.clone(),
             params,
             ret,
             locals: body.1,
             body: body.0,
-        });
+        };
+        if f.is_suspending {
+            if !matches!(ret, Type::Int | Type::Void | Type::Bool) {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                    "susp callables currently return int, bool or void"));
+            }
+            tasks.push(task_plan::plan(&tfunc, i as u32, f.pos)?);
+        }
+        funcs[i] = Some(tfunc);
+    }
+    let task_main = p.funcs[main as usize].is_suspending;
+    if !tasks.is_empty() && !task_main {
+        return Err(Diagnostic::new(p.funcs[main as usize].pos, "E_SUSPEND",
+            "susp callables run on the task scheduler: declare 'pub susp fnc main()'"));
     }
 
     // ---- classes: P.new, P.constructor, methods
@@ -1536,8 +1606,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
+        heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty() || !tasks.is_empty(),
         generators,
+        tasks,
+        task_main,
         globals,
         actors: tactors,
         strings,
@@ -1626,6 +1698,8 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
             TStmt::Return(None) | TStmt::UnwindFrame { .. }
             | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
             | TStmt::Unreachable => EscapeEffects::default(),
+            TStmt::Suspend { op, .. } => suspend_operands(op).into_iter()
+                .fold(EscapeEffects::default(), |acc, v| acc.union(expr_escape_effects(v, effects))),
             TStmt::Throw(value) => expr_escape_effects(value, effects)
                 .union(EscapeEffects { throws: true, raises: false }),
             TStmt::Raise(value) => expr_escape_effects(value, effects)
@@ -1842,6 +1916,9 @@ struct ConstructorInitFlow {
 
 fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) -> R<()> {
     match &e.kind {
+        ExprKind::Await(_) | ExprKind::Task { .. } | ExprKind::SpawnTask { .. } =>
+            Err(Diagnostic::new(e.pos, "E_SUSPEND", "constructors cannot suspend or start tasks")),
+        ExprKind::Duration(_) => Ok(()),
         ExprKind::Member(base, name) if matches!(base.kind, ExprKind::SelfRef) => {
             if fields.iter().any(|f| f.deferred_final && f.name == *name)
                 && !flow.definite.contains(name) {
@@ -2078,6 +2155,8 @@ fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
     let denied = || Diagnostic::new(e.pos, "E_OWNERSHIP",
         "under-construction self cannot escape, be captured or dispatch methods");
     match &e.kind {
+        ExprKind::Await(_) | ExprKind::Task { .. } | ExprKind::SpawnTask { .. } => Err(denied()),
+        ExprKind::Duration(_) => Ok(()),
         ExprKind::SelfRef => Err(denied()),
         ExprKind::Member(base, _) if matches!(base.kind, ExprKind::SelfRef) => {
             if captured { Err(denied()) } else { Ok(()) }
@@ -2219,6 +2298,8 @@ fn body_check(
     }
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.nparams = named.len() as u32;
+    cx.suspending = matches!(owner, Owner::TopLevel)
+        && g.suspending.contains(&(label.to_string(), named.len()));
     if let Some((mail_name, payload)) = mail {
         cx.scopes[0].push(Local {
             name: mail_name.to_string(),
@@ -2378,12 +2459,22 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
         TStmt::Raise(_) | TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
         TStmt::Defer { .. } | TStmt::Recover { .. } | TStmt::RecoverNext => false,
+        TStmt::Suspend { .. } => false,
     })
+}
+
+/// Typed operands evaluated by a suspension, in evaluation order.
+pub(crate) fn suspend_operands(op: &TSuspend) -> Vec<&TE> {
+    match op {
+        TSuspend::Call { args, .. } | TSuspend::Spawn { args, .. } => args.iter().collect(),
+        TSuspend::Await(v) | TSuspend::Sleep(v) => vec![v],
+    }
 }
 
 /// Whether any expression node in `body` satisfies `f`.
 pub(crate) fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
+        TStmt::Suspend { op, .. } => suspend_operands(op).into_iter().any(|e| any_in(e, f)),
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
@@ -2494,6 +2585,8 @@ impl<'a> FnCx<'a> {
             recover_cursor: None,
             recover_error: None,
             trace: None,
+            suspending: false,
+            consuming_future: false,
         }
     }
 
@@ -2793,6 +2886,9 @@ impl<'a> FnCx<'a> {
             if let Some(reason) = outside {
                 tr.unavailable(reason);
             }
+        }
+        if let Some(t) = self.suspension_stmt(s)? {
+            return Ok(t);
         }
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
@@ -4530,6 +4626,12 @@ impl<'a> FnCx<'a> {
             }
         }
         Ok(match &e.kind {
+            ExprKind::Await(_) => return Err(Diagnostic::new(pos, "E_SUSPEND",
+                "await is only valid inside a susp/suspends callable, as a statement-level operand")),
+            ExprKind::Task { .. } | ExprKind::SpawnTask { .. } => return Err(Diagnostic::new(pos, "E_SUSPEND",
+                "task { } is only valid inside a susp/suspends callable, bound with val/let or started with do task")),
+            ExprKind::Duration(_) => return Err(Diagnostic::new(pos, "E_TYPE",
+                "duration literals are only admitted as the sleeper(..) argument")),
             ExprKind::Int(Some(v)) => TE {
                 e: TExpr::I64(*v as i64),
                 ty: Type::Int,
@@ -4578,7 +4680,15 @@ impl<'a> FnCx<'a> {
                     let Some(l) = self.lookup(name) else { unreachable!("local '{name}' vanished") };
                     debug_assert!(l.slot == slot && l.ty == ty);
                     if self.moved.contains(&l.slot) {
+                        if l.ty == Type::FutureInt {
+                            return Err(Diagnostic::new(pos, "E_MOVED", format!(
+                                "Future '{name}' is affine and was already awaited")));
+                        }
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
+                    }
+                    if l.ty == Type::FutureInt && !self.consuming_future {
+                        return Err(Diagnostic::new(pos, "E_OWNERSHIP", format!(
+                            "Future '{name}' is affine: its only use is 'await {name}'")));
                     }
                     if self.loans.values().any(|loan| loan.owner == l.slot && loan.mutable) {
                         return Err(Diagnostic::new(pos, "E_BORROW", format!("owner '{name}' is exclusively mutably borrowed")));
@@ -4735,6 +4845,126 @@ impl<'a> FnCx<'a> {
     }
 
     /// Check arguments against parameter types; object arguments move.
+    /// Statement-level `await` / task start forms (after task_desugar).
+    fn suspension_stmt(&mut self, s: &Stmt) -> R<Option<TStmt>> {
+        let is_suspension = |e: &Expr| matches!(e.kind, ExprKind::Await(_) | ExprKind::SpawnTask { .. });
+        match s {
+            Stmt::Bind { kind, name, ty, init, pos } if is_suspension(init) => {
+                if *kind == BindKind::Const {
+                    return Err(Diagnostic::new(*pos, "E_CONST", "const cannot bind a suspension result"));
+                }
+                let (op, got) = self.suspend_op(init)?;
+                if got == Type::Void {
+                    return Err(type_err(init.pos, format!("'{name}' cannot bind a void suspension")));
+                }
+                if let Some(t) = ty {
+                    let want = self.resolve(*t, *pos)?;
+                    if want != got {
+                        return Err(type_err(init.pos, format!(
+                            "binding '{name}' has type {} but its initializer has type {}",
+                            self.tn(want), self.tn(got))));
+                    }
+                }
+                let slot = self.declare(name, got, *kind == BindKind::Let, *pos)?;
+                Ok(Some(TStmt::Suspend { op, dest: Some(slot) }))
+            }
+            Stmt::Assign { name, value, pos } if is_suspension(value) => {
+                let (op, got) = self.suspend_op(value)?;
+                let local = self.lookup(name).ok_or_else(|| Diagnostic::new(*pos, "E_UNBOUND",
+                    format!("assignment to unknown '{name}'")))?;
+                let (slot, ty, mutable) = (local.slot, local.ty, local.mutable);
+                if !mutable {
+                    return Err(Diagnostic::new(*pos, "E_IMMUTABLE", format!("'{name}' cannot be reassigned")));
+                }
+                if ty != got {
+                    return Err(type_err(value.pos, format!(
+                        "cannot assign {} to '{name}' of type {}", self.tn(got), self.tn(ty))));
+                }
+                Ok(Some(TStmt::Suspend { op, dest: Some(slot) }))
+            }
+            Stmt::Expr(e) if is_suspension(e) => {
+                let (op, _) = self.suspend_op(e)?;
+                Ok(Some(TStmt::Suspend { op, dest: None }))
+            }
+            Stmt::Return(Some(e), pos) if is_suspension(e) => {
+                let (op, got) = self.suspend_op(e)?;
+                if got != self.ret {
+                    return Err(type_err(e.pos, format!(
+                        "return of {} from a callable returning {}", self.tn(got), self.tn(self.ret))));
+                }
+                if got == Type::Void {
+                    return Ok(Some(TStmt::Block(vec![TStmt::Suspend { op, dest: None }, TStmt::Return(None)])));
+                }
+                let tmp = self.temp(got, *pos)?;
+                Ok(Some(TStmt::Block(vec![
+                    TStmt::Suspend { op, dest: Some(tmp) },
+                    TStmt::Return(Some(TE { e: TExpr::Local(tmp), ty: got })),
+                ])))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn suspend_op(&mut self, e: &Expr) -> R<(TSuspend, Type)> {
+        if !self.suspending || self.cleanup_depth > 0 || self.state_write_scope || self.state_read_scope {
+            return Err(Diagnostic::new(e.pos, "E_SUSPEND",
+                "await and task { } are only valid in a susp/suspends callable, outside cleanup and critical scopes"));
+        }
+        match &e.kind {
+            ExprKind::Await(op) => match &op.kind {
+                ExprKind::Call(name, args) if name == "sleeper"
+                    && !self.g.sigs.contains_key(&(name.clone(), args.len())) => {
+                    if args.len() != 1 {
+                        return Err(Diagnostic::new(op.pos, "E_ARITY", "sleeper expects one duration"));
+                    }
+                    let ms = match &args[0].kind {
+                        ExprKind::Duration(ms) => TE { e: TExpr::I64(*ms as i64), ty: Type::Int },
+                        _ => {
+                            let v = self.value(&args[0])?;
+                            if v.ty != Type::Int {
+                                return Err(type_err(args[0].pos, "sleeper expects a duration such as 100ms"));
+                            }
+                            v
+                        }
+                    };
+                    Ok((TSuspend::Sleep(ms), Type::Void))
+                }
+                ExprKind::Call(name, args) if self.g.suspending.contains(&(name.clone(), args.len())) => {
+                    let (idx, params, ret) = self.g.sigs[&(name.clone(), args.len())].clone();
+                    let targs = self.args(name, args, &params)?;
+                    Ok((TSuspend::Call { function: idx, args: targs }, ret))
+                }
+                _ => {
+                    self.consuming_future = matches!(op.kind, ExprKind::Var(_));
+                    let v = self.value(op);
+                    self.consuming_future = false;
+                    let v = v?;
+                    if v.ty != Type::FutureInt {
+                        return Err(type_err(op.pos, format!(
+                            "await needs a Future<int>, a susp call or sleeper(..), not {}", self.tn(v.ty))));
+                    }
+                    // Affine receipt (core_future_ownership): consumed exactly once.
+                    if let TExpr::Local(slot) = v.e {
+                        if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
+                            return Err(Diagnostic::new(op.pos, "E_MOVED",
+                                "a Future declared outside a loop cannot be awaited inside it (it could be awaited twice)"));
+                        }
+                        self.moved.insert(slot);
+                    }
+                    Ok((TSuspend::Await(v), Type::Int))
+                }
+            },
+            ExprKind::SpawnTask { func, args, detached } => {
+                let (idx, params, _) = self.g.sigs.get(&(func.clone(), args.len())).cloned()
+                    .ok_or_else(|| Diagnostic::new(e.pos, "E_UNBOUND", "unknown task body"))?;
+                let targs = self.args(func, args, &params)?;
+                let ty = if *detached { Type::Void } else { Type::FutureInt };
+                Ok((TSuspend::Spawn { function: idx, args: targs, detached: *detached }, ty))
+            }
+            _ => unreachable!("caller checked the suspension form"),
+        }
+    }
+
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
@@ -5177,6 +5407,14 @@ impl<'a> FnCx<'a> {
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+        }
+        if self.g.suspending.contains(&(name.to_string(), args.len())) {
+            return Err(Diagnostic::new(pos, "E_SUSPEND", format!(
+                "'{name}' is a susp callable: call it with await inside a susp callable")));
+        }
+        if name == "sleeper" && !self.g.sigs.contains_key(&(name.to_string(), args.len())) {
+            return Err(Diagnostic::new(pos, "E_SUSPEND",
+                "sleeper(..) suspends: use 'await sleeper(..)' inside a susp callable"));
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),

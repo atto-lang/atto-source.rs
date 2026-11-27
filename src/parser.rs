@@ -259,6 +259,8 @@ pub struct Parser {
     array_types: Vec<ArrayType>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
+    /// Parsing the body of a top-level susp/suspends callable.
+    in_suspending: bool,
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
@@ -396,6 +398,7 @@ impl Parser {
             type_names: Vec::new(),
             array_types: Vec::new(),
             in_generator: false,
+            in_suspending: false,
             erlang_body: false,
             state_method: false,
             state_binder: None,
@@ -601,6 +604,16 @@ impl Parser {
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
                 }
+            }
+            "Future" => {
+                self.expect(Tok::Lt, "'<' after Future")?;
+                let inner = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Future result type")?;
+                if inner != Type::Int {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "the browser task ABI currently recognizes only Future<int>"));
+                }
+                Type::FutureInt
             }
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
@@ -1923,10 +1936,15 @@ impl Parser {
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
         }
+        // Canonical `susp` and its `suspends` alias (susp-effect-shorthand-v1).
+        let is_suspending = self.eat_word("susp") || self.eat_word("suspends");
+        if is_suspending && (self.is_word("susp") || self.is_word("suspends")) {
+            return Err(Diagnostic::new(self.pos(), "E_DUPLICATE_EFFECT",
+                "'susp' and 'suspends' are the same effect; write it once"));
+        }
         for m in [
             "async",
             "suspend",
-            "suspends",
             "nlex",
             "abstract",
             "structural",
@@ -1966,20 +1984,28 @@ impl Parser {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
         }
+        if is_suspending && (is_generator || is_pure) {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "suspending generators and pure suspending callables need separate effect semantics"));
+        }
         if is_generator && ret != Type::GeneratorInt {
             return Err(Diagnostic::new(pos, "E_TYPE",
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
         self.in_generator = is_generator;
+        self.in_suspending = is_suspending;
         let body = self.parse_callable_body(arrow_type, colon_type, return_first,
-            if infer { Type::Int } else { ret })?;
+            if infer { Type::Int } else { ret });
         self.in_generator = false;
+        self.in_suspending = false;
+        let body = body?;
         let ret = if infer { self.infer_callable_return(&body, &params)? } else { ret };
         let _ = start;
         Ok(Func {
             name,
             pos,
             is_generator,
+            is_suspending,
             is_pure,
             declared_effects,
             params,
@@ -2718,6 +2744,13 @@ impl Parser {
                 Ok(Stmt::Continue(pos))
             }
             Some("match") => self.parse_match(false),
+            Some("do") if self.word_at(1) == Some("task") && *self.peek_at(2) == Tok::LBrace => {
+                self.advance();
+                self.advance();
+                let body = self.parse_block()?;
+                self.eat(&Tok::Semi);
+                Ok(Stmt::Expr(Expr { kind: ExprKind::Task { body, detached: true }, pos }))
+            }
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
@@ -2795,7 +2828,9 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Expr(e))
             }
-            Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
+            // `await e;` is an expression statement only inside a susp callable.
+            Some(w) if UNSUPPORTED_STMT.contains(&w) && !(w == "await" && self.in_suspending) =>
+                Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
             _ => {
                 // Integer-only compound bitwise assignment. Require a simple
@@ -4325,11 +4360,27 @@ impl Parser {
                     "'++' and '--' exist only in a for update clause",
                 ))
             }
+            Tok::Ident(s) if (s == "susp" || s == "suspends") && *self.peek_at(1) == Tok::Pipe => {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "suspending lambdas are not lowered yet; declare a top-level susp fnc"));
+            }
+            // Inside a susp callable, await is a real suspension (atto.task.v1).
+            Tok::Ident(s) if s == "await" && self.in_suspending => {
+                self.advance();
+                let operand = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Await(Box::new(operand)), pos });
+            }
+            // Elsewhere keep the immediate int-await identity (#631).
             Tok::Ident(s) if s == "await" => {
                 self.advance();
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ascribe(Box::new(inner), Type::Int, false), pos });
             },
+            Tok::Ident(s) if s == "task" && *self.peek_at(1) == Tok::LBrace => {
+                self.advance();
+                let body = self.parse_block()?;
+                return Ok(Expr { kind: ExprKind::Task { body, detached: false }, pos });
+            }
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
@@ -4772,6 +4823,10 @@ impl Parser {
             Tok::Float(bits) => {
                 self.advance();
                 ExprKind::Float(bits)
+            }
+            Tok::Duration(ms) => {
+                self.advance();
+                ExprKind::Duration(ms)
             }
             Tok::LParen => {
                 self.advance();

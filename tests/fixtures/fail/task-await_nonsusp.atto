@@ -1,0 +1,4 @@
+// expect-error: E_SUSPEND
+susp fnc f(): int { return 1; }
+fnc g(): int { return await f(); }
+pub susp fnc main(): int { return await f(); }

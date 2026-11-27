@@ -1,0 +1,2 @@
+// expect-error: E_DUPLICATE_EFFECT
+pub susp suspends fnc main(): int { return 0; }

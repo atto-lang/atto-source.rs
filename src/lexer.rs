@@ -16,6 +16,8 @@ pub enum Tok {
     Int(Option<u64>),
     /// Float literal, stored as `f64::to_bits` so `Tok` stays `Eq`.
     Float(u64),
+    /// Duration literal normalized to milliseconds: `100ms`, `2s`.
+    Duration(u64),
     Str(String),
     LParen,
     RParen,
@@ -250,6 +252,21 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     "E_UNSUPPORTED_TYPE",
                     "imaginary literals are not supported by the browser compiler yet",
                 ));
+            }
+            // Duration literal: decimal digits immediately followed by ms or s.
+            if !floating && i < chars.len() && (chars[i] == 'm' || chars[i] == 's') {
+                let unit_len = if chars[i] == 'm' && chars.get(i + 1) == Some(&'s') { 2 }
+                    else if chars[i] == 's' { 1 } else { 0 };
+                let after = i + unit_len;
+                if unit_len > 0 && !(after < chars.len() && (chars[after].is_alphanumeric() || chars[after] == '_')) {
+                    let scale: u64 = if unit_len == 2 { 1 } else { 1000 };
+                    let ms = digits.parse::<u64>().ok().and_then(|v| v.checked_mul(scale))
+                        .filter(|v| *v <= i64::MAX as u64)
+                        .ok_or_else(|| Diagnostic::new(pos, "E_INTEGER_RANGE", "duration literal out of range"))?;
+                    for _ in 0..unit_len { bump!(); }
+                    out.push(Token { tok: Tok::Duration(ms), pos });
+                    continue;
+                }
             }
             if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_' || chars[i] == '〇') {
                 return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL", "malformed integer literal"));

@@ -720,13 +720,13 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
             }
             body.extend(mutating_statements(m, &scratch, &params)?);
             body.push(Stmt::Return(None, m.pos));
-            lowered.push(Func { name: function, pos: m.pos, is_generator: false, is_pure: false,
+            lowered.push(Func { name: function, pos: m.pos, is_generator: false, is_suspending: false, is_pure: false,
                 declared_effects: None, params: flat, ret: Type::Void, body });
         } else {
             let [Stmt::Return(Some(e), ret_pos)] = m.body.as_slice() else {
                 return Err(denied(m.pos, "readonly method requires exactly one scalar return expression"));
             };
-            lowered.push(Func { name: function, pos: m.pos, is_generator: false, is_pure: false,
+            lowered.push(Func { name: function, pos: m.pos, is_generator: false, is_suspending: false, is_pure: false,
                 declared_effects: None, params: flat, ret: m.ret,
                 body: vec![Stmt::Return(Some(member_expr(e, &params, &fields)?), *ret_pos)] });
         }

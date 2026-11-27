@@ -1,0 +1,2 @@
+// expect-error: E_TASK_CAPTURE
+pub susp fnc main(): int { val n = 1; val t = task { n = 2; return 1; }; return await t; }

@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+susp fnc f(): int { return 1; }
+pub susp fnc main(): int { defer { stdio.println(1); }; return await f(); }

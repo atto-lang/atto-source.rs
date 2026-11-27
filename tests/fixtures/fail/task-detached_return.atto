@@ -1,0 +1,2 @@
+// expect-error: E_TYPE
+pub susp fnc main(): int { do task { return 1; }; return 0; }

@@ -273,6 +273,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 name: d.hidden,
                 pos: d.lambda.pos,
                 is_generator: false,
+                is_suspending: false,
                 is_pure: true,
                 declared_effects: None,
                 params: d.params.into_iter().chain(
@@ -456,6 +457,14 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         }
     }
     match &mut e.kind {
+        ExprKind::Await(inner) => rewrite_expr(inner, d),
+        ExprKind::SpawnTask { args, .. } => {
+            for a in args.iter_mut() { rewrite_expr(a, d)?; }
+            Ok(())
+        }
+        ExprKind::Duration(_) => Ok(()),
+        ExprKind::Task { .. } => Err(error(e.pos, "E_UNSUPPORTED",
+            "task { } must be desugared before direct lambda conversion")),
         ExprKind::Var(n) if *n == d.source =>
             Err(error(e.pos, "E_UNSUPPORTED",
                 "direct lambda cannot escape as a first-class value")),
@@ -529,6 +538,15 @@ fn calls_any_named(e: &Expr, names: &BTreeSet<String>, depth: usize) -> R<bool> 
     }
     let d = depth + 1;
     match &e.kind {
+        ExprKind::Await(inner) => return calls_any_named(inner, names, d),
+        ExprKind::SpawnTask { func, args, .. } => {
+            if names.contains(func) { return Ok(true); }
+            for arg in args {
+                if calls_any_named(arg, names, d)? { return Ok(true); }
+            }
+            return Ok(false);
+        }
+        ExprKind::Task { .. } | ExprKind::Duration(_) => return Ok(false),
         ExprKind::Call(name, args) => {
             if names.contains(name) { return Ok(true); }
             for arg in args {
@@ -668,6 +686,13 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
     }
     match &e.kind {
         ExprKind::Var(name) => { names.insert(name.clone()); }
+        ExprKind::Await(a) => free_names(a, names, depth + 1)?,
+        ExprKind::SpawnTask { args, .. } => {
+            for arg in args { free_names(arg, names, depth + 1)?; }
+        }
+        ExprKind::Duration(_) => {}
+        ExprKind::Task { .. } => return Err(error(e.pos, "E_UNSUPPORTED",
+            "a direct lambda cannot capture a task { } body")),
         ExprKind::Unary(_, a) => free_names(a, names, depth + 1)?,
         ExprKind::Binary(_, a, b) => {
             free_names(a, names, depth + 1)?;
