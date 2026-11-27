@@ -38,3 +38,33 @@ fn unused_marker_emits_identical_wasm() {
     assert_eq!(compile(fixed).unwrap(), compile(&marked).unwrap(),
         "unused rebinding permission must not change emitted Wasm");
 }
+
+#[test]
+fn explicit_scalar_set_and_fresh_let_shadow() {
+    for source in [
+        "pub fnc main(): int { let int x = 40; set x = x + 2; return x; }",
+        "pub fnc main(): int { let int x = 40; set! x = x + 2; return x; }",
+        "pub fnc main(): int { let int x = 40; set! (x = x + 2); return x; }",
+        "pub fnc main(): int { let x = 40; let x = x + 1; set x = x + 1; return x; }",
+        "pub fnc main(): int { let x = 40; let x = true; if x then return 42; else return 0; fi }",
+    ] {
+        valid(source);
+    }
+}
+
+#[test]
+fn explicit_set_respects_fixed_and_nearest_binding() {
+    reject("pub fnc main(): int { const x = 40; set x = 42; return x; }", "E_IMMUTABLE");
+    reject("pub fnc main(): int { val int x = 40; set! x = 42; return x; }", "E_IMMUTABLE");
+    reject("pub fnc main(): int { set x = 42; return 0; }", "E_UNBOUND");
+    reject("pub fnc main(): int { const x = 1; const x = 2; return x; }", "E_DUPLICATE");
+    reject("pub fnc main(): int { const x = 1; let x = 2; return x; }", "E_DUPLICATE");
+    reject("pub fnc main(): int { let x = 1; const x = 2; return x; }", "E_DUPLICATE");
+    for source in [
+        "pub fnc main(): int { let x = 40; (set! x) = 42; return x; }",
+        "pub fnc main(): int { let x = 40; set x.field = 42; return x; }",
+        "pub fnc main(): int { let x = 1; let x = true; set x = 2; return 42; }",
+    ] {
+        assert!(compile(source).is_err(), "{source}");
+    }
+}
