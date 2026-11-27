@@ -2120,7 +2120,15 @@ impl Parser {
             let args = self.parse_args()?;
             (params, body, args)
         } else {
-            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+            // Initial braceless profile: only literal stdout writes; no implicit
+            // arbitrary callback invocation, captures or suspension.
+            let expr = self.parse_expr()?;
+            if !matches!(&expr.kind, ExprKind::Call(name, args)
+                if matches!(name.as_str(), "stdio.stdout.write" | "process.stdout.write")
+                    && matches!(args.as_slice(), [Expr { kind: ExprKind::Str(_), .. }])) {
+                return Err(unsupported(pos, "braceless defer outside literal stdout write profile"));
+            }
+            (Vec::new(), vec![Stmt::Expr(expr)], Vec::new())
         };
         self.terminator()?;
         Ok(Stmt::Defer { params, body, args, pos })

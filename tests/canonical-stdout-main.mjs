@@ -48,8 +48,11 @@ for(const [source,code] of [
  ['pub fnc main(): int { stdio.out.write(42); return 42; }','E_TYPE'],
  ['pub fnc main(): int { process.stdout.write(); return 42; }','E_ARITY'],
  ['pub fnc main(): int { val int process=1; process.stdout.write("X"); return 42; }','E_IO_SHADOW'],
- ['pub fnc main(): int { val int stdio=1; stdio.out.write("X"); return 42; }','E_IO_SHADOW']
+ ['pub fnc main(): int { val int stdio=1; stdio.out.write("X"); return 42; }','E_IO_SHADOW'],
+ ['pub fnc main(): int { val int process=1; defer process.stdout.write("X"); return 42; }','E_IO_SHADOW'],
+ ['pub fnc main(): int { val int stdio=1; defer { stdio.out.write("X"); }; return 42; }','E_IO_SHADOW'],
+ ['pub fnc main(): int { defer stdio.out.write(42); return 42; }','E_UNSUPPORTED']
 ]){
  const built=compile(source);assert.equal(built.wasm,undefined);assert.ok(built.diagnostic?.startsWith(code+':'),built.diagnostic);passes++;
 }
-console.log(JSON.stringify({status:'PASS',profile:'canonical-stdout-main-v1',compiler_sha256:digest,guest_executions:4,negative_denials:4,passes}));
+console.log(JSON.stringify({status:'PASS',profile:'canonical-stdout-main-v1',compiler_sha256:digest,guest_executions:4,negative_denials:7,passes}));
