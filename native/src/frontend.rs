@@ -261,6 +261,22 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
+    // A singleton declaration needs a dedicated identity/lifetime proof.
+    // Contextual recognition on real tokens preserves ordinary names and comments.
+    for (i, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define { continue; }
+        let mut next = i + 1;
+        if tokens.get(next).map(|t| t.kind) == Some(Kind::Pub) { next += 1; }
+        if let Some(name) = tokens.get(next) {
+            if name.kind == Kind::Identifier && name.text == "singleton" {
+                return Err(ParseError {
+                    offset: name.start,
+                    class: "singleton_unsupported",
+                    message: "ORES-SINGLETON-UNSUPPORTED: singleton requires verified identity and lifetime lowering".into(),
+                });
+            }
+        }
+    }
     reject_execution_domains(&tokens)?;
     let mut parser = Parser {
         tokens,
