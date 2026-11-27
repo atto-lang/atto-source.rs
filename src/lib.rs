@@ -169,6 +169,10 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
+    // The reusable RawPointer<int> profile is independent of the consuming
+    // Pointer<int> handle. Authenticate the entire bounded program before
+    // generic lowering can erase or reinterpret any slot operation.
+    let tokens = pointer_local::lower_slot(tokens)?;
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.
     // Valid candidates still fail closed until typed await/actor runtime exists.

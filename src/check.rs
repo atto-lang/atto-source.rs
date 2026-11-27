@@ -3367,8 +3367,6 @@ impl<'a> FnCx<'a> {
                     let (tag, needed) = match (sty, name.as_str()) {
                         (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
-            (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
-            (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::OptionInt, "None") => (0, None),

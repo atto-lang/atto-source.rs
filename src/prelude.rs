@@ -176,6 +176,8 @@ impl TypeInfo {
     }
 }
 
+// One explicit field per static prelude descriptor; keep the existing table ABI.
+#[allow(clippy::too_many_arguments)]
 const fn info(
     name: &'static str, canonical: &'static str, scope: Scope, kind: Kind,
     min: u8, max: u8, ownership: Ownership, allocation: Allocation,

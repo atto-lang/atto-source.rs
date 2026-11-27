@@ -1,0 +1,5 @@
+// expect-exit: 42
+pub fnc main(): int {
+  let mut RawPointer<int> p = RawPointer.empty<int>();
+  return 42;
+}
