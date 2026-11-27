@@ -2084,13 +2084,16 @@ impl Parser {
         } else {
             return Err(self.expected("'val', 'const' or 'let'"));
         };
-        // Referent mutation is independent of binding rebinding.
-        // `val mut` and `let mut` are both legal; neither bypasses ownership.
-        let referent_mutable = self.eat_word("mut");
-        if kind == BindKind::Const && referent_mutable {
-            return Err(Diagnostic::new(pos, "E_CONST_MUT_TARGET",
-                "const mut is not supported for the scalar/Record guest profile"));
-        }
+        // Canonical const mut is exactly val, including referent
+        // permissions; it does not independently grant a mutable loan.
+        // Preserve the existing explicit val mut/let mut profile until
+        // its separate compatibility contract is resolved.
+        let written_mut = self.eat_word("mut");
+        let (kind, referent_mutable) = if kind == BindKind::Const && written_mut {
+            (BindKind::Val, false)
+        } else {
+            (kind, written_mut)
+        };
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
