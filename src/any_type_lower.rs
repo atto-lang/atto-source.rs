@@ -60,6 +60,40 @@ fn scalar_type(s: &str) -> Option<&'static str> {
     }
 }
 
+// The list syntax is a compile-time list of scalar type references, never
+// a runtime array. Reject malformed, unknown and duplicate canonical tags.
+fn scalar_type_list(t: &[Token], at: usize, pos: Pos) -> R<(BTreeSet<&'static str>, usize)> {
+    let mut tags = BTreeSet::new();
+    if !word(t, at, "in") {
+        let ty = match t.get(at).map(|x| &x.tok) {
+            Some(Tok::Ident(s)) => scalar_type(s),
+            _ => None,
+        }.ok_or_else(|| fail(pos, "E_UNSUPPORTED_TYPE", "expected a supported scalar type"))?;
+        tags.insert(ty);
+        return Ok((tags, at + 1));
+    }
+    if !matches!(t.get(at + 1).map(|x| &x.tok), Some(Tok::LBracket)) {
+        return Err(fail(pos, "E_SYNTAX", "is in requires a bracketed type list"));
+    }
+    let mut i = at + 2;
+    loop {
+        let ty = match t.get(i).map(|x| &x.tok) {
+            Some(Tok::Ident(s)) => scalar_type(s),
+            Some(Tok::RBracket) => return Err(fail(pos, "E_SYNTAX", "expected a type in nonempty type list")),
+            _ => None,
+        }.ok_or_else(|| fail(pos, "E_UNSUPPORTED_TYPE", "expected a supported scalar type in type list"))?;
+        if !tags.insert(ty) {
+            return Err(fail(pos, "E_MATCH", "duplicate canonical type in type list"));
+        }
+        i += 1;
+        match t.get(i).map(|x| &x.tok) {
+            Some(Tok::RBracket) => return Ok((tags, i + 1)),
+            Some(Tok::Comma) => i += 1,
+            _ => return Err(fail(pos, "E_SYNTAX", "expected comma or closing bracket in type list")),
+        }
+    }
+}
+
 fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token>, usize)> {
     // Exactly 'match known_scalar over on ... -> { ... } ... end'.
     // Braced bodies are self-delimiting; nested scopes are not scanned for
@@ -84,33 +118,33 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
         if head.tok == Tok::Eof {
             return Err(fail(pos, "E_EOF", "unterminated statically checked Any match"));
         }
-        if !word(t, j, "on") {
+        let explicit_on = word(t, j, "on");
+        if !explicit_on && !word(t, j, "is") {
             return Err(fail(head.pos, "E_UNSUPPORTED",
-                "monomorphic Any match admits only on-is-Type or on-_ arms"));
+                "monomorphic Any match requires is, on is, or on _"));
         }
+        let pattern_at = j + usize::from(explicit_on);
         arms += 1;
         if arms > MAX_TYPE_ARMS {
             return Err(fail(head.pos, "E_SOURCE_LIMIT", "Any match has too many type arms"));
         }
-        let typed = word(t, j + 1, "is");
-        let wildcard = word(t, j + 1, "_");
+        let typed = word(t, pattern_at, "is");
+        let wildcard = explicit_on && word(t, pattern_at, "_");
         if !typed && !wildcard {
             return Err(fail(head.pos, "E_UNSUPPORTED",
                 "Any match requires a type pattern ('on is int') or wildcard"));
         }
         // Typed arms may negate the type test, and may bind a proven scalar.
         // Bind only after the type test succeeds: failed arms cannot leak names.
-        let negated = typed && matches!(t.get(j + 2).map(|x| &x.tok), Some(Tok::Bang));
-        let type_at = j + 2 + usize::from(negated);
-        let arm_ty = if typed {
-            let ty = match t.get(type_at).map(|x| &x.tok) {
-                Some(Tok::Ident(s)) => scalar_type(s),
-                _ => None,
-            };
-            Some(ty.ok_or_else(|| fail(head.pos, "E_UNSUPPORTED_TYPE",
-                "runtime object type patterns are not implemented; only provable scalar tags are supported"))?)
-        } else { None };
-        let after_type = if typed { type_at + 1 } else { j + 2 };
+        let negated = typed && matches!(t.get(pattern_at + 1).map(|x| &x.tok), Some(Tok::Bang));
+        let type_at = pattern_at + 1 + usize::from(negated);
+        if negated && word(t, type_at, "in") {
+            return Err(fail(head.pos, "E_UNSUPPORTED", "negated type lists are not admitted in this profile"));
+        }
+        let (arm_types, after_type) = if typed {
+            let (types, next) = scalar_type_list(t, type_at, head.pos)?;
+            (Some(types), next)
+        } else { (None, pattern_at + 1) };
         let binding = if typed && word(t, after_type, "as") {
             if !word(t, after_type + 1, "val") {
                 return Err(fail(t[after_type].pos, "E_SYNTAX",
@@ -150,30 +184,30 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
             if depth > 128 { return Err(fail(head.pos, "E_NESTING", "type arm nesting exceeds 128")); }
             end += 1;
         }
-        let compatible = arm_ty.is_none_or(|ty| (ty == concrete) != negated);
+        let compatible = arm_types.as_ref().is_none_or(|types| types.contains(concrete) != negated);
         let guarded = word(t, header_end, "when");
         if wildcard_covered {
             return Err(fail(head.pos, "E_MATCH",
                 "unreachable Any type arm after an unconditional wildcard"));
         }
-        if let Some(ty) = arm_ty {
-            if unguarded_tags.contains(&(negated, ty)) {
+        if let Some(types) = arm_types {
+            if types.iter().all(|ty| unguarded_tags.contains(&(negated, *ty))) {
                 return Err(fail(head.pos, "E_MATCH",
-                    "unreachable Any type arm: this tag is already unconditionally covered"));
+                    "unreachable Any type arm: every listed tag is already unconditionally covered"));
             }
             if !guarded {
-                unguarded_tags.insert((negated, ty));
+                unguarded_tags.extend(types.into_iter().map(|ty| (negated, ty)));
             }
         } else if !guarded {
             wildcard_covered = true;
         }
         if compatible && !selected {
-            output.push(t[j].clone()); // on
+            output.push(Token { tok: Tok::Ident("on".into()), pos: head.pos });
             if typed {
-                output.push(binding.unwrap_or(Token { tok: Tok::Ident("_".into()), pos: t[j + 1].pos }));
+                output.push(binding.unwrap_or(Token { tok: Tok::Ident("_".into()), pos: t[pattern_at].pos }));
                 output.extend_from_slice(&t[header_end..end]);
             } else {
-                output.extend_from_slice(&t[j + 1..end]);
+                output.extend_from_slice(&t[pattern_at..end]);
             }
             if !guarded { selected = true; }
         }
