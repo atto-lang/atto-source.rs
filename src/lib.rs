@@ -36,6 +36,8 @@ pub mod borrow_export;
 /// Fail-closed compiler-core preflight for sealed Future-family ownership.
 pub mod core_future_ownership;
 pub mod check;
+/// Staged typed V2 call planning; not yet connected to executable lowering.
+pub mod call_presence_v2;
 pub mod diag;
 pub mod lsp_diagnostics;
 pub mod generator_cfg;
