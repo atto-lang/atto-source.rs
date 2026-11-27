@@ -52,6 +52,7 @@ pub mod static_import_graph;
 /// Checked physical layout metadata; does not admit guest reference operations.
 pub mod ref_layout;
 pub mod layout_plan;
+pub mod layout_trace;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
 pub mod linker;
