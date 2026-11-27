@@ -236,3 +236,29 @@ fn protected_state_emission_authenticates_nominal_receiver_and_field_layout() {
             "corrupt protected read layout {variant} emitted bytes");
     }
 }
+
+#[test]
+fn protected_snapshot_authenticates_slots_and_generated_tuple_constructor() {
+    use atto_compiler::wasm;
+    let source = fs::read_to_string("tests/fixtures/pass/state-owned-tuple-snapshot.atto").unwrap();
+    let parsed = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
+    let original = check::check(&parsed).unwrap();
+    assert!(!wasm::emit(&original).is_empty());
+    for variant in 0..5 {
+        let mut program = original.clone();
+        let method = program.funcs.iter_mut().find(|f| f.name == "Account.snapshot").unwrap();
+        let value = method.body.iter_mut().find_map(|s| match s {
+            TStmt::Return(Some(value)) => Some(value), _ => None,
+        }).unwrap();
+        let TExpr::StateSnapshot { ctor, fields } = &mut value.e else { panic!("expected snapshot"); };
+        match variant {
+            0 => fields[0].1 = 16, // aligned but not an Account field
+            1 => fields[0].0 = Type::Bool,
+            2 => *ctor = u32::MAX,
+            3 => *ctor = program.main,
+            _ => value.ty = Type::Class(u32::MAX),
+        }
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),
+            "corrupt protected snapshot {variant} emitted bytes");
+    }
+}
