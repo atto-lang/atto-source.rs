@@ -232,6 +232,8 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+// Bounds constructed AST depth even when each individual parser chain fits its budget.
+pub const MAX_AST_DEPTH: usize = 128;
 pub const MAX_PRIMARY_DEPTH: usize = 64;
 pub const MAX_INFIX_OPERATORS: usize = 64;
 
@@ -546,8 +548,46 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "expected a function declaration".into(),
         });
     }
+    // Parser-local infix and primary limits can compose into an unsafe AST spine.
+    // Validate ALL initializers and returns before recursive MIR or object lowering.
+    for function in &functions {
+        for local in &function.locals {
+            check_ast_depth(&local.value, source.len())?;
+        }
+        check_ast_depth(&function.expression, source.len())?;
+    }
     Ok(Program { functions, exports })
 }
+fn check_ast_depth(root: &Expr, source_len: usize) -> Result<(), ParseError> {
+    // Keep the guard itself iterative; never recurse on untrusted source trees.
+    let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    while let Some((expr, depth)) = pending.pop() {
+        if depth > MAX_AST_DEPTH {
+            return Err(ParseError {
+                offset: source_len,
+                class: "resource_limit",
+                message: "expression AST depth exceeds prototype limit".into(),
+            });
+        }
+        match expr {
+            Expr::Integer(_) | Expr::Name(_) => {}
+            Expr::Negate(inner) => pending.push((inner.as_ref(), depth + 1)),
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    pending.push((arg, depth + 1));
+                }
+            }
+            Expr::Add(left, right)
+            | Expr::Subtract(left, right)
+            | Expr::Multiply(left, right) => {
+                pending.push((left.as_ref(), depth + 1));
+                pending.push((right.as_ref(), depth + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
