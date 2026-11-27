@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// java: rejects
+define class LoopNode as pub let mut LoopNode next = new LoopNode(); end
+pub fnc main(): int { return 42; }

@@ -129,3 +129,15 @@ fn fixed_nested_slot_remains_fixed_on_shallow_and_deep_copy() {
     wasm(include_str!("fixtures/pass/1020-copy-fixed-slot.atto"));
     assert_eq!(compile(include_str!("fixtures/fail/1021-copy-fixed-slot-replace.atto")).unwrap_err().code, "E_COPY_READONLY_SLOT");
 }
+
+#[test]
+fn bounded_fresh_tree_copy_and_transitive_authority() {
+    wasm(include_str!("fixtures/pass/1022-copy-tree-detach.atto"));
+    wasm(include_str!("fixtures/pass/1023-copy-tree-deep.atto"));
+    wasm(include_str!("fixtures/pass/1024-copy-tree-release.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1025-copy-tree-source-write.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1026-copy-tree-inner-replace.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1027-copy-tree-shared-inner-replace.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1028-copy-tree-cycle.atto")).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+    assert_eq!(compile(include_str!("fixtures/fail/1029-copy-tree-depth.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+}

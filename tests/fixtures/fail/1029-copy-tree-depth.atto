@@ -1,0 +1,7 @@
+// expect-error: E_COPY_UNPROVEN
+// java: rejects
+define class Scores as pub let int n = 20; end
+define class Profile as pub let mut Scores scores = new Scores(); end
+define class Person as pub let mut Profile profile = new Profile(); pub let int age = 1; end
+define class Outer as pub let mut Person person = new Person(); end
+pub fnc main(): int { return 42; }

@@ -25,6 +25,9 @@ const positives = [
   '1011-copy-lexical-third-release.atto',
   '1012-copy-source-recovery-on-detach.atto',
   '1020-copy-fixed-slot.atto',
+  '1022-copy-tree-detach.atto',
+  '1023-copy-tree-deep.atto',
+  '1024-copy-tree-release.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
@@ -49,6 +52,11 @@ const negatives = [
   '1018-copy-untracked-temp.atto',
   '1019-copy-root-call-boundary.atto',
   '1021-copy-fixed-slot-replace.atto',
+  '1025-copy-tree-source-write.atto',
+  '1026-copy-tree-inner-replace.atto',
+  '1027-copy-tree-shared-inner-replace.atto',
+  '1028-copy-tree-cycle.atto',
+  '1029-copy-tree-depth.atto',
 ];
 const imports = {
   atto: {
