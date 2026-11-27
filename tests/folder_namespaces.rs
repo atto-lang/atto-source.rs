@@ -87,3 +87,47 @@ fn compiler_without_path_rejects_derived_header_before_emission() {
         .expect("derived namespace is file identity only");
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
+
+#[test]
+fn v2_file_named_and_folder_modes_are_distinct() {
+    use namespace::{resolve_mode_v2, NamespaceModeV2::*};
+    let path = Some(Path::new("src/network/http/client.atto"));
+    let mode = |src: &str, path| resolve_mode_v2(&lex(src).unwrap(), path).unwrap();
+    for src in ["", "use default namespace;", "use file namespace;"] {
+        assert_eq!(mode(src, path), File);
+        assert_eq!(mode(src, None), File);
+    }
+    assert_eq!(mode("use folder namespace;", path),
+        Folder(vec!["src".into(), "network".into(), "http".into()]));
+    assert_eq!(mode("use folder namespace;", Some(Path::new("main.atto"))), Folder(vec![]));
+    assert_eq!(mode("use default namespace(1);", path), mode("use namespace http;", path));
+    assert_eq!(mode("use default namespace(2);", path), mode("use namespace network.http;", path));
+    assert_eq!(mode("use default namespace(3);", path), mode("use namespace src.network.http;", path));
+    assert_ne!(mode("use folder namespace;", path), mode("use default namespace(3);", path));
+    assert_ne!(mode("use folder namespace;", path), mode("use folder namespace;", Some(Path::new("src/db/http/client.atto"))));
+}
+
+#[test]
+fn v2_rejects_ambiguous_paths_mixed_headers_and_depth_errors() {
+    use namespace::resolve_mode_v2;
+    for path in ["../http/main.atto", "/src/http/main.atto", "src/./http/main.atto",
+                 "src//http/main.atto", "src/http/main.txt", "src/http/.atto",
+                 "src\\http\\main.atto"] {
+        assert_eq!(resolve_mode_v2(&lex("use folder namespace;").unwrap(), Some(Path::new(path)))
+            .unwrap_err().code, "E_NAMESPACE_PATH", "{path}");
+    }
+    assert_eq!(resolve_mode_v2(&lex("use folder namespace;").unwrap(), None)
+        .unwrap_err().code, "E_NAMESPACE_PATH");
+    let path = Some(Path::new("src/http/main.atto"));
+    for src in ["use default namespace(0);", "use default namespace(33);",
+                "use default namespace(3);", "use default namespace(-1);"] {
+        assert_eq!(resolve_mode_v2(&lex(src).unwrap(), path).unwrap_err().code, "E_NAMESPACE_DEPTH");
+    }
+    for src in ["use file namespace; use folder namespace;",
+                "use namespace x; use file namespace;", "use default namespace; use default namespace(1);"] {
+        assert_eq!(resolve_mode_v2(&lex(src).unwrap(), path).unwrap_err().code, "E_DUPLICATE");
+    }
+    for src in ["use file namespace", "use folder namespace(1);", "import module m from \"./m.atto\"; use file namespace;"] {
+        assert_eq!(resolve_mode_v2(&lex(src).unwrap(), path).unwrap_err().code, "E_SYNTAX");
+    }
+}
