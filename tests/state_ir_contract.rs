@@ -335,3 +335,46 @@ fn forged_protected_schema_cannot_gain_ordinary_class_or_reference_authority() {
         }
     }
 }
+
+#[test]
+fn ordinary_field_opcodes_cannot_bypass_protected_receiver() {
+    use atto_compiler::{check::TE, wasm};
+    assert!(!wasm::emit(&typed()).is_empty());
+    for variant in 0..3 {
+        let mut program = typed();
+        let method = program.funcs.iter_mut().find(|f| f.name == "Counter.read_count").unwrap();
+        let value = method.body.iter_mut().find_map(|s| match s {
+            TStmt::Return(Some(v)) => Some(v), _ => None,
+        }).unwrap();
+        let TExpr::StateFieldRead { obj, offset } = &value.e else { panic!("expected protected read"); };
+        let mut object = obj.clone();
+        if variant == 1 { object.ty = Type::Int; } // cannot disguise self as scalar
+        if variant == 2 {
+            let write = TStmt::FieldSet { obj: *object, offset: *offset, ty: Type::Int,
+                value: TE { e: TExpr::I64(77), ty: Type::Int } };
+            method.body.insert(0, write);
+        } else {
+            value.e = TExpr::FieldGet { obj: object, offset: *offset };
+        }
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),
+            "ordinary field bypass {variant} emitted");
+    }
+}
+
+#[test]
+fn protected_constructor_requires_exact_initialization_and_registration_order() {
+    use atto_compiler::wasm;
+    for variant in 0..5 {
+        let mut program = typed();
+        let ctor = program.funcs.iter_mut().find(|f| f.name == "Counter.new").unwrap();
+        match variant {
+            0 => { ctor.body.remove(2); } // no registration
+            1 => ctor.body.swap(1, 2), // register before initialization
+            2 => { let duplicate = ctor.body[1].clone(); ctor.body.insert(1, duplicate); }
+            3 => { let TStmt::FieldSet { offset, .. } = &mut ctor.body[1] else { panic!("field"); }; *offset = 8; }
+            _ => { let TStmt::StateRegister(obj) = &mut ctor.body[2] else { panic!("register"); }; obj.e = TExpr::Local(1); }
+        }
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),
+            "corrupt state constructor {variant} emitted");
+    }
+}
