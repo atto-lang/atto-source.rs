@@ -367,15 +367,17 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
-    // Reject raw NUL before preprocessing. Otherwise an ignored /* ... */
-    // or // comment could erase it and produce a valid executable AST.
-    // The source is already a valid UTF-8 &str; report its byte offset.
-    if let Some(offset) = source.bytes().position(|byte| byte == 0) {
-        return Err(ParseError {
-            offset,
-            class: "source_admission",
-            message: "source contains NUL byte".into(),
-        });
+    // Reject all raw control bytes before comment stripping; preserve the
+    // first invalid byte across NUL, ESC and DEL. CR, LF and TAB stay valid.
+    if let Some((offset, byte)) = source.bytes().enumerate()
+        .find(|(_, byte)| matches!(*byte, 0 | 0x1b | 0x7f))
+    {
+        let (class, message) = if byte == 0 {
+            ("source_admission", "source contains NUL byte")
+        } else {
+            ("invalid_source_control", "source contains terminal control byte")
+        };
+        return Err(ParseError { offset, class, message: message.into() });
     }
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
