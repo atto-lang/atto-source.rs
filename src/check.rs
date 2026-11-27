@@ -789,7 +789,7 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 /// method names can mint a witness, and this does not admit actor sends.
 fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: crate::copy_graph_v1::CopyMode) -> R<()> {
     use crate::copy_graph_v1::{
-        admit_copy, CopyRequest, Field as CopyField,
+        admit_copy, CopyMode, CopyRequest, Field as CopyField,
         FieldKind as CopyFieldKind, TypeDescriptor,
     };
 
