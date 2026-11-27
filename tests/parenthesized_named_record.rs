@@ -296,3 +296,40 @@ fn lexical_capture_rejects_duplicate_mixed_and_nonidentifier_items() {
         assert!(compile(&s).is_err(),"{s}");
     }
 }
+
+#[test]
+fn parenthesized_capture_is_record_including_anonymous_call_argument() {
+    for expr in ["{:name,:age}", "(:name,:age)", "{foo:5,:name,:age}", "(foo=5,:name,:age)", "(:age,)"] {
+        let p = binding(&format!("const name=\"Alice\"; const age=42; val z={expr}; sink(z); sink({expr});"));
+        let Stmt::Bind {init,..} = &p.funcs[0].body[2] else {panic!("missing binding")};
+        let ExprKind::Record(fields) = &init.kind else {panic!("not a Record")};
+        let Stmt::Expr(call) = &p.funcs[0].body[4] else {panic!("missing call")};
+        let ExprKind::Call(_,args) = &call.kind else {panic!("not a call")};
+        assert_eq!(args.len(),1);
+        let ExprKind::Record(anonymous) = &args[0].kind else {panic!("not an anonymous Record")};
+        assert_eq!(fields.iter().map(|f|&f.0).collect::<Vec<_>>(),
+                   anonymous.iter().map(|f|&f.0).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn parenthesized_capture_uses_existing_scalar_record_lowering() {
+    for expr in ["{foo:5,:name,:age}", "(foo=5,:name,:age)", "(:name,:age)"] {
+        guest(&format!("pub fnc main(): int {{ const name=\"Alice\"; const age=42; val z={expr}; return z.age; }}"));
+    }
+}
+
+#[test]
+fn parenthesized_capture_rejects_duplicate_positional_and_path_items() {
+    for (expr, code) in [
+        ("(:age,age=1)", "E_DUPLICATE"),
+        ("(age=1,:age)", "E_DUPLICATE"),
+        ("(:age,5)", "E_LITERAL_KIND"),
+    ] {
+        rejected(&format!("pub fnc main():int {{ const age=42; val z={expr}; return 0; }}"),code);
+    }
+    for expr in ["(:age.value)", "(:42)", "(:return)", "(:missing)"] {
+        let source=format!("pub fnc main():int {{ const age=42; val z={expr}; return 0; }}");
+        assert!(compile(&source).is_err(),"{source}");
+    }
+}
