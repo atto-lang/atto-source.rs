@@ -180,6 +180,28 @@ mod tests {
         let bytes=crate::compile(&src).expect("checked contextual guest compilation");
         assert_eq!(&bytes[..4],b"\0asm");
     }
+    // This gate executes the actual emitted Wasm, never a host reimplementation.
+    // Run explicitly with Node.js installed: cargo test --lib contextual_specialization::tests::guest_capture -- --ignored
+    #[test]
+    #[ignore = "requires Node.js guest runtime"]
+    fn guest_capture() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        for (body, expected) in [
+            ("let n = 3; const x = Scale::(n); n = 9; const a = x.apply(4); const b = x.apply(5); return a + b + Scale::(2).apply(7);", "41"),
+            ("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);", "20"),
+            ("return Scale::(6).apply(7);", "42"),
+        ] {
+            let wasm = crate::compile(&program(body)).expect("compile guest");
+            let mut child = Command::new("node").args(["-e",
+                "const fs=require('fs');const m=new WebAssembly.Module(fs.readFileSync(0));const i=new WebAssembly.Instance(m,{});process.stdout.write(String(i.exports.main()));"])
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("Node.js required");
+            child.stdin.take().unwrap().write_all(&wasm).unwrap();
+            let result = child.wait_with_output().unwrap();
+            assert!(result.status.success(), "guest failed: {body}");
+            assert_eq!(String::from_utf8(result.stdout).unwrap(), expected);
+        }
+    }
     #[test] fn separate_bindings_compile() {
         assert!(crate::compile(&program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);")).is_ok());
     }
