@@ -2974,6 +2974,13 @@ impl<'a> FnCx<'a> {
                     return Ok(TStmt::Expr(last_value));
                 }
                 let v = self.expr(e)?;
+                if self.cleanup_depth > 0 && matches!(v.ty,
+                    Type::ResultIntStr | Type::ResultIntInt |
+                    Type::OptionResultIntStr | Type::Callable(_))
+                {
+                    return Err(Diagnostic::new(e.pos, "E_UNWIND_EFFECT",
+                        "cleanup/recovery must handle fallible results and cannot discard callable values"));
+                }
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
                         "discarding an unclosed generator handle is prohibited"));

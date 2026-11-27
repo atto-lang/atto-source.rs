@@ -13,6 +13,34 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
   {
+    name: 'braceless direct call delays operands; bound factory evaluates once at registration',
+    src: `fnc seed(): int { stdio.println("factory"); return 5; }
+      fnc later(): int { stdio.println("operand"); return 2; }
+      fnc cleanup(int n): void { stdio.println(n); }
+      pub fnc main(): int {
+        defer cleanup(later());
+        defer (|int value| -> || -> { stdio.println(value); })(seed());
+        defer stdio.println("last");
+        stdio.println("body");
+        return 42;
+      }`,
+    stdout: 'factory\nbody\nlast\n5\noperand\n2\n', value: 42n,
+  },
+  {
+    name: 'fallible cleanup result is not silently discarded',
+    src: `fnc cleanup(): Result<int,string> { return Ok(42); }
+      pub fnc main(): int { defer cleanup(); return 40; }`,
+    reject: 'E_UNWIND_EFFECT',
+  },
+  {
+    name: 'unlowered await in braceless cleanup emits no artifact',
+    src: `pub fnc main(): int { defer await 42; return 40; }`,
+    reject: 'E_UNSUPPORTED',
+  },
+
+
+
+  {
     name: 'annotated caught throw is safe in defer and preserves normal result',
     src: `fnc fail(): int throws(Error) { throw Error("inner"); }
       fnc safe(): int raises(Error) {

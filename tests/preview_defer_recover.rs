@@ -611,3 +611,37 @@ fn methods_and_generators_fail_closed() {
         fnc *gen g(): Generator<int> { try { yield 1; } finally { stdio.println("x"); } }
         pub fnc main(): int { return 0; }"#);
 }
+
+#[test]
+fn braceless_defer_and_bound_empty_lambda_share_cleanup_lowering() {
+    pass(r#"
+        fnc cleanup(): void { stdio.println("cleanup"); }
+        pub fnc main(): int {
+            defer cleanup();
+            defer stdio.println("direct");
+            defer (|int value| -> || -> { stdio.println(value); })(5);
+            return 42;
+        }
+    "#);
+}
+
+#[test]
+fn unsupported_braceless_cleanup_stays_fail_closed() {
+    reject("E_UNSUPPORTED", r#"pub fnc main(): int {
+        defer await 42;
+        return 40;
+    }"#);
+    reject("E_UNSUPPORTED", r#"
+        fnc cleanup(): void { stdio.println("cleanup"); }
+        pub fnc main(): int { defer cleanup; return 42; }
+    "#);
+    reject("E_UNBOUND", r#"pub fnc main(): int {
+        let mut int count = 0;
+        defer count = 2;
+        return 40;
+    }"#);
+    reject("E_UNWIND_EFFECT", r#"
+        fnc cleanup(): Result<int,string> { return Ok(42); }
+        pub fnc main(): int { defer cleanup(); return 40; }
+    "#);
+}
