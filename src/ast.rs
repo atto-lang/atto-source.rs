@@ -429,6 +429,12 @@ pub enum Pattern {
     /// `_`, or `else` in the legacy form
     Wild,
     Int(i64),
+    /// Bounded constant integer membership, not an array-valued pattern.
+    InInts(Vec<i64>),
+    /// Statically known scalar type tests; no runtime tag fabrication.
+    StaticTypes(Vec<Type>),
+    /// Compile-time-only scalar pattern disjunction; erased by checking.
+    ConstSet { ints: Vec<i64>, bools: Vec<bool>, types: Vec<Type> },
     Bool(bool),
     /// lower-case name: binds the subject
     Bind(String),
