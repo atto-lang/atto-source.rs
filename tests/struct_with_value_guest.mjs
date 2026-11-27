@@ -157,6 +157,10 @@ const positives = [
     ['origin', decl + '\n' + main.replace('10, 20', '0, 0'), '0\n0\ntrue\n'],
 ];
 const negatives = [
+    ['nested-mutual-cycle', direct(decl).replace('int x;', 'Rectangle x;') + '\n' + rectangle + '\n' + nestedMain, /E_STRUCT_LAYOUT_CYCLE/],
+    ['nested-slot-budget', nestedOwners + '\n' + Array.from({length:4}, (_,i)=>'define struct Wide'+i+' { '+Array.from({length:3},(_,j)=>(i===0?'Rectangle':'Wide'+(i-1))+' f'+j+';').join(' ')+' } with { constructor() {} }').join('\n') + '\n' + nestedMain, /E_SOURCE_LIMIT/],
+    ['nested-parameter-snapshot-budget', nestedOwners + '\n' + 'define struct TooWide { int x; } with { constructor('+Array.from({length:9},(_,i)=>'Rectangle a'+i).join(', ')+') { self.x = 1; } }' + '\n' + nestedMain],
+
     ['nested-wrong-nominal-argument', nestedOwners + '\n' + secondOwner + '\n' + nestedMain.replace('let q = Point', 'let q = Offset'), /E_TYPE/],
     ['nested-wrong-field-identity', nestedOwners.replace('Point bottom_right;', 'Offset bottom_right;') + '\n' + secondOwner + '\n' + nestedMain, /E_TYPE/],
     ['nested-uninitialized-field', nestedOwners.replace('self.bottom_right = b;', '') + '\n' + nestedMain, /E_STRUCT_INIT/],

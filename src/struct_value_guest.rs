@@ -447,7 +447,7 @@ impl MainLower<'_> {
         let lowered: Vec<_> = actual.into_iter().flat_map(|(_, _, leaves)| leaves).collect();
         if lowered.len() != ctor.params.len() { return Err(denied(pos, "invalid flattened constructor argument plan")); }
         charge_expansion(&mut self.expansion_nodes, body_cost(&ctor.body)
-            .saturating_add(4 * (decl.fields.len() + args.len())), pos)?;
+            .saturating_add(4 * (decl.fields.len() + lowered.len())), pos)?;
         if ctor.params.iter().any(|p| p.mutable) {
             return Err(denied(pos, "mutable constructor parameter outside scalar profile"));
         }
