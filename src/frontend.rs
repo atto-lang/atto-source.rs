@@ -169,6 +169,15 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
             if depth == 0 {
                 open = i;
             }
+            // Bound nested comments to 64 and reject before increment, not
+            // after possible counter overflow or excessive lexer work.
+            if depth >= 64 {
+                return Err(ParseError {
+                    offset: i,
+                    class: "resource_limit",
+                    message: "block comment nesting exceeds 64".into(),
+                });
+            }
             depth += 1;
             bytes[i] = b' ';
             bytes[i + 1] = b' ';
@@ -359,6 +368,29 @@ fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+// The native scalar MIR cannot currently lower checked copy/take/borrow/share.
+// Diagnose ownership bang tokens at the lexical failure boundary, without
+// treating text inside comments as executable source.
+fn is_ownership_bang(source: &str, offset: usize) -> bool {
+    let bytes = source.as_bytes();
+    if bytes.get(offset) != Some(&b'!') { return false; }
+    let mut start = offset;
+    while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+        start -= 1;
+    }
+    if !matches!(&source[start..offset], "copy" | "take" | "borrow" | "share") {
+        return false;
+    }
+    let suffix = &source[offset + 1..];
+    if suffix.starts_with('=') { return false; }
+    if let Some(tail) = suffix.strip_prefix("eq") {
+        if !tail.as_bytes().first().is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_') {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -381,10 +413,17 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
     for (kind, range) in Kind::lexer(&prepared).spanned() {
-        let kind = kind.map_err(|_| ParseError {
-            offset: range.start,
-            class: "syntax_error",
-            message: "unsupported token".into(),
+        let kind = kind.map_err(|_| {
+            let ownership = is_ownership_bang(&prepared, range.start);
+            ParseError {
+                offset: range.start,
+                class: if ownership { "ownership_bang_unsupported" } else { "syntax_error" },
+                message: if ownership {
+                    "OWNERSHIP_BANG_BACKEND_UNSUPPORTED: checked native ownership MIR required".into()
+                } else {
+                    "unsupported token".into()
+                },
+            }
         })?;
         if tokens.len() >= MAX_TOKENS {
             return Err(ParseError {
