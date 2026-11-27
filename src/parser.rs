@@ -1018,7 +1018,7 @@ impl Parser {
                 return Err(Diagnostic::new(pos, "E_SYNTAX", "constructor cannot have a mutable receiver modifier"));
             }
             self.expect(Tok::LParen, "'(' after constructor")?;
-            let params = self.parse_params()?;
+            let params = self.parse_params(false)?;
             if !(scalar_params(&params) || allow_nominal && params.iter().all(|p| matches!(p.ty, Type::Int | Type::Bool | Type::Named(_)))) {
                 return Err(unsupported(pos, "unsupported attached constructor parameters"));
             }
@@ -1410,7 +1410,7 @@ impl Parser {
                     }
                     self.advance();
                     self.expect(Tok::LParen, "'('")?;
-                    let params = self.parse_params()?;
+                    let params = self.parse_params(false)?;
                     let body = self.parse_block()?;
                     m.ctor = Some(Constructor { pos: mpos, params, body });
                 }
@@ -1664,7 +1664,7 @@ impl Parser {
         if what == "a method name" && self.is_word("self") {
             return Err(unsupported(self.pos(), "explicit 'self' receivers"));
         }
-        let params = self.parse_params()?;
+        let params = self.parse_params(what == "a function name")?;
         if what == "a method name" && *self.peek() == Tok::LParen {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
@@ -1888,7 +1888,7 @@ impl Parser {
     }
 
     /// Parameters after `(` up to and including `)`.
-    fn parse_params(&mut self) -> R<Vec<Param>> {
+    fn parse_params(&mut self, allow_omittable: bool) -> R<Vec<Param>> {
         let mut params: Vec<Param> = Vec::new();
         if *self.peek() != Tok::RParen {
             loop {
@@ -1899,7 +1899,7 @@ impl Parser {
                         format!("more than {MAX_PARAMS} parameters"),
                     ));
                 }
-                let p = self.parse_param()?;
+                let p = self.parse_param(allow_omittable)?;
                 if params.iter().any(|q| q.name == p.name) {
                     return Err(Diagnostic::new(
                         p.pos,
@@ -2203,34 +2203,43 @@ impl Parser {
         Ok(())
     }
 
-    fn parse_param(&mut self) -> R<Param> {
+    fn parse_param(&mut self, allow_omittable: bool) -> R<Param> {
         let pos = self.pos();
         self.reject_unlowered_callable_pattern()?;
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
-        // compatibility form `name: type [mut]`
-        if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+        let name_first = matches!(self.peek(), Tok::Ident(_))
+            && (*self.peek_at(1) == Tok::Colon
+                || (*self.peek_at(1) == Tok::Question && *self.peek_at(2) == Tok::Colon));
+        if name_first {
             let (name, pos) = self.ident("a parameter name")?;
-            self.advance();
+            let omittable = self.eat(&Tok::Question);
+            self.expect(Tok::Colon, "':' after parameter name")?;
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, pos);
+            return self.finish_param(name, ty, mutable, omittable, allow_omittable, pos);
         }
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
         let (name, pos) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, pos)
+        let omittable = self.eat(&Tok::Question);
+        self.finish_param(name, ty, mutable, omittable, allow_omittable, pos)
     }
 
-    fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
+    fn finish_param(&self, name: String, ty: Type, mutable: bool, omittable: bool,
+        allow_omittable: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
         }
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        if omittable && (!allow_omittable || mutable || !matches!(ty, Type::OptionInt | Type::OptionResultIntStr)) {
+            return Err(Diagnostic::new(pos, "E_OMITTABLE_DEFAULT",
+                "this direct-call slice admits only immutable omittable Option formals with implicit None"));
+        }
+        Ok(Param { name, ty, mutable, omittable, pos })
     }
 
     // ----------------------------------------------------------- statements
@@ -4177,6 +4186,17 @@ impl Parser {
                 Tok::Bang if self.word_at(1) == Some("eq") => {
                     self.advance();
                     BinOp::Ne
+                }
+                Tok::Ident(s) if s == "is" && self.word_at(1) == Some("omitted") => {
+                    if !matches!(&left.kind, ExprKind::Var(_)) {
+                        return Err(Diagnostic::new(pos, "E_OMISSION_PROVENANCE", "is omitted requires a formal binding"));
+                    }
+                    self.advance();
+                    self.advance();
+                    self.grow(1)?;
+                    links += 1;
+                    left = Expr { kind: ExprKind::Call("\0is_omitted".into(), vec![left]), pos };
+                    continue;
                 }
                 Tok::Ident(s) if s == "is" => return Err(unsupported(pos, "a type test using 'is' (requires a statically proven type tag in this backend)")),
                 _ => break,
