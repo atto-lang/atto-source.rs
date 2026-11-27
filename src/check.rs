@@ -411,6 +411,7 @@ struct ClassInfo {
     state_container: bool,
     // Closed immutable leaf witness: no methods, constructor, or writable fields.
     immutable_leaf: bool,
+    closed_scalar_leaf: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
@@ -487,6 +488,10 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Directly constructed class roots, never aliases received from calls/fields.
     fresh_class_roots: BTreeSet<u32>,
+    // Conservative straight-line per-root field write authority. No joins,
+    // loops or scope recovery are inferred in this first mutable-leaf slice.
+    nested_linear: bool,
+    unique_nested_fields: BTreeSet<(u32, u32)>,
     /// Stable CLASS borrow provenance; expiry never grants ownership.
     borrowed_slots: BTreeSet<u32>,
     nll_fuel: usize,
@@ -797,6 +802,8 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: cr
                     CopyFieldKind::Scalar,
                 Type::Class(child) if classes[child as usize].immutable_leaf && !f.referent_mutable =>
                     CopyFieldKind::ImmutableShared,
+                Type::Class(child) if classes[child as usize].closed_scalar_leaf && f.referent_mutable =>
+                    CopyFieldKind::SharedMutable(child + 1),
                 Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
                 _ => CopyFieldKind::Unresolved,
             },
@@ -822,7 +829,17 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: cr
     // The current AOT backend generates flat-object copies only. Do not
     // broaden witness admission to transitive graphs until the generated
     // copier has an identity memo and a rollback-safe graph allocation plan.
-    if plan.copied_type_ids != vec![requested] {
+    let mut expected = BTreeSet::from([requested]);
+    if mode == CopyMode::Deep {
+        for field in &classes[ci as usize].fields {
+            if let Type::Class(child) = field.ty {
+                if field.referent_mutable && classes[child as usize].closed_scalar_leaf {
+                    expected.insert(child + 1);
+                }
+            }
+        }
+    }
+    if plan.copied_type_ids != expected.into_iter().collect::<Vec<_>>() {
         return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
             "nested mutable class graph requires a memoized AOT copy runtime"));
     }
@@ -1043,6 +1060,13 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // No annotation or nominal field modifier alone grants sharing. The
     // admitted leaf has only fixed scalar slots and no user code capable of
     // publishing self or changing its state. No recursive layout admission.
+    let closed_scalar_leaves: Vec<bool> = p.classes.iter().map(|c| {
+        !c.state_container && c.ctor.is_none() && c.methods.is_empty()
+            && c.fields.iter().all(|f| !f.referent_mutable
+                && f.init.as_ref().is_some_and(const_init)
+                && res(f.ty).is_ok_and(|t| matches!(t,
+                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))))
+    }).collect();
     let immutable_leaves: Vec<bool> = p.classes.iter().map(|c| {
         !c.state_container && c.ctor.is_none() && c.methods.is_empty()
             && c.fields.iter().all(|f| !f.binding.rebindable()
@@ -1086,8 +1110,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 Type::Int | Type::Bool => true,
                 Type::Float | Type::Str | Type::Enum(_) => !actor,
                 Type::Class(ci) => !actor
-                    && !f.referent_mutable && f.binding != FieldBinding::Const
-                    && immutable_leaves[ci as usize]
+                    && f.binding != FieldBinding::Const
+                    && ((!f.referent_mutable && immutable_leaves[ci as usize])
+                        || (f.referent_mutable && closed_scalar_leaves[ci as usize]))
                     && f.init.as_ref().is_some_and(|e| matches!(&e.kind,
                         ExprKind::New(name, args) if name == &class_names[ci as usize] && args.is_empty())),
                 _ => false,
@@ -1122,6 +1147,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut classes = Vec::new();
     for (ci, c) in p.classes.iter().enumerate() {
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
+        if fields.iter().any(|f| matches!(f.ty, Type::Class(_)) && f.referent_mutable)
+            && (c.state_container || c.ctor.is_some() || !c.methods.is_empty()) {
+            return Err(Diagnostic::new(c.pos, "E_COPY_UNPROVEN",
+                "mutable nested root requires a closed constructor-free, method-free layout"));
+        }
         if c.state_container && fields.iter().any(|f| matches!(f.ty, Type::Class(_))) {
             return Err(Diagnostic::new(c.pos, "E_STATE_BORROW", "nested reference state is not admitted"));
         }
@@ -1137,7 +1167,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         // Custom copy_deep overrides need separate proof/hook chaining.
         let flat = !c.state_container && fields.iter().all(|f| match f.ty {
             Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
-            Type::Class(child) => immutable_leaves[child as usize] && !f.referent_mutable,
+            Type::Class(child) => (immutable_leaves[child as usize] && !f.referent_mutable)
+                || (closed_scalar_leaves[child as usize] && f.referent_mutable),
             _ => false,
         });
         let deep_copy_idx = if flat && !c.methods.iter().any(|m| m.name == "copy_deep") { Some(take()) } else { None };
@@ -1150,6 +1181,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             name: c.name.clone(),
             state_container: c.state_container,
             immutable_leaf: immutable_leaves[ci],
+            closed_scalar_leaf: closed_scalar_leaves[ci],
             fields,
             methods,
             new_idx,
@@ -1414,13 +1446,18 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ty: me,
             })];
             for field in &info.fields {
+                let mut value = TE { e: TExpr::FieldGet {
+                    obj: Box::new(source.clone()), offset: field.slot,
+                }, ty: field.ty };
+                if mode == crate::copy_graph_v1::CopyMode::Deep && field.referent_mutable {
+                    if let Type::Class(child) = field.ty {
+                        let idx = g.classes[child as usize].deep_copy_idx.ok_or_else(||
+                            Diagnostic::new(c.pos, "E_COPY_AOT_WITNESS", "missing mutable leaf copier"))?;
+                        value = TE { e: TExpr::Call(idx, vec![value]), ty: field.ty };
+                    }
+                }
                 body.push(TStmt::FieldSet {
-                    obj: cloned.clone(),
-                    offset: field.slot,
-                    ty: field.ty,
-                    value: TE { e: TExpr::FieldGet {
-                        obj: Box::new(source.clone()), offset: field.slot,
-                    }, ty: field.ty },
+                    obj: cloned.clone(), offset: field.slot, ty: field.ty, value,
                 });
             }
             body.push(TStmt::Return(Some(cloned)));
@@ -1834,7 +1871,8 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
     };
     if let Type::Class(ci) = ty {
         let info = &g.classes[ci as usize];
-        if !actor && info.immutable_leaf && !f.referent_mutable
+        if !actor && ((info.immutable_leaf && !f.referent_mutable)
+            || (info.closed_scalar_leaf && f.referent_mutable))
             && matches!(&init.kind, ExprKind::New(name, args) if name == &info.name && args.is_empty())
         {
             return Ok(Some(TE { e: TExpr::Call(info.new_idx, Vec::new()), ty }));
@@ -2519,6 +2557,8 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             fresh_class_roots: BTreeSet::new(),
+            nested_linear: true,
+            unique_nested_fields: BTreeSet::new(),
             borrowed_slots: BTreeSet::new(),
             nll_fuel: NLL_WORK_BUDGET,
             loans: BTreeMap::new(),
@@ -2811,6 +2851,10 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
+        if !matches!(s, Stmt::Bind { .. } | Stmt::Assign { .. } | Stmt::FieldAssign { .. } | Stmt::Expr(_) | Stmt::Return(..)) {
+            self.nested_linear = false;
+            self.unique_nested_fields.clear();
+        }
         if let Some(tr) = self.trace.as_mut() {
             let outside = match s {
                 Stmt::Bind { .. } | Stmt::Expr(_) | Stmt::Return(..) | Stmt::Block(_) => None,
@@ -2863,6 +2907,16 @@ impl<'a> FnCx<'a> {
                 if matches!(v.ty, Type::Class(_)) && matches!(init.kind,
                     ExprKind::New(..) | ExprKind::Ownership(OwnershipOp::Copy | OwnershipOp::DeepCopy, _, _)) {
                     self.fresh_class_roots.insert(slot);
+                    if self.nested_linear && self.owner == Owner::TopLevel
+                        && matches!(init.kind, ExprKind::New(..) | ExprKind::Ownership(OwnershipOp::DeepCopy, _, _)) {
+                        if let Type::Class(ci) = v.ty {
+                            for field in &self.g.classes[ci as usize].fields {
+                                if field.referent_mutable && matches!(field.ty, Type::Class(_)) {
+                                    self.unique_nested_fields.insert((slot, field.slot));
+                                }
+                            }
+                        }
+                    }
                 }
                 if let Some(tr) = self.trace.as_mut() {
                     // Exactly `x`, `take! x` or `copy!! x`: the binding receives
@@ -2901,6 +2955,7 @@ impl<'a> FnCx<'a> {
                 }
                 // Never restore freshness after reassignment; monotone across joins.
                 self.fresh_class_roots.remove(&slot);
+                self.unique_nested_fields.retain(|(root, _)| *root != slot);
                 // a reassigned object binding owns a value again
                 self.moved.remove(&slot);
                 TStmt::Set(slot, v)
@@ -3558,6 +3613,55 @@ impl<'a> FnCx<'a> {
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
+        // A nested write is legal only through a known independent root slot
+        // and an unshared, freshly constructed scalar leaf. No nested handle
+        // escapes, so a shallow transition can conservatively retire authority.
+        if let ExprKind::Member(base, member) = &target.kind {
+            if let ExprKind::Var(name) = &base.kind {
+                if let Some((root, Type::Class(ci), mutable)) = self.lookup(name).map(|l| (l.slot, l.ty, l.mutable)) {
+                    let outer = &self.g.classes[ci as usize];
+                    if let Some(edge) = outer.fields.iter().find(|f| f.name == *member) {
+                        if let Type::Class(child) = edge.ty {
+                            if edge.referent_mutable && self.g.classes[child as usize].closed_scalar_leaf {
+                                if !self.nested_linear || self.owner != Owner::TopLevel || !mutable ||
+                                    !self.fresh_class_roots.contains(&root) || self.moved.contains(&root) ||
+                                    self.borrowed_slots.contains(&root) || self.loans.values().any(|l| l.owner == root) ||
+                                    !self.unique_nested_fields.contains(&(root, edge.slot)) {
+                                    return Err(Diagnostic::new(pos, "E_COPY_READONLY", "nested referent has no independent write authority"));
+                                }
+                                if edge.visibility == FieldVisibility::Private {
+                                    return Err(Diagnostic::new(pos, "E_PRIVATE", "private outer field"));
+                                }
+                                let leaf = &self.g.classes[child as usize];
+                                let f = leaf.fields.iter().find(|f| f.name == field).ok_or_else(||
+                                    Diagnostic::new(pos, "E_UNBOUND", "unknown nested field"))?;
+                                if f.visibility == FieldVisibility::Private {
+                                    return Err(Diagnostic::new(pos, "E_PRIVATE", "private nested field"));
+                                }
+                                if !f.binding.rebindable() {
+                                    return Err(Diagnostic::new(pos, "E_IMMUTABLE", "fixed nested field"));
+                                }
+                                if !const_init(value) {
+                                    return Err(Diagnostic::new(pos, "E_COPY_UNPROVEN", "nested write RHS requires a proven constant expression"));
+                                }
+                                let (edge_offset, offset, ty) = (edge.slot, f.slot, f.ty);
+                                let v = self.value(value)?;
+                                if v.ty != ty { return Err(type_err(value.pos, "nested field assignment type mismatch")); }
+                                if !self.unique_nested_fields.contains(&(root, edge_offset)) || self.moved.contains(&root)
+                                    || self.loans.values().any(|l| l.owner == root) {
+                                    return Err(Diagnostic::new(pos, "E_COPY_READONLY", "nested field RHS invalidated authority"));
+                                }
+                                if let Some(tr) = self.trace.as_mut() { tr.unavailable("nested write lacks canonical place provenance"); }
+                                return Ok(TStmt::FieldSet {
+                                    obj: TE { e: TExpr::FieldGet { obj: Box::new(TE { e: TExpr::Local(root), ty: Type::Class(ci) }), offset: edge_offset }, ty: Type::Class(child) },
+                                    offset, ty, value: v,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
                 if self.borrowed_slots.contains(&local.slot) && !self.loans.contains_key(&local.slot) {
@@ -3647,7 +3751,8 @@ impl<'a> FnCx<'a> {
                 let fresh_leaf_replacement = match fty {
                     Type::Class(ci) => {
                         let leaf = &self.g.classes[ci as usize];
-                        leaf.immutable_leaf && !f.referent_mutable &&
+                        ((leaf.immutable_leaf && !f.referent_mutable) ||
+                            (self.nested_linear && self.owner == Owner::TopLevel && leaf.closed_scalar_leaf && f.referent_mutable)) &&
                             matches!(&value.kind, ExprKind::New(n, args) if n == &leaf.name && args.is_empty())
                     }
                     _ => false,
@@ -3680,6 +3785,9 @@ impl<'a> FnCx<'a> {
                 }
                 if checked.ty != fty {
                     return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
+                }
+                if fresh_leaf_replacement && matches!(fty, Type::Class(_)) && self.nested_linear {
+                    self.unique_nested_fields.insert((slot, offset));
                 }
                 return Ok(TStmt::FieldSet {
                     obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
@@ -4061,6 +4169,22 @@ impl<'a> FnCx<'a> {
                             }
                         }
                         let class = &self.g.classes[ci as usize];
+                        if class.fields.iter().any(|f| f.referent_mutable && matches!(f.ty, Type::Class(_))) {
+                            let owner_slot = match &inner.kind {
+                                ExprKind::Var(n) => self.lookup(n).map(|l| l.slot),
+                                _ => None,
+                            };
+                            let Some(slot) = owner_slot else {
+                                return Err(Diagnostic::new(pos, "E_COPY_UNPROVEN", "mutable nested copy needs a named root"));
+                            };
+                            if !self.nested_linear || self.owner != Owner::TopLevel ||
+                                !self.fresh_class_roots.contains(&slot) || self.borrowed_slots.contains(&slot) ||
+                                self.loans.values().any(|l| l.owner == slot) {
+                                return Err(Diagnostic::new(pos, "E_COPY_UNPROVEN", "mutable nested copy requires a proven direct root in straight-line scope"));
+                            }
+                            if shallow { self.unique_nested_fields.retain(|(root, _)| *root != slot); }
+                            if let Some(tr) = self.trace.as_mut() { tr.unavailable("nested copy authority not in L3 wire profile"); }
+                        }
                         let method = if shallow { "copy" } else { "copy_deep" };
                         if class.methods.iter().any(|m| m.name == method) {
                             return Err(Diagnostic::new(pos, "E_COPY_OVERRIDE",
