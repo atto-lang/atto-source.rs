@@ -39,6 +39,8 @@ function guest(main, provider, expected, folder = '') {
 
 function rejected(main, provider, expectedCode) {
   const { result, output } = compile(main, provider);
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, new RegExp(expectedCode));
   assert.equal(existsSync(output), false, 'failed compile must produce no guest artifact');
@@ -83,6 +85,14 @@ try {
     'E_UNSUPPORTED');
   rejected(main, 'x'.repeat(65537), 'E_IMPORT'); // native loader rejects oversized source
   rejected('import const status_valid from "std.http"; pub fnc main(): int {return 0;}',
+    provider, 'E_IMPORT_PATH');
+
+  // Parent selectors are not globally banned: an in-project parent is valid.
+  writeFileSync(join(dir, 'config.atto'), provider);
+  guest('import const status_valid from "../config.atto"; pub fnc main(): int {return status_valid;}',
+    'define pub const int status_valid = 999;', 200, 'project');
+  // The identical selector at the project root must fail closed, not escape.
+  rejected('import const status_valid from "../escape.atto"; pub fnc main(): int {return 0;}',
     provider, 'E_IMPORT_PATH');
 
   // The real CLI must canonicalize requested paths and reject an imported
