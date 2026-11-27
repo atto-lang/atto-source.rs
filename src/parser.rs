@@ -265,6 +265,8 @@ pub struct Parser {
     state_method: bool,
     state_binder: Option<String>,
     struct_value_bindings: Option<Vec<Pos>>,
+    // Prior, file-local public-field scalar constructors proven to be bijective.
+    contextual_new_fields: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 struct TypeFirstField {
@@ -400,6 +402,7 @@ impl Parser {
             state_method: false,
             state_binder: None,
             struct_value_bindings: None,
+            contextual_new_fields: std::collections::BTreeMap::new(),
         }
     }
 
@@ -755,7 +758,11 @@ impl Parser {
                 }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
-                    prog.classes.push(self.parse_class(public)?);
+                    let decl = self.parse_class(public)?;
+                    if let Some(fields) = Self::contextual_new_schema(&decl) {
+                        self.contextual_new_fields.insert(decl.name.clone(), fields);
+                    }
+                    prog.classes.push(decl);
                 }
                 (Some("define"), Some("state")) => {
                     self.i += at + 2;
@@ -3051,6 +3058,57 @@ impl Parser {
         Ok(ExprKind::StateRead(field))
     }
 
+    /// Only direct, one-to-one initialization of every public deferred-final
+    /// scalar field is admitted. This does not invent field access or bypass
+    /// the ordinary constructor, ownership checker or allocator.
+    fn contextual_new_schema(decl: &ClassDecl) -> Option<Vec<String>> {
+        let ctor = decl.ctor.as_ref()?;
+        if decl.state_container || decl.fields.is_empty() || decl.fields.len() > 32
+            || decl.fields.len() != ctor.params.len() || ctor.body.len() != ctor.params.len()
+            || decl.fields.iter().any(|f| f.visibility != FieldVisibility::Public
+                || f.binding != FieldBinding::Final || f.init.is_some()
+                || !matches!(f.ty, Type::Int | Type::Bool))
+            || ctor.params.iter().any(|p| p.mutable) {
+            return None;
+        }
+        let mut ordered = vec![None; ctor.params.len()];
+        let mut initialized = std::collections::BTreeSet::new();
+        for stmt in &ctor.body {
+            let Stmt::FieldAssign { target, field, value, .. } = stmt else { return None };
+            if !matches!(&target.kind, ExprKind::SelfRef) { return None; }
+            let ExprKind::Var(param) = &value.kind else { return None };
+            let index = ctor.params.iter().position(|p| &p.name == param)?;
+            let destination = decl.fields.iter().find(|f| &f.name == field)?;
+            if destination.ty != ctor.params[index].ty || !initialized.insert(field.as_str())
+                || ordered[index].replace(field.clone()).is_some() { return None; }
+        }
+        ordered.into_iter().collect()
+    }
+
+    /// Initial typed-local slice. Written field order must match the proven
+    /// constructor parameter order until an order-preserving named-call IR
+    /// exists. Never reorder effects or infer owners from field shapes.
+    fn parse_contextual_new(&mut self, expected: Option<Type>) -> R<Expr> {
+        let pos = self.pos();
+        let deny = || Diagnostic::new(pos, "E_CONTEXTUAL_NEW",
+            "contextual new requires a typed local and a prior public-field scalar constructor; use constructor field order");
+        let Some(Type::Named(index)) = expected else { return Err(deny()); };
+        let owner = self.type_names.get(index as usize).map(|(n, _)| n.clone()).ok_or_else(deny)?;
+        let fields = self.contextual_new_fields.get(&owner).cloned().ok_or_else(deny)?;
+        self.expect_word("new")?;
+        self.expect(Tok::LBrace, "'{' after contextual new")?;
+        let mut args = Vec::with_capacity(fields.len());
+        for (i, field) in fields.iter().enumerate() {
+            if i != 0 { self.expect(Tok::Comma, "',' between contextual fields")?; }
+            let (written, _) = self.ident("a contextual constructor field")?;
+            if &written != field { return Err(deny()); }
+            self.expect(Tok::Colon, "':' after contextual field")?;
+            args.push(self.parse_expr()?);
+        }
+        self.expect(Tok::RBrace, "'}' after complete contextual construction")?;
+        Ok(Expr { kind: ExprKind::New(owner, args), pos })
+    }
+
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
     fn parse_binding(&mut self) -> R<Stmt> {
         let pos = self.pos();
@@ -3110,7 +3168,11 @@ impl Parser {
             ));
         }
         self.advance();
-        let init = self.parse_expr()?;
+        let init = if self.is_word("new") && *self.peek_at(1) == Tok::LBrace {
+            self.parse_contextual_new(ty)?
+        } else {
+            self.parse_expr()?
+        };
         if (kind == BindKind::Val || explicit_mut) && kind != BindKind::Const {
             if let Some(bindings) = self.struct_value_bindings.as_mut() {
                 bindings.push(pos);
