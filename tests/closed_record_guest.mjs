@@ -49,6 +49,8 @@ function run(bytes){
  return {value:inst.exports.main(),stdout};
 }
 const positives=[
+ ['pub fnc main(): int {const name="Alice"; const age=42; val z={:name,:age}; stdio.println(z.name); return z["age"];}',42n,'Alice\n'],
+ ['pub fnc main(): int {val age=40; val z={:age,offset:2}; return z.age+z.offset;}',42n,''],
  ['pub fnc main(): int {let Record p={y:2,x:40}; return p.x+p.y;}',42n,''],
  ['pub fnc main(): int {let Record h={content_type:"application/json",über_field:40,status_code:2}; stdio.println(h["content_type"]); return h["über_field"]+h.status_code;}',42n,'application/json\n'],
  ['pub fnc main(): int {let Record x={z:true,a:40}; let record y={a:41,z:false}; return x.a+y.a-39;}',42n,''],
@@ -60,6 +62,8 @@ const positives=[
  ['pub fnc main(): int {let Record headers={empty:1,café:41,cafe_decomp:7}; return headers["empty"]+headers["café"];}',42n,''],
 ];
 const negatives=[
+ ['pub fnc main(): int {const age=42; val z={:age,age:1}; return 0;}','E_DUPLICATE'],
+ ['pub fnc main(): int {const age=42; val z={:age,"x"=>1}; return 0;}','E_LITERAL_KIND'],
  ['pub fnc main(): int {let Record r={x:42}; let string key="x"; return r[key];}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:42}; return r["missing"]; }','E_NO_FIELD'],
  ['pub fnc main(): int {let Map<string,int> m={"x"=>42}; return m["x"]; }','E_UNSUPPORTED'],
