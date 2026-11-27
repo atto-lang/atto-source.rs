@@ -29,6 +29,9 @@ use crate::diag::{Diagnostic, Pos};
 
 pub const PROFILE: &str = "straight-line-v1";
 const TEMP_BASE: u32 = 1_000_000;
+// The canonical V0 single-block verifier admits at most 1024 operations.
+// The final Return and any synthetic EndBorrow operations count as well.
+const MAX_TRACE_EVENTS: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ev {
@@ -130,6 +133,10 @@ impl FnTrace {
             self.unavailable("statement after return");
             return;
         }
+        if self.events.len() >= MAX_TRACE_EVENTS {
+            self.unavailable("straight-line-v1 event budget exceeded");
+            return;
+        }
         self.pending_dest = None;
         self.events.push((ev, pos));
     }
@@ -159,12 +166,18 @@ impl FnTrace {
     }
 
     pub fn moved(&mut self, slot: u32, pos: Pos) {
+        if !self.active() {
+            return;
+        }
         let into = self.temp();
         self.push(Ev::Move { from: owner_id(slot), into }, pos);
         if self.active() { self.pending_dest = Some(self.events.len() - 1); }
     }
 
     pub fn deep_copied(&mut self, slot: u32, pos: Pos) {
+        if !self.active() {
+            return;
+        }
         let into = self.temp();
         self.push(Ev::DeepCopy { from: owner_id(slot), into }, pos);
         if self.active() { self.pending_dest = Some(self.events.len() - 1); }
@@ -221,6 +234,9 @@ impl FnTrace {
     /// A loan created outside a lexical binding (e.g. `return borrow! x`):
     /// it has no lexical end, so it is born escaped.
     pub fn borrow_escaping(&mut self, owner_slot: u32, mutable: bool, pos: Pos) {
+        if !self.active() {
+            return;
+        }
         let (owner, loan) = (owner_id(owner_slot), self.temp());
         self.push(Ev::Borrow { owner, loan, mutable }, pos);
         if self.active() {
@@ -230,6 +246,9 @@ impl FnTrace {
 
     /// `val b = borrow! <temporary>`: an unnamed owner, then the loan.
     pub fn borrow_temporary(&mut self, loan_slot: u32, mutable: bool, pos: Pos) {
+        if !self.active() {
+            return;
+        }
         let owner = self.temp();
         self.push(Ev::Init { owner, copy: false }, pos);
         let loan = owner_id(loan_slot);
@@ -241,6 +260,9 @@ impl FnTrace {
 
     /// A lexical scope ended: close loans held by its binders.
     pub fn scope_ended(&mut self, slots: &[u32], pos: Pos) {
+        if !self.active() {
+            return;
+        }
         for &slot in slots.iter().rev() {
             let id = owner_id(slot);
             if let Some(index) = self.live.iter().position(|l| l.loan == id) {
@@ -263,7 +285,7 @@ impl FnTrace {
 
     /// `return` or falling off the end: lexical loans end, then Return.
     pub fn returned(&mut self, pos: Pos) {
-        if self.terminated {
+        if self.terminated || !self.active() {
             return;
         }
         while let Some(loan) = self.live.pop() {
@@ -417,4 +439,64 @@ pub fn report_lines(records: &[Record], ctx: &ReportContext<'_>) -> String {
             ctx.case.map_or("null".to_string(), esc), esc(&r.function), local, mir, esc(&note)));
     }
     out
+}
+
+#[cfg(test)]
+mod trace_budget_tests {
+    use super::*;
+
+    #[test]
+    fn exact_single_block_budget_includes_return() {
+        begin();
+        let pos = Pos::default();
+        let mut trace = FnTrace::new();
+        trace.init(0, true, pos);
+        for _ in 0..MAX_TRACE_EVENTS - 2 {
+            trace.read(0, pos);
+        }
+        record("bounded", Some(trace), "", None, pos);
+        let records = finish();
+        let events = records[0].mir.as_ref().unwrap();
+        assert_eq!(events.len(), MAX_TRACE_EVENTS);
+        assert_eq!(events.last().unwrap().0, Ev::Return);
+    }
+
+    #[test]
+    fn budget_exhaustion_never_exports_partial_graph_or_changes_local_verdict() {
+        begin();
+        let pos = Pos::default();
+        let mut trace = FnTrace::new();
+        trace.init(0, true, pos);
+        for _ in 0..MAX_TRACE_EVENTS {
+            trace.read(0, pos);
+        }
+        // Calls made after admission stops cannot grow the temporary counter.
+        trace.moved(0, pos);
+        trace.deep_copied(0, pos);
+        trace.borrow_escaping(0, false, pos);
+        trace.borrow_temporary(1, false, pos);
+        assert_eq!(trace.next_temp, 0);
+        assert_eq!(trace.events.len(), MAX_TRACE_EVENTS);
+        record("overflow", Some(trace), "", None, pos);
+        let records = finish();
+        assert!(records[0].local.is_none());
+        assert!(!records[0].prefix_at_error);
+        assert!(matches!(&records[0].mir, Err(reason) if reason.contains("event budget")));
+    }
+
+    #[test]
+    fn synthetic_loan_cleanup_also_consumes_budget() {
+        begin();
+        let pos = Pos::default();
+        let mut trace = FnTrace::new();
+        trace.init(0, true, pos);
+        trace.borrow(0, 1, false, pos);
+        for _ in 0..MAX_TRACE_EVENTS - 3 {
+            trace.read(1, pos);
+        }
+        // Cleanup fits, but Return does not; no truncated witness is valid.
+        record("cleanup", Some(trace), "", None, pos);
+        let records = finish();
+        assert!(matches!(&records[0].mir, Err(reason) if reason.contains("event budget")));
+    }
 }
