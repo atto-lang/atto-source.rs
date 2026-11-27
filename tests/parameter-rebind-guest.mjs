@@ -88,6 +88,21 @@ try {
     if (expected === null) reject(bytes.toString('utf8'), diagnostic);
     else guest(bytes.toString('utf8'), expected);
   }
+  // Reuse the existing integer operator semantics, including checked shift distances.
+  guest('pub fnc main(): int { let x = 63; set x &= 42; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 32; set x |= 10; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 40; set x ^^= 2; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 21; set x <<<= 1; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 84; set x >>>= 1; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = -84; set x ashr= 1; return 84 + x; }', 42, true);
+  guest('pub fnc main(): int { let x = 21; for let i = 0; i < 1; set i |= 1 { set x <<<= 1; } return x; }', 42, true);
+  reject('pub fnc main(): int { let x = 40; x ^^= 2; return x; }', 'E_EXPLICIT_REBIND', true);
+  reject('pub fnc main(): int { const x = 40; set x |= 2; return x; }', 'E_IMMUTABLE', true);
+  reject('pub fnc main(): int { let x = true; set x &= 1; return 42; }', 'E_TYPE', true);
+  reject('pub fnc main(): int { let x = 1; set x <<<= 64; return x; }', 'E_SHIFT_DISTANCE', true);
+  reject('pub fnc main(): int { let x = 1; set x >>>= -1; return x; }', 'E_SHIFT_DISTANCE', true);
+  reject('pub fnc main(): int { let x = 1; set x ashr= 64; return x; }', 'E_SHIFT_DISTANCE', true);
+  reject('pub fnc main(): int { let x = 40; set x ^ ^= 2; return x; }', 'E_SYNTAX', true);
   console.log('scalar rebind and match alias guest cases passed');
 } finally {
   rmSync(dir, { recursive: true, force: true });
