@@ -4622,7 +4622,7 @@ impl<'a> FnCx<'a> {
                 None if self.g.class(name).is_some() || self.g.enum_(name).is_some() || self.g.actor(name).is_some() => {
                     return Err(Diagnostic::new(
                         pos,
-                        "E_UNSUPPORTED",
+                        "E_TYPE_NOT_VALUE",
                         format!("the type name '{name}' is not a value"),
                     ))
                 }
