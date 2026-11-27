@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+// java: target-only
+pub fnc main(): int { val n = loop (val i: bool = true) { break -i; }; return 0; }
