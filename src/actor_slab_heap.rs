@@ -64,7 +64,7 @@ impl Ref32 {
         self.0.get()
     }
     fn from_offset(offset: usize) -> Option<Self> {
-        if !offset.is_multiple_of(8) {
+        if offset & 7 != 0 {
             return None;
         }
         let index = (offset / 8) as u64;
@@ -172,7 +172,7 @@ fn blocks_in_page(size: usize) -> u16 {
 fn class_for(bytes: usize, align: usize) -> Option<u8> {
     CLASS_BYTES
         .iter()
-        .position(|&c| c as usize >= bytes && (c as usize).is_multiple_of(align))
+        .position(|&c| c as usize >= bytes && (c as usize).checked_rem(align) == Some(0))
         .map(|c| c as u8)
 }
 
@@ -504,7 +504,7 @@ impl ActorSlabHeap {
         match page.kind {
             Kind::Small => {
                 let size = CLASS_BYTES[page.cls as usize] as usize;
-                if !(within - HEADER_BYTES).is_multiple_of(size) {
+                if (within - HEADER_BYTES).checked_rem(size) != Some(0) {
                     return Err(SlabError::InvalidRef);
                 }
                 let block = (within - HEADER_BYTES) / size;
@@ -664,6 +664,22 @@ mod tests {
 
     fn heap(reserve: usize, budget: usize) -> ActorSlabHeap {
         ActorSlabHeap::new(Config::new(reserve, budget)).expect("config")
+    }
+
+    #[test]
+    fn slab_alignment_admission_is_fail_closed() {
+        assert!(Ref32::from_offset(0).is_some());
+        assert!(Ref32::from_offset(8).is_some());
+        for offset in [1, 7, 9, usize::MAX] {
+            assert!(Ref32::from_offset(offset).is_none());
+        }
+        assert_eq!(class_for(8, 0), None);
+        for align in [8usize, 16, 32, 64] {
+            let class = class_for(17, align).expect("aligned class");
+            let bytes = CLASS_BYTES[class as usize] as usize;
+            assert!(bytes >= 17);
+            assert_eq!(bytes.checked_rem(align), Some(0));
+        }
     }
 
     #[test]
