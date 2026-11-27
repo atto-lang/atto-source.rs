@@ -247,7 +247,7 @@ end
 pub fnc main(): int {
     let owner = new Cell();
     let exclusive = borrow! mut owner;
-    return owner.value;
+    return owner.value + exclusive.value;
 }
 "#;
     assert_eq!(compile(source).unwrap_err().code, "E_BORROW",
@@ -326,4 +326,19 @@ fn private_tuple_storage_has_explicit_constructor_write_authority() {
          if pub_kw == "pub" && let_kw == "let" && ty == "int" && field == "e0"
     )), "internal constructor-initialized fields must be 'pub let' under default-val class semantics");
     assert!(compile(source).is_ok(), "constructor must initialize private tuple fields");
+}
+
+#[test]
+fn unused_exclusive_loan_expires_before_owner_scalar_read() {
+    let source = r#"
+define class Cell as
+    pub int value: 7;
+end
+pub fnc main(): int {
+    let owner = new Cell();
+    let exclusive = borrow! mut owner;
+    return owner.value;
+}
+"#;
+    assert!(compile(source).is_ok(), "unused exclusive loan must not block owner read");
 }
