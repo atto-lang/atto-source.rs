@@ -15,6 +15,12 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 const programs = [
   {
+    name: 'fixed-size-soa-15',
+    filename: 'collection-layout-fixed-size-soa-15.atto',
+    expectedReturn: 15n,
+    expectedWords: [15n, 30n, 20n, 40n, 1n, 2n],
+  },
+  {
     name: 'soa-15',
     filename: 'collection-layout-soa-15.atto',
     expectedReturn: 15n,
@@ -90,7 +96,12 @@ try {
 
   // Prove fail-closed compiler negatives with no generated guest artifact.
   const milestone = readFileSync(resolve(here, 'fixtures/pass/collection-layout-soa-15.atto'), 'utf8');
+  const fixed = readFileSync(resolve(here, 'fixtures/pass/collection-layout-fixed-size-soa-15.atto'), 'utf8');
   const invalid = [
+    ['fixed-size-too-small', fixed.replace('size=2', 'size=1'), 'E_ARRAY_SIZE_MISMATCH'],
+    ['fixed-size-too-large', fixed.replace('size=2', 'size=3'), 'E_ARRAY_SIZE_MISMATCH'],
+    ['fixed-size-negative', fixed.replace('size=2', 'size=-1'), 'E_LAYOUT_SIZE'],
+    ['fixed-size-over-limit', fixed.replace('size=2', 'size=1025'), 'E_LAYOUT_SIZE'],
     ['wrong-layout', milestone.replace('layout=soa', 'layout=bogus'), 'E_LAYOUT_VALUE'],
     ['duplicate-layout', milestone.replace('layout=soa', 'layout=soa, layout=aos'), 'E_GENERIC_DUP'],
     ['aosoa-zero', milestone.replace('layout=soa', 'layout=aosoa(0)'), 'E_LAYOUT_SIZE'],
