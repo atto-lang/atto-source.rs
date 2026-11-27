@@ -44,6 +44,10 @@ const run=(name,source,positive,expectedTrace=[],oracle={})=>{
    const view=new DataView(memory.buffer);
    const actual=oracle.words.map((_,i)=>view.getBigInt64(i*8,true));
    assert.deepEqual(actual,oracle.words,name);
+   if(oracle.tail){
+     const tail=oracle.tail.map((_,i)=>view.getBigInt64(view.byteLength-oracle.tail.length*8+i*8,true));
+     assert.deepEqual(tail,oracle.tail,name);
+   }
    assert.throws(()=>memory.grow(1),RangeError,name);
  }
  console.log(JSON.stringify({name,guest_executed:true,panic_code:panic,return_value:panic?null:String(oracle.result??42n),wasm_sha256:createHash('sha256').update(bytes).digest('hex')}));
@@ -63,10 +67,12 @@ try {
  const two=contextual.replace('return p.sum();','let q: Point = new {x:40,y:2}; return p.sum()+q.sum();');
  run('distinct-equal-objects',two,true,[],{result:84n,words:[40n,2n,40n,2n,0n,0n]});
  // Preserve the first object, evaluate the failing second initializer once,
- // skip subsequent initializer effects and do not reserve/write its fields.
+ // skip subsequent initializer effects and leave its destination unwritten.
  const failing=effects.replace('let p: Point = new {y:mark(2),x:mark(40)};',
    'let p: Point = new {x:11,y:31}; let q: Point = new {y:mark(9223372036854775807)+1,x:mark(40)};')
    .replace('return p.sum();','return p.sum()+q.sum();');
+ assert.notEqual(failing,effects);
+ assert.ok(failing.includes('let q: Point = new {y:mark(9223372036854775807)+1,x:mark(40)};'));
  run('initializer-overflow-before-construction',failing,true,[9223372036854775807n],
    {panic:1,words:[11n,31n,0n,0n]});
  // A fixed 1 MiB heap has room for precisely 65536 two-i64 objects in
@@ -75,7 +81,10 @@ try {
  const exhausted=contextual.replace('let p: Point = new {x:40,y:2};\n return p.sum();',
    'let total=0; for(let i=0;i<65537;i++){ let p: Point = new {x:40,y:2}; total=total+p.sum(); } return total;');
  assert.notEqual(exhausted,contextual);
- run('fixed-heap-exhaustion',exhausted,true,[],{panic:3,words:[40n,2n,40n,2n]});
+ const full=exhausted.replace('i<65537','i<65536');
+ assert.notEqual(full,exhausted);
+ run('fixed-heap-exact-capacity',full,true,[],{result:2752512n,words:[40n,2n,40n,2n],tail:[40n,2n]});
+ run('fixed-heap-exhaustion',exhausted,true,[],{panic:3,words:[40n,2n,40n,2n],tail:[40n,2n]});
  for(const [name,source] of [
  ['untyped',contextual.replace('p: Point','p')],
  ['reordered-wrong-kind',contextual.replace('x:40,y:2','y:1+1,x:true')],
@@ -87,5 +96,5 @@ try {
  ['non-fieldwise',contextual.replace('self.x=a','self.x=a+1')],
  ['allocator',contextual.replace('new {x:40,y:2}','new {x:40,y:2} with actor_heap')]
  ]) run(name,source,false);
- console.log('7 successful guest cases, 2 runtime panic cases, and 9 negative no-artifact checks');
+ console.log('8 successful guest cases, 2 runtime panic cases, and 9 negative no-artifact checks');
 } finally {rmSync(dir,{recursive:true,force:true});}
