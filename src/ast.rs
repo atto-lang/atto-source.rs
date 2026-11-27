@@ -280,9 +280,17 @@ pub struct Func {
 }
 
 #[derive(Clone, Debug)]
+pub enum DefaultLiteral {
+    Int(i64),
+    None,
+}
+
+#[derive(Clone, Debug)]
 pub struct Param {
     /// Independent name-position omission marker; never an Option type tag.
     pub omittable: bool,
+    pub none_default: Option<DefaultLiteral>,
+    pub omission_default: Option<DefaultLiteral>,
     pub name: String,
     pub ty: Type,
     pub mutable: bool,
