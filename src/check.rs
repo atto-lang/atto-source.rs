@@ -430,6 +430,7 @@ struct ActorInfo {
 /// Program-wide declaration tables shared by every body check.
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    overloads: BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -980,7 +981,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let res = |t: Type| resolve(t, tn, &class_names, &p.enums, &actor_names);
 
     // ---- top-level signatures keep indices 0..funcs.len()
-    let mut sigs = BTreeMap::new();
+    let mut sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)> = BTreeMap::new();
+    let mut overloads: BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>> = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None")
@@ -992,20 +994,25 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             ));
         }
         let key = (f.name.clone(), f.params.len());
-        if sigs.contains_key(&key) {
-            return Err(Diagnostic::new(
-                f.pos,
-                "E_DUPLICATE",
-                format!(
-                    "function '{}' already has arity {}; overload identity is name + arity",
-                    f.name,
-                    f.params.len()
-                ),
-            ));
-        }
         let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
-        sigs.insert(key, (i as u32, params, res(f.ret)?));
-        names.entry(f.name.clone()).or_default().push(f.params.len());
+        let ret = res(f.ret)?;
+        if let Some(first) = sigs.get(&key) {
+            // This bounded profile only admits exact, concrete Copy-like
+            // caller types. Never select a generator or nominal owner by guess.
+            let admitted = |t: Type| matches!(t, Type::Int | Type::Bool | Type::Float
+                | Type::Str | Type::OptionInt | Type::OptionResultIntStr);
+            let family = overloads.entry(key.clone()).or_insert_with(|| vec![first.clone()]);
+            if f.name == "main" || f.is_generator || family.iter().any(|s| p.funcs[s.0 as usize].is_generator)
+                || !params.iter().copied().all(admitted)
+                || family.iter().any(|s| !s.1.iter().copied().all(admitted) || s.1 == params) {
+                return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
+                    format!("function '{}' has duplicate or unsupported typed overload", f.name)));
+            }
+            family.push((i as u32, params, ret));
+        } else {
+            sigs.insert(key, (i as u32, params, ret));
+            names.entry(f.name.clone()).or_default().push(f.params.len());
+        }
     }
 
     // ---- member function indices follow the top-level functions
@@ -1178,6 +1185,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     let g = Globals {
         sigs,
+        overloads,
         names,
         classes,
         enums: &p.enums,
@@ -1218,7 +1226,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // ---- top-level functions
     let mut generators = Vec::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
+        let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
+        let ret = res(f.ret)?;
         if f.is_generator {
             if let Some(mut plan) = generator_lower::lower(f)? {
                 plan.function = i as u32;
@@ -5172,6 +5181,35 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// Read only syntactically stable argument types before selecting a
+    /// target. No speculative consumption, effect execution or AST rewriting.
+    /// More complex expressions need an explicitly typed local in this slice.
+    fn overload_item(&self, arg: &Expr) -> R<crate::call_presence_v2::Item> {
+        use crate::call_presence_v2::Item;
+        let ty = match &arg.kind {
+            ExprKind::Int(_) => Type::Int,
+            ExprKind::Bool(_) => Type::Bool,
+            ExprKind::Float(_) => Type::Float,
+            ExprKind::Str(_) => Type::Str,
+            ExprKind::Var(name) if name == "None" => return Ok(Item::UntypedNone),
+            ExprKind::Var(name) => self.lookup(name)
+                .filter(|l| l.mail.is_none())
+                .map(|l| l.ty)
+                .ok_or_else(|| Diagnostic::new(arg.pos, "E_UNBOUND",
+                    format!("unknown or unsupported overload argument '{name}'")))?,
+            ExprKind::Call(name, args) if name == "Some" && args.len() == 1 => {
+                match self.overload_item(&args[0])? {
+                    Item::Typed(Type::Int) => Type::OptionInt,
+                    Item::Typed(Type::ResultIntStr) => Type::OptionResultIntStr,
+                    _ => return Err(type_err(arg.pos, "unsupported Some payload for typed overload")),
+                }
+            }
+            _ => return Err(Diagnostic::new(arg.pos, "E_UNSUPPORTED",
+                "typed overload argument needs a literal, typed binding, or supported Some payload")),
+        };
+        Ok(Item::Typed(ty))
+    }
+
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
@@ -5325,7 +5363,27 @@ impl<'a> FnCx<'a> {
                 return Err(isolation(pos, me, "file/module callable", name));
             }
         }
-        let (idx, params, ret) = match self.g.sigs.get(&(name.to_string(), args.len())) {
+        let key = (name.to_string(), args.len());
+        if let Some(family) = self.g.overloads.get(&key) {
+            use crate::call_presence_v2::{self, Formal, Error};
+            let items = args.iter().map(|a| self.overload_item(a)).collect::<R<Vec<_>>>()?;
+            let candidates = family.iter().map(|s| s.1.iter().map(|&ty| Formal {
+                ty, omittable: false, none_default: false, omission_default: false,
+            }).collect::<Vec<_>>()).collect::<Vec<_>>();
+            let plan = call_presence_v2::select(&candidates, &items).map_err(|err| {
+                Diagnostic::new(pos, match err {
+                    Error::Ambiguous => "E_AMBIGUOUS",
+                    Error::NoMatch => "E_TYPE",
+                    _ => "E_DUPLICATE",
+                }, format!("typed overload selection for '{name}' failed: {err:?}"))
+            })?;
+            let (idx, params, ret) = family[plan.candidate].clone();
+            // The ordinary ownership/type checker still verifies every operand
+            // against the selected signature, in source order, exactly once.
+            let targs = self.args(name, args, &params)?;
+            return Ok(TE { e: TExpr::Call(idx, targs), ty: ret });
+        }
+        let (idx, params, ret) = match self.g.sigs.get(&key) {
             Some(s) => s.clone(),
             None => {
                 return Err(match self.g.names.get(name) {
