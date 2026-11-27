@@ -318,6 +318,15 @@ impl FlatMachineTable {
     }
 }
 
+/// File-local declaration indices only. Not a message ABI or a type-checker proof.
+#[derive(Clone, Debug)]
+pub struct NominalMachineInspection {
+    pub actor: String,
+    pub declarations: Vec<String>,
+    pub declaration_ids: Vec<usize>,
+    pub table: FlatMachineTable,
+}
+
 /// Actor-local declarations kept separate from legacy executable fields.
 #[derive(Clone, Debug)]
 pub struct ActorMachineInspection {
@@ -731,10 +740,62 @@ impl Parser {
         if source.len() > crate::SOURCE_CAP {
             return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT", "source exceeds input cap"));
         }
+        let (parser, _) = Self::parse_machine_inspection(source)?;
+        Ok(parser.machine_inspections)
+    }
+
+    fn parse_machine_inspection(source: &str) -> R<(Self, Program)> {
+        if source.len() > crate::SOURCE_CAP {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT", "source exceeds input cap"));
+        }
         let mut parser = Self::new(crate::lexer::lex(source)?);
         parser.inspect_machines = true;
-        let _ = parser.parse_program()?;
-        Ok(parser.machine_inspections)
+        let program = parser.parse_program()?;
+        Ok((parser, program))
+    }
+
+    /// Restricted file-root nominal declaration resolution. The source itself
+    /// supplies the declarations; callers cannot provide their own type table.
+    /// No type-checker, Sendable proof, runtime identity or executable IR.
+    pub fn inspect_nominal_machines(source: &str) -> R<Vec<NominalMachineInspection>> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let (parser, program) = Self::parse_machine_inspection(source)?;
+        let at = Pos { line: 1, col: 1 };
+        let reject = |reason| Diagnostic::new(at, "E_MACHINE_EVENT_TYPE", reason);
+        // Deliberately restrict the scope until package/type resolution exists.
+        if !program.enums.is_empty() || !program.funcs.is_empty() || program.actor_interface.is_some() {
+            return Err(reject("nominal machine inspection requires file-root class and actor declarations only"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut empty_classes = BTreeSet::new();
+        for class in &program.classes {
+            if !seen.insert(class.name.as_str()) {
+                return Err(reject("duplicate nominal declaration"));
+            }
+            if !class.state_container && class.fields.is_empty() && class.methods.is_empty() && class.ctor.is_none() {
+                empty_classes.insert(class.name.clone());
+            }
+        }
+        for actor in &program.actors {
+            if !seen.insert(actor.name.as_str()) {
+                return Err(reject("duplicate nominal declaration"));
+            }
+        }
+        let declarations: Vec<String> = empty_classes.into_iter().collect();
+        let ids: BTreeMap<&str, usize> = declarations.iter().enumerate().map(|(i, name)| (name.as_str(), i)).collect();
+        let mut result = Vec::new();
+        for actor in parser.machine_inspections {
+            if let Some(graph) = actor.machine {
+                let table = graph.transition_table()?;
+                let mut declaration_ids = Vec::new();
+                for event in table.events() {
+                    let id = ids.get(event.as_str()).ok_or_else(|| reject("event must resolve to a unique empty ordinary class in this file"))?;
+                    declaration_ids.push(*id);
+                }
+                result.push(NominalMachineInspection { actor: actor.actor, declarations: declarations.clone(), declaration_ids, table });
+            }
+        }
+        Ok(result)
     }
 
     // ------------------------------------------------------------ top level
