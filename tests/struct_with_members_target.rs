@@ -25,7 +25,9 @@ fn grouped_chained_and_return_forms_share_signature() {
     for source in [GROUPED.to_owned(), CHAINED.to_owned(),
         GROUPED.replace("int • sum()", "sum(): int"),
         GROUPED.replace("int <- product()", "int • product()"),
-        GROUPED.replace("is_origin() : bool", "bool <- is_origin()")] {
+        GROUPED.replace("is_origin() : bool", "bool <- is_origin()"),
+        GROUPED.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool"),
+        CHAINED.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool")] {
         let d = Parser::new(lex(&source).unwrap()).parse_struct_with_target().unwrap();
         assert_eq!(d.name, "Point");
         assert_eq!(d.fields, vec![("x".to_string(), Type::Int), ("y".to_string(), Type::Int)]);
@@ -41,6 +43,8 @@ fn invalid_headers_and_duplicates_reject() {
     for source in [
         GROUPED.replace("is_origin() : bool", "bool * is_origin()"),
         GROUPED.replace("int <- product()", "int <- sum()"),
+        GROUPED.replace("int <- product()", "sum() -> int"),
+        GROUPED.replace("int <- product()", "product() -> int: int"),
         GROUPED.replace("int y;", "int x;"),
         GROUPED.replace("constructor(int x, int y)", "print(42); constructor(int x, int y)"),
         GROUPED.replace("} with {", "} with { } with {"),

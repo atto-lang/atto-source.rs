@@ -751,15 +751,18 @@ impl Parser {
     /// Parse a bounded scalar struct declaration and its grouped/chained
     /// attachments. This does not certify initialization, layout or guest execution.
     pub fn parse_struct_with_target(&mut self) -> R<StructWithTarget> {
-        self.expect_word("type")?;
+        let direct = self.eat_word("define");
+        if direct { self.expect_word("struct")?; } else { self.expect_word("type")?; }
         let (name, pos) = self.ident("a struct name")?;
         reject_intrinsic_type_name(&name, pos)?;
         if UNSUPPORTED_TYPES.contains(&name.as_str()) ||
             matches!(name.as_str(), "int" | "bool" | "boolean" | "float" | "f64" | "string" | "String" | "void") {
             return Err(Diagnostic::new(pos, "E_RESERVED_TYPE", "struct name is an intrinsic type"));
         }
-        self.expect(Tok::Assign, "'=' after struct name")?;
-        self.expect_word("struct")?;
+        if !direct {
+            self.expect(Tok::Assign, "'=' after struct name")?;
+            self.expect_word("struct")?;
+        }
         self.expect(Tok::LBrace, "'{' after struct")?;
         let mut fields: Vec<(String, Type)> = Vec::new();
         while !self.eat(&Tok::RBrace) {
@@ -936,11 +939,11 @@ impl Parser {
             Self::prove_struct_constructor(&out.fields, &params, &body, pos)?;
             out.constructors.push((public, Constructor { pos, params, body }));
         } else if self.eat_word("mtd") {
-            let CallableHeader { name, pos, params, ret, infer, return_first, colon_type, .. } =
+            let CallableHeader { name, pos, params, ret, infer, return_first, colon_type, arrow_type } =
                 self.parse_named_callable_header("a method name")?;
-            if !(return_first || colon_type) || infer {
+            if !(return_first || colon_type || arrow_type) || infer {
                 return Err(Diagnostic::new(pos, "E_SYNTAX",
-                    "attached method requires a bullet, left-arrow or postfix colon return type"));
+                    "attached method requires a bullet, left-arrow, postfix arrow or colon return type"));
             }
             if !scalar_params(&params) || !matches!(ret, Type::Int | Type::Bool | Type::Void) {
                 return Err(unsupported(pos, "non-scalar attached method signature"));

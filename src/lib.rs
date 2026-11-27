@@ -272,13 +272,19 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     let mut depth = 0usize;
     let mut pending_struct = None;
     for (i, token) in original_tokens.iter().enumerate() {
-        if depth == 0 && matches!(original_tokens.get(i..i.saturating_add(5)),
+        if depth == 0 && (matches!(original_tokens.get(i..i.saturating_add(5)),
             Some([lexer::Token { tok: lexer::Tok::Ident(a), .. },
                   lexer::Token { tok: lexer::Tok::Ident(_), .. },
                   lexer::Token { tok: lexer::Tok::Assign, .. },
                   lexer::Token { tok: lexer::Tok::Ident(b), .. },
                   lexer::Token { tok: lexer::Tok::LBrace, .. }])
-                if a == "type" && b == "struct") {
+                if a == "type" && b == "struct")
+            || matches!(original_tokens.get(i..i.saturating_add(4)),
+                Some([lexer::Token { tok: lexer::Tok::Ident(a), .. },
+                      lexer::Token { tok: lexer::Tok::Ident(b), .. },
+                      lexer::Token { tok: lexer::Tok::Ident(_), .. },
+                      lexer::Token { tok: lexer::Tok::LBrace, .. }])
+                    if a == "define" && b == "struct")) {
             pending_struct = Some(i);
         }
         match &token.tok {
@@ -290,7 +296,7 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
                         if matches!(original_tokens.get(i+1).map(|t| &t.tok),
                             Some(lexer::Tok::Ident(w)) if w == "with") {
                             if start != 0 || !matches!(tokens.first().map(|t| &t.tok),
-                                Some(lexer::Tok::Ident(w)) if w == "type") {
+                                Some(lexer::Tok::Ident(w)) if w == "type" || w == "define") {
                                 return Err(Diagnostic::new(original_tokens[start].pos, "E_UNSUPPORTED",
                                     "attached struct execution is restricted to one standalone file-local declaration"));
                             }

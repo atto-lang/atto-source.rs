@@ -70,7 +70,11 @@ const snapshotMain = `pub fnc main(): int {
     stdio.println(p.is_origin());
     return 0;
 }`;
+const direct = s => s.replace('type Point = struct', 'define struct Point').replace('is_origin() : bool', 'is_origin() -> bool');
 const positives = [
+    ['define-grouped-arrow', direct(decl) + '\n' + main, '30\n200\nfalse\n'],
+    ['define-chained-arrow', direct(chained) + '\n' + main, '30\n200\nfalse\n'],
+    ['define-all-right-arrow', direct(decl).replace('int • sum()', 'sum() -> int').replace('int <- product()', 'product() -> int') + '\n' + main, '30\n200\nfalse\n'],
     ['mutable-copy-isolation', mutating + '\n' + mutationMain, '40\n30\n34\n'],
     ['mutable-snapshot-arguments', mutating + '\n' + snapshotMain, '6000\n230\nfalse\n'],
     ['mutable-val-authority', mutating + '\n' + mutationMain.replace('let mut p =', 'val p ='), '40\n30\n34\n'],
@@ -95,6 +99,9 @@ const positives = [
     ['origin', decl + '\n' + main.replace('10, 20', '0, 0'), '0\n0\ntrue\n'],
 ];
 const negatives = [
+    ['define-duplicate-arrow', direct(decl).replace('int <- product()', 'sum() -> int') + '\n' + main],
+    ['define-duplicate-result-annotation', direct(decl).replace('is_origin() -> bool', 'is_origin() -> bool: bool') + '\n' + main],
+    ['define-nested-layout-unimplemented', direct(decl).replace('int x;', 'Point x;') + '\n' + main],
     ['mut-readonly-owner', mutating + '\n' + mutationMain.replace('let mut p =', 'let p =')],
     ['mut-readonly-copy', mutating + '\n' + mutationMain.replace('p.shift(5);', 'q.shift(5);')],
     ['mut-wrong-argument', mutating + '\n' + mutationMain.replace('p.shift(5)', 'p.shift(true)')],
