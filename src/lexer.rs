@@ -61,6 +61,9 @@ pub enum Tok {
     Caret,
     Tilde,
     At,
+    /// Compiler-generated proof marker. The lexer never emits this token;
+    /// only a validated file-export directive can create it.
+    CheckedFileExport,
     Eof,
 }
 

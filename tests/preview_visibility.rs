@@ -155,3 +155,17 @@ fn nested_brace_export_does_not_promote_a_file_root_symbol() {
     }
     ok("fnc helper(): int { return 42; } pub fnc main(): int { return helper(); } export pub fnc helper;");
 }
+
+#[test]
+fn checked_export_markers_cannot_escape_keyword_scope() {
+    for source in [
+        "fnc helper(): int { return 42; } fnc main() -> int\n export pub fnc helper;\n return helper();\n end",
+        "fnc helper(): int { return 42; } fnc main() -> int\n return helper();\n export pub fnc helper;\n end",
+        "fnc helper(): int { return 42; } define class C as export pub fnc helper; end fnc main(): int { return helper(); }",
+        "fnc helper(): int { return 42; } define module M as export pub fnc helper; end fnc main(): int { return helper(); }",
+        "fnc export pub helper; helper(): int { return 42; } fnc main(): int { return helper(); }",
+    ] {
+        assert!(compile(source).is_err(), "nested export escaped: {source}");
+    }
+    ok("export pub fnc helper; fnc helper(): int { return 42; } fnc main() -> int\n return helper();\n end export pub helper;");
+}

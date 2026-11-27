@@ -191,6 +191,9 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
             } else {
                 exports.push(export);
             }
+            // Preserve the exact directive position until the production
+            // root grammar has accepted it; never erase a nested declaration.
+            out.push(Token { tok: Tok::CheckedFileExport, pos });
             i = next;
             continue;
         }
