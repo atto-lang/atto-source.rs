@@ -11,6 +11,9 @@ fn scalar_and_grouped_subjects_compile() {
         "fnc subject(): int { return 7; } pub fnc main(): int { return match |subject()| over on 7 -> 42, on _ -> 0 end; }",
         "pub fnc main(): int { match |7| over on 7 -> { return 42; } on _ -> { return 0; } end }",
         "pub fnc main(): int { return match 7 over on 7 -> 42, on _ -> 0 end; }",
+        "pub fnc main(): int { return match |false ? 0 : 42| over on 42 -> 42, on _ -> 0 end; }",
+        "pub fnc main(): int { return match |false ? 0 : (true ? (2 | 4) : 0)| over on 6 -> 42, on _ -> 0 end; }",
+        "pub fnc main(): int { match |7| over on 7 -> { stdio.println(7); } on _ -> { stdio.println(0); } end; return 42; }",
         "pub fnc main(): int { return (2 | 4); }",
     ] {
         assert!(compile(source).is_ok(), "{source}: {:?}", compile(source).err());
