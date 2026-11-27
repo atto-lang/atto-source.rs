@@ -195,7 +195,7 @@ pub fn build_actor_program(headers: &TargetHeaders, module: &TypedActorModule) -
         methods: module.receivers.iter().map(|m| ActorInterfaceMethod {
             owner: m.actor as u32,
             name: m.method.clone(),
-            params: m.params.iter().map(|p| Param { omittable: false,
+            params: m.params.iter().map(|p| Param { omittable: false, none_default: None, omission_default: None,
                 name: p.name.clone(), ty: p.ty.as_ast_type(),
                 mutable: false, pos: p.pos,
             }).collect(),
