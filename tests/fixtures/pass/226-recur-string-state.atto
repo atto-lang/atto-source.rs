@@ -1,0 +1,11 @@
+// expect-exit: 3
+// expect-stdout: abb
+// java: target-only
+pub fnc main(): int {
+  val result: string = loop (val s: string = "a", val i: int = 0) {
+    if i eq 2 { break s; }
+    recur(s + "b", i + 1);
+  };
+  stdio.println(result);
+  return 3;
+}

@@ -261,6 +261,7 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    struct_value_bindings: Option<Vec<Pos>>,
 }
 
 struct TypeFirstField {
@@ -281,6 +282,17 @@ struct CallableHeader {
     arrow_type: bool,
     colon_type: bool,
     return_first: bool,
+}
+
+/// Parse-only nominal struct target; never lowered as an identity-bearing class.
+#[derive(Clone, Debug)]
+pub struct StructWithTarget {
+    pub name: String,
+    pub pos: Pos,
+    pub fields: Vec<(String, Type)>,
+    pub constructors: Vec<(bool, Constructor)>,
+    pub methods: Vec<Method>,
+    pub mutable_methods: Vec<usize>,
 }
 
 /// Members collected from a class or actor body.
@@ -304,17 +316,67 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 /// evidence cannot stand in for a guaranteed enclosing-function exit.
 /// Later checker stages may admit richer terminal constructs only after
 /// proving they cannot fall through.
+fn lazy_guard_predicate(expr: Expr) -> Expr {
+    let pos = expr.pos;
+    match expr.kind {
+        ExprKind::Binary(BinOp::And, left, right) => Expr {
+            kind: ExprKind::Ternary(
+                Box::new(lazy_guard_predicate(*left)),
+                Box::new(lazy_guard_predicate(*right)),
+                Box::new(Expr { kind: ExprKind::Bool(false), pos })),
+            pos,
+        },
+        ExprKind::Binary(BinOp::Or, left, right) => Expr {
+            kind: ExprKind::Ternary(
+                Box::new(lazy_guard_predicate(*left)),
+                Box::new(Expr { kind: ExprKind::Bool(true), pos }),
+                Box::new(lazy_guard_predicate(*right))),
+            pos,
+        },
+        kind => Expr { kind, pos },
+    }
+}
+
+/// Conservative guard proof: every failure path must explicitly return
+/// from the enclosing callable. An exceptional exit does not satisfy this
+/// mandatory-return contract. The typed checker checks the return's type.
 fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
-        Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
-        Some(Stmt::Block(inner) | Stmt::UsingTelemetry { body: inner, .. }) =>
-            guard_failure_exits(inner),
+        Some(Stmt::Return(..)) => true,
+        Some(Stmt::Block(inner)) => guard_failure_exits(inner),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
                 && guard_failure_exits(other),
         _ => false,
     }
+}
+
+/// A throw/raise or loop escape cannot be hidden by a trailing return,
+/// including from nested arms. Guard lowering must fail closed.
+fn guard_has_nonreturn_exit(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Throw(..) | Stmt::Raise(..) | Stmt::Break(..) | Stmt::Continue(..) => true,
+        Stmt::Block(body) | Stmt::StateWrite { body, .. } | Stmt::UsingTelemetry { body, .. }
+        | Stmt::While { body, .. } | Stmt::Loop { body, .. }
+        | Stmt::ForIn { body, .. } | Stmt::Defer { body, .. }
+        | Stmt::Recover { body, .. } =>
+            guard_has_nonreturn_exit(body),
+        Stmt::For { init, update, body, .. } =>
+            guard_has_nonreturn_exit(body)
+                || init.as_ref().is_some_and(|s| guard_has_nonreturn_exit(std::slice::from_ref(s.as_ref())))
+                || update.as_ref().is_some_and(|s| guard_has_nonreturn_exit(std::slice::from_ref(s.as_ref()))),
+        Stmt::Try { body, catch, finally, .. } =>
+            guard_has_nonreturn_exit(body)
+                || catch.as_ref().is_some_and(|(_, b)| guard_has_nonreturn_exit(b))
+                || finally.as_ref().is_some_and(|b| guard_has_nonreturn_exit(b)),
+        Stmt::If { arms, otherwise, .. } =>
+            arms.iter().any(|(_, b)| guard_has_nonreturn_exit(b))
+                || otherwise.as_ref().is_some_and(|b| guard_has_nonreturn_exit(b)),
+        Stmt::Match { arms, .. } =>
+            arms.iter().any(|arm| guard_has_nonreturn_exit(&arm.body)),
+        _ => false,
+    })
 }
 
 impl Parser {
@@ -333,6 +395,7 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            struct_value_bindings: None,
         }
     }
 
@@ -630,6 +693,15 @@ impl Parser {
 
     // ------------------------------------------------------------ top level
 
+    // Capture explicit writable referent authority for this bounded profile.
+    // Other parser entrypoints and ordinary AST semantics remain unchanged.
+    pub(crate) fn parse_struct_value_program(&mut self) -> R<(Program, Vec<Pos>)> {
+        self.struct_value_bindings = Some(Vec::new());
+        let result = self.parse_program();
+        let bindings = self.struct_value_bindings.take().unwrap_or_default();
+        Ok((result?, bindings))
+    }
+
     pub fn parse_program(&mut self) -> R<Program> {
         let mut prog = Program::default();
         let mut decls = 0usize;
@@ -724,6 +796,248 @@ impl Parser {
         prog.type_names = std::mem::take(&mut self.type_names);
         prog.array_types = std::mem::take(&mut self.array_types);
         Ok(prog)
+    }
+
+    /// Parse a bounded scalar struct declaration and its grouped/chained
+    /// attachments. This does not certify initialization, layout or guest execution.
+    pub(crate) fn parse_struct_value_targets(&mut self) -> R<Vec<StructWithTarget>> {
+        let mut decls = Vec::new();
+        let mut owners = std::collections::BTreeSet::new();
+        loop {
+            if decls.len() >= 16 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many attached nominal owners"));
+            }
+            let decl = self.parse_struct_with_target_impl(true)?;
+            if !owners.insert(decl.name.clone()) {
+                return Err(Diagnostic::new(decl.pos, "E_DUPLICATE", "duplicate attached nominal owner"));
+            }
+            decls.push(decl);
+            let next = (self.word_at(0) == Some("define") && self.word_at(1) == Some("struct")
+                && self.word_at(2).is_some() && *self.peek_at(3) == Tok::LBrace)
+                || (self.word_at(0) == Some("type") && self.word_at(1).is_some()
+                    && *self.peek_at(2) == Tok::Assign && self.word_at(3) == Some("struct")
+                    && *self.peek_at(4) == Tok::LBrace);
+            if !next { break; }
+        }
+        Ok(decls)
+    }
+
+    pub fn parse_struct_with_target(&mut self) -> R<StructWithTarget> {
+        self.parse_struct_with_target_impl(false)
+    }
+
+    fn parse_struct_with_target_impl(&mut self, allow_nominal: bool) -> R<StructWithTarget> {
+        let direct = self.eat_word("define");
+        if direct { self.expect_word("struct")?; } else { self.expect_word("type")?; }
+        let (name, pos) = self.ident("a struct name")?;
+        reject_intrinsic_type_name(&name, pos)?;
+        if UNSUPPORTED_TYPES.contains(&name.as_str()) ||
+            matches!(name.as_str(), "int" | "bool" | "boolean" | "float" | "f64" | "string" | "String" | "void") {
+            return Err(Diagnostic::new(pos, "E_RESERVED_TYPE", "struct name is an intrinsic type"));
+        }
+        if !direct {
+            self.expect(Tok::Assign, "'=' after struct name")?;
+            self.expect_word("struct")?;
+        }
+        self.expect(Tok::LBrace, "'{' after struct")?;
+        let mut fields: Vec<(String, Type)> = Vec::new();
+        while !self.eat(&Tok::RBrace) {
+            if fields.len() >= MAX_MEMBERS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many struct fields"));
+            }
+            let ty = self.parse_type()?;
+            if !(matches!(ty, Type::Int | Type::Bool) || allow_nominal && matches!(ty, Type::Named(_))) {
+                return Err(unsupported(self.pos(), "unsupported attached struct field type"));
+            }
+            let (field, at) = self.ident("a struct field name")?;
+            if fields.iter().any(|(prior, _)| prior == &field) {
+                return Err(Diagnostic::new(at, "E_DUPLICATE", "duplicate struct field"));
+            }
+            self.expect(Tok::Semi, "';' after struct field")?;
+            fields.push((field, ty));
+        }
+        self.expect_word("with")?;
+        let mut out = StructWithTarget {
+            name, pos, fields, constructors: Vec::new(), methods: Vec::new(), mutable_methods: Vec::new(),
+        };
+        loop {
+            if self.eat(&Tok::LBrace) {
+                if *self.peek() == Tok::RBrace {
+                    return Err(self.expected("a constructor or method inside with"));
+                }
+                while !self.eat(&Tok::RBrace) {
+                    self.parse_struct_attachment_member(&mut out, allow_nominal)?;
+                }
+            } else {
+                self.parse_struct_attachment_member(&mut out, allow_nominal)?;
+            }
+            if !self.eat_word("with") { break; }
+        }
+        self.eat(&Tok::Semi);
+        Ok(out)
+    }
+
+    /// A bounded scalar constructor proof with exact fallthrough branch joins. Do not
+    /// certify arbitrary calls, control flow or effects until the value ABI
+    /// and full ownership checker can establish those contracts.
+    pub(crate) fn prove_struct_constructor(
+        fields: &[(String, Type)], params: &[Param], body: &[Stmt], pos: Pos,
+    ) -> R<()> {
+        use std::collections::{BTreeMap, BTreeSet};
+        fn scalar(
+            e: &Expr, fields: &BTreeMap<&str, Type>, params: &BTreeMap<&str, Type>,
+            initialized: &BTreeSet<&str>,
+        ) -> R<Type> {
+            let invalid = || Diagnostic::new(e.pos, "E_STRUCT_INIT",
+                "constructor expression is not a proven initialized scalar");
+            match &e.kind {
+                ExprKind::Int(_) => Ok(Type::Int),
+                ExprKind::Bool(_) => Ok(Type::Bool),
+                ExprKind::Var(n) => params.get(n.as_str()).copied().ok_or_else(invalid),
+                ExprKind::Member(base, n) if matches!(&base.kind, ExprKind::SelfRef) => {
+                    if !initialized.contains(n.as_str()) {
+                        return Err(Diagnostic::new(e.pos, "E_STRUCT_INIT",
+                            "read of an uninitialized struct field"));
+                    }
+                    fields.get(n.as_str()).copied().ok_or_else(invalid)
+                }
+                ExprKind::Unary(op, inner) => {
+                    let t = scalar(inner, fields, params, initialized)?;
+                    match (op, t) {
+                        (UnOp::Neg | UnOp::Plus | UnOp::BitNot, Type::Int) => Ok(Type::Int),
+                        (UnOp::Not, Type::Bool) => Ok(Type::Bool),
+                        _ => Err(invalid()),
+                    }
+                }
+                ExprKind::Binary(op, l, r) => {
+                    let l = scalar(l, fields, params, initialized)?;
+                    let r = scalar(r, fields, params, initialized)?;
+                    match (op, l, r) {
+                        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
+                         BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                         BinOp::Shl | BinOp::LShr | BinOp::AShr, Type::Int, Type::Int) => Ok(Type::Int),
+                        (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, Type::Int, Type::Int) => Ok(Type::Bool),
+                        (BinOp::Eq | BinOp::Ne, Type::Int, Type::Int) |
+                        (BinOp::Eq | BinOp::Ne | BinOp::And | BinOp::Or, Type::Bool, Type::Bool) => Ok(Type::Bool),
+                        _ => Err(invalid()),
+                    }
+                }
+                ExprKind::Ternary(cond, yes, no) => {
+                    let c = scalar(cond, fields, params, initialized)?;
+                    let y = scalar(yes, fields, params, initialized)?;
+                    let n = scalar(no, fields, params, initialized)?;
+                    if c == Type::Bool && y == n { Ok(y) } else { Err(invalid()) }
+                }
+                _ => Err(invalid()),
+            }
+        }
+        // Each reachable fallthrough path must initialize the same fields.
+        // A missing else contributes the unchanged incoming state. Reject
+        // differing branch states rather than speculate on later conditions.
+        fn block<'a>(
+            body: &'a [Stmt], fields: &BTreeMap<&str, Type>, params: &BTreeMap<&str, Type>,
+            initialized: &mut BTreeSet<&'a str>, pos: Pos,
+        ) -> R<()> {
+            for stmt in body {
+                match stmt {
+                    Stmt::FieldAssign { target, field, value, pos: at }
+                        if matches!(&target.kind, ExprKind::SelfRef) => {
+                        let expected = fields.get(field.as_str()).copied().ok_or_else(||
+                            Diagnostic::new(*at, "E_STRUCT_INIT", "unknown struct field"))?;
+                        if initialized.contains(field.as_str()) {
+                            return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "struct field initialized twice"));
+                        }
+                        if scalar(value, fields, params, initialized)? != expected {
+                            return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "struct field initializer type mismatch"));
+                        }
+                        initialized.insert(field.as_str());
+                    }
+                    Stmt::If { arms, otherwise, pos: at } => {
+                        let mut joined = None;
+                        for (condition, branch) in arms {
+                            if scalar(condition, fields, params, initialized)? != Type::Bool {
+                                return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "constructor condition must be bool"));
+                            }
+                            let mut state = initialized.clone();
+                            block(branch, fields, params, &mut state, *at)?;
+                            if joined.as_ref().is_some_and(|prior| prior != &state) {
+                                return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "constructor branches initialize different fields"));
+                            }
+                            joined = Some(state);
+                        }
+                        let mut state = initialized.clone();
+                        if let Some(other) = otherwise {
+                            block(other, fields, params, &mut state, *at)?;
+                        }
+                        if joined.as_ref().is_some_and(|prior| prior != &state) {
+                            return Err(Diagnostic::new(*at, "E_STRUCT_INIT", "constructor branches initialize different fields"));
+                        }
+                        *initialized = state;
+                    }
+                    _ => return Err(unsupported(pos, "constructor requires scalar assignments and bounded if branches")),
+                }
+            }
+            Ok(())
+        }
+        let field_types: BTreeMap<&str, Type> = fields.iter().map(|(n,t)| (n.as_str(), *t)).collect();
+        let param_types: BTreeMap<&str, Type> = params.iter().map(|p| (p.name.as_str(), p.ty)).collect();
+        let mut initialized = BTreeSet::new();
+        block(body, &field_types, &param_types, &mut initialized, pos)?;
+        if initialized.len() != fields.len() {
+            return Err(Diagnostic::new(pos, "E_STRUCT_INIT", "constructor leaves required fields uninitialized"));
+        }
+        Ok(())
+    }
+
+    fn parse_struct_attachment_member(&mut self, out: &mut StructWithTarget, allow_nominal: bool) -> R<()> {
+        let pos = self.pos();
+        if out.methods.len() + out.constructors.len() >= MAX_MEMBERS {
+            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many attached struct members"));
+        }
+        let public = self.eat_word("pub");
+        if !public { self.eat_word("private"); }
+        let mutable_receiver = self.eat_word("mut");
+        let scalar_params = |ps: &[Param]| ps.iter().all(|p| matches!(p.ty, Type::Int | Type::Bool));
+        let same_params = |a: &[Param], b: &[Param]| a.iter().map(|p| p.ty).eq(b.iter().map(|p| p.ty));
+        if self.eat_word("constructor") {
+            if mutable_receiver {
+                return Err(Diagnostic::new(pos, "E_SYNTAX", "constructor cannot have a mutable receiver modifier"));
+            }
+            self.expect(Tok::LParen, "'(' after constructor")?;
+            let params = self.parse_params()?;
+            if !(scalar_params(&params) || allow_nominal && params.iter().all(|p| matches!(p.ty, Type::Int | Type::Bool | Type::Named(_)))) {
+                return Err(unsupported(pos, "unsupported attached constructor parameters"));
+            }
+            if out.constructors.iter().any(|(_, ctor)| same_params(&ctor.params, &params)) {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE", "duplicate struct constructor signature"));
+            }
+            let body = self.parse_block()?;
+            if !allow_nominal || (scalar_params(&params) && out.fields.iter().all(|(_, t)| matches!(t, Type::Int | Type::Bool))) {
+                Self::prove_struct_constructor(&out.fields, &params, &body, pos)?;
+            }
+            out.constructors.push((public, Constructor { pos, params, body }));
+        } else if self.eat_word("mtd") {
+            let CallableHeader { name, pos, params, ret, infer, return_first, colon_type, arrow_type } =
+                self.parse_named_callable_header("a method name")?;
+            if !(return_first || colon_type || arrow_type) || infer {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "attached method requires a bullet, left-arrow, postfix arrow or colon return type"));
+            }
+            if !scalar_params(&params) || !matches!(ret, Type::Int | Type::Bool | Type::Void) {
+                return Err(unsupported(pos, "non-scalar attached method signature"));
+            }
+            if out.methods.iter().any(|m| m.name == name && same_params(&m.params, &params)) {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE", "duplicate attached method signature"));
+            }
+            let body = self.parse_block()?;
+            if mutable_receiver {
+                out.mutable_methods.push(out.methods.len());
+            }
+            out.methods.push(Method { name, pos, public, is_static: false, params, ret, body });
+        } else {
+            return Err(self.expected("an attached constructor or mtd"));
+        }
+        Ok(())
     }
 
     /// After `define class`: `Name as { class_member } end`.
@@ -2081,7 +2395,7 @@ impl Parser {
                 if *self.peek() == Tok::Eof {
                     return Err(self.expected("'}'"));
                 }
-                out.push(self.parse_stmt()?);
+                self.parse_stmt_into(&mut out)?;
             }
             self.advance();
             Ok(out)
@@ -2110,7 +2424,7 @@ impl Parser {
                 if *self.peek() == Tok::RBrace {
                     return Err(self.expected(&format!("'{}'", stops.last().unwrap())));
                 }
-                out.push(self.parse_stmt()?);
+                self.parse_stmt_into(&mut out)?;
             }
             Ok(out)
         })();
@@ -2200,6 +2514,48 @@ impl Parser {
         Ok(Stmt::Block(body))
     }
 
+    /// A statement list is the lexical scope of an immutable result binder.
+    /// Lower only an explicit primitive name-first val initializer; keep
+    /// the state aliases scoped to the loop and publish the user binder
+    /// exactly once after a valued break. The compiler-only result slot is
+    /// initialized for the existing IR, but no source path reads that
+    /// initial value: the closed tail proof requires every normal exit to
+    /// write the slot before breaking.
+    fn parse_stmt_into(&mut self, out: &mut Vec<Stmt>) -> R<()> {
+        let typed_loop = self.is_word("val")
+            && matches!(self.peek_at(1), Tok::Ident(_))
+            && *self.peek_at(2) == Tok::Colon
+            && matches!(self.word_at(3), Some("int" | "bool" | "float" | "string" | "String"))
+            && *self.peek_at(4) == Tok::Assign
+            && self.word_at(5) == Some("loop")
+            && *self.peek_at(6) == Tok::LParen;
+        if !typed_loop {
+            out.push(self.parse_stmt()?);
+            return Ok(());
+        }
+        let pos = self.pos();
+        let slot = format!("\0recur_result_{}", self.i);
+        self.expect_word("val")?;
+        let (name, _) = self.ident("a value-loop result binding")?;
+        self.expect(Tok::Colon, "':' after result binding")?;
+        let ty = self.parse_type()?;
+        let init = match ty {
+            Type::Int => ExprKind::Int(Some(0)),
+            Type::Bool => ExprKind::Bool(false),
+            Type::Float => ExprKind::Float(0),
+            Type::Str => ExprKind::Str(String::new()),
+            _ => return Err(unsupported(pos, "value-loop result requires primitive type")),
+        };
+        self.expect(Tok::Assign, "'=' before value loop")?;
+        let lowered = self.parse_scalar_state_loop(pos, Some(&slot))?;
+        out.push(Stmt::Bind { kind: BindKind::Let, name: slot.clone(), ty: Some(ty),
+            init: Expr { kind: init, pos }, pos });
+        out.push(lowered);
+        out.push(Stmt::Bind { kind: BindKind::Val, name, ty: Some(ty),
+            init: Expr { kind: ExprKind::Var(slot), pos }, pos });
+        Ok(())
+    }
+
     fn parse_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
         if *self.peek() == Tok::At {
@@ -2273,6 +2629,9 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
+                if self.is_word("loop") && *self.peek_at(1) == Tok::LParen {
+                    return self.parse_scalar_state_loop(pos, None);
+                }
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
                     // return values, including an exhaustive match.
@@ -2687,7 +3046,8 @@ impl Parser {
         // Java Parser.parseReferentMutability: `const mut` / `let mut` request a
         // mutable referent (no effect on scalar values); `val` already means
         // `const mut`, so `val mut` is a duplicate qualifier.
-        if self.is_word("mut") {
+        let explicit_mut = self.is_word("mut");
+        if explicit_mut {
             if kind == BindKind::Val {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -2731,6 +3091,11 @@ impl Parser {
         }
         self.advance();
         let init = self.parse_expr()?;
+        if (kind == BindKind::Val || explicit_mut) && kind != BindKind::Const {
+            if let Some(bindings) = self.struct_value_bindings.as_mut() {
+                bindings.push(pos);
+            }
+        }
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
@@ -2742,15 +3107,20 @@ impl Parser {
     fn parse_guard(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("guard")?;
-        let predicate = self.parse_cond_head()?;
-        if *self.peek() != Tok::LBrace {
+        let predicate = lazy_guard_predicate(self.parse_cond_head()?);
+        let failure = if *self.peek() == Tok::LBrace {
+            self.parse_block()?
+        } else if self.eat_word("else") {
+            let failure = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            failure
+        } else {
             return Err(Diagnostic::new(self.pos(), "E_GUARD",
-                "guard requires a braced failure branch"));
-        }
-        let failure = self.parse_block()?;
-        if !guard_failure_exits(&failure) {
+                "guard needs '{ ... }' or 'else ... end' failure branch"));
+        };
+        if guard_has_nonreturn_exit(&failure) || !guard_failure_exits(&failure) {
             return Err(Diagnostic::new(pos, "E_GUARD",
-                "guard failure branch must exit the enclosing function on every path"));
+                "guard failure branch must explicitly return from the enclosing function on every path"));
         }
         Ok(Stmt::If {
             arms: vec![(
@@ -2926,6 +3296,155 @@ impl Parser {
     /// once-only subject evaluation, exhaustive pattern checker, strict return
     /// typing, unreachable-arm detection and Wasm branches. It does not
     /// pretend that arbitrary expressions are value matches.
+    /// Restricted scalar state loop in return or explicitly typed binding
+    /// position. A valued break returns directly or assigns the private
+    /// result slot then exits the lexical loop. Arbitrary expression
+    /// contexts still require typed CFG lowering.
+    fn parse_scalar_state_loop(&mut self, pos: Pos, result_slot: Option<&str>) -> R<Stmt> {
+        if self.in_generator || self.state_method || self.erlang_body || self.struct_value_bindings.is_some() {
+            return Err(unsupported(pos, "state loop in this callable profile"));
+        }
+        self.expect_word("loop")?;
+        self.expect(Tok::LParen, "'(' after loop")?;
+        let mut state: Vec<(String, Type)> = Vec::new();
+        let mut outer = Vec::new();
+        if *self.peek() == Tok::RParen {
+            return Err(Diagnostic::new(pos, "E_RECUR_ARITY", "state loop requires at least one binding"));
+        }
+        loop {
+            if !self.is_word("val") {
+                return Err(Diagnostic::new(self.pos(), "E_RECUR_BINDING", "state loop requires explicit val"));
+            }
+            let Stmt::Bind { name, ty, init, pos: at, .. } = self.parse_binding()? else {
+                unreachable!("parse_binding always returns a binding");
+            };
+            let ty = ty.filter(|t| matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str))
+                .ok_or_else(|| unsupported(at, "state loop requires explicit primitive state type"))?;
+            if state.iter().any(|(n, _)| n == &name) {
+                return Err(Diagnostic::new(at, "E_DUPLICATE", "duplicate state binder"));
+            }
+            if state.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(at, "E_SOURCE_LIMIT", "too many state binders"));
+            }
+            if !Self::state_loop_scalar(&init, &state) {
+                return Err(unsupported(at, "state initializer outside closed scalar profile"));
+            }
+            // The source binding is visible to subsequent initializers.
+            outer.push(Stmt::Bind { kind: BindKind::Val, name: name.clone(), ty: Some(ty), init, pos: at });
+            let slot = format!("\0recur_state_{}", state.len());
+            outer.push(Stmt::Bind { kind: BindKind::Let, name: slot, ty: Some(ty),
+                init: Expr { kind: ExprKind::Var(name.clone()), pos: at }, pos: at });
+            state.push((name, ty));
+            if !self.eat(&Tok::Comma) { break; }
+        }
+        self.expect(Tok::RParen, "')' after state bindings")?;
+        let (mut body, terminal, _, has_break) = self.parse_state_loop_body(&state, result_slot)?;
+        if !terminal {
+            return Err(Diagnostic::new(pos, "E_RECUR_TAIL", "state loop body may not fall through"));
+        }
+        if !has_break {
+            return Err(Diagnostic::new(pos, "E_LOOP_VALUE", "state loop needs a valued break"));
+        }
+        let mut iteration = Vec::new();
+        for (i, (name, ty)) in state.iter().enumerate() {
+            iteration.push(Stmt::Bind { kind: BindKind::Val, name: name.clone(), ty: Some(*ty),
+                init: Expr { kind: ExprKind::Var(format!("\0recur_state_{i}")), pos }, pos });
+        }
+        iteration.append(&mut body);
+        outer.push(Stmt::Loop { body: iteration, pos });
+        self.terminator()?;
+        Ok(Stmt::Block(outer))
+    }
+
+    // No captures, member/actor accesses, calls, ownership operations or
+    // implicit propagation in the first state loop slice. Existing typed
+    // arithmetic validates the admitted expression tree and traps.
+    fn state_loop_scalar(e: &Expr, state: &[(String, Type)]) -> bool {
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
+            ExprKind::Var(n) => state.iter().any(|(name, _)| name == n),
+            ExprKind::Unary(_, a) => Self::state_loop_scalar(a, state),
+            ExprKind::Binary(_, a, b) => Self::state_loop_scalar(a, state) && Self::state_loop_scalar(b, state),
+            ExprKind::Ternary(a, b, c) => Self::state_loop_scalar(a, state) && Self::state_loop_scalar(b, state) && Self::state_loop_scalar(c, state),
+            _ => false,
+        }
+    }
+
+    /// (body, all paths exit, contains recur, contains valued break).
+    fn parse_state_loop_body(&mut self, state: &[(String, Type)], result_slot: Option<&str>) -> R<(Vec<Stmt>, bool, bool, bool)> {
+        self.expect(Tok::LBrace, "'{' for state loop")?;
+        self.enter()?;
+        let result = (|| {
+            let mut body = Vec::new();
+            let (mut terminal, mut has_recur, mut has_break) = (false, false, false);
+            while *self.peek() != Tok::RBrace {
+                let at = self.pos();
+                if terminal || has_recur {
+                    return Err(Diagnostic::new(at, "E_RECUR_TAIL", "recur must be in tail position"));
+                }
+                if self.eat_word("break") {
+                    if matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Eof) {
+                        return Err(Diagnostic::new(at, "E_RECUR_TAIL", "state loop requires a valued break"));
+                    }
+                    let value = self.parse_expr()?;
+                    if !Self::state_loop_scalar(&value, state) { return Err(unsupported(at, "state loop break outside closed scalar profile")); }
+                    self.terminator()?;
+                    if let Some(slot) = result_slot {
+                        body.push(Stmt::Assign { name: slot.to_owned(), value, pos: at });
+                        body.push(Stmt::Break(at));
+                    } else {
+                        body.push(Stmt::Return(Some(value), at));
+                    }
+                    terminal = true;
+                    has_break = true;
+                } else if self.eat_word("recur") {
+                    let args = self.parse_args()?;
+                    if args.len() != state.len() {
+                        return Err(Diagnostic::new(at, "E_RECUR_ARITY", "recur state arity mismatch"));
+                    }
+                    self.terminator()?;
+                    let mut staged = Vec::new();
+                    for (i, (arg, (_, ty))) in args.into_iter().zip(state).enumerate() {
+                        if !Self::state_loop_scalar(&arg, state) { return Err(unsupported(at, "recur operand outside closed scalar profile")); }
+                        staged.push(Stmt::Bind { kind: BindKind::Val, name: format!("\0recur_next_{i}"),
+                            ty: Some(*ty), init: arg, pos: at });
+                    }
+                    // All operands checked and evaluated before publishing
+                    // the next iteration's slots. No partially committed state.
+                    for i in 0..state.len() {
+                        staged.push(Stmt::Assign { name: format!("\0recur_state_{i}"),
+                            value: Expr { kind: ExprKind::Var(format!("\0recur_next_{i}")), pos: at }, pos: at });
+                    }
+                    staged.push(Stmt::Continue(at));
+                    body.push(Stmt::Block(staged));
+                    terminal = true;
+                    has_recur = true;
+                } else if self.eat_word("if") {
+                    let cond = self.parse_cond_head()?;
+                    if !Self::state_loop_scalar(&cond, state) { return Err(unsupported(at, "state loop predicate outside closed scalar profile")); }
+                    let (yes, yt, yr, yb) = self.parse_state_loop_body(state, result_slot)?;
+                    let (other, nt, nr, nb) = if self.eat_word("else") {
+                        let (no, t, r, b) = self.parse_state_loop_body(state, result_slot)?;
+                        (Some(no), t, r, b)
+                    } else { (None, false, false, false) };
+                    self.eat_word("fi");
+                    terminal = yt && nt;
+                    has_recur |= yr || nr;
+                    has_break |= yb || nb;
+                    body.push(Stmt::If { arms: vec![(cond, yes)], otherwise: other, pos: at });
+                } else if self.is_word("continue") {
+                    return Err(Diagnostic::new(at, "E_RECUR_TAIL", "state loop requires recur, not continue"));
+                } else {
+                    return Err(unsupported(at, "statement outside closed scalar state loop profile"));
+                }
+            }
+            self.advance();
+            Ok((body, terminal, has_recur, has_break))
+        })();
+        self.leave();
+        result
+    }
+
     fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
         self.expect_word("match")?;
         let subject = self.parse_expr()?;
@@ -4122,6 +4641,41 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                // A stateless, single-break value loop has no observable
+                // backedge or local bindings. Normalize only this exact
+                // braced form to its operand; ordinary checker/effect/loan
+                // handling remains authoritative. General CFG loops still
+                // require typed result-join lowering.
+                "loop" if *self.peek_at(1) == Tok::LBrace => {
+                    self.advance();
+                    self.advance();
+                    self.expect_word("break")?;
+                    if matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Eof) {
+                        return Err(Diagnostic::new(self.pos(), "E_BREAK_VALUE",
+                            "value loop requires a break operand"));
+                    }
+                    let old = self.ascription_colon;
+                    self.ascription_colon = true;
+                    let operand = self.parse_expr();
+                    self.ascription_colon = old;
+                    let operand = operand?;
+                    self.terminator()?;
+                    self.expect(Tok::RBrace, "'}' after the single value break")?;
+                    // Restrict this early normalization to ordinary scalar
+                    // expression shapes. A bare variable, call or member
+                    // would be reinterpreted by name-based call/pipeline
+                    // parsing rather than remaining a computed value.
+                    if !matches!(&operand.kind,
+                        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+                        ExprKind::Str(_) | ExprKind::Unary(..) | ExprKind::Binary(..) |
+                        ExprKind::Ternary(..) | ExprKind::Ascribe(..)) {
+                        return Err(unsupported(pos, "value-loop operand requires typed CFG lowering"));
+                    }
+                    if *self.peek() == Tok::LParen {
+                        return Err(unsupported(self.pos(), "calling a computed value loop"));
+                    }
+                    return Ok(Expr { kind: operand.kind, pos });
+                }
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
@@ -4169,6 +4723,16 @@ impl Parser {
                         ));
                     }
                     self.advance();
+                    // A grouped spawn request is not a plain actor spawn.
+                    // Never emit the existing Spawn node while dropping the
+                    // startup schema, resource limits or scheduling policy.
+                    if self.is_word("with") && *self.peek_at(1) == Tok::LBrace {
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_SPAWN_OPTIONS_UNSUPPORTED",
+                            "grouped actor spawn requires typed initialization, resource admission and runtime lowering",
+                        ));
+                    }
                     ExprKind::Spawn(actor)
                 }
                 "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {

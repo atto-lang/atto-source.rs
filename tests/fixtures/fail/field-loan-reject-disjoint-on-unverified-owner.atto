@@ -1,0 +1,14 @@
+// expect-error: E_OWNERSHIP
+// java: rejects
+define class Person as
+  pub let string name = "Alice";
+  pub let int age = 30;
+end
+fnc make_person(): Person {
+  return new Person();
+}
+pub fnc main(): int {
+  let person = make_person();
+  person.age = 42;
+  return person.age;
+}

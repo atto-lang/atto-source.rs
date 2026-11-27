@@ -34,12 +34,14 @@ fn terminal_guard_lowers_to_typed_boolean_branch() {
             return 3;
         }
     "#);
-    compile_ok(r#"
+    // A failure branch must return from the enclosing callable; exceptional
+    // exits are not interchangeable with the mandatory return contract.
+    assert_eq!(error_code(r#"
         pub fnc main(): int {
             guard true { throw Error("failure"); }
             return 42;
         }
-    "#);
+    "#), "E_GUARD");
 }
 
 #[test]
