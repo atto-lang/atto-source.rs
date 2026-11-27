@@ -498,6 +498,7 @@ struct FnCx<'a> {
     unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// > 0 while checking an isolated defer/recover body.
     cleanup_depth: u32,
+    cleanup_io_shadow: [bool; 2],
     telemetry_aliases: Vec<String>,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
@@ -2487,6 +2488,7 @@ impl<'a> FnCx<'a> {
             data,
             unwind: None,
             cleanup_depth: 0,
+            cleanup_io_shadow: [false; 2],
             telemetry_aliases: Vec::new(),
             recover_cursor: None,
             recover_error: None,
@@ -2561,6 +2563,8 @@ impl<'a> FnCx<'a> {
     /// the explicit factory parameters in `bound`.
     fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>,
                 error: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
+        let outer_shadow = self.cleanup_io_shadow;
+        self.cleanup_io_shadow = [outer_shadow[0] || self.lookup("stdio").is_some(), outer_shadow[1] || self.lookup("process").is_some()];
         let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
@@ -2580,6 +2584,7 @@ impl<'a> FnCx<'a> {
         self.borrowed_slots = borrowed_slots;
         self.loops = loops;
         self.scopes = scopes;
+        self.cleanup_io_shadow = outer_shadow;
         r
     }
 
@@ -5232,14 +5237,15 @@ impl<'a> FnCx<'a> {
                 return Ok(accumulated);
             }
         }
-        if name == "stdio.print" || name == "stdio.println" {
+        if matches!(name, "stdio.print" | "stdio.println" | "stdio.stdout.write" | "process.stdout.write") {
             // The parser desugars `stdio.out << value` and the explicit
             // `writech stdio.out, value` through this checked builtin.
             // Never let a lexical binding named `stdio` be silently bypassed
             // by that syntactic rewrite: it denotes a different receiver.
             // Full stream capability dispatch can resolve shadowed names
             // when it is implemented.
-            if self.lookup("stdio").is_some() {
+            let capability = if name == "process.stdout.write" { "process" } else { "stdio" };
+            if self.lookup(capability).is_some() || self.cleanup_io_shadow[usize::from(capability == "process")] || (name.ends_with(".write") && (self.g.names.contains_key(capability) || self.g.class(capability).is_some() || self.g.actor(capability).is_some() || self.g.enum_(capability).is_some())) {
                 return Err(Diagnostic::new(pos, "E_IO_SHADOW",
                     "the builtin stdio capability is shadowed by a local binding; use an unshadowed handle"));
             }
@@ -5263,6 +5269,7 @@ impl<'a> FnCx<'a> {
                 });
             }
             let v = self.value(&args[0])?;
+            if name.ends_with(".write") && v.ty != Type::Str { return Err(type_err(args[0].pos, "stdout.write requires String")); }
             return match v.ty {
                 Type::Float => {
                     self.imports.push(Import::PrintF64);
