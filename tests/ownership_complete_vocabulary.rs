@@ -72,6 +72,33 @@ fn immutable_primitives_support_shallow_deep_shared_and_frozen_values() {
 }
 
 #[test]
+fn method_receiver_stays_live_while_arguments_are_checked() {
+    let prefix = r#"
+define class Item as
+  pub let int value = 21;
+  pub plus(int extra): int { return self.value + extra; }
+end
+fnc read_item(Item item): int { return item.value; }
+"#;
+    for argument in ["read_item(item)", "read_item(take! item)"] {
+        let source = format!(
+            "{prefix} pub fnc main(): int {{ let item = new Item(); return item.plus({argument}); }}"
+        );
+        error(&source, "E_BORROW");
+    }
+    for expression in [
+        "item.plus(item.value)",
+        "item.plus(read_item(copy!! item))",
+        "(take! item).plus(21)",
+    ] {
+        let source = format!(
+            "{prefix} pub fnc main(): int {{ let item = new Item(); return {expression}; }}"
+        );
+        wasm_ok(&source);
+    }
+}
+
+#[test]
 fn scalar_drop_consumes_ownership_at_this_program_point() {
     wasm_ok("pub fnc main(): int { let x = 42; drop! x; return 7; }");
     error("pub fnc main(): int { let x = 42; drop! x; return x; }", "E_MOVED");
@@ -107,7 +134,7 @@ pub fnc main(): int {
   val owner = new Data();
   val loan = borrow! owner;
   drop! owner;
-  return 0;
+  return loan.value;
 }"#;
     error(src, "E_BORROW");
 }

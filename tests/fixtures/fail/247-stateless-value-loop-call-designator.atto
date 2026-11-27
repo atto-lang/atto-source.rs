@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED
+// java: target-only
+fnc f(int n): int { return n; }
+pub fnc main(): int { return 42 |> loop { break f; }; }

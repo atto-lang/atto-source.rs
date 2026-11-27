@@ -1,0 +1,15 @@
+// expect-exit: 42
+// java: rejects
+// The final mutable write ends the loan before an independent deep copy.
+define class Parcel as
+    pub let int value = 1;
+end
+pub fnc main(): int {
+    let original = new Parcel();
+    val borrowed = borrow! mut original;
+    borrowed.value = 42;
+    let cloned = copy!! original;
+    val writer = borrow! mut cloned;
+    writer.value = 99;
+    return original.value;
+}

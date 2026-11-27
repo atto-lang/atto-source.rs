@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// Fail closed: generic Option<Payload> requires a checked affine owner
+// layout, loan provenance, active-variant drop and a verified Wasm ABI.
+// The existing concrete Option<int> profile does NOT imply this support.
+define class Payload as
+  pub val int value = 42;
+end
+fnc steal(Option<Payload> value): Payload {
+  return borrow! value;
+}
+pub fnc main(): int { return 0; }

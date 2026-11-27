@@ -2,6 +2,8 @@ name: Portable Atto frontend and browser Wasm conformance
 on:
   push:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -37,10 +39,20 @@ jobs:
         env:
           RUST_MIN_STACK: "16777216"
         run: cargo test --locked --verbose
+      - name: Execute contextual specialization guests and verify captured scalar values
+        env:
+          RUST_MIN_STACK: "16777216"
+        run: cargo test --locked --lib contextual_specialization::tests::guest_capture -- --ignored
       - name: Strict Rust Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute constant import guests and fail-closed import checks
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node --check tests/constant_import_guest.mjs
+          node tests/constant_import_guest.mjs
       - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
         env:
           ATTOC: target/release/attoc
@@ -49,6 +61,14 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/io_shorthand_guest.mjs
+      - name: Execute grouping and tuple-boundary guests and reject malformed sources
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/parentheses_guest.mjs
+      - name: Execute immediate await receiver guests and fail-closed diagnostics
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/immediate_await_guest.mjs
       - name: Execute bitwise operators in native-generated Wasm guests
         env:
           ATTOC: target/release/attoc
@@ -57,6 +77,10 @@ jobs:
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
           sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
+      - name: Execute default-only procedural select via native and wasm32 compilers
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/select_default_guest.mjs
       - name: Compile exact bitwise preview inside browser Wasm compiler and compare native guest bytes
         env:
           ATTOC: target/release/attoc

@@ -282,6 +282,12 @@ impl Context {
                 }
                 Ok(a)
             }
+            ExprKind::Ascribe(inner, expected, cast) => {
+                let got = self.expression(inner)?;
+                if got == *expected { Ok(got) }
+                else if *cast { Err(err(e.pos, "E_UNSUPPORTED_CAST", "lambda explicit conversion is not yet lowered")) }
+                else { Err(err(e.pos, "E_TYPE", "lambda expression type ascription mismatch")) }
+            }
             ExprKind::SelfRef => Err(err(e.pos, "E_CAPTURE", "noncapturing lambda cannot access self")),
             _ => Err(err(e.pos, "E_UNSUPPORTED",
                 "lambda expression needs unsupported effect, capture or callable lowering")),
@@ -296,6 +302,7 @@ fn position(stmt: &Stmt) -> Pos {
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
         Stmt::Raise(_, pos) | Stmt::Try { pos, .. } | Stmt::Defer { pos, .. } | Stmt::Recover { pos, .. } |
+        Stmt::UsingTelemetry { pos, .. } |
         Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) |
         Stmt::Return(_, pos) | Stmt::Break(pos) | Stmt::Continue(pos) => *pos,
         Stmt::Expr(e) => e.pos,

@@ -17,23 +17,21 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod loan_liveness;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
+const NLL_WORK_BUDGET: usize = 32_768;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
-// Canonical collection and loan identities are reserved before guest lowering.
-// This is a name-spoofing guard, not a runtime implementation.
-const RESERVED_COLLECTION_AND_LOAN_NAMES: &[&str] = &[
-    "Option", "Result", "Array", "FixedArray", "List", "FixedList",
-    "Vector", "Slice", "Tuple", "Map", "Set", "ReadLoan", "WriteLoan",
-];
+// Reuse the compiler-owned prelude identity catalog for spoof prevention.
+// This does not grant unsupported generic storage or import resolution.
 fn is_reserved_collection_or_loan_name(name: &str) -> bool {
-    RESERVED_COLLECTION_AND_LOAN_NAMES.contains(&name)
+    crate::prelude::protected_identity(name)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,10 +57,12 @@ pub enum Import {
     StateRegister,
     StateEnter,
     StateLeave,
+    TraceSpanBegin,
+    TraceSpanEnd,
 }
 
 impl Import {
-    pub const ALL: [Import; 10] = [
+    pub const ALL: [Import; 12] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -73,6 +73,8 @@ impl Import {
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
+        Import::TraceSpanBegin,
+        Import::TraceSpanEnd,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -86,6 +88,8 @@ impl Import {
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
+            Import::TraceSpanBegin => "trace_span_begin",
+            Import::TraceSpanEnd => "trace_span_end",
         }
     }
 }
@@ -116,6 +120,8 @@ pub enum StrOp {
 #[derive(Clone, Debug)]
 pub enum TExpr {
     I64(i64),
+    /// Checked inclusive signed-i64 refinement; evaluate the child exactly once.
+    RefinementCheck(Box<TE>, i64, i64, i32),
     F64(f64),
     Bool(bool),
     /// string value `offset << 32 | len` into the module's string data
@@ -139,6 +145,9 @@ pub enum TExpr {
     Ternary(Box<TE>, Box<TE>, Box<TE>),
     Call(u32, Vec<TE>),
     Builtin(Builtin, Box<TE>, Box<TE>),
+    /// Compiler-owned telemetry span imports. Source cannot refer to the token.
+    TraceSpanBegin { offset: u32, len: u32 },
+    TraceSpanEnd { token: u32 },
     /// `stdio.print` / `stdio.println` of an int or bool value
     Print {
         value: Box<TE>,
@@ -457,8 +466,9 @@ struct Local {
     mail: Option<Type>,
 }
 
+/// None identifies a whole owner; Some is an authenticated scalar field slot.
 #[derive(Clone, Copy)]
-struct ScopedLoan { owner: u32, mutable: bool }
+struct ScopedLoan { owner: u32, field: Option<u32>, mutable: bool }
 
 struct FnCx<'a> {
     g: &'a Globals<'a>,
@@ -472,6 +482,11 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Directly constructed class roots, never aliases received from calls/fields.
+    fresh_class_roots: BTreeSet<u32>,
+    /// Stable CLASS borrow provenance; expiry never grants ownership.
+    borrowed_slots: BTreeSet<u32>,
+    nll_fuel: usize,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
     /// Compiler-issued lexical protected state permissions.
@@ -483,11 +498,15 @@ struct FnCx<'a> {
     unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// > 0 while checking an isolated defer/recover body.
     cleanup_depth: u32,
+    cleanup_io_shadow: [bool; 2],
+    telemetry_aliases: Vec<String>,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
     /// Non-escaping error-view binder; only explicitly admitted read-only
     /// properties may be lowered from the compiler-owned unwind slots.
     recover_error: Option<String>,
+    /// Opt-in L3 ownership-event export (`borrow_export`); `None` normally.
+    trace: Option<crate::borrow_export::FnTrace>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -585,7 +604,7 @@ fn isolation(pos: Pos, actor: &str, what: &str, name: &str) -> Diagnostic {
 fn const_init(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
-        ExprKind::Unary(_, a) => const_init(a),
+        ExprKind::Unary(_, a) | ExprKind::Ascribe(a, _, _) => const_init(a),
         ExprKind::Binary(_, a, b) => const_init(a) && const_init(b),
         ExprKind::Ternary(c, a, b) => const_init(c) && const_init(a) && const_init(b),
         ExprKind::Member(base, _) => matches!(base.kind, ExprKind::Var(_)),
@@ -1557,8 +1576,9 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
         | TExpr::CollectionAlloc(_)
+        | TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. }
         | TExpr::Spawn(_) => EscapeEffects::default(),
-        TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
+        TExpr::RefinementCheck(v, _, _, _) | TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
         | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
@@ -1836,7 +1856,7 @@ fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) ->
             Ok(())
         }
         ExprKind::Unary(_, v) | ExprKind::Trap(v) | ExprKind::Propagate(v)
-        | ExprKind::Ownership(_, _, v) => ctor_init_expr(v, flow, fields),
+        | ExprKind::Ownership(_, _, v) | ExprKind::Ascribe(v, _, _) => ctor_init_expr(v, flow, fields),
         ExprKind::Binary(_, a, b) => {
             ctor_init_expr(a, flow, fields)?;
             ctor_init_expr(b, flow, fields)
@@ -1993,6 +2013,11 @@ fn ctor_init_stmts(
                 ctor_init_stmts(body, &mut nested, fields, true)?;
                 true
             }
+            Stmt::UsingTelemetry { body, .. } => {
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
             Stmt::Try { body, catch, finally, .. } => {
                 // Exception edges / cleanup order are not yet part of the
                 // constructor CFG. Inspect all reads but do not allow
@@ -2065,7 +2090,8 @@ fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
             Ok(())
         }
         ExprKind::Unary(_, inner) | ExprKind::Trap(inner)
-        | ExprKind::Ownership(_, _, inner) | ExprKind::Propagate(inner) =>
+        | ExprKind::Ownership(_, _, inner) | ExprKind::Propagate(inner)
+        | ExprKind::Ascribe(inner, _, _) =>
             constructor_self_expr(inner, captured),
         ExprKind::Binary(_, left, right) => {
             constructor_self_expr(left, captured)?;
@@ -2109,6 +2135,7 @@ fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
             Stmt::Return(Some(expr), _) => constructor_self_expr(expr, captured)?,
             Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::StateWrite { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::UsingTelemetry { body, .. }
             | Stmt::Block(body) => constructor_self_stmts(body, captured)?,
             Stmt::Try { body, catch, finally, .. } => {
                 constructor_self_stmts(body, captured)?;
@@ -2210,19 +2237,40 @@ fn body_check(
             });
         }
     }
+    // Opt-in L3 conformance export (borrow_export): top-level fnc only.
+    let traced = crate::borrow_export::enabled() && matches!(owner, Owner::TopLevel) && mail.is_none();
+    if traced {
+        let mut trace = crate::borrow_export::FnTrace::new();
+        for (i, (_, t, _)) in named.iter().enumerate() {
+            trace.init(i as u32, is_copy_scalar(*t), pos);
+        }
+        cx.trace = Some(trace);
+    }
     cx.scopes.push(Vec::new());
-    let mut tbody = cx.stmts(body)?;
-    if let Some((ret, saved, msg, kind, pending)) = cx.unwind {
-        tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
-    }
-    if ret != Type::Void && !returns(&tbody) {
-        let what = if matches!(owner, Owner::TopLevel) { "fnc" } else { "method" };
-        return Err(Diagnostic::new(
-            pos,
-            "E_RETURN",
-            format!("non-void {what} '{label}' must explicitly return on every path"),
-        ));
-    }
+    let checked = cx.stmts(body);
+    let unwind = cx.unwind;
+    let checked = checked.and_then(|mut tbody| {
+        if let Some((ret, saved, msg, kind, pending)) = unwind {
+            tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
+        }
+        if ret != Type::Void && !returns(&tbody) {
+            let what = if matches!(owner, Owner::TopLevel) { "fnc" } else { "method" };
+            return Err(Diagnostic::new(
+                pos,
+                "E_RETURN",
+                format!("non-void {what} '{label}' must explicitly return on every path"),
+            ));
+        }
+        Ok(tbody)
+    });
+    crate::borrow_export::record(
+        label,
+        cx.trace.take(),
+        "class, actor and constructor bodies are outside straight-line-v1",
+        checked.as_ref().err(),
+        pos,
+    );
+    let tbody = checked?;
     Ok((tbody, cx.locals))
 }
 
@@ -2253,7 +2301,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
     match &value.e {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
-        TExpr::IntToFloat(a) | TExpr::FNeg(a) |
+        TExpr::RefinementCheck(a, _, _, _) | TExpr::IntToFloat(a) | TExpr::FNeg(a) |
         TExpr::Neg(a) | TExpr::Not(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
@@ -2303,7 +2351,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-        TExpr::AdtPropagate { .. } => false,
+        TExpr::AdtPropagate { .. } |
+        TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. } => false,
     }
 }
 
@@ -2332,7 +2381,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
 }
 
 /// Whether any expression node in `body` satisfies `f`.
-fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
+pub(crate) fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
@@ -2365,7 +2414,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
-        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
+        TExpr::RefinementCheck(a, _, _, _) | TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
@@ -2429,6 +2478,9 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            fresh_class_roots: BTreeSet::new(),
+            borrowed_slots: BTreeSet::new(),
+            nll_fuel: NLL_WORK_BUDGET,
             loans: BTreeMap::new(),
             state_write_scope: false,
             state_read_scope: false,
@@ -2436,8 +2488,11 @@ impl<'a> FnCx<'a> {
             data,
             unwind: None,
             cleanup_depth: 0,
+            cleanup_io_shadow: [false; 2],
+            telemetry_aliases: Vec::new(),
             recover_cursor: None,
             recover_error: None,
+            trace: None,
         }
     }
 
@@ -2508,9 +2563,13 @@ impl<'a> FnCx<'a> {
     /// the explicit factory parameters in `bound`.
     fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>,
                 error: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
+        let outer_shadow = self.cleanup_io_shadow;
+        self.cleanup_io_shadow = [outer_shadow[0] || self.lookup("stdio").is_some(), outer_shadow[1] || self.lookup("process").is_some()];
         let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
+        let fresh_class_roots = std::mem::take(&mut self.fresh_class_roots);
+        let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
         let loans = std::mem::take(&mut self.loans);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
@@ -2521,8 +2580,11 @@ impl<'a> FnCx<'a> {
         self.recover_error = prev_error;
         self.loans = loans;
         self.moved = moved;
+        self.fresh_class_roots = fresh_class_roots;
+        self.borrowed_slots = borrowed_slots;
         self.loops = loops;
         self.scopes = scopes;
+        self.cleanup_io_shadow = outer_shadow;
         r
     }
 
@@ -2583,6 +2645,10 @@ impl<'a> FnCx<'a> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        if self.telemetry_aliases.iter().any(|alias| alias == name) {
+            return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
+                format!("opaque span alias '{name}' cannot be shadowed")));
+        }
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
         }
@@ -2627,9 +2693,15 @@ impl<'a> FnCx<'a> {
 
     fn pop_scope(&mut self) {
         if let Some(ended) = self.scopes.pop() {
+            if let Some(tr) = self.trace.as_mut() {
+                let slots: Vec<u32> = ended.iter().map(|l| l.slot).collect();
+                tr.scope_ended(&slots, Pos::default());
+            }
             for l in ended {
                 self.loans.remove(&l.slot);
                 self.moved.remove(&l.slot);
+                self.fresh_class_roots.remove(&l.slot);
+                self.borrowed_slots.remove(&l.slot);
             }
         }
     }
@@ -2663,7 +2735,28 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
-        body.iter().map(|s| self.stmt(s)).collect()
+        let mut checked = Vec::with_capacity(body.len());
+        for (i, stmt) in body.iter().enumerate() {
+            checked.push(self.stmt(stmt)?);
+            // Never retire an outer-scope loan inside a child scope.
+            // Count all syntactic possible uses, not only the straight line.
+            // On budget exhaustion, the visitor treats the loan as live.
+            let loans = &self.loans;
+            let fuel = &mut self.nll_fuel;
+            let ended: Vec<u32> = self.scopes.last().unwrap().iter()
+                .filter(|local| loans.contains_key(&local.slot) &&
+                    !body[i + 1..].iter().any(|next|
+                        loan_liveness::stmt_mentions(next, &local.name, fuel)))
+                .map(|local| local.slot)
+                .collect();
+            if let Some(tr) = self.trace.as_mut() { tr.scope_ended(&ended, Pos::default()); }
+            for alias in ended {
+                self.loans.remove(&alias);
+                // borrowed_slots is intentionally permanent through this
+                // scope: an expired class alias is NEVER an owner.
+            }
+        }
+        Ok(checked)
     }
 
     fn cond(&mut self, e: &Expr, what: &str) -> R<TE> {
@@ -2678,6 +2771,24 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
+        if let Some(tr) = self.trace.as_mut() {
+            let outside = match s {
+                Stmt::Bind { .. } | Stmt::Expr(_) | Stmt::Return(..) | Stmt::Block(_) => None,
+                Stmt::Assign { .. } => Some("reassignment (no canonical re-initialization op)"),
+                Stmt::FieldAssign { .. } => Some("field assignment"),
+                Stmt::If { .. } | Stmt::Match { .. } => Some("branching control flow (needs canonical joins)"),
+                Stmt::While { .. } | Stmt::Loop { .. } | Stmt::For { .. } | Stmt::ForIn { .. }
+                | Stmt::Break(_) | Stmt::Continue(_) => Some("loops (needs canonical fixed-point analysis)"),
+                Stmt::Try { .. } | Stmt::Defer { .. } | Stmt::Recover { .. }
+                | Stmt::UsingTelemetry { .. }
+                | Stmt::Throw(..) | Stmt::Raise(..) => Some("unwind, cleanup or failure statement"),
+                Stmt::StateWrite { .. } | Stmt::Yield(..) | Stmt::YieldFrom(..) =>
+                    Some("protected state or generator statement"),
+            };
+            if let Some(reason) = outside {
+                tr.unavailable(reason);
+            }
+        }
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
                 if let ExprKind::Ownership(OwnershipOp::Borrow, mutable, inner) = &init.kind {
@@ -2709,6 +2820,20 @@ impl<'a> FnCx<'a> {
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                if matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_)) {
+                    self.fresh_class_roots.insert(slot);
+                }
+                if let Some(tr) = self.trace.as_mut() {
+                    // Exactly `x`, `take! x` or `copy!! x`: the binding receives
+                    // that moved/copied value; anything else is a fresh owner.
+                    let retarget = match &init.kind {
+                        ExprKind::Var(_) => true,
+                        ExprKind::Ownership(OwnershipOp::Take | OwnershipOp::DeepCopy, _, inner) =>
+                            matches!(inner.kind, ExprKind::Var(_)),
+                        _ => false,
+                    };
+                    tr.bind(slot, is_copy_scalar(v.ty), retarget, *pos);
+                }
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
@@ -2723,8 +2848,8 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed local or owner while the loan is live"));
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed alias or owner while the loan is live"));
                 }
                 let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
@@ -2733,6 +2858,8 @@ impl<'a> FnCx<'a> {
                         format!("cannot assign {} to '{name}' of type {}", self.tn(v.ty), self.tn(ty)),
                     ));
                 }
+                // Never restore freshness after reassignment; monotone across joins.
+                self.fresh_class_roots.remove(&slot);
                 // a reassigned object binding owns a value again
                 self.moved.remove(&slot);
                 TStmt::Set(slot, v)
@@ -2762,6 +2889,8 @@ impl<'a> FnCx<'a> {
                 let msg = self.guest_error_message(error, "raise", *pos)?;
                 TStmt::Raise(msg)
             }
+            Stmt::UsingTelemetry { operation, alias, body, pos } =>
+                self.telemetry_scope(operation, alias, body, *pos)?,
             Stmt::Try { body, catch, finally, pos } => {
                 self.unwind_frame(*pos, "try")?;
                 let saved = self.temp(Type::Bool, *pos)?;
@@ -2826,11 +2955,12 @@ impl<'a> FnCx<'a> {
                         None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND",
                             format!("unknown name '{name}'"))),
                     };
+                    if let Some(tr) = self.trace.as_mut() { tr.dropped(slot, e.pos); }
                     if self.moved.contains(&slot) {
                         return Err(Diagnostic::new(e.pos, "E_MOVED",
                             "cannot drop an already moved or dropped owner"));
                     }
-                    if self.loans.contains_key(&slot)
+                    if self.borrowed_slots.contains(&slot)
                         || self.loans.values().any(|loan| loan.owner == slot) {
                         return Err(Diagnostic::new(e.pos, "E_BORROW",
                             "cannot drop an owner while an active loan exists"));
@@ -2891,7 +3021,10 @@ impl<'a> FnCx<'a> {
                     "a defer body cannot return: cleanup must not replace the pending outcome"));
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
-                (None, Type::Void) => TStmt::Return(None),
+                (None, Type::Void) => {
+                    if let Some(tr) = self.trace.as_mut() { tr.returned(*pos); }
+                    TStmt::Return(None)
+                }
                 (None, t) => {
                     return Err(Diagnostic::new(
                         *pos,
@@ -2908,6 +3041,7 @@ impl<'a> FnCx<'a> {
                             format!("return value has type {} but expected {}", self.tn(v.ty), self.tn(t)),
                         ));
                     }
+                    if let Some(tr) = self.trace.as_mut() { tr.returned(*pos); }
                     TStmt::Return(Some(v))
                 }
             },
@@ -3015,6 +3149,43 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    fn telemetry_scope(&mut self, operation: &str, alias: &str, body: &[Stmt], pos: Pos) -> R<TStmt> {
+        self.unwind_frame(pos, "using telemetry.span")?;
+        if self.lookup(alias).is_some() || self.telemetry_aliases.iter().any(|a| a == alias)
+            || alias == "self"
+        {
+            return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
+                format!("span alias '{alias}' shadows an active binding")));
+        }
+
+        let token = self.temp(Type::Int, pos)?;
+        let saved = self.temp(Type::Bool, pos)?;
+        let (offset, len) = self.string(operation, pos)?;
+        self.imports.extend([Import::TraceSpanBegin, Import::TraceSpanEnd]);
+        // The existing finally lowering cannot branch out of a protected
+        // region to an enclosing loop. Loops inside the scope remain valid.
+        let loops = std::mem::replace(&mut self.loops, 0);
+        self.telemetry_aliases.push(alias.to_owned());
+        let body = self.scoped(body);
+        self.telemetry_aliases.pop();
+        self.loops = loops;
+
+        // Begin before entering the unwind region, then reuse the same
+        // return/throw/raise cleanup path as an ordinary verified finally.
+        Ok(TStmt::Block(vec![
+            TStmt::Set(token, TE { e: TExpr::TraceSpanBegin { offset, len }, ty: Type::Int }),
+            TStmt::Try {
+                saved,
+                body: body?,
+                catch: None,
+                finally: Some(vec![TStmt::Expr(TE {
+                    e: TExpr::TraceSpanEnd { token }, ty: Type::Void,
+                })]),
+                pos,
+            },
+        ]))
+    }
+
     /// `match`: the subject is evaluated once into a temp; arms are tried in
     /// source order; a guard runs only after its pattern matched. The checker
     /// rejects unreachable arms and requires exhaustiveness (Java reference:
@@ -3022,7 +3193,7 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -3244,6 +3415,8 @@ impl<'a> FnCx<'a> {
                     let (tag, needed) = match (sty, name.as_str()) {
                         (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+                        (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
+                        (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
                         (Type::OptionResultIntStr, "None") => (0, None),
@@ -3346,6 +3519,10 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
+                if self.borrowed_slots.contains(&local.slot) && !self.loans.contains_key(&local.slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "cannot mutate through an expired borrowed class alias"));
+                }
                 if let Some(loan) = self.loans.get(&local.slot).copied() {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
@@ -3384,6 +3561,76 @@ impl<'a> FnCx<'a> {
                     return Ok(TStmt::FieldSet { obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
                         offset, ty: fty, value: checked });
                 }
+            }
+        }
+        // Unique, directly created class owners may mutate an independent
+        // scalar let-field without invalidating a live loan of a sibling.
+        // General aliases, protected state and reference-valued fields are
+        // not admitted by this bounded browser/guest implementation.
+        if let ExprKind::Var(name) = &target.kind {
+            if let Some((slot, Type::Class(c), mutable_binding)) =
+                self.lookup(name).map(|l| (l.slot, l.ty, l.mutable)) {
+                if self.loans.contains_key(&slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "cannot mutate a field through a readonly borrowed handle"));
+                }
+                if self.moved.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_MOVED",
+                        "cannot mutate a field of a moved owner"));
+                }
+                if !mutable_binding || !self.fresh_class_roots.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        "direct class writes require a mutable binding of a proven-unique direct-new class owner"));
+                }
+                let class = &self.g.classes[c as usize];
+                if class.name.starts_with("__atto_tuple_private_") {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "tuple root fields require separate provenance"));
+                }
+                let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
+                    Diagnostic::new(pos, "E_UNBOUND",
+                        format!("class '{}' has no field '{field}'", class.name)))?;
+                if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
+                    return Err(Diagnostic::new(pos, "E_PRIVATE",
+                        "cannot mutate a private class field outside its class"));
+                }
+                if f.mode == FieldMode::ActorState {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "protected state requires the checked critical-write lease"));
+                }
+                if !f.binding.rebindable() {
+                    return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                        "cannot reassign val/final/const field"));
+                }
+                let (offset, fty) = (f.slot, f.ty);
+                if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "reference-valued class field assignment requires checked ownership transfer"));
+                }
+                if self.loans.values().any(|loan| loan.owner == slot &&
+                    (loan.field.is_none() || loan.field == Some(offset))) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "cannot write a field overlapping an active loan"));
+                }
+                let checked = self.consume_expected(value, fty)?;
+                // RHS may execute nested calls and take! the owner, or
+                // introduce an overlapping loan. Revalidate AFTER effects.
+                if self.moved.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_MOVED",
+                        "class field assignment RHS moved its owner"));
+                }
+                if self.loans.values().any(|loan| loan.owner == slot &&
+                    (loan.field.is_none() || loan.field == Some(offset))) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "class field assignment RHS created an overlapping loan"));
+                }
+                if checked.ty != fty {
+                    return Err(type_err(value.pos, "class scalar field assignment type mismatch"));
+                }
+                return Ok(TStmt::FieldSet {
+                    obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
+                    offset, ty: fty, value: checked,
+                });
             }
         }
         if !matches!(target.kind, ExprKind::SelfRef) {
@@ -3493,7 +3740,7 @@ impl<'a> FnCx<'a> {
     /// Neither Null nor a bare payload implicitly converts to an ADT.
     fn consume_expected(&mut self, e: &Expr, want: Type) -> R<TE> {
         let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
-            ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
+            ExprKind::Call(name, args) if crate::prelude::core_constructor(name) && name != "None" => {
                 if args.len() != 1 {
                     return Err(Diagnostic::new(e.pos, "E_ARITY",
                         format!("{name} requires one payload argument, got {}", args.len())));
@@ -3506,6 +3753,8 @@ impl<'a> FnCx<'a> {
         let (tag, payload_type) = match (want, variant) {
             (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
             (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+            (Type::ResultIntInt, "Ok") => (0, Some(Type::Int)),
+            (Type::ResultIntInt, "Err") => (1, Some(Type::Int)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
             (Type::OptionResultIntStr, "None") => (0, None),
@@ -3543,20 +3792,84 @@ impl<'a> FnCx<'a> {
     /// Class loans are bound to lexical locals; no owner transfer or escape.
     fn borrow_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
                       inner: &Expr, mutable: bool, pos: Pos) -> R<TStmt> {
-        let ExprKind::Var(owner_name) = &inner.kind else {
-            return Err(Diagnostic::new(inner.pos, "E_BORROW", "borrow! requires a named owner"));
+        let (owner_name, requested_field) = match &inner.kind {
+            ExprKind::Var(n) => (n.as_str(), None),
+            ExprKind::Member(base, f) => match &base.kind {
+                ExprKind::Var(n) => (n.as_str(), Some(f.as_str())),
+                _ => return Err(Diagnostic::new(inner.pos, "E_BORROW",
+                    "scalar field loans require a named class owner")),
+            },
+            _ => {
+                let predicted = self.nparams + self.locals.len() as u32;
+                if let Some(tr) = self.trace.as_mut() { tr.borrow_temporary(predicted, mutable, pos); }
+                return Err(Diagnostic::new(inner.pos, "E_BORROW",
+                    "borrow! requires a named owner or checked scalar field"));
+            }
         };
         let (owner, owner_ty) = match self.lookup(owner_name) {
             Some(l) => (l.slot, l.ty),
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
-        if self.loans.contains_key(&owner) {
+        // The whole-owner straight-line exporter cannot represent projected
+        // places. Never emit a whole-root graph as proof of field authority.
+        let predicted_loan_slot = self.nparams + self.locals.len() as u32;
+        let traced_class_loan = requested_field.is_none() && self.trace.is_some()
+            && (matches!(owner_ty, Type::Class(_)) || mutable);
+        if let Some(tr) = self.trace.as_mut() {
+            if requested_field.is_some() {
+                tr.unavailable("field projection requires canonical place provenance");
+            } else if tr.is_loan_binder(owner) || self.borrowed_slots.contains(&owner) {
+                tr.unavailable("reborrow of a loan binder (no canonical reborrow op)");
+            }
+        }
+        if traced_class_loan {
+            if let Some(tr) = self.trace.as_mut() { tr.borrow(owner, predicted_loan_slot, mutable, pos); }
+        }
+        if self.borrowed_slots.contains(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
-        if let Some(loan) = self.loans.values().find(|loan| loan.owner == owner) {
-            if mutable || loan.mutable {
-                return Err(Diagnostic::new(pos, "E_BORROW", "conflicting loans: mutable borrowing must be exclusive"));
+        // A field offset is a declaration-checked projection, not an index
+        // or caller-supplied alias root. For now, only direct-new class roots
+        // and immutable snapshots of scalar fields have a guest representation.
+        let projected_field = if let Some(field_name) = requested_field {
+            if mutable {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "mutable scalar field loans require reference write-through lowering"));
             }
+            if !self.fresh_class_roots.contains(&owner) {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "field borrowing requires a proven-unique direct-new class root"));
+            }
+            let Type::Class(c) = owner_ty else {
+                return Err(Diagnostic::new(pos, "E_BORROW", "field owner is not a class"));
+            };
+            let class = &self.g.classes[c as usize];
+            if class.name.starts_with("__atto_tuple_private_") {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "tuple roots require a distinct field-loan provenance proof"));
+            }
+            let f = class.fields.iter().find(|f| f.name == field_name).ok_or_else(||
+                Diagnostic::new(pos, "E_UNBOUND",
+                    format!("class '{}' has no field '{field_name}'", class.name)))?;
+            if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
+                return Err(Diagnostic::new(pos, "E_PRIVATE",
+                    "cannot borrow a private field outside the owning class"));
+            }
+            if f.mode == FieldMode::ActorState {
+                return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                    "protected state requires a critical-read lease"));
+            }
+            if !matches!(f.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "field loans of class/resource handles need nested-loan provenance"));
+            }
+            Some(f.slot)
+        } else { None };
+        if self.loans.values().any(|loan| loan.owner == owner
+            && (loan.field.is_none() || projected_field.is_none() || loan.field == projected_field)
+            && (mutable || loan.mutable)) {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "conflicting loans of overlapping class places"));
         }
         let value = self.value(inner)?;
         if let Some(annotation) = annotation {
@@ -3564,6 +3877,13 @@ impl<'a> FnCx<'a> {
             if expected != value.ty {
                 return Err(type_err(pos, format!("borrowed binding '{name}' expects {}, found {}", self.tn(expected), self.tn(value.ty))));
             }
+        }
+        if let Some(field) = projected_field {
+            // Snapshot-backed, read-only scalar loan: the stored value is
+            // independent, while the field's original storage remains protected.
+            let slot = self.declare(name, value.ty, false, pos)?;
+            self.loans.insert(slot, ScopedLoan { owner, field: Some(field), mutable: false });
+            return Ok(TStmt::Set(slot, value));
         }
         // Tuple roots are value-aggregate anchors. Their non-Copy storage
         // is a private implementation detail, not a writable user class.
@@ -3585,10 +3905,17 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(pos, "E_BORROW", "borrowing this type is not supported by the guest Wasm backend"));
             }
             let slot = self.declare(name, value.ty, kind == BindKind::Let, pos)?;
+            if let Some(tr) = self.trace.as_mut() { tr.bind(slot, true, false, pos); }
             return Ok(TStmt::Set(slot, value));
         }
         let slot = self.declare(name, value.ty, false, pos)?;
-        self.loans.insert(slot, ScopedLoan { owner, mutable });
+        if traced_class_loan && slot != predicted_loan_slot {
+            if let Some(tr) = self.trace.as_mut() {
+                tr.unavailable("loan binder slot prediction mismatch");
+            }
+        }
+        self.loans.insert(slot, ScopedLoan { owner, field: None, mutable });
+        self.borrowed_slots.insert(slot);
         Ok(TStmt::Set(slot, value))
     }
 
@@ -3598,12 +3925,44 @@ impl<'a> FnCx<'a> {
         }
         match action {
             OwnershipOp::Borrow => {
+                // A loan outside a lexical binding has no lexical end: export
+                // it as an escaping loan before the checker rejects it.
                 if mutable {
+                    if self.trace.is_some() {
+                        let owner = match &inner.kind {
+                            ExprKind::Var(n) => self.lookup(n).map(|l| l.slot),
+                            _ => None,
+                        };
+                        if let Some(tr) = self.trace.as_mut() {
+                            match owner {
+                                Some(slot) => tr.borrow_escaping(slot, true, pos),
+                                None => tr.unavailable("borrow! mut of a temporary expression"),
+                            }
+                        }
+                    }
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
                 }
+                // Borrowed concrete ADTs are only legal in checked call
+                // argument position (see args()). A standalone borrow! must
+                // never become an owned return or a stored carrier handle.
                 let value = self.value(inner)?;
-                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding"));
+                // A concrete Copy carrier can be read from a named owner,
+                // not borrowed from a temporary. Do not turn borrow! into
+                // a general expression-copy operator for ADT temporaries.
+                if matches!(value.ty, Type::OptionInt | Type::ResultIntStr
+                    | Type::ResultIntInt | Type::OptionResultIntStr)
+                    && !matches!(&inner.kind, ExprKind::Var(_))
+                {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "borrow! of a concrete ADT requires a named owner"));
+                }
+                if !is_copy_scalar(value.ty) {
+                    if let (Some(tr), TExpr::Local(slot)) = (self.trace.as_mut(), &value.e) {
+                        tr.borrow_escaping(*slot, false, pos);
+                    }
+                }
+                if !is_copy_scalar(value.ty) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding; unproved ADT payload loans are forbidden"));
                 }
                 Ok(value)
             }
@@ -3618,6 +3977,7 @@ impl<'a> FnCx<'a> {
                     if let Type::Class(ci) = value.ty {
                         if let ExprKind::Var(name) = &inner.kind {
                             if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
+                                if let Some(tr) = self.trace.as_mut() { tr.deep_copied(owner_slot, pos); }
                                 if self.loans.contains_key(&owner_slot)
                                     || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
                                 {
@@ -3686,8 +4046,11 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
                 };
                 let slot = *slot_ref;
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
+                if let Some(tr) = self.trace.as_mut() {
+                    if tr.is_loan_binder(slot) { tr.escape_binder(slot); } else { tr.moved(slot, pos); }
+                }
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "take! cannot move a borrowed class alias or owner with live loans"));
                 }
                 if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                     return Err(Diagnostic::new(pos, "E_MOVED", format!("cannot take '{name}' from outside a loop")));
@@ -3704,8 +4067,11 @@ impl<'a> FnCx<'a> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
-            if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
+            if let Some(tr) = self.trace.as_mut() {
+                if tr.is_loan_binder(slot) { tr.escape_binder(slot); } else { tr.moved(slot, e.pos); }
+            }
+            if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class alias or owner while a loan is live"));
             }
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
@@ -3749,6 +4115,40 @@ impl<'a> FnCx<'a> {
     }
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
+        let reference = match &e.kind {
+            ExprKind::Var(name) | ExprKind::Call(name, _) => Some(name),
+            ExprKind::Member(base, _) | ExprKind::MethodCall(base, _, _) => match &base.kind {
+                ExprKind::Var(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = reference {
+            if self.telemetry_aliases.iter().any(|alias| alias == name) {
+                return Err(Diagnostic::new(e.pos, "E_TELEMETRY_ALIAS",
+                    format!("opaque span alias '{name}' cannot be used as a guest value")));
+            }
+        }
+        if let Some(tr) = self.trace.as_mut() {
+            // straight-line-v1 allowlist: every other expression form has
+            // ownership effects (receivers, captures, branches, actors) that
+            // this exporter does not yet represent, so it fails closed.
+            let outside = match &e.kind {
+                ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_)
+                | ExprKind::Var(_) | ExprKind::Unary(..) | ExprKind::Binary(..)
+                | ExprKind::Ascribe(..) | ExprKind::Call(..) | ExprKind::New(..)
+                | ExprKind::Member(..) | ExprKind::Ownership(..) => None,
+                ExprKind::Ternary(..) => Some("conditional expression (needs canonical joins)"),
+                ExprKind::MethodCall(..) => Some("method call (receiver effect summary not exported)"),
+                ExprKind::Lambda { .. } => Some("closure capture"),
+                ExprKind::Spawn(_) | ExprKind::SelfRef | ExprKind::StateRead(_) =>
+                    Some("actor, self or protected state access"),
+                _ => Some("expression form outside straight-line-v1"),
+            };
+            if let Some(reason) = outside {
+                tr.unavailable(reason);
+            }
+        }
         match &e.kind {
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
                 e: TExpr::I64(i64::MIN),
@@ -3759,10 +4159,33 @@ impl<'a> FnCx<'a> {
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
+            ExprKind::Ascribe(inner, target, explicit_cast) => {
+                let want = self.resolve(*target, e.pos)?;
+                // A contextual constructor (Some/Ok/Err/None) needs the
+                // expected type before it can be checked and guest-lowered.
+                let result = self.consume_expected(inner, want)?;
+                if *explicit_cast && result.ty == Type::Int && want == Type::Float {
+                    // The backend already lowers IntToFloat to
+                    // f64.convert_i64_s. Explicit as admits binary64
+                    // rounding; : float must not introduce this conversion.
+                    return Ok(TE {
+                        e: TExpr::IntToFloat(Box::new(result)),
+                        ty: Type::Float,
+                    });
+                }
+                if result.ty != want {
+                    let action = if *explicit_cast { "convert" } else { "ascribe" };
+                    let code = if *explicit_cast { "E_UNSUPPORTED_CAST" } else { "E_TYPE" };
+                    return Err(Diagnostic::new(e.pos, code, format!(
+                        "cannot {action} {} to {} in the browser compiler",
+                        self.tn(result.ty), self.tn(want))));
+                }
+                Ok(result)
+            },
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
                 let success_tag = match value.ty {
-                    Type::ResultIntStr => 0,
+                    Type::ResultIntStr | Type::ResultIntInt => 0,
                     Type::OptionInt => 1,
                     _ => return Err(type_err(e.pos,
                         format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
@@ -3850,16 +4273,48 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        // The parser bounds tree height, but a left-associated chain still
+        // consumed a large native checker frame per operator. Walk that spine
+        // iteratively, preserving exact source order, per-node types and
+        // checked overflow. Right subtrees use the existing checker.
+        let mut spine = vec![(op, r, pos)];
+        let mut left = l;
+        while let ExprKind::Binary(op, lhs, rhs) = &left.kind {
+            spine.push((*op, rhs.as_ref(), left.pos));
+            left = lhs.as_ref();
+        }
+        let mut value = self.value(left)?;
+        for (op, rhs, pos) in spine.into_iter().rev() {
+            let right = self.value(rhs)?;
+            value = self.binary_values(op, value, right, pos)?;
+        }
+        Ok(value)
+    }
+
+    #[inline(never)]
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr) {
                 if a.ty != Type::Int || b.ty != Type::Int {
                     return Err(type_err(pos, format!(
                         "bitwise operator '{}' requires two int operands, found {} and {}",
                         op.symbol(), self.tn(a.ty), self.tn(b.ty))));
+                }
+                if matches!(op, BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                    let literal = match &b.e {
+                        TExpr::I64(n) => Some(*n),
+                        TExpr::Neg(inner) => match &inner.e {
+                            TExpr::I64(n) => n.checked_neg(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if literal.is_some_and(|n| !(0..64).contains(&n)) {
+                        return Err(Diagnostic::new(pos, "E_SHIFT_DISTANCE",
+                            "shift distance must be in 0..63"));
+                    }
                 }
                 return Ok(TE {
                     e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
@@ -3918,11 +4373,26 @@ impl<'a> FnCx<'a> {
                 }
                 if a.ty == Type::Int && b.ty == Type::Int {
                     if *op == BinOp::Div {
-                        return Err(Diagnostic::new(
-                            pos,
-                            "E_UNSUPPORTED",
-                            "'/' on two ints is not admitted: whether int / int yields float or int is undecided (spec S-25); write a float operand, e.g. 7.0 / 2",
-                        ));
+                        // Same proof boundary as the LLVM bundled frontend.
+                        // Never substitute a terminal Wasm trap for a guest
+                        // ordinary error on an unproven divisor.
+                        let literal = |v: &TE| match &v.e {
+                            TExpr::I64(n) => Some(*n),
+                            TExpr::Neg(inner) => match &inner.e {
+                                TExpr::I64(n) => n.checked_neg(),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let safe = match literal(&b) {
+                            Some(0) | None => false,
+                            Some(-1) => literal(&a).is_some_and(|n| n != i64::MIN),
+                            Some(_) => true,
+                        };
+                        if !safe {
+                            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                                "checked integer division requires a proven nonzero divisor and no MIN/-1 overflow, or typed ordinary-error lowering"));
+                        }
                     }
                 } else {
                     // Java binary numeric promotion: an int operand widens to float.
@@ -3948,8 +4418,7 @@ impl<'a> FnCx<'a> {
                 }
             }
             let ty = match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
-                BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => Type::Int,
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr =>
                     unreachable!("bitwise operations handled before numeric promotion"),
@@ -3966,7 +4435,7 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
@@ -4094,6 +4563,15 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
+                    let (slot, ty) = (l.slot, l.ty);
+                    if self.borrowed_slots.contains(&slot) && !self.loans.contains_key(&slot) {
+                        if let Some(tr) = self.trace.as_mut() { tr.unavailable("expired class borrow"); }
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            "expired borrowed class alias cannot be used as an owner"));
+                    }
+                    if let Some(tr) = self.trace.as_mut() { tr.read(slot, pos); }
+                    let Some(l) = self.lookup(name) else { unreachable!("local '{name}' vanished") };
+                    debug_assert!(l.slot == slot && l.ty == ty);
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
@@ -4122,8 +4600,8 @@ impl<'a> FnCx<'a> {
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
-            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
-            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
+            | ExprKind::Propagate(..) | ExprKind::Ascribe(..) => unreachable!("handled by expr"),
+            ExprKind::Call(name, _) if crate::prelude::core_constructor(name) =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::StateRead(field) => {
@@ -4255,6 +4733,10 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
+            // Option<int> and Result<int,string> are concrete Copy carriers
+            // (their active payload types are themselves Copy). Their normal
+            // consume path therefore preserves a reusable local. This is
+            // deliberately not generic borrowing or affine ownership.
             let v = self.consume_expected(a, *want)?;
             if v.ty != *want {
                 return Err(type_err(
@@ -4444,6 +4926,15 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_BORROW",
                 "borrowed object field cannot yield an owned handle without nested-loan provenance"));
         }
+        // Nested class handles may alias unverified memory. Do not permit a
+        // detached owned handle to escape from a field-borrowed root.
+        if matches!(&obj.e, TExpr::Local(slot) if
+            self.loans.values().any(|loan| loan.owner == *slot && loan.field.is_some()))
+            && matches!(f.ty, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt)
+        {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "nested class/resource fields need separate loan provenance"));
+        }
         // Class privacy does not grant sealed state access: require a
         // compiler-recognized lease on the exact receiver instance.
         let protected = f.mode == FieldMode::ActorState && class.state_container;
@@ -4548,6 +5039,17 @@ impl<'a> FnCx<'a> {
                 _ => return Err(Diagnostic::new(base.pos, "E_UNBOUND", "unknown name 'self'")),
             }
         }
+        // Receiver effects are not certified to a field footprint in this
+        // compiler. Treat methods as whole-receiver accesses while any
+        // field loan is live rather than guessing their read/write sets.
+        if let ExprKind::Var(owner_name) = &base.kind {
+            if let Some(local) = self.lookup(owner_name) {
+                if self.loans.values().any(|loan| loan.owner == local.slot && loan.field.is_some()) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "method call on a field-borrowed owner requires verified effect metadata"));
+                }
+            }
+        }
         let recv = self.value(base)?;
         self.method_on(recv, name, args, pos)
     }
@@ -4646,8 +5148,21 @@ impl<'a> FnCx<'a> {
         }
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
+        // Lowering evaluates the receiver before the arguments, and the
+        // method uses it after all arguments have evaluated. A live local
+        // receiver must therefore survive their evaluation. A receiver
+        // already transferred into a temporary (`(take! x).method(...)`)
+        // owns that value independently of the source local's moved state.
+        let live_receiver = match &recv.e {
+            TExpr::Local(slot) if !self.moved.contains(slot) => Some(*slot),
+            _ => None,
+        };
         let mut targs = vec![recv];
         targs.extend(self.args(&label, args, &m.params)?);
+        if live_receiver.is_some_and(|slot| self.moved.contains(&slot)) {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "cannot move a method receiver while evaluating its arguments"));
+        }
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,
@@ -4665,60 +5180,70 @@ impl<'a> FnCx<'a> {
             _ => None,
         } {
             if self.lookup(name).is_none() {
-                // An array literal in this exact builtin position is an
-                // unescaped, read-only scalar argument pack. No general
-                // heap Array<bool> value, indexing, or mutable alias exists.
-                let values: &[Expr] = if args.len() == 1 {
-                    match &args[0].kind {
-                        ExprKind::Array(items) => {
-                            if items.iter().any(|e| !matches!(&e.kind,
-                                ExprKind::Bool(_) | ExprKind::Var(_))) {
-                                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                                    "boolean array gate pack admits only immutable bool literals or bindings"));
-                            }
-                            items
-                        }
-                        _ => return Err(Diagnostic::new(pos, "E_ARITY",
-                            format!("{name} expects at least 2 bool arguments or a scalar array literal"))),
+                // Array syntax is a bounded temporary pack in this profile,
+                // not a general Array<bool> allocation or ownership claim.
+                let pack = args.len() == 1 && matches!(&args[0].kind, ExprKind::Array(_));
+                let values: &[Expr] = if pack {
+                    let ExprKind::Array(items) = &args[0].kind else { unreachable!() };
+                    if items.iter().any(|e| !matches!(&e.kind,
+                        ExprKind::Bool(_) | ExprKind::Var(_))) {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "boolean array gate pack admits only bool literals or bindings"));
                     }
+                    items
                 } else { args };
-                if values.len() < 2 {
+                if !pack && values.len() < 2 {
                     return Err(Diagnostic::new(pos, "E_ARITY",
-                        format!("{name} expects at least 2 bool arguments")));
+                        format!("{name} expects at least 2 bool arguments or one array literal")));
                 }
                 if values.len() > crate::parser::MAX_PARAMS {
                     return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
                         format!("{name} has too many boolean operands")));
                 }
-                // Normal functions eagerly evaluate all arguments; nested
-                // typed binary builtins retain exact left-to-right behavior.
-                let mut iter = values.iter();
-                let first = iter.next().expect("checked operand minimum");
-                let mut accumulated = self.value(first)?;
-                if accumulated.ty != Type::Bool {
-                    return Err(type_err(first.pos, format!("{name} needs bool arguments")));
-                }
-                for arg in iter {
+                // Check every source operand before emitting control flow,
+                // including operands that will be skipped at runtime.
+                let mut checked = Vec::with_capacity(values.len());
+                for arg in values {
                     let next = self.value(arg)?;
                     if next.ty != Type::Bool {
                         return Err(type_err(arg.pos, format!("{name} needs bool arguments")));
                     }
-                    accumulated = TE {
-                        e: TExpr::Builtin(b, Box::new(accumulated), Box::new(next)),
-                        ty: Type::Bool,
+                    checked.push(next);
+                }
+                let literal = |value| TE { e: TExpr::Bool(value), ty: Type::Bool };
+                let mut iter = checked.into_iter();
+                let Some(mut accumulated) = iter.next() else {
+                    return Ok(literal(b == Builtin::And));
+                };
+                // Scalar And/Or use existing typed conditional lowering.
+                // Array packs and XOR retain eager evaluation in source order.
+                if !pack && b != Builtin::Xor {
+                    if let Some(tr) = self.trace.as_mut() {
+                        tr.unavailable("named Boolean conditional (needs canonical joins)");
+                    }
+                }
+                for next in iter {
+                    let e = match (pack, b) {
+                        (false, Builtin::And) => TExpr::Ternary(
+                            Box::new(accumulated), Box::new(next), Box::new(literal(false))),
+                        (false, Builtin::Or) => TExpr::Ternary(
+                            Box::new(accumulated), Box::new(literal(true)), Box::new(next)),
+                        _ => TExpr::Builtin(b, Box::new(accumulated), Box::new(next)),
                     };
+                    accumulated = TE { e, ty: Type::Bool };
                 }
                 return Ok(accumulated);
             }
         }
-        if name == "stdio.print" || name == "stdio.println" {
+        if matches!(name, "stdio.print" | "stdio.println" | "stdio.stdout.write" | "process.stdout.write") {
             // The parser desugars `stdio.out << value` and the explicit
             // `writech stdio.out, value` through this checked builtin.
             // Never let a lexical binding named `stdio` be silently bypassed
             // by that syntactic rewrite: it denotes a different receiver.
             // Full stream capability dispatch can resolve shadowed names
             // when it is implemented.
-            if self.lookup("stdio").is_some() {
+            let capability = if name == "process.stdout.write" { "process" } else { "stdio" };
+            if self.lookup(capability).is_some() || self.cleanup_io_shadow[usize::from(capability == "process")] || (name.ends_with(".write") && (self.g.names.contains_key(capability) || self.g.class(capability).is_some() || self.g.actor(capability).is_some() || self.g.enum_(capability).is_some())) {
                 return Err(Diagnostic::new(pos, "E_IO_SHADOW",
                     "the builtin stdio capability is shadowed by a local binding; use an unshadowed handle"));
             }
@@ -4742,6 +5267,7 @@ impl<'a> FnCx<'a> {
                 });
             }
             let v = self.value(&args[0])?;
+            if name.ends_with(".write") && v.ty != Type::Str { return Err(type_err(args[0].pos, "stdout.write requires String")); }
             return match v.ty {
                 Type::Float => {
                     self.imports.push(Import::PrintF64);
@@ -4998,4 +5524,10 @@ fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
         TStmt::Defer { body, .. } | TStmt::Recover { body, .. } => stmt_exists(body, f),
         _ => false,
     })
+}
+
+/// Identity-free admitted scalars: value copies, never ownership roots.
+fn is_copy_scalar(t: Type) -> bool {
+    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)
+        | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr)
 }

@@ -1,0 +1,11 @@
+// expect-exit: 42
+import module arena from "atto.alloc/arena";
+import module option from "atto.core/option";
+pub fnc main(): int {
+  let int used = arena.reset();
+  used = arena.advance(used, 64, 3, 1);
+  val int second = option.unwrap_or(arena.place(used, 64, 8, 8), 0);
+  used = arena.advance(used, 64, 8, 8);
+  val int overflow = option.is_none(arena.place(used, 64, 100, 8)) ? 1 : 0;
+  return second + used + overflow + arena.remaining(used, 64) - 32 + 1;
+}

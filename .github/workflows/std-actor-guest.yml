@@ -1,0 +1,68 @@
+name: Atto std.actors exact-head namespace guests
+on:
+  pull_request:
+    paths:
+      - "stdlib/actor/**"
+      - "tests/actor-stdlib-**"
+      - "tests/actor-future-source.test.mjs"
+      - "tests/actor-namespace-source-contract.test.mjs"
+      - "contracts/std-actor-v1/**"
+      - "tests/actor_std_native_guest.rs"
+      - "tests/namespace_relative_function_imports.rs"
+      - "src/import_link.rs"
+      - "src/lib.rs"
+      - "src/core_future_ownership.rs"
+      - "tests/core_future_ownership.rs"
+      - "src/target_syntax.rs"
+      - "src/namespace.rs"
+      - ".github/workflows/std-actor-guest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the exact PR head without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Bind test execution to immutable source tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
+          git diff --exit-code --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          for file in src/import_link.rs src/lib.rs src/target_syntax.rs tests/actor_std_native_guest.rs tests/namespace_relative_function_imports.rs stdlib/actor/policy.atto stdlib/actor/guest_smoke.atto stdlib/actor/guest_edges.atto stdlib/actor/guest_namespace_only.atto stdlib/actor/future.atto; do
+            test -f "$file" && test ! -L "$file"
+            test "$(git hash-object --no-filters "$file")" = "$(git rev-parse "HEAD:$file")"
+          done
+          echo "ATTO_ACTOR_SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_ACTOR_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal
+      - name: Compile actual native Atto namespace and relative import
+        run: cargo +1.85.1 test --locked --test actor_std_native_guest --test namespace_relative_function_imports --test core_future_ownership -- --nocapture
+      - name: Build exact-head production Atto compiler
+        run: cargo +1.85.1 build --locked --release --bin attoc
+      - name: Execute source contracts and compiled Wasm actor policy guests
+        run: node --test tests/actor-stdlib-source.test.mjs tests/actor-future-source.test.mjs tests/actor-namespace-source-contract.test.mjs tests/actor-stdlib-guest.test.mjs
+      - name: Assert exact-head Rust source tree remained unchanged
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --exit-code --quiet HEAD --
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"

@@ -1,0 +1,241 @@
+name: Static import v2 focused checks
+on:
+  pull_request:
+    paths:
+      - 'src/import_v2.rs'
+      - 'src/const_import_link.rs'
+      - 'src/ref_layout.rs'
+      - 'src/import_tree.rs'
+      - 'tests/import_tree.rs'
+      - 'src/registry_namespace.rs'
+      - 'src/package_resolver.rs'
+      - 'tests/registry_namespace.rs'
+      - 'src/import_link.rs'
+      - 'tests/relative_file_imports.rs'
+      - 'tests/layout_plan.rs'
+      - 'tests/profile_cli.rs'
+      - 'src/static_import_graph.rs'
+      - 'tests/static_import_graph.rs'
+      - 'tests/shared_nominal_matrix.rs'
+      - 'src/target_syntax.rs'
+      - 'src/library.rs'
+      - 'src/lib.rs'
+      - 'tests/package_resolver.rs'
+      - 'src/linker.rs'
+      - 'tests/static_imports_v2.rs'
+      - 'tests/shared-import-v2/**'
+      - '.github/workflows/static-imports-v2.yml'
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact head and physical tree
+        id: identity
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD HEAD^{tree}
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code HEAD --
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          test -z "$(git ls-files --others --exclude-standard)"
+          rustc --version
+      - name: Run focused and compatibility compiler suites
+        run: |
+          cargo test --locked --no-fail-fast --test layout_plan --test import_tree --test registry_namespace --test static_import_graph --test static_imports_v2 --test unified_imports --test constant_import_syntax --test relative_file_imports --test const_import_link --test package_resolver --test package_cli --test namespace_storefront
+      - name: Execute shared nominal-kind matrix against production resolver
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          matrix="$(mktemp)"
+          trap 'rm -f "$matrix"' EXIT
+          node tests/shared-import-v2/nominal-matrix-projection.mjs > "$matrix"
+          cmp "$matrix" tests/shared-import-v2/nominal-matrix.tsv
+          cargo test --locked --test shared_nominal_matrix -- --nocapture
+      - name: Compile real builtin guests and run exported main
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./import-v2-guest.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          for variant in legacy bare single double shorthand qualified alias qualified_alias direct; do
+            binding=num
+            case "$variant" in
+              legacy) selector="import module num from 'core/num';" ;;
+              bare) selector="import namespace num from core.num;" ;;
+              single) selector="import namespace num from 'core.num';" ;;
+              double) selector='import namespace num from "core.num";' ;;
+              shorthand) selector='import num from core.num;' ;;
+              qualified) selector='import core.num from core.num;'; binding=core.num ;;
+              alias) selector='import core.num as num;' ;;
+              qualified_alias) selector='import core.num as core.num;'; binding=core.num ;;
+              direct) selector='import core.num;'; binding=core.num ;;
+            esac
+            printf '%s\n%s\n' "$selector" "pub fnc main(): int { return $binding.clamp(42, 0, 100); }" > "$work/$variant.atto"
+            target/debug/attoc "$work/$variant.atto" -o "$work/$variant.wasm"
+            node -e 'const fs=require("node:fs"); const b=fs.readFileSync(process.argv[1]); if(!WebAssembly.validate(b)) throw Error("invalid guest"); const i=new WebAssembly.Instance(new WebAssembly.Module(b),{}); if(i.exports.main()!==42n) throw Error("guest did not return 42"); console.log(process.argv[1]+": main=42");' "$work/$variant.wasm"
+          done
+          printf '%s\n' "import class [C, D], fnc (f, g) from pkg '@a/b/c';" 'pub fnc main(): int { return 42; }' > "$work/denied.atto"
+          if target/debug/attoc "$work/denied.atto" -o "$work/denied.wasm" 2>"$work/denied.log"; then
+            echo 'unsupported import produced a guest' >&2
+            exit 1
+          fi
+          test ! -e "$work/denied.wasm"
+          grep -F 'E_UNSUPPORTED' "$work/denied.log"
+      - name: Legacy core alloc std real guest regression suite
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: node tests/atto_libraries.mjs target/debug/attoc
+      - name: Execute grouped relative function guests and rejection
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./import-v2-relative.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s\n' 'fnc twice(int x): int { return x+x; }' 'pub fnc square(int x): int { return x*x; }' 'pub fnc add(int x): int { return twice(x); }' > "$work/math.atto"
+          for clause in "import fnc [square as calc, add] from './math.atto';" "import fnc (square as calc, add) from './math.atto';" "import [fnc square as calc, fnc add] from './math.atto';" "import ([fnc square as calc, add]) from './math.atto';"; do
+            printf '%s\n%s\n' "$clause" 'pub fnc main(): int { return calc(6)+add(3); }' > "$work/main.atto"
+            target/debug/attoc "$work/main.atto" -o "$work/main.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); if(!WebAssembly.validate(b)||new WebAssembly.Instance(new WebAssembly.Module(b),{}).exports.main()!==42n) throw Error("bad guest"); console.log("grouped relative guest main=42")' "$work/main.wasm"
+          done
+          printf '%s\n%s\n' "import fnc [square, twice] from './math.atto';" 'pub fnc main(): int { return square(6); }' > "$work/negative.atto"
+          if target/debug/attoc "$work/negative.atto" -o "$work/negative.wasm" 2>"$work/negative.log"; then exit 1; fi
+          test ! -e "$work/negative.wasm"
+          grep -F E_PRIVATE "$work/negative.log"
+      - name: Execute static namespace alias guests and reject cycles
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./import-v2-namespace-const.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s\n' 'import core.num;' 'pub fnc main(): int { return num.clamp(42, 0, 100); }' > "$work/baseline.atto"
+          target/debug/attoc "$work/baseline.atto" -o "$work/baseline.wasm"
+          for decl in 'define alias m = core.num;' 'define alias m = second; define alias second = core.num;' 'define alias m = num;' 'define alias core.num as m;' 'define alias second as m; define alias core.num as second;' 'define alias m = second; define alias core.num as second;'; do
+            printf '%s\n' 'import core.num;' "$decl" 'pub fnc main(): int { return m.clamp(42, 0, 100); }' > "$work/alias.atto"
+            target/debug/attoc "$work/alias.atto" -o "$work/alias.wasm"
+            cmp "$work/baseline.wasm" "$work/alias.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); if(!WebAssembly.validate(b)||new WebAssembly.Instance(new WebAssembly.Module(b),{}).exports.main()!==42n) throw Error("bad guest"); console.log("namespace alias guest main=42 byte-identical")' "$work/alias.wasm"
+          done
+          printf '%s\n' 'import core.num;' 'define alias a = b; define alias b = a;' 'pub fnc main(): int { return 42; }' > "$work/cycle.atto"
+          if target/debug/attoc "$work/cycle.atto" -o "$work/cycle.wasm" 2>"$work/cycle.log"; then exit 1; fi
+          test ! -e "$work/cycle.wasm"
+          grep -F E_IMPORT_CYCLE "$work/cycle.log"
+          printf '%s\n' 'import core.num;' 'define alias a as b; define alias b as c; define alias c as a;' 'pub fnc main(): int { return 42; }' > "$work/cycle-as.atto"
+          if target/debug/attoc "$work/cycle-as.atto" -o "$work/cycle-as.wasm" 2>"$work/cycle-as.log"; then exit 1; fi
+          test ! -e "$work/cycle-as.wasm"
+          grep -F 'a -> c -> b -> a' "$work/cycle-as.log"
+      - name: Execute pinned shared conformance guest corpus
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          test "$(git hash-object tests/shared-import-v2/fixtures/import-v2/cases.json)" = af8b7feb26562780fd06159029b9bb6c465eacc7
+          test "$(git hash-object tests/shared-import-v2/tools/run-static-import-v2-rust-guests.mjs)" = 8d22505781e92798993b9b587c6a792806999567
+          cargo build --locked --bin attoc
+          node tests/shared-import-v2/tools/run-static-import-v2-rust-guests.mjs --compiler target/debug/attoc
+      - name: Execute verified external-package Wasm guests
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          work="$(mktemp -d ./import-v2-registry-guest.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          ATTO_REGISTRY_GUEST_DIR="$PWD/$work" cargo test --locked --test registry_namespace -- --nocapture
+          for name in registry-0 registry-1 registry-2 registry-3 registry-distinct registry-tree-0 registry-tree-1 registry-tree-2 registry-tree-3 registry-context-0 registry-context-1 registry-context-2 registry-context-3 registry-context-4 registry-context-5 registry-const-0 registry-const-1 registry-const-2 registry-const-3 registry-const-4 registry-mixed-0 registry-mixed-1 registry-mixed-2 registry-multifile-0 registry-multifile-1 registry-multifile-2 registry-owner-0 registry-class-0 registry-class-1 registry-class-2 registry-class-3 registry-class-4 registry-class-local-0 registry-class-local-1 registry-class-local-2 registry-class-cross-0 registry-class-cross-1 registry-class-helper-0 registry-class-helper-1 registry-class-helper-2 registry-class-helper-3 registry-class-loan-0 registry-class-loan-1 registry-class-exclusive-0 registry-class-exclusive-1 registry-enum-0 registry-enum-1 registry-enum-2; do
+            test -f "$work/$name.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); if(!WebAssembly.validate(b)) throw Error("invalid guest"); const m=new WebAssembly.Module(b); if(WebAssembly.Module.imports(m).length!==0) throw Error("unexpected host import"); if(new WebAssembly.Instance(m,{}).exports.main()!==42n) throw Error("bad guest result"); console.log(process.argv[1]+": main=42");' "$work/$name.wasm"
+          done
+      - name: Execute builtin recursive import tree guests
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./import-v2-builtin-tree.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s\n' 'import core.num; pub fnc main(): int { return num.clamp(42,0,100); }' > "$work/baseline.atto"
+          target/debug/attoc "$work/baseline.atto" -o "$work/baseline.wasm"
+          for decl in 'import core.num.{fnc clamp as bound};' 'import core.{num.{clamp as bound,},};' 'import fnc core.num.clamp as bound;'; do
+            printf '%s\n%s\n' "$decl" 'pub fnc main(): int { return bound(42,0,100); }' > "$work/tree.atto"
+            target/debug/attoc "$work/tree.atto" -o "$work/tree.wasm"
+            cmp "$work/baseline.wasm" "$work/tree.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); if(!WebAssembly.validate(b)||new WebAssembly.Instance(new WebAssembly.Module(b),{}).exports.main()!==42n) throw Error("bad guest"); console.log("builtin tree main=42 byte-identical")' "$work/tree.wasm"
+          done
+          printf '%s\n' 'import core.num.{clamp, absent}; pub fnc main(): int { return 42; }' > "$work/negative.atto"
+          if target/debug/attoc "$work/negative.atto" -o "$work/negative.wasm" 2>"$work/negative.log"; then exit 1; fi
+          test ! -e "$work/negative.wasm"
+          grep -F E_UNBOUND "$work/negative.log"
+      - name: Compile manifest-selected namespace guest
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: |
+          set -eu
+          cargo build --locked --bin attoc
+          work="$(mktemp -d ./manifest-guest.XXXXXX)"
+          trap 'rm -rf "$work"' EXIT
+          mkdir -p "$work/src/network/http"
+          cat > "$work/.atto.pkg.toml" <<'EOF'
+          [package]
+          name = "@org/project/package"
+          version = "1.0.0"
+          [namespaces]
+          http = "src/network/http/"
+          [exports]
+          "network/http" = "http"
+          EOF
+          printf '%s\n' 'use namespace http;' 'pub fnc answer(): int { return 42; }' > "$work/src/network/http/namespace.atto"
+          printf '%s\n' 'this unrelated source is intentionally invalid' > "$work/src/network/http/unrelated.atto"
+          mkdir -p "$work/src/a/b"
+          printf '%s\n' 'use namespace c;' 'pub fnc answer(): int { return 22; }' > "$work/src/a/b/c.atto"
+          # Add the second namespace to the manifest before the exports table.
+          sed -i '/^\[exports\]/i c = "src/a/b/c.atto"' "$work/.atto.pkg.toml"
+          for variant in explicit-root shorthand-root explicit-subpath shorthand-subpath plural-explicit plural-shorthand plural-reversed alias qualified qualified-alias subpath-alias shared-prefix; do
+            case "$variant" in
+              explicit-root) clause="import namespace http from pkg '@org/project/package';" ;;
+              shorthand-root) clause="import http from pkg '@org/project/package';" ;;
+              explicit-subpath) clause="import namespace http from pkg '@org/project/package/network/http';" ;;
+              shorthand-subpath) clause="import http from pkg '@org/project/package/network/http';" ;;
+              plural-explicit) clause="import namespace http, c from pkg '@org/project/package';" ;;
+              plural-shorthand) clause="import http, c from pkg '@org/project/package';" ;;
+              plural-reversed) clause="import c, http from pkg '@org/project/package';" ;;
+            esac
+            body='pub fnc main(): int { return http.answer(); }'
+            case "$variant" in
+              plural-*) body='pub fnc main(): int { return http.answer() - c.answer() + 22; }' ;;
+              alias) clause="import http as web from pkg '@org/project/package';"; body='pub fnc main(): int { return web.answer(); }' ;;
+              qualified) clause="import network.http from pkg '@org/project/package';"; body='pub fnc main(): int { return network.http.answer(); }' ;;
+              qualified-alias) clause="import namespace http as api.v1 from pkg '@org/project/package/network/http';"; body='pub fnc main(): int { return api.v1.answer(); }' ;;
+              subpath-alias) clause="import web from pkg '@org/project/package/network/http';"; body='pub fnc main(): int { return web.answer(); }' ;;
+              shared-prefix) clause="import http as api.web, c as api.calc from pkg '@org/project/package';"; body='pub fnc main(): int { return api.web.answer() - api.calc.answer() + 22; }' ;;
+            esac
+            printf '%s\n' "$clause" "$body" > "$work/src/main.atto"
+            target/debug/attoc --package-root "$work" --entry src/main.atto -o "$work/$variant.wasm"
+            node -e 'const b=require("node:fs").readFileSync(process.argv[1]); if(!WebAssembly.validate(b)) throw Error("invalid guest"); const i=new WebAssembly.Instance(new WebAssembly.Module(b),{}); if(i.exports.main()!==42n) throw Error("wrong manifest guest"); console.log(process.argv[1]+": MANIFEST_NAMESPACE_GUEST_MAIN=42");' "$work/$variant.wasm"
+          done
+          cmp "$work/explicit-root.wasm" "$work/shorthand-root.wasm"
+          cmp "$work/explicit-subpath.wasm" "$work/shorthand-subpath.wasm"
+          cmp "$work/plural-explicit.wasm" "$work/plural-shorthand.wasm"
+          for variant in alias qualified qualified-alias subpath-alias; do
+            cmp "$work/explicit-root.wasm" "$work/$variant.wasm"
+          done
+          for clause in "import http as api, c as api.v1 from pkg '@org/project/package';" "import http as __atto_q_fake from pkg '@org/project/package';" "import http from pkg '@org/project/package/hidden';" "import http from pkg '@other/project/package';" "import fnc http from pkg '@org/project/package';" "import http, http from pkg '@org/project/package';"; do
+            printf '%s\n' "$clause" 'pub fnc main(): int { return 0; }' > "$work/src/main.atto"
+            if target/debug/attoc --package-root "$work" --entry src/main.atto -o "$work/denied.wasm" >"$work/denied.log" 2>&1; then
+              echo "invalid manifest import produced an artifact" >&2; exit 1
+            fi
+            test ! -e "$work/denied.wasm"
+            cat "$work/denied.log"
+          done
+          printf '%s\n' "import http as web from pkg '@org/project/package';" 'pub fnc main(): int { return http.answer(); }' > "$work/src/main.atto"
+          if target/debug/attoc --package-root "$work" --entry src/main.atto -o "$work/denied.wasm" >"$work/denied.log" 2>&1; then
+            echo "hidden natural provider name escaped alias" >&2; exit 1
+          fi
+          test ! -e "$work/denied.wasm"
+          cat "$work/denied.log"

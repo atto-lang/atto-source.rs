@@ -51,9 +51,12 @@ pub enum Tok {
     YieldStar,
     Slash,
     Bang,
+    UnicodeNot,
     Question,
     Pipe,
     PipeGt,
+    /// Right-associative functional application: f <| value.
+    PipeLt,
     Amp,
     Caret,
     Tilde,
@@ -71,6 +74,15 @@ pub const MAX_TOKENS: usize = 32_768;
 pub const MAX_STRING_BYTES: usize = 4_096;
 
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    // Scan raw source before comments or quoted literals can hide controls.
+    let (mut raw_line, mut raw_col) = (1u32, 1u32);
+    for c in source.chars() {
+        if matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            return Err(Diagnostic::new(Pos { line: raw_line, col: raw_col },
+                "E_SOURCE_BIDI", "bidirectional Unicode control in source"));
+        }
+        if c == '\n' { raw_line += 1; raw_col = 1; } else { raw_col += 1; }
+    }
     let chars: Vec<char> = source.chars().collect();
     let mut out = Vec::new();
     let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
@@ -91,7 +103,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if c == '\0' {
             return Err(Diagnostic::new(pos, "E_NUL", "NUL characters are not allowed in source"));
         }
-        if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+        if matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c') {
             bump!();
             continue;
         }
@@ -127,11 +139,27 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         if out.len() >= MAX_TOKENS {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many tokens"));
         }
-        if c.is_alphabetic() || c == '_' {
+        if matches!(c, '⧖' | '∂') {
+            bump!();
+            out.push(Token { tok: Tok::Ident("suspends".to_owned()), pos });
+            continue;
+        }
+        if c.is_alphabetic() || c == '_' || c == '〇' {
             let mut s = String::new();
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '〇') {
                 s.push(chars[i]);
                 bump!();
+            }
+            // Transfer aliases have exactly the same source separator rule.
+            // Preserve comparison spellings and ordinary longer identifiers.
+            if matches!(s.as_str(), "take" | "move") && chars.get(i) == Some(&'!')
+                && chars.get(i + 1) != Some(&'=')
+                && !(chars.get(i + 1) == Some(&'e') && chars.get(i + 2) == Some(&'q')
+                    && chars.get(i + 3).is_none_or(|c| !(c.is_alphanumeric() || *c == '_' || *c == '〇')))
+                && !chars.get(i + 1).is_some_and(|c| matches!(*c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c'))
+            {
+                return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
+                    "whitespace required after the complete transfer keyword bang"));
             }
             // Generator delegation is a single contiguous lexical spelling.
             // Do not consume a separated star: `yield *value` is not `yield*`.
@@ -139,7 +167,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 bump!();
                 Tok::YieldStar
             } else {
-                Tok::Ident(s)
+                Tok::Ident(if s == "susp" { "suspends".to_owned() } else { s })
             };
             out.push(Token { tok, pos });
             continue;
@@ -164,7 +192,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     bump!();
                 }
                 if bits.is_empty() || i < chars.len() &&
-                    (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '〇') {
                     return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL",
                         "malformed binary integer literal"));
                 }
@@ -216,14 +244,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     bump!();
                 }
             }
-            if i < chars.len() && chars[i] == 'i' && !chars.get(i + 1).is_some_and(|d| d.is_alphanumeric() || *d == '_') {
+            if i < chars.len() && chars[i] == 'i' && !chars.get(i + 1).is_some_and(|d| d.is_alphanumeric() || *d == '_' || *d == '〇') {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED_TYPE",
                     "imaginary literals are not supported by the browser compiler yet",
                 ));
             }
-            if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_') {
+            if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_' || chars[i] == '〇') {
                 return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL", "malformed integer literal"));
             }
             if floating {
@@ -342,12 +370,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            ('¬', _) => (Tok::UnicodeNot, 1),
             // Keep the last bracket of '<<<=' / '>>>=' separate from
             // '='. This also protects unspaced triple generic closers
             // (e.g. T<U<V<W>>>=value) from becoming comparison tokens.
             ('<', Some('=')) if i >= 2 && chars[i - 1] == '<' && chars[i - 2] == '<' =>
                 (Tok::Lt, 1),
             ('<', Some('-')) => (Tok::LeftArrow, 2),
+            ('•', _) => (Tok::LeftArrow, 1),
+            ('<', Some('|')) => (Tok::PipeLt, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
             ('>', Some('=')) if i >= 2 && chars[i - 1] == '>' && chars[i - 2] == '>' =>
@@ -356,7 +387,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('>', _) => (Tok::Gt, 1),
             ('*', _) => (Tok::Star, 1),
             ('/', _) => (Tok::Slash, 1),
-            ('%', _) | ('^', Some('^')) => {
+            ('%', _) => {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED",
@@ -396,4 +427,26 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         pos: Pos { line, col },
     });
     Ok(out)
+}
+
+#[cfg(test)]
+mod suspension_alias_lex_tests {
+    use super::*;
+    #[test]
+    fn exact_aliases_share_the_existing_effect_word() {
+        for spelling in ["suspends", "susp", "⧖", "∂"] {
+            let source = format!("{spelling} fnc");
+            let tokens = lex(&source).expect("valid alias");
+            assert_eq!(tokens[0].tok, Tok::Ident("suspends".into()));
+            assert_eq!(tokens[1].tok, Tok::Ident("fnc".into()));
+            assert_eq!(tokens[0].pos.col, 1);
+            assert_eq!(tokens[1].pos.col, spelling.chars().count() as u32 + 2);
+        }
+        let tokens = lex("suspension susp2 π \"⧖ ∂ susp\" // ⧖ ∂").unwrap();
+        for (i, name) in ["suspension", "susp2", "π"].iter().enumerate() {
+            assert_eq!(tokens[i].tok, Tok::Ident((*name).into()));
+        }
+        assert_eq!(tokens[3].tok, Tok::Str("⧖ ∂ susp".into()));
+        assert_eq!(tokens[4].tok, Tok::Eof);
+    }
 }

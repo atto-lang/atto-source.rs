@@ -74,6 +74,7 @@ fn is_scanner_source(root: &Path, path: &Path) -> bool {
             .replace('\\', "/")
             .as_str(),
         "tools/check_no_python.rs" | "tools/no-python-check/src/main.rs"
+            | "native/tools/check_no_python.rs" | "native/tools/no-python-check/src/main.rs"
     )
 }
 
@@ -430,6 +431,10 @@ mod tests {
             root,
             &root.join("tools/no-python-check/src/main.rs")
         ));
+        assert!(is_scanner_source(root, &root.join("native/tools/check_no_python.rs")));
+        assert!(is_scanner_source(root, &root.join("native/tools/no-python-check/src/main.rs")));
+        assert!(!is_scanner_source(root, &root.join("native/tools/other.rs")));
+        assert!(!is_scanner_source(root, &root.join("other/tools/check_no_python.rs")));
         assert!(!is_scanner_source(root, &root.join("tools/other.rs")));
         assert!(python_invocation_reason("run: python3 -m unittest").is_some());
     }

@@ -1,0 +1,14 @@
+// expect-exit: 42
+// expect-stdout: 30
+// java: rejects
+define class Person as
+  pub let int age = 30;
+end
+pub fnc main(): int {
+  let person = new Person();
+  val first = borrow! person;
+  stdio.println(first.age);
+  val second = borrow! mut person;
+  second.age = 42;
+  return person.age;
+}

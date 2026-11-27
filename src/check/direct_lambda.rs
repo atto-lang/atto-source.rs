@@ -1,6 +1,6 @@
 //! Conservative direct-call lowering of bounded, immutable scalar-capturing lambdas.
 //!
-//! One immutable local lambda per source function is supported. Direct calls
+//! Up to eight independent immutable local lambdas per source function are supported. Direct calls
 //! become named private Wasm function calls with frozen scalar capture parameters.
 //! Callable values, escaping closures, mutable captures and indirect tables
 //! remain unsupported.
@@ -19,12 +19,15 @@ struct Direct {
     lambda: Expr,
     params: Vec<String>,
     inferred: Option<Vec<Type>>,
+    declared: Option<CallableSignature>,
     captures: Vec<Capture>,
     calls: usize,
     expression_depth: usize,
     statement_depth: usize,
 }
 const MAX_REWRITE_DEPTH: usize = 128;
+const MAX_DIRECT_LAMBDAS_PER_FUNCTION: usize = 8;
+const MAX_DIRECT_LAMBDAS_PER_MODULE: usize = 64;
 fn error(p: Pos, code: &'static str, m: impl Into<String>) -> Diagnostic {
     Diagnostic::new(p, code, m)
 }
@@ -34,17 +37,39 @@ fn literal_type(e: &Expr) -> Option<Type> {
         ExprKind::Bool(_) => Some(Type::Bool),
         ExprKind::Float(_) => Some(Type::Float),
         ExprKind::Str(_) => Some(Type::Str),
+        ExprKind::Ascribe(inner, ty, _) => literal_type(inner).filter(|found| found == ty),
         ExprKind::Unary(UnOp::Plus | UnOp::Neg, inner) if
             matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_)) => literal_type(inner),
         _ => None,
     }
 }
 pub fn lower(input: &Program) -> R<Program> {
+    // A hand-built AST cannot introduce an executable declaration for the
+    // temporary apply operand marker. Source identifiers cannot spell it.
+    let marker = crate::parser::APPLY_TUPLE_LITERAL_NAME;
+    if input.funcs.iter().any(|f| f.name == marker)
+        || input.classes.iter().any(|c| c.name == marker)
+        || input.enums.iter().any(|e| e.name == marker)
+        || input.actors.iter().any(|a| a.name == marker)
+    {
+        return Err(error(Pos { line: 1, col: 1 }, "E_DUPLICATE",
+            "reserved compiler tuple operand marker"));
+    }
     let mut program = input.clone();
     let mut generated = Vec::new();
     for (idx, f) in program.funcs.iter_mut().enumerate() {
         if f.is_generator { continue; }
-        let mut direct: Option<Direct> = None;
+        let mut direct = Vec::<Direct>::new();
+        // Discover every same-function direct-lambda name before lowering.
+        // Looking only at already visited declarations would miss a forward
+        // reference inside an earlier lambda body, potentially binding the
+        // callee to an unrelated top-level function after helper generation.
+        let lambda_names = f.body.iter().filter_map(|stmt| match stmt {
+            Stmt::Bind { name, init, .. }
+                if matches!(&init.kind, ExprKind::Lambda { .. }) =>
+                Some(name.clone()),
+            _ => None,
+        }).collect::<BTreeSet<_>>();
         // Keep the top-level lexical binding ledger before desugaring removes
         // the lambda declaration. The ordinary checker would otherwise miss
         // an earlier same-scope declaration with the identical name.
@@ -62,26 +87,29 @@ pub fn lower(input: &Program) -> R<Program> {
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
                 if let ExprKind::Lambda { params, .. } = &init.kind {
-                    if direct.is_some() {
-                        return Err(error(*pos, "E_UNSUPPORTED",
-                            "at most one direct lambda per function is supported"));
+                    if direct.len() >= MAX_DIRECT_LAMBDAS_PER_FUNCTION {
+                        return Err(error(*pos, "E_SOURCE_LIMIT", "too many direct lambdas in one function"));
                     }
-                    if let Some(t @ Type::Callable(_)) = ty {
-                        // Even though callable storage is not executable,
-                        // a typed lambda binding provides a complete
-                        // contextual signature: check its body and captures
-                        // before the explicit runtime capability gate.
+                    let declared = if let Some(t @ Type::Callable(_)) = ty {
                         let want = CallableSignature::from_source_type(
                             *t, &input.type_names, *pos)?;
-                        let _typed = CallableSignature::from_noncapturing(
+                        let checked = CallableSignature::from_noncapturing(
                             init, Some(&want.params), Some(want.result))?;
-                        return Err(error(*pos, "E_UNSUPPORTED",
-                            "typed callable values require verified Wasm indirect dispatch"));
-                    }
-                    if *kind != BindKind::Val || ty.is_some() {
-                        return Err(error(*pos, "E_UNSUPPORTED",
-                            "direct lambdas need an unannotated immutable val binding"));
-                    }
+                        if checked != want {
+                            return Err(error(*pos, "E_TYPE", "typed lambda differs from declaration"));
+                        }
+                        if !matches!(kind, BindKind::Val | BindKind::Const) {
+                            return Err(error(*pos, "E_UNSUPPORTED",
+                                "mutable callable values require verified Wasm indirect dispatch"));
+                        }
+                        Some(want)
+                    } else {
+                        if *kind != BindKind::Val || ty.is_some() {
+                            return Err(error(*pos, "E_UNSUPPORTED",
+                                "direct lambdas need an unannotated immutable val binding"));
+                        }
+                        None
+                    };
                     if bindings_before_lambda.contains(name) {
                         return Err(error(*pos, "E_DUPLICATE",
                             "direct lambda duplicates an existing local binding"));
@@ -90,14 +118,21 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_DUPLICATE",
                             "lambda name duplicates a function parameter"));
                     }
-                    if generated.len() >= 64 {
+                    if generated.len().saturating_add(direct.len()) >= MAX_DIRECT_LAMBDAS_PER_MODULE {
                         return Err(error(*pos, "E_SOURCE_LIMIT", "too many direct lambdas"));
                     }
                     // The private name is reserved by source grammar but a
                     // checker caller may construct a Program directly. Reject
                     // collisions instead of letting a forged declaration
                     // impersonate the compiled callback.
-                    let hidden = format!("$lambda_{}", idx);
+                    // Preserve the existing first-helper ABI/name. Siblings
+                    // receive a distinct private name and capture snapshot key.
+                    let ordinal = direct.len();
+                    let hidden = if ordinal == 0 {
+                        format!("$lambda_{}", idx)
+                    } else {
+                        format!("$lambda_{}_{}", idx, ordinal)
+                    };
                     if input.funcs.iter().any(|f| f.name == hidden)
                         || input.classes.iter().any(|c| c.name == hidden)
                         || input.enums.iter().any(|e| e.name == hidden)
@@ -106,8 +141,30 @@ pub fn lower(input: &Program) -> R<Program> {
                             "compiler-generated lambda name collides with a declaration"));
                     }
                     let mut free = BTreeSet::new();
-                    if let ExprKind::Lambda { body: LambdaBody::Expression(expression), .. } = &init.kind {
-                        free_names(expression, &mut free, 0)?;
+                    if let ExprKind::Lambda { body: lambda_body, .. } = &init.kind {
+                        // A complete, depth-bounded call graph preflight covers
+                        // expression, statement and block bodies, including
+                        // nested branches, handlers, cleanup and match arms.
+                        // Without it, an unlowered local sibling/forward call
+                        // might accidentally resolve to a top-level homonym.
+                        let local_call = match lambda_body {
+                            LambdaBody::Expression(expr) =>
+                                calls_any_named(expr, &lambda_names, 0)?,
+                            LambdaBody::Statement(stmt) =>
+                                calls_any_named_stmt(stmt, &lambda_names, 0)?,
+                            LambdaBody::Block(stmts) =>
+                                calls_any_named_statements(stmts, &lambda_names, 0)?,
+                        };
+                        if local_call {
+                            return Err(error(*pos, "E_UNSUPPORTED",
+                                "local lambda calls and self-recursion require verified closure environment linking"));
+                        }
+                        // Capture lifting stays deliberately limited to
+                        // expression bodies. Statement and block bodies retain
+                        // the independent noncapturing type/effect checker.
+                        if let LambdaBody::Expression(expr) = lambda_body {
+                            free_names(expr, &mut free, 0)?;
+                        }
                     }
                     for p in params { free.remove(p); }
                     let mut captures = Vec::new();
@@ -119,10 +176,17 @@ pub fn lower(input: &Program) -> R<Program> {
                             }
                             captures.push(Capture {
                                 source: candidate,
-                                snapshot: format!("$capture_{}_{}", idx, captures.len()),
+                                snapshot: if ordinal == 0 {
+                                    format!("$capture_{}_{}", idx, captures.len())
+                                } else {
+                                    format!("$capture_{}_{}_{}", idx, ordinal, captures.len())
+                                },
                                 ty,
                             });
                         }
+                    }
+                    if declared.is_some() && !captures.is_empty() {
+                        return Err(error(*pos, "E_CAPTURE", "typed closed callable cannot capture enclosing state"));
                     }
                     // Snapshot at the lexical definition point, not at a call
                     // inside a shadowing block. Values are immutable scalars.
@@ -134,17 +198,19 @@ pub fn lower(input: &Program) -> R<Program> {
                             pos: *pos,
                         });
                     }
-                    direct = Some(Direct {
+                    direct.push(Direct {
                         source: name.clone(),
                         hidden,
                         lambda: init.clone(),
-                        params: params.clone(), inferred: None, captures, calls: 0,
+                        params: params.clone(), inferred: declared.as_ref().map(|sig| sig.params.clone()),
+                        declared, captures, calls: 0,
                         expression_depth: 0, statement_depth: 0,
                     });
+                    bindings_before_lambda.insert(name.clone());
                     continue;
                 }
             }
-            if let Some(d) = &mut direct { rewrite_stmt(&mut stmt, d)?; }
+            for d in &mut direct { rewrite_stmt(&mut stmt, d)?; }
             if let Stmt::Bind { kind, name, init, .. } = &stmt {
                 bindings_before_lambda.insert(name.clone());
                 if *kind == BindKind::Val {
@@ -163,10 +229,10 @@ pub fn lower(input: &Program) -> R<Program> {
             }
             body.push(stmt);
         }
-        if let Some(d) = direct {
+        for d in direct {
             if d.calls == 0 {
                 return Err(error(d.lambda.pos, "E_UNSUPPORTED",
-                    "unused lambdas are not executable; first-class callables remain unsupported"));
+                    "unused lambdas are not executable; first-class callables require verified indirect dispatch"));
             }
             let types = d.inferred.ok_or_else(|| error(d.lambda.pos, "E_INFER",
                 "lambda parameter types need a direct invocation"))?;
@@ -178,7 +244,11 @@ pub fn lower(input: &Program) -> R<Program> {
                     all_types.push(c.ty);
                 }
             }
-            let signature = CallableSignature::from_noncapturing(&lifted, Some(&all_types), None)?;
+            let signature = CallableSignature::from_noncapturing(&lifted, Some(&all_types),
+                d.declared.as_ref().map(|sig| sig.result))?;
+            if d.declared.as_ref().is_some_and(|want| *want != signature) {
+                return Err(error(d.lambda.pos, "E_TYPE", "lowered callable signature differs from declaration"));
+            }
             let callable = TypedCallable::checked(
                 signature,
                 CallableTarget::Direct {
@@ -259,22 +329,40 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
         }
         Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
             "direct lambda rewriting cannot cross a protected state loan")),
+        Stmt::UsingTelemetry { alias, body, pos, .. } => {
+            if *alias == d.source {
+                return Err(error(*pos, "E_TELEMETRY_ALIAS",
+                    "span alias cannot shadow a direct lambda"));
+            }
+            rewrite_statements(body, d)
+        }
         Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
             rewrite_expr(e, d),
         Stmt::Try { body, catch, finally, .. } => {
             rewrite_statements(body, d)?;
-            if let Some((_, handler)) = catch { rewrite_statements(handler, d)?; }
+            if let Some((name, handler)) = catch {
+                if *name == d.source {
+                    return Err(error(d.lambda.pos, "E_UNSUPPORTED", "catch binding cannot shadow direct lambda"));
+                }
+                rewrite_statements(handler, d)?;
+            }
             if let Some(cleanup) = finally { rewrite_statements(cleanup, d)?; }
             Ok(())
         }
-        // Cleanup/recovery bodies are checked in an isolated scope, but
-        // their factory argument expressions execute at registration and must
-        // undergo the same checked direct-call rewriting as ordinary calls.
-        Stmt::Defer { args, .. } => {
-            for arg in args { rewrite_expr(arg, d)?; }
-            Ok(())
-        },
-        Stmt::Recover { args, .. } => {
+        // Cleanup/recovery bodies run in their own lexical scope. They are
+        // intentionally not rewritten as ordinary direct-call sites. A call
+        // to a local lambda from either body must fail closed; otherwise the
+        // source name could silently resolve to an unrelated global function
+        // after the local lambda declaration has been erased.
+        Stmt::Defer { args, body, pos, .. } |
+        Stmt::Recover { args, body, pos, .. } => {
+            let names = BTreeSet::from([d.source.clone()]);
+            if calls_any_named_statements(body, &names, 0)? {
+                return Err(error(*pos, "E_UNSUPPORTED",
+                    "direct lambda calls inside deferred or recovery handlers need closure environment lowering"));
+            }
+            // Registration arguments are evaluated once in the caller and
+            // still receive normal direct-call and ownership validation.
             for arg in args { rewrite_expr(arg, d)?; }
             Ok(())
         }
@@ -336,6 +424,37 @@ fn rewrite_expr(e: &mut Expr, d: &mut Direct) -> R<()> {
     result
 }
 fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
+    // Resolve only the lexically tracked immutable callable. Ordinary
+    // nominal methods named call remain ordinary MethodCall expressions.
+    // Normalize before the existing checked direct-call rewrite, preserving
+    // argument order, arity, signature, captures and the private target.
+    if let ExprKind::MethodCall(receiver, member, args) = &mut e.kind {
+        if matches!(&receiver.kind, ExprKind::Var(name) if *name == d.source) {
+            if member == "call" {
+                e.kind = ExprKind::Call(d.source.clone(), std::mem::take(args));
+            } else if member == "apply" {
+                if d.declared.is_none() {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires a closed source-typed callable in this profile"));
+                }
+                if args.len() != 1 {
+                    return Err(error(e.pos, "E_ARITY", "apply expects exactly one tuple"));
+                }
+                let operand = args.pop().expect("arity checked");
+                let ExprKind::Call(marker, elements) = operand.kind else {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires an immediate parenthesized scalar tuple literal"));
+                };
+                if marker != crate::parser::APPLY_TUPLE_LITERAL_NAME
+                    || elements.iter().any(|arg| literal_type(arg).is_none())
+                {
+                    return Err(error(e.pos, "E_UNSUPPORTED",
+                        "apply requires an immediate parenthesized scalar tuple literal"));
+                }
+                e.kind = ExprKind::Call(d.source.clone(), elements);
+            }
+        }
+    }
     match &mut e.kind {
         ExprKind::Var(n) if *n == d.source =>
             Err(error(e.pos, "E_UNSUPPORTED",
@@ -368,7 +487,8 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         // escape. Traverse their operand before the ordinary ownership checker
         // validates move/borrow/copy semantics.
         ExprKind::Ownership(_, _, x) | ExprKind::Unary(_, x) |
-        ExprKind::Trap(x) | ExprKind::Propagate(x) => rewrite_expr(x, d),
+        ExprKind::Trap(x) | ExprKind::Propagate(x) |
+        ExprKind::Ascribe(x, _, _) => rewrite_expr(x, d),
         ExprKind::Binary(_, x, y) => {
             rewrite_expr(x, d)?;
             rewrite_expr(y, d)
@@ -403,6 +523,142 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
     }
 }
 
+fn calls_any_named(e: &Expr, names: &BTreeSet<String>, depth: usize) -> R<bool> {
+    if depth >= MAX_REWRITE_DEPTH {
+        return Err(error(e.pos, "E_NESTING", "lambda call scan limit exceeded"));
+    }
+    let d = depth + 1;
+    match &e.kind {
+        ExprKind::Call(name, args) => {
+            if names.contains(name) { return Ok(true); }
+            for arg in args {
+                if calls_any_named(arg, names, d)? { return Ok(true); }
+            }
+        }
+        ExprKind::Unary(_, a) | ExprKind::Ownership(_, _, a)
+        | ExprKind::Trap(a) | ExprKind::Propagate(a)
+        | ExprKind::Member(a, _) | ExprKind::Ascribe(a, _, _) => return calls_any_named(a, names, d),
+        ExprKind::Binary(_, a, b) => {
+            return Ok(calls_any_named(a, names, d)? || calls_any_named(b, names, d)?);
+        }
+        ExprKind::Ternary(a, b, c) => {
+            return Ok(calls_any_named(a, names, d)?
+                || calls_any_named(b, names, d)?
+                || calls_any_named(c, names, d)?);
+        }
+        ExprKind::MethodCall(a, _, args) => {
+            if calls_any_named(a, names, d)? { return Ok(true); }
+            for arg in args {
+                if calls_any_named(arg, names, d)? { return Ok(true); }
+            }
+        }
+        ExprKind::Array(args) | ExprKind::New(_, args) => {
+            for arg in args {
+                if calls_any_named(arg, names, d)? { return Ok(true); }
+            }
+        }
+        // A nested expression lambda or protected state projection is not
+        // eligible for independent direct-lambda lowering.
+        ExprKind::Lambda { .. } => return Ok(true),
+        ExprKind::StateRead(_) |
+        ExprKind::SelfRef | ExprKind::Spawn(_) |
+        ExprKind::Int(_) | ExprKind::Float(_) |
+        ExprKind::Bool(_) | ExprKind::Str(_) => {},
+        // A local callable used as a value or intrinsic receiver is also
+        // unverified in an independent lambda or isolated handler.
+        ExprKind::Var(name) => return Ok(names.contains(name)),
+    }
+    Ok(false)
+}
+
+
+fn calls_any_named_statements(stmts: &[Stmt], names: &BTreeSet<String>, depth: usize) -> R<bool> {
+    if depth >= MAX_REWRITE_DEPTH {
+        return Err(error(Pos { line: 1, col: 1 }, "E_NESTING", "lambda statement call scan limit exceeded"));
+    }
+    for stmt in stmts {
+        if calls_any_named_stmt(stmt, names, depth + 1)? { return Ok(true); }
+    }
+    Ok(false)
+}
+
+fn calls_any_named_stmt(s: &Stmt, names: &BTreeSet<String>, depth: usize) -> R<bool> {
+    if depth >= MAX_REWRITE_DEPTH {
+        return Err(error(stmt_pos(s), "E_NESTING", "lambda statement call scan limit exceeded"));
+    }
+    let next = depth + 1;
+    match s {
+        Stmt::Bind { init, .. } => calls_any_named(init, names, next),
+        Stmt::Assign { value, .. } => calls_any_named(value, names, next),
+        Stmt::FieldAssign { target, value, .. } =>
+            Ok(calls_any_named(target, names, next)?
+                || calls_any_named(value, names, next)?),
+        Stmt::StateWrite { body, .. } | Stmt::Block(body)
+        | Stmt::Loop { body, .. } | Stmt::UsingTelemetry { body, .. } => calls_any_named_statements(body, names, next),
+        Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _)
+        | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
+            calls_any_named(e, names, next),
+        Stmt::Return(Some(e), _) => calls_any_named(e, names, next),
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => Ok(false),
+        Stmt::Try { body, catch, finally, .. } => {
+            if calls_any_named_statements(body, names, next)? { return Ok(true); }
+            if let Some((_, handler)) = catch {
+                if calls_any_named_statements(handler, names, next)? { return Ok(true); }
+            }
+            if let Some(cleanup) = finally {
+                if calls_any_named_statements(cleanup, names, next)? { return Ok(true); }
+            }
+            Ok(false)
+        }
+        Stmt::Defer { body, args, .. } | Stmt::Recover { body, args, .. } => {
+            for arg in args {
+                if calls_any_named(arg, names, next)? { return Ok(true); }
+            }
+            calls_any_named_statements(body, names, next)
+        }
+        Stmt::If { arms, otherwise, .. } => {
+            for (cond, body) in arms {
+                if calls_any_named(cond, names, next)?
+                    || calls_any_named_statements(body, names, next)? {
+                    return Ok(true);
+                }
+            }
+            if let Some(body) = otherwise {
+                return calls_any_named_statements(body, names, next);
+            }
+            Ok(false)
+        }
+        Stmt::While { cond, body, .. } =>
+            Ok(calls_any_named(cond, names, next)?
+                || calls_any_named_statements(body, names, next)?),
+        Stmt::For { init, cond, update, body, .. } => {
+            if let Some(stmt) = init {
+                if calls_any_named_stmt(stmt, names, next)? { return Ok(true); }
+            }
+            if let Some(expr) = cond {
+                if calls_any_named(expr, names, next)? { return Ok(true); }
+            }
+            if let Some(stmt) = update {
+                if calls_any_named_stmt(stmt, names, next)? { return Ok(true); }
+            }
+            calls_any_named_statements(body, names, next)
+        }
+        Stmt::ForIn { source, body, .. } =>
+            Ok(calls_any_named(source, names, next)?
+                || calls_any_named_statements(body, names, next)?),
+        Stmt::Match { subject, arms, .. } => {
+            if calls_any_named(subject, names, next)? { return Ok(true); }
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    if calls_any_named(guard, names, next)? { return Ok(true); }
+                }
+                if calls_any_named_statements(&arm.body, names, next)? { return Ok(true); }
+            }
+            Ok(false)
+        }
+    }
+}
+
 // Collect only simple expression-body free variables. Other lambda bodies
 // remain under the existing no-capture/effect checker until scoped capture
 // analysis and lifetime lowering are implemented.
@@ -427,7 +683,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // otherwise a missed free-variable use could escape capture analysis.
         ExprKind::Int(_) | ExprKind::Float(_) |
         ExprKind::Bool(_) | ExprKind::Str(_) => {},
-        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) =>
+        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) |
+        ExprKind::Ascribe(a, _, _) =>
             free_names(a, names, depth + 1)?,
         ExprKind::Call(_, args) | ExprKind::New(_, args) |
         ExprKind::Array(args) => {
@@ -460,6 +717,7 @@ fn stmt_pos(s: &Stmt) -> Pos {
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
         Stmt::Raise(_, pos) | Stmt::Try { pos, .. } | Stmt::Defer { pos, .. } | Stmt::Recover { pos, .. } |
+        Stmt::UsingTelemetry { pos, .. } |
         Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) |
         Stmt::Return(_, pos) | Stmt::Break(pos) |
         Stmt::Continue(pos) => *pos,

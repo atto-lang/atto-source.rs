@@ -1,0 +1,15 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Person as
+  pub let string name = "Alice";
+  pub let int age = 30;
+end
+fnc make_person(): Person {
+  return new Person();
+}
+pub fnc main(): int {
+  let person = make_person();
+  val name_view = borrow! person.name;
+  stdio.println(name_view);
+  return person.age;
+}

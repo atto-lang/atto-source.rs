@@ -3,7 +3,7 @@
 //! Guest contract `atto.browser.guest.v2` (v1 plus classes and actors):
 //! * export `main: () -> i64` (a void `main` returns 0)
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
-//!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
+//!   1 = integer overflow; 2 = checked quantity division by zero;
 //!   3 = object heap exhausted; 4 = invalid generator handle/state;
 //!   5 = generator per-pull dispatch budget exhausted;
 //!   6 = logical stack exhausted: a recursive call exceeded [`MAX_CALL_DEPTH`]
@@ -31,7 +31,7 @@ mod generator_runtime;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
-/// Reserved ABI value; current admitted expressions cannot generate this panic.
+/// Checked quantity division by zero; ordinary scalar division is still separate.
 pub const PANIC_DIV_ZERO: i32 = 2;
 pub const PANIC_HEAP: i32 = 3;
 pub const PANIC_GENERATOR: i32 = 4;
@@ -40,6 +40,10 @@ pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 /// Logical stack exhausted (spec chapter 25): a call inside a recursive call
 /// cycle would exceed [`MAX_CALL_DEPTH`] live guest frames.
 pub const PANIC_STACK: i32 = 6;
+/// Checked refinement predicate violation in the verified quantity profile.
+pub const PANIC_REFINEMENT: i32 = 7;
+/// Checked shift distance outside 0..63; terminal guest panic, not a masked shift.
+pub const PANIC_SHIFT_DISTANCE: i32 = 8;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -93,7 +97,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -135,6 +139,8 @@ const STRING_HELPERS: u32 = 8;
 struct Layout {
     imports: Vec<Import>,
     helpers: u32,
+    quantity_div: Option<u32>,
+    refinement_check: Option<u32>,
     /// helper index of `S_BYTES_EQ`
     str_base: u32,
     /// global index of actor-state global 0
@@ -208,6 +214,9 @@ struct Emit<'a> {
     active_iterators: Vec<u32>,
     /// Scratch i64 local for an opaque host-issued admission ticket.
     state_ticket_slot: Option<u32>,
+    // Reserved only when a shift is emitted; no extra locals for unaffected functions.
+    shift_slot: u32,
+    shift_used: bool,
     state_write_depth: u32,
     /// Unwind slots of a try/defer/recover function: (ret, saved, msg, kind, pending).
     uw: Option<(Option<u32>, u32, u32, u32, u32)>,
@@ -670,18 +679,104 @@ impl Emit<'_> {
     }
 
     fn if_chain(&mut self, arms: &[(TE, Vec<TStmt>)], other: Option<&[TStmt]>) {
-        let (c, body) = &arms[0];
-        self.expr(c);
-        self.open(0x04, 0x40, Frame::Other);
-        self.stmts(body);
-        if arms.len() > 1 {
-            self.op(0x05);
-            self.if_chain(&arms[1..], other);
-        } else if let Some(o) = other {
+        // Preserve the original nested Wasm if/else layout and label depths,
+        // without recursively consuming a host stack frame per elif.
+        assert!(!arms.is_empty());
+        for (index, (c, body)) in arms.iter().enumerate() {
+            if index != 0 { self.op(0x05); }
+            self.expr(c);
+            self.open(0x04, 0x40, Frame::Other);
+            self.stmts(body);
+        }
+        if let Some(o) = other {
             self.op(0x05);
             self.stmts(o);
         }
+        for _ in arms { self.close(); }
+    }
+
+    // Stack contains the already-evaluated lhs and rhs. Save only the rhs,
+    // reject unsigned rhs >= 64 (including negative signed counts), then
+    // restore the exact count. Never evaluate the source operand twice.
+    fn checked_shift_opcode(&mut self, opcode: u8) {
+        self.shift_used = true;
+        self.op(0x22); // local.tee
+        uleb(&mut self.code, self.shift_slot as u64);
+        self.i64c(64);
+        self.op(0x5A); // i64.ge_u
+        self.open(0x04, 0x40, Frame::Other);
+        panic(&mut self.code, PANIC_SHIFT_DISTANCE);
         self.close();
+        self.get(self.shift_slot);
+        self.op(opcode);
+    }
+
+    // Local declarations precede the emitted body. Install the extra i64
+    // only if needed and relocate recorded call/landing offsets.
+    fn finish_shift_local(&mut self, locals: &mut Vec<Type>) {
+        if !self.shift_used { return; }
+        let old_len = locals_decl(locals).len();
+        locals.push(Type::Int);
+        let prefix = locals_decl(locals);
+        let delta = prefix.len() - old_len;
+        self.code.splice(..old_len, prefix);
+        for (start, end, _) in &mut self.calls {
+            *start += delta;
+            *end += delta;
+        }
+        for landing in &mut self.landings { *landing += delta; }
+    }
+
+    fn binary_opcode(&mut self, op: &BinOp, ty: Type) {
+        let int = ty == Type::Int;
+        if ty == Type::Float {
+            self.op(match op {
+                BinOp::Add => 0xA0,
+                BinOp::Sub => 0xA1,
+                BinOp::Mul => 0xA2,
+                BinOp::Div => 0xA3,
+                BinOp::Eq => 0x61,
+                BinOp::Ne => 0x62,
+                BinOp::Lt => 0x63,
+                BinOp::Gt => 0x64,
+                BinOp::Le => 0x65,
+                BinOp::Ge => 0x66,
+                BinOp::And | BinOp::Or |
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr =>
+                    unreachable!("bitwise operations require int"),
+            });
+            return;
+        }
+        match op {
+            BinOp::Add => self.call(self.l.helper(H_ADD)),
+            BinOp::Sub => self.call(self.l.helper(H_SUB)),
+            BinOp::Mul => self.call(self.l.helper(H_MUL)),
+            BinOp::BitAnd => self.op(0x83), // i64.and
+            BinOp::BitOr => self.op(0x84),  // i64.or
+            BinOp::BitXor => self.op(0x85), // i64.xor
+            BinOp::Shl => self.checked_shift_opcode(0x86),
+            BinOp::AShr => self.checked_shift_opcode(0x87),
+            BinOp::LShr => self.checked_shift_opcode(0x88),
+            BinOp::And => self.op(0x71), // i32.and
+            BinOp::Or => self.op(0x72),  // i32.or
+            BinOp::Lt => self.op(0x53),
+            BinOp::Le => self.op(0x57),
+            BinOp::Gt => self.op(0x55),
+            BinOp::Ge => self.op(0x59),
+            BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
+            BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
+            BinOp::Div => {
+                // Quantity lowering retains its separate checked helper.
+                // Normal source i64 division is statically safe by admission.
+                if let Some(helper) = self.l.quantity_div {
+                    self.call(self.l.helper(helper));
+                } else {
+                    self.op(0x7f); // i64.div_s
+                }
+            },
+        }
+
     }
 
     fn expr(&mut self, v: &TE) {
@@ -692,6 +787,15 @@ impl Emit<'_> {
                 self.code.extend_from_slice(&x.to_le_bytes());
             }
             TExpr::StrConst(offset, len) => self.i64c(((*offset as i64) << 32) | *len as i64),
+            TExpr::TraceSpanBegin { offset, len } => {
+                self.i32c(*offset as i32);
+                self.i32c(*len as i32);
+                self.call(self.l.import(Import::TraceSpanBegin));
+            }
+            TExpr::TraceSpanEnd { token } => {
+                self.get(*token);
+                self.call(self.l.import(Import::TraceSpanEnd));
+            }
             TExpr::IntToFloat(a) => {
                 self.expr(a);
                 self.op(0xB9); // f64.convert_i64_s
@@ -739,50 +843,24 @@ impl Emit<'_> {
                 self.op(0x45);
             }
             TExpr::Bin(op, a, b) => {
-                // Canonical AttoLang conditions are eager: both operands
-                // execute in source order even when the left decides truth.
-                self.expr(a);
-                self.expr(b);
-                let int = a.ty == Type::Int;
-                if a.ty == Type::Float {
-                    self.op(match op {
-                        BinOp::Add => 0xA0,
-                        BinOp::Sub => 0xA1,
-                        BinOp::Mul => 0xA2,
-                        BinOp::Div => 0xA3,
-                        BinOp::Eq => 0x61,
-                        BinOp::Ne => 0x62,
-                        BinOp::Lt => 0x63,
-                        BinOp::Gt => 0x64,
-                        BinOp::Le => 0x65,
-                        BinOp::Ge => 0x66,
-                        BinOp::And | BinOp::Or |
-                        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
-                        BinOp::Shl | BinOp::LShr | BinOp::AShr =>
-                            unreachable!("bitwise operations require int"),
-                    });
-                    return;
+                let mut spine = vec![(*op, a.ty, b.as_ref())];
+                let mut left = a.as_ref();
+                while let TExpr::Bin(op, lhs, rhs) = &left.e {
+                    spine.push((*op, lhs.ty, rhs.as_ref()));
+                    left = lhs.as_ref();
                 }
-                match op {
-                    BinOp::Add => self.call(self.l.helper(H_ADD)),
-                    BinOp::Sub => self.call(self.l.helper(H_SUB)),
-                    BinOp::Mul => self.call(self.l.helper(H_MUL)),
-                    BinOp::BitAnd => self.op(0x83), // i64.and
-                    BinOp::BitOr => self.op(0x84),  // i64.or
-                    BinOp::BitXor => self.op(0x85), // i64.xor
-                    BinOp::Shl => self.op(0x86),    // i64.shl (count mod 64)
-                    BinOp::AShr => self.op(0x87),   // i64.shr_s
-                    BinOp::LShr => self.op(0x88),   // i64.shr_u
-                    BinOp::And => self.op(0x71), // i32.and
-                    BinOp::Or => self.op(0x72),  // i32.or
-                    BinOp::Lt => self.op(0x53),
-                    BinOp::Le => self.op(0x57),
-                    BinOp::Gt => self.op(0x55),
-                    BinOp::Ge => self.op(0x59),
-                    BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
-                    BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                    BinOp::Div => unreachable!("division not admitted by checker"),
+                self.expr(left);
+                for (op, ty, right) in spine.into_iter().rev() {
+                    self.expr(right);
+                    self.binary_opcode(&op, ty);
                 }
+            }
+            TExpr::RefinementCheck(value, min, max, failure) => {
+                self.expr(value);
+                self.op(0x42); sleb(&mut self.code, *min);
+                self.op(0x42); sleb(&mut self.code, *max);
+                self.op(0x41); sleb(&mut self.code, i64::from(*failure));
+                self.call(self.l.helper(self.l.refinement_check.expect("refinement requires verified profile")));
             }
             TExpr::Ternary(c, a, b) => {
                 self.expr(c);
@@ -907,9 +985,17 @@ impl Emit<'_> {
                 self.i32c(*success_tag as i32);
                 self.op(0x47); // i32.ne: failure
                 self.open(0x04, 0x40, Frame::Other); // if (void)
-                self.op(0x20);
-                uleb(&mut self.code, *tmp as u64);
-                self.op(0x0F); // return original Err/None tagged pointer
+                self.get(*tmp); // return the original Err/None tagged pointer
+                if let Some((ret, ..)) = self.uw {
+                    self.set(ret.expect("ADT propagation has a return slot"));
+                    for handle in self.active_iterators.clone().into_iter().rev() {
+                        self.get(handle);
+                        self.call(self.l.func(self.l.gen_first_func + 3));
+                    }
+                    self.return_path(); // scoped finally/defer must run before '?'
+                } else {
+                    self.op(0x0F);
+                }
                 self.close();
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
@@ -1434,11 +1520,42 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    emit_inner(p, false)
+}
+
+/// Only the checked immutable quantity profile enables integer division.
+pub(crate) fn emit_quantity_program(p: &TProgram) -> Vec<u8> {
+    emit_inner(p, true)
+}
+
+fn quantity_div_body() -> (Sig, Vec<u8>, Vec<u8>) {
+    // Test zero before the signed MIN/-1 overflow case, then perform actual div_s.
+    let mut c = vec![0x20, 1, 0x50, 0x04, 0x40];
+    panic(&mut c, PANIC_DIV_ZERO);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x42]);
+    sleb(&mut c, i64::MIN);
+    c.extend_from_slice(&[0x51, 0x20, 1, 0x42, 0x7f, 0x51, 0x71, 0x04, 0x40]);
+    panic(&mut c, PANIC_OVERFLOW);
+    c.extend_from_slice(&[0x0B, 0x20, 0, 0x20, 1, 0x7f, 0x0B]);
+    (Sig(vec![I64, I64], vec![I64]), vec![0], c)
+}
+
+fn refinement_check_body() -> (Sig, Vec<u8>, Vec<u8>) {
+    // local 0: value; 1: minimum; 2: maximum. Signed comparisons.
+    let mut c = vec![0x20,0,0x20,1,0x53,0x20,0,0x20,2,0x55,0x72,0x04,0x40];
+    c.extend_from_slice(&[0x20,3,0x24,0,0x00]);
+    c.extend_from_slice(&[0x0b,0x20,0,0x0b]);
+    (Sig(vec![I64,I64,I64,I32],vec![I64]),vec![0],c)
+}
+fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
+    let base_helpers = str_base + if p.strings { STRING_HELPERS } else { 0 };
     let layout = Layout {
         imports: p.imports.clone(),
-        helpers: str_base + if p.strings { STRING_HELPERS } else { 0 },
+        helpers: base_helpers + 2 * u32::from(quantity_division),
+        quantity_div: quantity_division.then_some(base_helpers),
+        refinement_check: quantity_division.then_some(base_helpers + 1),
         str_base,
         state_base: 1 + u32::from(p.heap),
         gen_free_global: (!p.generators.is_empty()).then_some(
@@ -1466,6 +1583,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::StateRegister => Sig(vec![I32], vec![]),
             Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
             Import::StateLeave => Sig(vec![I64], vec![]),
+            Import::TraceSpanBegin => Sig(vec![I32, I32], vec![I64]),
+            Import::TraceSpanEnd => Sig(vec![I64], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1483,6 +1602,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         let alloc = p.heap.then(|| layout.helper(H_ALLOC));
         helpers.extend(string_helpers(layout.str_helper(S_BYTES_EQ), alloc));
     }
+    if quantity_division { helpers.push(quantity_div_body()); helpers.push(refinement_check_body()); }
     for (sig, locals, code) in helpers {
         func_types.push(types.idx(sig));
         let mut b = locals;
@@ -1508,6 +1628,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             void_main: is_void_main,
             active_iterators: Vec::new(),
             state_ticket_slot: state_hooks.then_some((f.params.len()+f.locals.len()) as u32),
+            shift_slot: (f.params.len() + locals.len()) as u32,
+            shift_used: false,
             state_write_depth: 0,
             uw: None,
             in_recover: false,
@@ -1536,6 +1658,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             e.op(0x00); // unreachable: definite-return analysis proved every path returns
         }
         e.op(0x0B);
+        e.finish_shift_local(&mut locals);
         fn_meta.push(FnMeta {
             body: bodies.len(),
             decl_len: locals_decl(&locals).len(),
@@ -1575,6 +1698,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             void_main: false,
             active_iterators: Vec::new(),
             state_ticket_slot: None,
+            shift_slot: 1, // actor_init has one i32 parameter and no user locals
+            shift_used: false,
             state_write_depth: 0,
             uw: None,
             in_recover: false,
@@ -1594,6 +1719,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         }
         e.op(0x00); // unknown actor type
         e.op(0x0B);
+        e.finish_shift_local(&mut Vec::new());
         bodies.push(e.code);
 
         func_types.push(types.idx(Sig(vec![I32, I64, I64], vec![])));

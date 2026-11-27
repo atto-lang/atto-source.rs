@@ -1,0 +1,6 @@
+// std/io (atto-source.rs): hosted standard output via the guest print imports.
+define module io as
+  pub fnc write_int(int value): void { stdio.print(value); return; }
+  pub fnc write_str(string text): void { stdio.print(text); return; }
+  pub fnc write_line(string text): void { stdio.println(text); return; }
+end

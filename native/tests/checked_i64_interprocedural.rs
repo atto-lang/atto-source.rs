@@ -1,0 +1,198 @@
+//! Scoped executable Rust/Cranelift checked-i64 call-boundary regression.
+//! This proves only the opt-in checked-i64 *native trap* on Linux/x86-64;
+//! not an actor error, guest Error object, default arithmetic policy,
+//! optimized LLVM/Graal parity, or completed cross-backend conformance.
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+
+use oreslang_source_rs::compile_checked_i64;
+use std::{
+    fs,
+    os::unix::process::ExitStatusExt,
+    path::PathBuf,
+    process::{Command, Output},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+struct Work(PathBuf);
+impl Work {
+    fn new() -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "oresc-checked-call-boundary-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).expect("create isolated native build directory");
+        Self(path)
+    }
+}
+impl Drop for Work {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn actual_native_output(source: &str) -> Output {
+    let work = Work::new();
+    let obj = work.0.join("guest.o");
+    let observed_obj = work.0.join("observed.o");
+    let observer = work.0.join("observer.c");
+    let binary = work.0.join("guest");
+    let bytes = compile_checked_i64(source)
+        .unwrap_or_else(|e| panic!("checked compile failed: {e}; source: {source}"));
+    assert!(bytes.starts_with(b"\x7fELF"), "required real ELF object");
+    fs::write(&obj, bytes).expect("write native object");
+    // Native codegen exports main with an i64 return ABI. Rename only the
+    // ELF symbol and use an independent C entry point to observe all 64 bits.
+    let renamed = Command::new("objcopy")
+        .arg("--redefine-sym")
+        .arg("main=atto_xo_guest_main")
+        .arg(&obj)
+        .arg(&observed_obj)
+        .output()
+        .expect("GNU objcopy required for Linux native i64 observation");
+    assert!(
+        renamed.status.success(),
+        "ELF symbol rename failed: {}",
+        String::from_utf8_lossy(&renamed.stderr)
+    );
+    fs::write(&observer, include_str!("fixtures/checked_i64_observer.c"))
+        .expect("write independent full-width observer");
+    let linked = Command::new("cc")
+        .args(["-O2", "-Wall", "-Wextra", "-Werror"])
+        .arg(&observer)
+        .arg(&observed_obj)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("run system C linker");
+    assert!(
+        linked.status.success(),
+        "link failed: {}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
+    Command::new(binary)
+        .current_dir(&work.0)
+        .output()
+        .expect("execute linked native guest")
+}
+
+fn assert_native_value(result: &Output, expected: i64, label: &str) {
+    assert!(result.status.success(), "{label}: {:?}", result.status);
+    assert!(result.stderr.is_empty(), "{label}: unexpected stderr");
+    assert_eq!(result.stdout, format!("{expected}\n").as_bytes(), "{label}");
+}
+
+fn assert_native_overflow(result: &Output, label: &str) {
+    assert_eq!(
+        result.status.signal(),
+        Some(4),
+        "{label}: {:?}",
+        result.status
+    );
+    assert!(result.stdout.is_empty(), "{label}: partial value on trap");
+    assert!(result.stderr.is_empty(), "{label}: unexpected stderr");
+}
+
+#[test]
+fn dynamic_interprocedural_overflow_is_never_silently_wrapped_or_dce_removed() {
+    const ADD: &str = "fnc add(int a,int b): int { return a+b; }";
+    const MULTIPLY: &str = "fnc mul(int a,int b): int { return a*b; }";
+    let cases = [
+        // Actual signed overflow occurs inside a function with opaque params.
+        format!("{ADD} pub fnc main(): int {{ return add(9223372036854775807,1); }}"),
+        format!("{ADD} pub fnc main(): int {{ return add(9223372036854775807,1)*0; }}"),
+        // Eager call arguments must execute despite caller ignoring the result.
+        format!("{ADD} fnc first(int a,int b): int {{ return a; }} \
+            pub fnc main(): int {{ return first(42,add(9223372036854775807,1)); }}"),
+        // An unused eager local initializer must still retain its trapping edge.
+        format!("{ADD} pub fnc main(): int {{ const unused: int = add(9223372036854775807,1); return 42; }}"),
+        // The multiplication overflow must not be optimized into a zero result.
+        format!("{MULTIPLY} pub fnc main(): int {{ return mul(3037000500,3037000500)*0; }}"),
+        // Helper -> helper -> main passes an overflow through two call boundaries.
+        format!("{ADD} fnc wrapper(int x): int {{ return add(x,1); }} \
+            pub fnc main(): int {{ return wrapper(9223372036854775807); }}"),
+        // Signed minimum overflow through a function parameter.
+        "fnc neg(int x): int { return -x; } pub fnc main(): int { return neg(-9223372036854775808); }".to_string(),
+    ];
+    for (index, source) in cases.iter().enumerate() {
+        let result = actual_native_output(source);
+        assert_native_overflow(&result, &format!("case {index}"));
+    }
+}
+
+#[test]
+fn full_width_safe_parameters_and_matched_boundaries_still_execute() {
+    let cases = [
+        (
+            "fnc add(int a,int b): int { return a+b; } \
+          pub fnc main(): int { return add(40,2); }",
+            42,
+        ),
+        (
+            "fnc add(int a,int b): int { return a+b; } \
+          pub fnc main(): int { return add(9223372036854775807,0)-9223372036854775807+42; }",
+            42,
+        ),
+        (
+            "fnc sub(int a,int b): int { return a-b; } \
+          pub fnc main(): int { return sub(-9223372036854775808,0)-(-9223372036854775808)+42; }",
+            42,
+        ),
+        (
+            "fnc mul(int a,int b): int { return a*b; } \
+          pub fnc main(): int { return mul(3037000499,3037000499)-9223372030926249001+42; }",
+            42,
+        ),
+    ];
+    for (source, expected) in cases {
+        let result = actual_native_output(source);
+        assert_native_value(&result, expected, source);
+    }
+}
+
+#[test]
+fn atto_xo_checked_debit_shared_guests() {
+    let corpus = include_str!("../../contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let corpus_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let digest = Command::new("git")
+        .arg("hash-object")
+        .arg(corpus_path)
+        .output()
+        .expect("verify exact shared fixture bytes");
+    assert!(digest.status.success());
+    assert_eq!(
+        String::from_utf8(digest.stdout).unwrap().trim(),
+        "6831dbd0c18eeaa2078fa5f3e324d0f88b40771e"
+    );
+    let mut ids = std::collections::HashSet::new();
+    let mut value_count = 0;
+    let mut overflow_count = 0;
+    for row in corpus.lines() {
+        let fields: Vec<_> = row.split('|').collect();
+        assert_eq!(fields.len(), 8);
+        let id = fields[0];
+        assert!(ids.insert(id), "duplicate case {id}");
+        let result = actual_native_output(fields[7]);
+        if fields[1] == "overflow" {
+            assert_native_overflow(&result, id);
+            overflow_count += 1;
+        } else {
+            let expected: i64 = fields[1].parse().expect("expected i64 result");
+            assert_native_value(&result, expected, id);
+            value_count += 1;
+        }
+    }
+    assert_eq!((value_count, overflow_count), (3, 4));
+}
+
+#[test]
+fn native_observer_preserves_all_return_bits() {
+    for expected in [42_i64, 298, i64::MIN, i64::MAX] {
+        let source = format!("pub fnc main(): int {{ return {expected}; }}");
+        assert_native_value(&actual_native_output(&source), expected, &source);
+    }
+}

@@ -16,18 +16,48 @@ use std::collections::HashMap;
 // The baseline scalar compiler retains wrapping arithmetic until effect IR
 // can encode conditional integer-overflow failure edges.
 pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
-    emit_object_with_arithmetic_mode(program, false)
+    emit_object_with_arithmetic_mode(program, ArithmeticMode::WrappingI64)
 }
 
 /// Opt-in native signed i64 overflow checks; no typed guest Error contract.
 pub fn emit_object_checked_i64(program: &Module) -> Result<Vec<u8>, String> {
-    emit_object_with_arithmetic_mode(program, true)
+    emit_object_with_arithmetic_mode(program, ArithmeticMode::CheckedI64)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArithmeticMode {
+    WrappingI64,
+    CheckedI64,
+    CheckedU64,
+}
+
+pub(crate) fn emit_unsigned_object(
+    program: &crate::mir::UnsignedModule,
+) -> Result<Vec<u8>, String> {
+    emit_object_with_arithmetic_mode(program.inner(), ArithmeticMode::CheckedU64)
 }
 
 fn emit_object_with_arithmetic_mode(
     program: &Module,
-    checked_i64: bool,
+    mode: ArithmeticMode,
 ) -> Result<Vec<u8>, String> {
+    // Do not let callers constructing MIR directly turn package metadata
+    // into a public native symbol or use the implicit main exception.
+    for export in &program.exports {
+        let function = program
+            .functions
+            .iter()
+            .find(|f| f.symbol == export.name)
+            .ok_or_else(|| format!("unresolved native export '{}'", export.name))?;
+        if export.scope == crate::frontend::ExportScope::Package
+            && (function.exported || function.symbol == "main")
+        {
+            return Err(format!(
+                "package export '{}' cannot have public linkage",
+                export.name
+            ));
+        }
+    }
     let isa = native::builder()
         .map_err(|e| e.to_string())?
         .finish(settings::Flags::new(settings::builder()))
@@ -52,13 +82,23 @@ fn emit_object_with_arithmetic_mode(
         // remain callable internally, but cannot be linked from another object.
         // Keep the existing implicit executable entry-point ABI for "main",
         // which is also a root in the release tree-shaker.
-        let linkage = if function.exported || function.symbol == "main" {
+        let linkage = if function.symbol == "main"
+            || (mode != ArithmeticMode::CheckedU64 && function.exported)
+        {
             Linkage::Export
         } else {
             Linkage::Local
         };
         let id = module
-            .declare_function(&function.symbol, linkage, &signature)
+            .declare_function(
+                if mode == ArithmeticMode::CheckedU64 && function.symbol == "main" {
+                    "atto_guest_main"
+                } else {
+                    &function.symbol
+                },
+                linkage,
+                &signature,
+            )
             .map_err(|e| e.to_string())?;
         ids.insert(function.symbol.clone(), id);
     }
@@ -92,16 +132,10 @@ fn emit_object_with_arithmetic_mode(
                 values.insert(name.clone(), value);
             }
             for (name, expression) in &function.locals {
-                let value = compile_expr(&mut builder, expression, &values, &calls, checked_i64)?;
+                let value = compile_expr(&mut builder, expression, &values, &calls, mode)?;
                 values.insert(name.clone(), value);
             }
-            let result = compile_expr(
-                &mut builder,
-                &function.return_value,
-                &values,
-                &calls,
-                checked_i64,
-            )?;
+            let result = compile_expr(&mut builder, &function.return_value, &values, &calls, mode)?;
             builder.ins().return_(&[result]);
             builder.finalize(frontend_config);
         }
@@ -117,7 +151,7 @@ fn compile_expr(
     expr: &Expr,
     vars: &HashMap<String, Value>,
     calls: &HashMap<String, FuncRef>,
-    checked_i64: bool,
+    mode: ArithmeticMode,
 ) -> Result<Value, String> {
     match expr {
         Expr::Integer(value) => Ok(builder.ins().iconst(types::I64, *value)),
@@ -131,16 +165,20 @@ fn compile_expr(
                 .ok_or_else(|| format!("unvalidated function call: {name}"))?;
             let mut operands = Vec::with_capacity(args.len());
             for arg in args {
-                operands.push(compile_expr(builder, arg, vars, calls, checked_i64)?);
+                operands.push(compile_expr(builder, arg, vars, calls, mode)?);
             }
             let instruction = builder.ins().call(callee, &operands);
             Ok(builder.inst_results(instruction)[0])
         }
         Expr::Add(a, b) => {
-            let lhs = compile_expr(builder, a, vars, calls, checked_i64)?;
-            let rhs = compile_expr(builder, b, vars, calls, checked_i64)?;
-            if checked_i64 {
-                let (value, overflow) = builder.ins().sadd_overflow(lhs, rhs);
+            let lhs = compile_expr(builder, a, vars, calls, mode)?;
+            let rhs = compile_expr(builder, b, vars, calls, mode)?;
+            if mode != ArithmeticMode::WrappingI64 {
+                let (value, overflow) = if mode == ArithmeticMode::CheckedU64 {
+                    builder.ins().uadd_overflow(lhs, rhs)
+                } else {
+                    builder.ins().sadd_overflow(lhs, rhs)
+                };
                 builder.ins().trapnz(overflow, TrapCode::INTEGER_OVERFLOW);
                 Ok(value)
             } else {
@@ -148,10 +186,14 @@ fn compile_expr(
             }
         }
         Expr::Subtract(a, b) => {
-            let lhs = compile_expr(builder, a, vars, calls, checked_i64)?;
-            let rhs = compile_expr(builder, b, vars, calls, checked_i64)?;
-            if checked_i64 {
-                let (value, overflow) = builder.ins().ssub_overflow(lhs, rhs);
+            let lhs = compile_expr(builder, a, vars, calls, mode)?;
+            let rhs = compile_expr(builder, b, vars, calls, mode)?;
+            if mode != ArithmeticMode::WrappingI64 {
+                let (value, overflow) = if mode == ArithmeticMode::CheckedU64 {
+                    builder.ins().usub_overflow(lhs, rhs)
+                } else {
+                    builder.ins().ssub_overflow(lhs, rhs)
+                };
                 builder.ins().trapnz(overflow, TrapCode::INTEGER_OVERFLOW);
                 Ok(value)
             } else {
@@ -159,10 +201,14 @@ fn compile_expr(
             }
         }
         Expr::Multiply(a, b) => {
-            let lhs = compile_expr(builder, a, vars, calls, checked_i64)?;
-            let rhs = compile_expr(builder, b, vars, calls, checked_i64)?;
-            if checked_i64 {
-                let (value, overflow) = builder.ins().smul_overflow(lhs, rhs);
+            let lhs = compile_expr(builder, a, vars, calls, mode)?;
+            let rhs = compile_expr(builder, b, vars, calls, mode)?;
+            if mode != ArithmeticMode::WrappingI64 {
+                let (value, overflow) = if mode == ArithmeticMode::CheckedU64 {
+                    builder.ins().umul_overflow(lhs, rhs)
+                } else {
+                    builder.ins().smul_overflow(lhs, rhs)
+                };
                 builder.ins().trapnz(overflow, TrapCode::INTEGER_OVERFLOW);
                 Ok(value)
             } else {
@@ -170,8 +216,11 @@ fn compile_expr(
             }
         }
         Expr::Negate(a) => {
-            let value = compile_expr(builder, a, vars, calls, checked_i64)?;
-            if checked_i64 {
+            let value = compile_expr(builder, a, vars, calls, mode)?;
+            if mode == ArithmeticMode::CheckedU64 {
+                return Err("unsigned MIR must not contain signed negation".into());
+            }
+            if mode == ArithmeticMode::CheckedI64 {
                 let zero = builder.ins().iconst(types::I64, 0);
                 let (result, overflow) = builder.ins().ssub_overflow(zero, value);
                 builder.ins().trapnz(overflow, TrapCode::INTEGER_OVERFLOW);

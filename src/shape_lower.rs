@@ -249,40 +249,52 @@ fn anonymous_fields(t: &[Token], start: usize, end: usize) -> R<Vec<Field>> {
     }
     Ok(fields)
 }
-fn generics(t: &[Token], index: usize) -> R<(String,String,usize)> {
-    let pos=t[index].pos;
-    if t.get(index+1).is_none_or(|x| x.tok != Tok::Lt) ||
-        t.get(index+3).is_none_or(|x| x.tok != Tok::Comma) ||
-        t.get(index+5).is_none_or(|x| x.tok != Tok::Gt) {
-        return Err(error(pos,"E_UNSUPPORTED_TYPE",
-            "source-local Tuple/Pair/Entry profile admits exactly two scalar type arguments"));
+fn product_types(t: &[Token], at: usize, pair: bool, pos: Pos) -> R<(String,String,usize)> {
+    if t.get(at).is_none_or(|x| x.tok != Tok::Lt) {
+        return Err(error(pos,"E_UNSUPPORTED_TYPE","expected product type arguments"));
     }
-    let a=match t.get(index+2).map(|x|&x.tok) {
-        Some(Tok::Ident(s))=>scalar(s), _=>None
-    }.ok_or_else(|| error(pos,"E_UNSUPPORTED_TYPE","first product type must be scalar"))?;
-    let b=match t.get(index+4).map(|x|&x.tok) {
-        Some(Tok::Ident(s))=>scalar(s), _=>None
-    }.ok_or_else(|| error(pos,"E_UNSUPPORTED_TYPE","second product type must be scalar"))?;
-    Ok((a.to_owned(),b.to_owned(),index+6))
+    let first=token_name(t,at+1).and_then(scalar).ok_or_else(||
+        error(pos,"E_UNSUPPORTED_TYPE","product type must be scalar in this profile"))?;
+    if pair && t.get(at+2).is_some_and(|x| x.tok == Tok::Gt) {
+        return Ok(("string".into(),first.into(),at+3));
+    }
+    if t.get(at+2).is_none_or(|x| x.tok != Tok::Comma) ||
+        t.get(at+4).is_none_or(|x| x.tok != Tok::Gt) {
+        return Err(error(pos,"E_UNSUPPORTED_TYPE","expected two scalar product type arguments"));
+    }
+    let second=token_name(t,at+3).and_then(scalar).ok_or_else(||
+        error(pos,"E_UNSUPPORTED_TYPE","second product type must be scalar"))?;
+    if pair && first != "string" {
+        return Err(error(pos,"E_TYPE","Pair first type argument must be string"));
+    }
+    Ok((first.into(),second.into(),at+5))
+}
+fn generics(t: &[Token], index: usize) -> R<(String,String,usize)> {
+    product_types(t,index+1,word(t,index,"Pair"),t[index].pos)
 }
 fn closing(t:&[Token],open:usize) -> R<usize> {
+    let pos=t.get(open).or_else(||t.last()).map(|x|x.pos).unwrap_or_default();
     if t.get(open).is_none_or(|x| x.tok != Tok::LParen) {
-        return Err(error(t[open.saturating_sub(1)].pos,"E_SYNTAX","expected '(' for product arguments"));
+        return Err(error(pos,"E_SYNTAX","expected '(' for product arguments"));
     }
-    let mut level=0usize;
-    for i in open..t.len() {
-        match t[i].tok {
-            Tok::LParen=>level+=1,
-            Tok::RParen=>{
-                level-=1;
-                if level==0 {return Ok(i);}
+    let mut expected=Vec::<Tok>::new();
+    for (i, token) in t.iter().enumerate().skip(open) {
+        match &token.tok {
+            Tok::LParen=>expected.push(Tok::RParen),
+            Tok::LBrace=>expected.push(Tok::RBrace),
+            Tok::LBracket=>expected.push(Tok::RBracket),
+            Tok::RParen|Tok::RBrace|Tok::RBracket=>{
+                if expected.pop().as_ref()!=Some(&token.tok) {
+                    return Err(error(token.pos,"E_SYNTAX","mismatched product argument delimiter"));
+                }
+                if expected.is_empty() {return Ok(i);}
             }
             Tok::Eof=>break,
             _=>{}
         }
-        if level>128 {return Err(error(t[open].pos,"E_NESTING","nested product argument limit"));}
+        if expected.len()>128 {return Err(error(pos,"E_NESTING","nested product argument limit"));}
     }
-    Err(error(t[open].pos,"E_EOF","unterminated positional product literal"))
+    Err(error(pos,"E_EOF","unterminated positional product literal"))
 }
 fn typed_product(t:&[Token],i:usize,defs:&mut BTreeMap<String,Vec<Field>>)
     -> R<Option<(Vec<Token>,usize)>>
@@ -306,7 +318,16 @@ fn typed_product(t:&[Token],i:usize,defs:&mut BTreeMap<String,Vec<Field>>)
         if !word(t,after+1,kind) {
             return Err(error(t[i].pos,"E_TYPE","typed product constructor kind must match the annotation"));
         }
-        after+2
+        if t.get(after+2).is_some_and(|x| x.tok == Tok::Dot) && word(t,after+3,"of") {
+            let witness=after+4;
+            if t.get(witness).is_some_and(|x|x.tok==Tok::Lt) {
+                let (wa,wb,end)=product_types(t,witness,kind=="Pair",t[witness].pos)?;
+                if wa!=a || wb!=b {
+                    return Err(error(t[witness].pos,"E_TYPE","factory type arguments disagree with product annotation"));
+                }
+                end
+            } else { witness }
+        } else { after+2 }
     };
     let close=closing(t,open)?;
     if t.get(close+1).is_none_or(|x| x.tok != Tok::Semi) {
@@ -332,6 +353,83 @@ fn typed_product(t:&[Token],i:usize,defs:&mut BTreeMap<String,Vec<Field>>)
     Ok(Some((out,close+2)))
 }
 
+// This pre-parser is not a general name resolver. Only infer unqualified
+// source-local Pair.of in a program without competing Pair declarations,
+// aliases, parameters or qualified access. Unknown forms stay unadmitted.
+fn product_factory(t: &[Token], i: usize, kind: &str) -> bool {
+    word(t,i,kind) && t.get(i+1).is_some_and(|x| x.tok == Tok::Dot)
+        && word(t,i+2,"of")
+}
+fn product_factory_guard(t: &[Token]) -> R<()> {
+    for kind in ["Pair","Entry"] {
+        if !t.iter().enumerate().any(|(i,_)| product_factory(t,i,kind)) { continue; }
+        for (i, token) in t.iter().enumerate() {
+            if !word(t,i,kind) { continue; }
+            let prior = i.checked_sub(1).and_then(|p|t.get(p)).map(|x|&x.tok);
+            let factory = product_factory(t,i,kind) && !matches!(prior,Some(Tok::Dot | Tok::ColonColon));
+            let annotation = matches!(prior,Some(Tok::Colon))
+                && t.get(i+1).is_some_and(|x|x.tok==Tok::Lt);
+            // Bare legacy constructor is allowed only after the assignment
+            // of a matching typed binding. The typed path checks its identity.
+            let legacy = matches!(prior,Some(Tok::Assign))
+                && t.get(i+1).is_some_and(|x|x.tok==Tok::LParen)
+                && (i.saturating_sub(10)..i).any(|start|
+                    word(t,start,"val") && token_name(t,start+1).is_some()
+                    && t.get(start+2).is_some_and(|x|x.tok==Tok::Colon)
+                    && word(t,start+3,kind)
+                    && generics(t,start+3).is_ok_and(|(_,_,end)|end+1==i));
+            if !factory && !annotation && !legacy {
+                return Err(error(token.pos,"E_UNSUPPORTED",
+                    format!("{kind}.of requires an unambiguous source-local builtin; competing reference")));
+            }
+        }
+    }
+    Ok(())
+}
+fn inferred_product(t: &[Token], i: usize, defs: &mut BTreeMap<String,Vec<Field>>)
+    -> R<Option<(Vec<Token>,usize)>>
+{
+    if !word(t,i,"val") || token_name(t,i+1).is_none()
+        || t.get(i+2).is_none_or(|x|x.tok!=Tok::Assign) { return Ok(None); }
+    let kind=if product_factory(t,i+3,"Pair") {"Pair"}
+        else if product_factory(t,i+3,"Entry") {"Entry"} else {return Ok(None);};
+    let witness=i+6;
+    let explicit=if t.get(witness).is_some_and(|x|x.tok==Tok::Lt) {
+        Some(product_types(t,witness,kind=="Pair",t[witness].pos)?)
+    } else {None};
+    let open=explicit.as_ref().map_or(witness,|(_,_,end)|*end);
+    let close=closing(t,open)?;
+    if t.get(close+1).is_none_or(|x|x.tok!=Tok::Semi) {
+        return Err(error(t[close].pos,"E_SYNTAX","product binding requires semicolon"));
+    }
+    let (a,b)=if let Some((a,b,_))=explicit {(a,b)} else {
+        let args=&t[open+1..close];
+        if args.len()!=3 || args[1].tok!=Tok::Comma {
+            return Err(error(t[open].pos,"E_UNSUPPORTED_TYPE",
+                "inferred product requires two scalar literals or explicit factory types"));
+        }
+        let a=literal_type(&args[0].tok).ok_or_else(||error(args[0].pos,"E_UNSUPPORTED_TYPE","inferred key needs a scalar literal"))?;
+        if kind=="Pair" && a!="string" {
+            return Err(error(args[0].pos,"E_TYPE","Pair first argument must be string"));
+        }
+        let b=literal_type(&args[2].tok).ok_or_else(||error(args[2].pos,"E_UNSUPPORTED_TYPE","inferred value needs a scalar literal"))?;
+        (a.into(),b.into())
+    };
+    let cls=synthetic_name(&kind.to_lowercase(),&a,&b);
+    if defs.len()>=MAX_SHAPES && !defs.contains_key(&cls) {
+        return Err(error(t[i].pos,"E_SOURCE_LIMIT","too many generic product specializations"));
+    }
+    let named=if kind=="Pair" {["first","second"]} else {["key","value"]};
+    defs.entry(cls.clone()).or_insert_with(||vec![
+        Field{name:named[0].into(),ty:a},Field{name:named[1].into(),ty:b},
+    ]);
+    let mut out=t[i..i+3].to_vec();
+    out.push(Token{tok:Tok::Ident("new".into()),pos:t[open].pos});
+    out.push(Token{tok:Tok::Ident(cls),pos:t[open].pos});
+    out.extend_from_slice(&t[open..=close+1]);
+    Ok(Some((out,close+2)))
+}
+
 /// Lower exactly source-local immutable two-field scalar products through
 /// checked class constructors, preserving real runtime allocations and field
 /// reads. Not executable for arbitrary structural/collection operations.
@@ -348,6 +446,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         (word(&t,i,"Tuple")||word(&t,i,"Pair")||word(&t,i,"Entry"))) {
         return Ok(t);
     }
+    product_factory_guard(&t)?;
     let mut declared=BTreeMap::<String,Decl>::new();
     let mut first=Vec::new();
     let mut i=0;
@@ -374,6 +473,9 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     let mut out=Vec::new();
     i=0;
     while i<first.len() {
+        if let Some((product,next))=inferred_product(&first,i,&mut synthetic)? {
+            out.extend(product);i=next;continue;
+        }
         if let Some((product,next))=typed_product(&first,i,&mut synthetic)? {
             out.extend(product);i=next;continue;
         }
