@@ -1,0 +1,7 @@
+// expect-error: E_IMMUTABLE
+// java: target-only
+pub fnc main(): int {
+ val a: int = loop (val i: int = 42) { break i; };
+ a = 0;
+ return a;
+}
