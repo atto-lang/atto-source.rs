@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const decl = `type Point = struct {
     int x;
@@ -229,11 +230,12 @@ positives.push(['mut-expansion-below-budget', largeMutator +
 const fixtureIds = [...positives, ...negatives].map(([id]) => id);
 assert.equal(new Set(fixtureIds).size, fixtureIds.length, 'duplicate guest fixture ID');
 const attoc = process.env.ATTOC || './target/debug/attoc';
+const js = process.env.ATTO_STRUCT_TARGET === 'js';
 const work = await mkdtemp(join(tmpdir(), 'atto-struct-value-'));
 async function build(name, source) {
-    const input = join(work, name + '.atto'), output = join(work, name + '.wasm');
+    const input = join(work, name + '.atto'), output = join(work, name + (js ? '.mjs' : '.wasm'));
     await writeFile(input, source);
-    return { result: spawnSync(attoc, [input, '-o', output], { encoding:'utf8', timeout:30_000 }), output };
+    return { result: spawnSync(attoc, [...(js ? ['--emit=js'] : []), input, '-o', output], { encoding:'utf8', timeout:30_000 }), output };
 }
 try {
     for (const [name, source, expected] of positives) {
@@ -242,25 +244,37 @@ try {
         assert.equal(result.signal, null, name + ': compiler terminated');
         assert.equal(result.status, 0, name + ': ' + result.stderr);
         const bytes = await readFile(output);
-        const module = new WebAssembly.Module(bytes);
-        const exports = WebAssembly.Module.exports(module);
-        assert.ok(exports.every(e => !e.name.startsWith('$struct_')), name + ': generated symbol escaped');
-        assert.ok(exports.every(e => e.kind !== 'memory'), name + ': unexpected guest memory');
-        const imports = WebAssembly.Module.imports(module);
-        assert.ok(imports.every(i => i.module === 'atto' && ['print_i64','print_bool','print_newline'].includes(i.name)), name);
         let stdout = '';
-        const guest = new WebAssembly.Instance(module, {atto:{
+        const host = {
             print_i64: n => { stdout += String(n); },
             print_bool: b => { stdout += b ? 'true' : 'false'; },
             print_newline: () => { stdout += '\n'; },
-        }});
+        };
+        let guest;
+        if (js) {
+            const source = bytes.toString('utf8');
+            assert.ok(source.startsWith('export function instantiate'), name);
+            assert.ok(!source.includes('WebAssembly.Memory'), name);
+            const esm = await import(pathToFileURL(output).href);
+            assert.deepEqual(esm.actorNames, []);
+            guest = esm.instantiate(host);
+            assert.deepEqual(Object.keys(guest.exports).sort(), ['main','panic_code']);
+        } else {
+            const module = new WebAssembly.Module(bytes);
+            const exports = WebAssembly.Module.exports(module);
+            assert.ok(exports.every(e => !e.name.startsWith('$struct_')), name + ': generated symbol escaped');
+            assert.ok(exports.every(e => e.kind !== 'memory'), name + ': unexpected guest memory');
+            const imports = WebAssembly.Module.imports(module);
+            assert.ok(imports.every(i => i.module === 'atto' && ['print_i64','print_bool','print_newline'].includes(i.name)), name);
+            guest = new WebAssembly.Instance(module, {atto:host});
+        }
         assert.equal(guest.exports.main(), 0n, name);
         assert.equal(guest.exports.panic_code.value, 0, name);
         assert.equal(stdout, expected, name);
         const again = await build(name + '-again', source);
         assert.equal(again.result.status, 0, again.result.stderr);
         assert.deepEqual(await readFile(again.output), bytes, name + ': nondeterministic guest');
-        console.log('PASS actual struct guest', name, JSON.stringify(stdout));
+        console.log(js ? 'PASS actual ESM struct guest' : 'PASS actual struct guest', name, JSON.stringify(stdout));
     }
     for (const [name, source, diagnostic = /E_[A-Z_]+/] of negatives) {
         const { result, output } = await build(name, source);
@@ -269,7 +283,7 @@ try {
         assert.equal(result.status, 1, name + ': ' + result.stderr);
         assert.match(result.stderr, diagnostic, name);
         await assert.rejects(stat(output), {code:'ENOENT'}, name + ': rejected program emitted artifact');
-        console.log('PASS rejected struct source', name);
+        console.log(js ? 'PASS rejected ESM struct source' : 'PASS rejected struct source', name);
     }
 } finally {
     await rm(work, {recursive:true, force:true});
