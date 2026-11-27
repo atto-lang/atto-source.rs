@@ -3402,8 +3402,12 @@ impl Parser {
             let Stmt::Bind { name, ty, init, pos: at, .. } = self.parse_binding()? else {
                 unreachable!("parse_binding always returns a binding");
             };
-            let ty = ty.filter(|t| matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str))
-                .ok_or_else(|| unsupported(at, "state loop requires explicit primitive state type"))?;
+            // Infer only from the same closed scalar grammar used for result
+            // hints. The normal checker still validates each initializer.
+            // Explicit annotations are never replaced by inferred types.
+            let ty = ty.or_else(|| Self::scalar_loop_result_hint(&init, &state))
+                .filter(|t| matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str))
+                .ok_or_else(|| unsupported(at, "state loop requires an unambiguous primitive state type"))?;
             if state.iter().any(|(n, _)| n == &name) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE", "duplicate state binder"));
             }
