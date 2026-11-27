@@ -18,7 +18,7 @@ fn lifecycle_is_fenced_and_replay_safe() {
     assert_eq!(gate.complete_init(&init, true), Err(Error::InitAuthority));
     let a = gate.try_enter_receive(&p).unwrap().unwrap();
     let b = gate.try_enter_receive(&p).unwrap().unwrap();
-    assert_eq!(gate.try_enter_receive(&p).unwrap_err(), Error::Full);
+    assert!(gate.try_enter_receive(&p).unwrap().is_none());
     assert_eq!(gate.release_after_quiescence(&p), Err(Error::NotRetired));
     gate.retire(&p).unwrap();
     assert!(!gate.may_receive(&p));
@@ -90,4 +90,44 @@ fn concurrent_host_admission_never_overbooks() {
     });
     assert_eq!(winners.load(Ordering::SeqCst), 1);
     assert_eq!(gate.lock().unwrap().usage(), [0;4]);
+}
+
+#[test]
+fn per_actor_receive_limit_is_bounded_and_retained_until_settlement() {
+    let mut g = Gate::<2, 4>::new(Charge::new(2,2,2,2).unwrap());
+    for cap in [0, 5, usize::MAX] {
+        assert_eq!(g.reserve_with_receive_limit(unit(), cap).unwrap_err(), Error::Policy);
+        assert_eq!(g.usage(), [0;4]);
+    }
+    let p = g.reserve_with_receive_limit(unit(), 1).unwrap();
+    assert_eq!(p.generation(), 1);
+    let q = g.reserve_with_receive_limit(unit(), 2).unwrap();
+    let pi = g.begin_init(&p).unwrap();
+    let qi = g.begin_init(&q).unwrap();
+    assert_eq!(g.complete_init(&pi, true), Ok(true));
+    assert_eq!(g.complete_init(&qi, true), Ok(true));
+    let first = g.try_enter_receive(&p).unwrap().unwrap();
+    assert!(g.try_enter_receive(&p).unwrap().is_none());
+    let x = g.try_enter_receive(&q).unwrap().unwrap();
+    let y = g.try_enter_receive(&q).unwrap().unwrap();
+    assert!(g.try_enter_receive(&q).unwrap().is_none());
+    g.finish_receive(&first).unwrap();
+    let replacement = g.try_enter_receive(&p).unwrap().unwrap();
+    assert_eq!(g.finish_receive(&first), Err(Error::Stale));
+    assert!(g.try_enter_receive(&p).unwrap().is_none());
+    g.retire(&p).unwrap();
+    assert!(g.try_enter_receive(&p).unwrap().is_none());
+    assert_eq!(g.release_after_quiescence(&p), Err(Error::InFlight));
+    assert_eq!(g.usage(), [2;4]);
+    g.finish_receive(&replacement).unwrap();
+    g.release_after_quiescence(&p).unwrap();
+    assert_eq!(g.usage(), [1;4]);
+    g.retire(&q).unwrap();
+    g.finish_receive(&x).unwrap();
+    g.finish_receive(&y).unwrap();
+    g.release_after_quiescence(&q).unwrap();
+    assert_eq!(g.usage(), [0;4]);
+    let mut empty = Gate::<1, 0>::new(unit());
+    assert_eq!(empty.reserve(unit()).unwrap_err(), Error::Policy);
+    assert_eq!(empty.usage(), [0;4]);
 }

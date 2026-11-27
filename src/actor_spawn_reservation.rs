@@ -14,7 +14,7 @@ impl Charge {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error { Quota, Full, Exhausted, Stale, InitAuthority, Retiring, NotRetired, InFlight }
+pub enum Error { Quota, Policy, Full, Exhausted, Stale, InitAuthority, Retiring, NotRetired, InFlight }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase { Initializing, Ready, Retiring }
 #[derive(Clone, Copy)]
@@ -24,6 +24,7 @@ struct Entry<const R: usize> {
     phase: Phase,
     init_started: bool,
     init_live: bool,
+    max_live_receives: usize,
     receives: [Option<u64>; R],
     next_receive: u64,
 }
@@ -51,6 +52,12 @@ impl<const N: usize, const R: usize> Gate<N, R> {
     }
     pub fn usage(&self) -> [u64; 4] { self.used }
     pub fn reserve(&mut self, charge: Charge) -> Result<Permit, Error> {
+        self.reserve_with_receive_limit(charge, R)
+    }
+    /// Per-actor logical receive limit must fit the fixed host ticket table.
+    /// Reject invalid policy before reserving quota or advancing generation.
+    pub fn reserve_with_receive_limit(&mut self, charge: Charge, max_live_receives: usize) -> Result<Permit, Error> {
+        if max_live_receives == 0 || max_live_receives > R { return Err(Error::Policy); }
         if (0..4).any(|i| charge.0[i] > self.limit.0[i] - self.used[i]) {
             return Err(Error::Quota);
         }
@@ -58,7 +65,7 @@ impl<const N: usize, const R: usize> Gate<N, R> {
         let generation = self.generation.checked_add(1).ok_or(Error::Exhausted)?;
         let permit = Permit { owner: Arc::clone(&self.identity), slot, generation };
         self.entries[slot] = Some(Entry { generation, charge, phase: Phase::Initializing,
-            init_started: false, init_live: false, receives: [None; R], next_receive: 0 });
+            init_started: false, init_live: false, max_live_receives, receives: [None; R], next_receive: 0 });
         for i in 0..4 { self.used[i] += charge.0[i]; }
         self.generation = generation;
         Ok(permit)
@@ -96,6 +103,10 @@ impl<const N: usize, const R: usize> Gate<N, R> {
     pub fn try_enter_receive(&mut self, p: &Permit) -> Result<Option<ReceiveLease>, Error> {
         let e = self.entry_mut(p)?;
         if e.phase != Phase::Ready { return Ok(None); }
+        // Saturation is ordinary backpressure, never an admitted receive.
+        if e.receives.iter().filter(|slot| slot.is_some()).count() >= e.max_live_receives {
+            return Ok(None);
+        }
         let slot = e.receives.iter().position(Option::is_none).ok_or(Error::Full)?;
         let id = e.next_receive.checked_add(1).ok_or(Error::Exhausted)?;
         e.receives[slot] = Some(id);

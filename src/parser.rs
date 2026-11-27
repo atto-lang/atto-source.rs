@@ -4447,6 +4447,41 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                // A stateless, single-break value loop has no observable
+                // backedge or local bindings. Normalize only this exact
+                // braced form to its operand; ordinary checker/effect/loan
+                // handling remains authoritative. General CFG loops still
+                // require typed result-join lowering.
+                "loop" if *self.peek_at(1) == Tok::LBrace => {
+                    self.advance();
+                    self.advance();
+                    self.expect_word("break")?;
+                    if matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Eof) {
+                        return Err(Diagnostic::new(self.pos(), "E_BREAK_VALUE",
+                            "value loop requires a break operand"));
+                    }
+                    let old = self.ascription_colon;
+                    self.ascription_colon = true;
+                    let operand = self.parse_expr();
+                    self.ascription_colon = old;
+                    let operand = operand?;
+                    self.terminator()?;
+                    self.expect(Tok::RBrace, "'}' after the single value break")?;
+                    // Restrict this early normalization to ordinary scalar
+                    // expression shapes. A bare variable, call or member
+                    // would be reinterpreted by name-based call/pipeline
+                    // parsing rather than remaining a computed value.
+                    if !matches!(&operand.kind,
+                        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+                        ExprKind::Str(_) | ExprKind::Unary(..) | ExprKind::Binary(..) |
+                        ExprKind::Ternary(..) | ExprKind::Ascribe(..)) {
+                        return Err(unsupported(pos, "value-loop operand requires typed CFG lowering"));
+                    }
+                    if *self.peek() == Tok::LParen {
+                        return Err(unsupported(self.pos(), "calling a computed value loop"));
+                    }
+                    return Ok(Expr { kind: operand.kind, pos });
+                }
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
