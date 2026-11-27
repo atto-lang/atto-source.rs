@@ -123,4 +123,55 @@ mod tests {
         let too_wide: Vec<_> = (0..17).map(|_| node(empty, vec![None; 1024])).collect();
         assert!(infer_parking(&too_wide).is_err());
     }
+    #[test]
+    fn differential_reachability_oracle_and_exact_budget() {
+        fn next(state: &mut u64) -> usize {
+            *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (*state >> 32) as usize
+        }
+        let mut seed = 1127u64;
+        for _ in 0..256 {
+            let n = 1 + next(&mut seed) % 48;
+            let nodes: Vec<_> = (0..n).map(|_| {
+                let bits = next(&mut seed) % 16;
+                let direct = ParkingEffects {
+                    explicit_suspend: bits == 1,
+                    runtime_park: bits == 2,
+                    unresolved: bits == 3,
+                };
+                let calls = (0..next(&mut seed) % 8).map(|_| {
+                    let target = next(&mut seed) % (n + 3);
+                    if target < n { Some(target) } else { None }
+                }).collect();
+                node(direct, calls)
+            }).collect();
+            let actual = infer_parking(&nodes).unwrap();
+            for root in 0..n {
+                let mut expected = ParkingEffects::default();
+                let mut seen = vec![false; n];
+                let mut pending = vec![root];
+                while let Some(i) = pending.pop() {
+                    if seen[i] { continue; }
+                    seen[i] = true;
+                    expected.explicit_suspend |= nodes[i].direct.explicit_suspend;
+                    expected.runtime_park |= nodes[i].direct.runtime_park;
+                    expected.unresolved |= nodes[i].direct.unresolved;
+                    for target in &nodes[i].calls {
+                        if let Some(t) = target { pending.push(*t); }
+                        else { expected.unresolved = true; }
+                    }
+                }
+                assert_eq!(actual[root], expected);
+                assert_eq!(actual[root].requires_suspend_annotation(), expected.explicit_suspend);
+            }
+        }
+        let empty = ParkingEffects::default();
+        let park = ParkingEffects { runtime_park: true, ..empty };
+        let cycle: Vec<_> = (0..1024).map(|i| node(
+            if i == 1023 { park } else { empty },
+            vec![Some((i + 1) % 1024); 16],
+        )).collect();
+        assert!(infer_parking(&cycle).unwrap().iter().all(|r| *r == park));
+    }
+
 }
