@@ -1,6 +1,6 @@
 //! Initial executable contextual specialization profile.
 //! One source-local nominal class, one public contextual static method, one
-//! Copy scalar context (int/bool), and straight-line main. Lower to ordinary
+//! to eight Copy scalar contexts (int/bool), and straight-line main. Lower to ordinary
 //! checked static dispatch and immutable locals. No capability capture yet.
 use crate::diag::Diagnostic;
 use crate::lexer::{Tok, Token, MAX_TOKENS};
@@ -30,7 +30,37 @@ pub fn present(t: &[Token]) -> bool {
         && word(&x[1]).is_some() && x[2].tok == Tok::ColonColon
         && x[3].tok == Tok::LParen)
 }
-fn plain(t: &[Token], owner: &str, aliases: &BTreeMap<String,String>, anchor: &Token, context: bool) -> Result<(), Diagnostic> {
+// Split only at top-level commas, preserving source order and nested calls.
+fn split_context<'a>(t: &'a [Token], anchor: &Token) -> Result<Vec<&'a [Token]>, Diagnostic> {
+    let mut parts = Vec::new();
+    let mut stack = Vec::new();
+    let mut start = 0;
+    for (i, x) in t.iter().enumerate() {
+        match x.tok {
+            Tok::LParen => stack.push(Tok::RParen),
+            Tok::LBracket => stack.push(Tok::RBracket),
+            Tok::RParen | Tok::RBracket => {
+                if stack.pop().as_ref() != Some(&x.tok) {
+                    return Err(err(x, "mismatched contextual delimiter"));
+                }
+            }
+            Tok::Comma if stack.is_empty() => {
+                if i == start { return Err(err(x, "empty context argument")); }
+                parts.push(&t[start..i]);
+                start = i+1;
+            }
+            _ => {}
+        }
+    }
+    if !stack.is_empty() || start == t.len() {
+        return Err(err(anchor, "empty or unclosed context argument"));
+    }
+    parts.push(&t[start..]);
+    if parts.len() > 8 { return Err(err(anchor, "context arity limit (8)")); }
+    Ok(parts)
+}
+
+fn plain(t: &[Token], owner: &str, aliases: &BTreeMap<String,Vec<String>>, anchor: &Token, context: bool) -> Result<(), Diagnostic> {
     if context && t.is_empty() { return Err(err(anchor, "exactly one context expression is required")); }
     let mut depth = 0usize;
     for x in t {
@@ -67,13 +97,20 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         return Err(bad(7,"invalid contextual owner or member name"));
     }
     let ctx_end = pair(&t,9,Tok::LParen,Tok::RParen)?;
-    if ctx_end != 12 || !matches!(w(&t,10),Some("int" | "bool")) || w(&t,11).is_none() {
-        return Err(bad(9,"only one typed Copy scalar context parameter (int or bool) is implemented"));
+    let mut schema = Vec::new();
+    for decl in split_context(&t[10..ctx_end], &t[9])? {
+        if decl.len() != 2 || !matches!(word(&decl[0]), Some("int" | "bool")) {
+            return Err(err(&decl[0], "context parameters must be typed Copy scalars (int or bool)"));
+        }
+        let ty = word(&decl[0]).unwrap();
+        let name = word(&decl[1]).ok_or_else(|| err(&decl[1], "context parameter name required"))?;
+        if crate::parser::is_reserved(name) || name == owner || schema.iter().any(|&(_, n)| n == name) {
+            return Err(err(&decl[1], "invalid or duplicate context parameter"));
+        }
+        schema.push((ty, name));
     }
-    let ctx_type = w(&t,10).unwrap();
-    let ctx_name = w(&t,11).unwrap();
-    if crate::parser::is_reserved(ctx_name) || ctx_name == owner { return Err(bad(11,"invalid context parameter")); }
-    let params_end = pair(&t,13,Tok::LParen,Tok::RParen)?;
+    let params_at = ctx_end + 1;
+    let params_end = pair(&t,params_at,Tok::LParen,Tok::RParen)?;
     let body_at = params_end + 3;
     if !(is(&t,params_end+1,Tok::Arrow) || is(&t,params_end+1,Tok::Colon))
         || !matches!(w(&t,params_end+2),Some("int" | "bool")) {
@@ -93,17 +130,17 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     }
     // Neither the method body nor ordinary parameters may reference the
     // original owner; recursive or qualified contextual dispatch is not yet supported.
-    if t[13..=body_end].iter().any(|x| word(x)==Some(owner) || x.tok==Tok::ColonColon) {
-        return Err(bad(13,"contextual member body must not rebind or recursively specialize owner"));
+    if t[params_at..=body_end].iter().any(|x| word(x)==Some(owner) || x.tok==Tok::ColonColon) {
+        return Err(bad(params_at,"contextual member body must not rebind or recursively specialize owner"));
     }
     let lowered = format!("{PREFIX}method");
     let mut out = t[..7].to_vec();
     out.push(ident(&t[7],&lowered));
-    out.push(t[13].clone());
-    out.extend_from_slice(&t[10..12]);
-    if params_end != 14 { out.push(token(&t[13],Tok::Comma)); }
-    out.extend_from_slice(&t[14..=main_at]);
-    let mut aliases = BTreeMap::<String,String>::new();
+    out.push(t[params_at].clone());
+    out.extend_from_slice(&t[10..ctx_end]);
+    if params_end != params_at + 1 { out.push(token(&t[params_at],Tok::Comma)); }
+    out.extend_from_slice(&t[params_at+1..=main_at]);
+    let mut aliases = BTreeMap::<String,Vec<String>>::new();
     let mut i = main_at+1;
     while i < main_end {
         let x = &t[i];
@@ -123,14 +160,20 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
                     return Err(bad(i,"context binding conflicts with a prior source name"));
                 }
                 if i!=main_at+1 && !is(&t,i-1,Tok::Semi) { return Err(bad(i,"context binding must be a standalone statement")); }
-                plain(&t[i+6..end],owner,&aliases,x,true)?;
+                let parts = split_context(&t[i+6..end], x)?;
+                if parts.len() != schema.len() { return Err(bad(i, "context arity mismatch")); }
                 if t[i+6..end].iter().any(|q| word(q)==Some(name)) { return Err(bad(i,"self-referencing contextual binding")); }
                 if aliases.len()>=64 { return Err(bad(i,"context binding limit (64)")); }
-                let slot = format!("{PREFIX}slot_{}",aliases.len());
-                out.extend([x.clone(),ident(&t[i+1],&slot),token(x,Tok::Colon),ident(x,ctx_type),t[i+2].clone()]);
-                out.extend_from_slice(&t[i+6..end]);
-                out.push(t[end+1].clone());
-                aliases.insert(name.into(),slot);
+                let mut slots = Vec::new();
+                for (j, (part, (ty, _))) in parts.into_iter().zip(&schema).enumerate() {
+                    plain(part,owner,&aliases,x,true)?;
+                    let slot = format!("{PREFIX}slot_{}_{}",aliases.len(),j);
+                    out.extend([x.clone(),ident(&t[i+1],&slot),token(x,Tok::Colon),ident(x,ty),t[i+2].clone()]);
+                    out.extend_from_slice(part);
+                    out.push(t[end+1].clone());
+                    slots.push(slot);
+                }
+                aliases.insert(name.into(),slots);
                 i=end+2; continue;
             }
         }
@@ -145,10 +188,17 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             let (dot, context) = if direct {
                 if !is(&t,i+1,Tok::ColonColon) { return Err(bad(i,"contextual method requires explicit binding")); }
                 let end=pair(&t,i+2,Tok::LParen,Tok::RParen)?;
-                plain(&t[i+3..end],owner,&aliases,x,true)?;
+                let parts = split_context(&t[i+3..end], x)?;
+                if parts.len() != schema.len() { return Err(bad(i, "context arity mismatch")); }
+                for part in parts { plain(part,owner,&aliases,x,true)?; }
                 (end+1,t[i+3..end].to_vec())
             } else {
-                (i+1,vec![ident(x,stored.unwrap())])
+                let mut captured = Vec::new();
+                for (j, slot) in stored.unwrap().iter().enumerate() {
+                    if j > 0 { captured.push(token(x, Tok::Comma)); }
+                    captured.push(ident(x,slot));
+                }
+                (i+1,captured)
             };
             if !is(&t,dot,Tok::Dot) || w(&t,dot+1)!=Some(member) || !is(&t,dot+2,Tok::LParen) {
                 return Err(bad(i,"bound context is only usable through its declared static member"));
@@ -214,6 +264,23 @@ mod tests {
             assert_eq!(String::from_utf8(result.stdout).unwrap(), expected);
         }
     }
+    fn multi_program(body: &str) -> String {
+        format!("define class Scale as pub static fnc apply::(int factor, int offset)(int value) -> int {{ return factor * value + offset; }} end fnc main() -> int {{ {body} }}")
+    }
+    #[test] fn multiple_contexts_compile() {
+        let src = multi_program("let n = 3; const x = Scale::(n, n + 1); n = 9; return x.apply(5) + Scale::(2, 1).apply(7);");
+        assert!(crate::compile(&src).is_ok());
+    }
+    #[test] fn multiple_contexts_reject() {
+        for body in [
+            "const x = Scale::(2); return x.apply(3);",
+            "const x = Scale::(2, true); return x.apply(3);",
+            "return Scale::(2, 1, 0).apply(3);",
+            "return Scale::(2,).apply(3);",
+            "return Scale::(,2).apply(3);",
+            "const x = Scale::(factor=2, offset=1); return x.apply(3);",
+        ] { assert!(crate::compile(&multi_program(body)).is_err(), "{body}"); }
+    }
     #[test] fn separate_bindings_compile() {
         assert!(crate::compile(&program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);")).is_ok());
     }
@@ -230,7 +297,7 @@ mod tests {
             "const x = Scale::(2); return x.apply(true);",
             "return Scale::(1, 2).apply(3);",
             "return Scale::(2).apply();",
-            "const x = Scale::(2); return _atto_context_v1_slot_0;",
+            "const x = Scale::(2); return _atto_context_v1_slot_0_0;",
         ] { assert!(crate::compile(&program(body)).is_err(),"{body}"); }
     }
 }
