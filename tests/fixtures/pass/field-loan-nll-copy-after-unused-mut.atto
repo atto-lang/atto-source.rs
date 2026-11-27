@@ -1,0 +1,12 @@
+// expect-exit: 42
+// java: rejects
+// The unused mutable loan ends before the deep copy; no live alias escapes.
+define class Parcel as
+    pub let int value = 42;
+end
+pub fnc main(): int {
+    let original = new Parcel();
+    val borrowed = borrow! mut original;
+    val cloned = copy!! original;
+    return cloned.value;
+}

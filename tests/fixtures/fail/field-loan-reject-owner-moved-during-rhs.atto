@@ -1,0 +1,13 @@
+// expect-error: E_MOVED
+// java: rejects
+define class Person as
+  pub let int age = 30;
+end
+fnc consume_person(Person person): int {
+  return 42;
+}
+pub fnc main(): int {
+  let person = new Person();
+  person.age = consume_person(take! person);
+  return 0;
+}
