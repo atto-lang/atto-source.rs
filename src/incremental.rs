@@ -38,7 +38,13 @@ pub struct BuildKey(pub [u8; 32]);
 
 impl BuildKey {
     pub fn hex(&self) -> String {
-        self.0.iter().map(|b| format!("{b:02x}")).collect()
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(64);
+        for b in self.0 {
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 15) as usize] as char);
+        }
+        out
     }
 }
 
@@ -207,12 +213,14 @@ pub struct CacheStats {
     pub evictions: u64,
 }
 
+type CacheEntry = (Vec<String>, R<Vec<u8>>, usize);
+
 /// Bounded FIFO cache of compiled guest artifacts and diagnostics.
 pub struct IncrementalCompiler {
     capacity: usize,
     byte_budget: usize,
     retained_bytes: usize,
-    entries: BTreeMap<BuildKey, (Vec<String>, R<Vec<u8>>, usize)>,
+    entries: BTreeMap<BuildKey, CacheEntry>,
     order: VecDeque<BuildKey>,
     last_digests: BTreeMap<String, [u8; 32]>,
     stats: CacheStats,
