@@ -121,3 +121,39 @@ fn inspection_rejects_duplicate_or_mixed_storage() {
         assert!(compile(source).is_err());
     }
 }
+
+#[test]
+fn shared_inspection_vectors_have_canonical_graph_order() {
+    let cycle = include_str!("fixtures/actor-machine-inspection-v1/flat-cycle.atto");
+    let order = include_str!("fixtures/actor-machine-inspection-v1/flat-order.atto");
+    let actors = Parser::inspect_actor_machines(cycle).unwrap();
+    let graph = actors[0].machine.as_ref().unwrap();
+    assert_eq!(graph.initial, 0);
+    assert_eq!(graph.nodes[0].name, "Idle");
+    assert_eq!(graph.nodes[0].transitions, vec![("Start".to_string(), 1)]);
+    assert_eq!(graph.nodes[1].name, "Running");
+    assert_eq!(graph.nodes[1].transitions, vec![("Stop".to_string(), 0)]);
+    let actors = Parser::inspect_actor_machines(order).unwrap();
+    let graph = actors[0].machine.as_ref().unwrap();
+    assert!(actors[0].storage.as_ref().unwrap().is_empty());
+    assert_eq!(graph.initial, 1);
+    assert_eq!(graph.nodes[0].name, "Alpha");
+    assert!(graph.nodes[0].terminal);
+    assert!(graph.nodes[0].transitions.is_empty());
+    assert_eq!(graph.nodes[1].name, "Zed");
+    assert_eq!(graph.nodes[1].transitions, vec![("AlphaEvent".to_string(), 0), ("Zulu".to_string(), 1)]);
+    for source in [cycle, order] {
+        assert!(compile(source).is_err());
+    }
+}
+
+#[test]
+fn shared_storage_vectors_reject_invalid_initializers() {
+    for source in [
+        include_str!("fixtures/actor-machine-inspection-v1/wrong-scalar.atto"),
+        include_str!("fixtures/actor-machine-inspection-v1/effectful-initializer.atto"),
+    ] {
+        assert!(Parser::inspect_actor_machines(source).is_err());
+        assert!(compile(source).is_err());
+    }
+}
