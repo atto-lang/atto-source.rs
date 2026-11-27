@@ -428,10 +428,24 @@ struct ActorInfo {
 }
 
 /// Program-wide declaration tables shared by every body check.
+fn constant_default(value: &DefaultLiteral, ty: Type, tmp: u32, pos: Pos) -> R<TE> {
+    match (value, ty) {
+        (DefaultLiteral::Int(n), Type::Int) => Ok(TE { ty, e: TExpr::I64(*n) }),
+        (DefaultLiteral::Int(n), Type::OptionInt) => Ok(TE { ty, e: TExpr::AdtNew {
+            tag: 1, payload: Some(Box::new(TE { ty: Type::Int, e: TExpr::I64(*n) })), tmp,
+        }}),
+        (DefaultLiteral::None, Type::OptionInt) => Ok(TE { ty, e: TExpr::AdtNew {
+            tag: 0, payload: None, tmp,
+        }}),
+        _ => Err(type_err(pos, "default literal does not match formal type")),
+    }
+}
+
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
     overloads: BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>>,
     presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>>,
+    omission_defaults: Vec<Vec<Option<DefaultLiteral>>>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -1018,13 +1032,22 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // The full family is kept for any name with an omittable formal.
     // Do not let the legacy name/arity table bypass provenance lowering.
-    if p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.omittable)) || c.methods.iter().any(|m| m.params.iter().any(|q| q.omittable)))
-        || p.actors.iter().any(|a| a.methods.iter().any(|m| m.params.iter().any(|q| q.omittable))) {
+    if p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some())) || c.methods.iter().any(|m| m.params.iter().any(|q| q.omittable)))
+        || p.actors.iter().any(|a| a.methods.iter().any(|m| m.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some()))) {
         return Err(Diagnostic::new(Pos::default(), "E_UNSUPPORTED", "omittable method and constructor ABI is not implemented"));
     }
+    let omission_defaults = p.funcs.iter().map(|f| f.params.iter().map(|q| q.omission_default.clone()).collect()).collect();
     let mut presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>> = BTreeMap::new();
     for f in &p.funcs {
-        if f.params.iter().any(|q| q.omittable) {
+        for q in &f.params {
+            if (q.none_default.is_some() && (q.ty != Type::OptionInt || q.mutable))
+                || (q.omission_default.is_some() && (!q.omittable || q.mutable))
+                || (q.omittable && !matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr) && q.omission_default.is_none()) {
+                return Err(type_err(q.pos, "invalid default metadata"));
+            }
+            if let Some(value) = &q.omission_default { constant_default(value, q.ty, 0, q.pos)?; }
+        }
+        if f.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some()) {
             if f.name == "main" || f.is_generator || f.params.len() + f.params.iter().filter(|q| q.omittable).count() > crate::parser::MAX_PARAMS {
                 return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "entrypoints, generators and over-budget hidden parameter frames cannot have omittable parameters in this slice"));
             }
@@ -1034,12 +1057,12 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for (i, f) in p.funcs.iter().enumerate() {
         if let Some(family) = presence_families.get_mut(&f.name) {
             if f.is_generator || f.params.iter().any(|q| !matches!(q.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::OptionInt | Type::OptionResultIntStr)) || f.params.iter().any(|q| q.omittable &&
-                (q.mutable || !matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr))) {
+                (q.mutable || (!matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr) && !(q.ty == Type::Int && q.omission_default.is_some())))) {
                 return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "unsupported omittable overload family"));
             }
             let formals = f.params.iter().map(|q| Ok(crate::call_presence_v2::Formal {
                 ty: res(q.ty)?, omittable: q.omittable,
-                none_default: false, omission_default: false,
+                none_default: q.none_default.is_some(), omission_default: q.omission_default.is_some(),
             })).collect::<R<Vec<_>>>()?;
             family.push((i as u32, formals, res(f.ret)?));
         }
@@ -1217,6 +1240,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         sigs,
         overloads,
         presence_families,
+        omission_defaults,
         names,
         classes,
         enums: &p.enums,
@@ -1306,7 +1330,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let hidden_names = f.params.iter().enumerate().filter(|(_, q)| q.omittable)
             .map(|(i, _)| format!("\0omitted:{i}")).collect::<Vec<_>>();
         named.extend(hidden_names.iter().map(|n| (n.as_str(), Type::Bool, false)));
-        let body = body_check(
+        let mut body = body_check(
             &g,
             BodyCheckInput {
                 owner: Owner::TopLevel, named: &named, mail: None,
@@ -1314,6 +1338,36 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             },
             &mut imports, &mut data,
         )?;
+        // Apply the supplied-None default in the callee, before user code.
+        // Omitted inputs already carry their omission default and never cascade.
+        let mut prelude = Vec::new();
+        let mut flag = f.params.len() as u32;
+        for (j, q) in f.params.iter().enumerate() {
+            let omitted_slot = if q.omittable { let s = flag; flag += 1; Some(s) } else { None };
+            if let Some(default) = &q.none_default {
+                if q.ty != Type::OptionInt || q.mutable {
+                    return Err(type_err(q.pos, "unsupported None default formal"));
+                }
+                if body.1.len() >= MAX_LOCALS {
+                    return Err(Diagnostic::new(q.pos, "E_SOURCE_LIMIT", "default temporary exceeds local limit"));
+                }
+                let tmp = named.len() as u32 + body.1.len() as u32;
+                body.1.push(q.ty);
+                let value = constant_default(default, q.ty, tmp, q.pos)?;
+                let is_none = TE { ty: Type::Bool, e: TExpr::AdtIs {
+                    obj: Box::new(TE { ty: q.ty, e: TExpr::Local(j as u32) }), tag: 0,
+                }};
+                let branch = TStmt::If(vec![(is_none, vec![TStmt::Set(j as u32, value)])], None);
+                prelude.push(if let Some(s) = omitted_slot {
+                    let supplied = TE { ty: Type::Bool, e: TExpr::Not(Box::new(TE {
+                        ty: Type::Bool, e: TExpr::Local(s),
+                    })) };
+                    TStmt::If(vec![(supplied, vec![branch])], None)
+                } else { branch });
+            }
+        }
+        prelude.append(&mut body.0);
+        body.0 = prelude;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
             params: named.iter().map(|n| n.1).collect(),
@@ -1503,7 +1557,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for (m, mi) in a.methods.iter().zip(&info.methods) {
             for (q, t) in m.params.iter().zip(&mi.params).map(|(q, t)| (q, *t)).chain(std::iter::once((
                 &Param {
-                    omittable: false,
+                    omittable: false, none_default: None, omission_default: None,
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
@@ -5432,7 +5486,7 @@ impl<'a> FnCx<'a> {
             let (idx, formals, ret) = family[plan.candidate].clone();
             let mut typed = Vec::new();
             let mut provenance = Vec::new();
-            for (formal, slot) in formals.iter().zip(&plan.slots) {
+            for (j, (formal, slot)) in formals.iter().zip(&plan.slots).enumerate() {
                 let supplied = match slot.origin {
                     Origin::Supplied(i) => {
                         let value = self.consume_expected(&args[i], formal.ty)?;
@@ -5441,8 +5495,13 @@ impl<'a> FnCx<'a> {
                         true
                     }
                     Origin::ExplicitHole(_) | Origin::Absent => {
-                        let none = Expr { kind: ExprKind::Var("None".into()), pos };
-                        typed.push(self.consume_expected(&none, formal.ty)?);
+                        if let Some(default) = self.g.omission_defaults[idx as usize][j].clone() {
+                            let tmp = if formal.ty == Type::Int { 0 } else { self.temp(formal.ty, pos)? };
+                            typed.push(constant_default(&default, formal.ty, tmp, pos)?);
+                        } else {
+                            let none = Expr { kind: ExprKind::Var("None".into()), pos };
+                            typed.push(self.consume_expected(&none, formal.ty)?);
+                        }
                         false
                     }
                 };
