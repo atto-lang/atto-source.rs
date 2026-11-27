@@ -1,0 +1,44 @@
+// expect-exit: 76
+fnc keyword(bool c): int {
+  return if c then 5 else 6 fi;
+}
+fnc ternary(bool c): int {
+  return c ? 5 : 6;
+}
+fnc ternary_block(bool c): int {
+  return c ? { return 5; } : { return 6; };
+}
+fnc prefix(bool c): int {
+  do if c then
+    return 5;
+  else
+    return 6;
+  fi
+}
+fnc suffix(bool c): int {
+  if c do
+    return 5;
+  else
+    return 6;
+  fi
+}
+fnc braced(bool c): int {
+  if c {
+    return 5;
+  } else {
+    return 6;
+  }
+}
+fnc local_arm(): int {
+  const int v = true ? { return 5; } : { return 6; };
+  return v * 2;
+}
+pub fnc main(): int {
+  return keyword(true) + keyword(false)
+       + ternary(true) + ternary(false)
+       + ternary_block(true) + ternary_block(false)
+       + prefix(true) + prefix(false)
+       + suffix(true) + suffix(false)
+       + braced(true) + braced(false)
+       + local_arm();
+}
