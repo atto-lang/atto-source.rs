@@ -1,0 +1,29 @@
+name: Lexical Record capture compiler and guest
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - name: Run targeted compiler regressions
+        run: cargo test --locked --test parenthesized_named_record --test closed_record_guest --test inline_collection_types
+      - name: Build native compiler
+        run: cargo build --locked --release --bin attoc
+      - name: Build browser compiler
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --locked --release --lib --target wasm32-unknown-unknown
+      - name: Execute actual guest Wasm and compare native/browser compiler bytes
+        run: node tests/closed_record_guest.mjs
