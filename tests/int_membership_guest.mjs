@@ -12,13 +12,15 @@ const pass = [
   program('7','is in [int, string] -> 42'),
   program('true','is in [int, bool] -> 42'),
   program('2','on 0 -> 0, is in [int, bool] -> 42'),
-  program('7','in [0,1,2] when (1 / 0) eq 1 -> 0, on _ -> 42'),
+  program('7','in [0,1,2] when (4 / 2) eq 2 -> 0, on _ -> 42'),
   program('2','on 2 -> 42, in [1,2,3] -> 0, on _ -> 0'),
   program('2','in [1,2] when false -> 0, in [1,2] -> 42, on _ -> 0'),
   program('-9223372036854775808','in [-9223372036854775808, 0] -> 42, on _ -> 0'),
   'fnc get(): int { return 2; } ' + program('get()','in [1,2] -> 42, on _ -> 0')
 ];
 const fail = [
+  // A guard is still statically checked even when its pattern cannot match.
+  program('7','in [0,1,2] when (1 / 0) eq 1 -> 0, on _ -> 42'),
   program('2','in [2,2] -> 42, on _ -> 0'),
   program('7','is in [int,int] -> 42'),
   program('7','is in [string,String] -> 42'),
@@ -39,6 +41,7 @@ try {
     const input = join(dir, i+'.atto'), output = join(dir, i+'.wasm');
     await writeFile(input,source);
     const built = spawnSync(attoc,[input,'-o',output],{encoding:'utf8',timeout:30000});
+    assert.ifError(built.error); assert.equal(built.signal,null);
     if (i < pass.length) {
       assert.equal(built.status,0,built.stderr);
       const bytes = await readFile(output);
