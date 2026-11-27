@@ -223,3 +223,28 @@ test('state pointer domain is bounded by the signed i32 preview ABI', () => {
   leave(ticket);rt.complete();
   assert.equal(rt.snapshot().quiescent,true);
 });
+
+test('retire and successful completion are one-shot notifications',()=>{
+  const events=[];const rt=createStateRuntime({onEvent:e=>events.push(e.kind)});
+  rt.imports.state_register(0); const t=rt.imports.state_enter(0,0);
+  rt.beginRetire(0);rt.beginRetire(0);
+  assert.equal(rt.quiescent(0),false);
+  rt.imports.state_leave(t);rt.complete();rt.complete();rt.abort();
+  assert.deepEqual(events,['register','enter','retire','leave','complete']);
+  assert.equal(rt.snapshot().quiescent,true);
+});
+test('aborted runtime never reports successful completion',()=>{
+  const events=[];const rt=createStateRuntime({onEvent:e=>events.push(e.kind)});
+  rt.imports.state_register(0);const t=rt.imports.state_enter(0,1);
+  rt.abort();rt.abort();assert.throws(()=>rt.complete(),/aborted/);
+  assert.throws(()=>rt.imports.state_leave(t),/replayed/);
+  assert.deepEqual(events,['register','enter','abort']);
+  assert.equal(rt.quiescent(0),true);
+});
+test('failed complete does not terminalize live runtime',()=>{
+  const events=[];const rt=createStateRuntime({onEvent:e=>events.push(e.kind)});
+  rt.imports.state_register(0);const t=rt.imports.state_enter(0,1);
+  assert.throws(()=>rt.complete(),/unreleased/);assert.equal(rt.snapshot().retired,false);
+  rt.imports.state_leave(t);rt.complete();assert.equal(rt.snapshot().quiescent,true);
+  assert.deepEqual(events,['register','enter','leave','complete']);
+});
