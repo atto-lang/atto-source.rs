@@ -193,3 +193,46 @@ fn corrupted_typed_state_region_cannot_emit_guest_bytes() {
         assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),"forged typed region {variant} emitted");
     }
 }
+
+#[test]
+fn protected_state_emission_authenticates_nominal_receiver_and_field_layout() {
+    use atto_compiler::{check::TE, wasm};
+    assert!(!wasm::emit(&typed()).is_empty());
+    for variant in 0..5 {
+        let mut program = typed();
+        let method = program.funcs.iter_mut().find(|f| f.name == "Counter.increment").unwrap();
+        let body = method.body.iter_mut().find_map(|s| match s {
+            TStmt::StateCriticalWrite(body) => Some(body), _ => None,
+        }).unwrap();
+        let TStmt::StateFieldWrite { obj, offset, ty, value } = &mut body[0] else {
+            panic!("expected protected assignment");
+        };
+        match variant {
+            0 => *offset = 8, // aligned but outside this one-field layout
+            1 => obj.ty = Type::Class(u32::MAX),
+            2 => {
+                *ty = Type::Bool;
+                *value = TE { e: TExpr::Bool(true), ty: Type::Bool };
+            }
+            3 => method.params[0] = Type::Class(u32::MAX),
+            _ => method.params[0] = Type::Int,
+        }
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),
+            "corrupt protected write layout {variant} emitted bytes");
+    }
+    for variant in 0..3 {
+        let mut program = typed();
+        let method = program.funcs.iter_mut().find(|f| f.name == "Counter.read_count").unwrap();
+        let read = method.body.iter_mut().find_map(|s| match s {
+            TStmt::Return(Some(value)) => Some(value), _ => None,
+        }).unwrap();
+        let TExpr::StateFieldRead { obj, offset } = &mut read.e else { panic!("expected read"); };
+        match variant {
+            0 => *offset = 8,
+            1 => obj.ty = Type::Class(u32::MAX),
+            _ => read.ty = Type::Bool,
+        }
+        assert!(std::panic::catch_unwind(|| wasm::emit(&program)).is_err(),
+            "corrupt protected read layout {variant} emitted bytes");
+    }
+}
