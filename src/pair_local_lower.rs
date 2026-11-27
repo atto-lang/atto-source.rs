@@ -182,6 +182,9 @@ pub fn lower(ts: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             }
             if let Some((k,payload,alias)) = pair_init {
                 if payload.is_empty() { return Err(unsupported(pos)); }
+                let mut checked_payload = Vec::new();
+                if alias { checked_payload.extend(payload.iter().cloned()); }
+                else { expression(&payload,&locals,&mut checked_payload)?; }
                 if qualifier == "const" && !alias && !scalar_literal(&payload) {
                     return Err(err(pos,"E_PAIR_CONSTEXPR","const Pair payload requires a proven integer literal in this profile"));
                 }
@@ -190,8 +193,7 @@ pub fn lower(ts: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
                 // No early source binding: rewrite payload with the previous
                 // environment, then introduce the fresh Pair binding.
                 out.extend([tok(ident("val"), pos),tok(ident("int"),pos),tok(ident(&slot),binder.pos),tok(Tok::Assign,op.pos)]);
-                if alias { out.extend(payload); }
-                else { expression(&payload,&locals,&mut out)?; }
+                out.extend(checked_payload);
                 locals.insert(n, Local::Pair(Pair { key:k, payload:slot, qualifier:qualifier.to_owned() }));
             } else {
                 if typed_pair || op.tok != Tok::Assign { return Err(unsupported(pos)); }
@@ -241,6 +243,8 @@ mod tests {
             "const x := y := 5; return x.value;",
             "val x := 5; const Pair<int> p = x; return p.value;",
         ] { assert!(compile(body).is_err(), "unsafe acceptance: {body}"); }
+        assert_eq!(compile("const x := x; return x.value;").unwrap_err().code, "E_UNBOUND");
+        assert_eq!(compile("const x = x := x; return x.value;").unwrap_err().code, "E_UNBOUND");
         assert!(compile("val __atto_pair_local_0 = 5; return 5;").is_err());
     }
 }
