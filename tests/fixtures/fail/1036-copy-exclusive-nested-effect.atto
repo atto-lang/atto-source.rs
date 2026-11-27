@@ -1,0 +1,6 @@
+// expect-error: E_COPY_UNPROVEN
+// java: rejects
+define class Scores as pub let int n = 20; end
+define class Person as pub let mut Scores scores = new Scores(); end
+fnc adjust(mut Scores s): void { s.n = 22; stdio.println(s.n); }
+pub fnc main(): int { return 42; }

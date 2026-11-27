@@ -1,0 +1,19 @@
+// expect-exit: 42
+// java: rejects
+define class Leaf as
+    pub val int n = 20;
+end
+define class Root as
+    pub let Leaf child = new Leaf();
+    pub let int extra = 1;
+end
+pub fnc main(): int {
+    let a = new Root();
+    let b = copy! a;
+    let c = copy!! b;
+    a.extra = 2;
+    b.extra = 3;
+    c.extra = 4;
+    b.child = new Leaf();
+    return a.child.n + c.child.n + a.extra;
+}

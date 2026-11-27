@@ -2199,18 +2199,25 @@ impl Parser {
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
+        let exclusive = self.eat_word("mut");
         // compatibility form `name: type [mut]`
         if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, pos) = self.ident("a parameter name")?;
             self.advance();
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, pos);
+            if exclusive && mutable { return Err(Diagnostic::new(pos, "E_SYNTAX", "duplicate mut formal")); }
+            let mut param = self.finish_param(name, ty, mutable || exclusive, pos)?;
+            param.exclusive = exclusive;
+            return Ok(param);
         }
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
         let (name, pos) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, pos)
+        if exclusive && mutable { return Err(Diagnostic::new(pos, "E_SYNTAX", "duplicate mut formal")); }
+        let mut param = self.finish_param(name, ty, mutable || exclusive, pos)?;
+        param.exclusive = exclusive;
+        Ok(param)
     }
 
     fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
@@ -2220,7 +2227,7 @@ impl Parser {
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        Ok(Param { name, ty, mutable, exclusive: false, pos })
     }
 
     // ----------------------------------------------------------- statements
@@ -4462,7 +4469,12 @@ impl Parser {
                 if *self.peek() == Tok::Dot {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
-                args.push(self.parse_expr()?);
+                let arg_pos = self.pos();
+                let exclusive = self.eat_word("mut");
+                let arg = self.parse_expr()?;
+                args.push(if exclusive {
+                    Expr { kind: ExprKind::Ownership(OwnershipOp::Borrow, true, Box::new(arg)), pos: arg_pos }
+                } else { arg });
                 if args.len() > MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
                 }

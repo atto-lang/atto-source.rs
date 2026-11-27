@@ -1,0 +1,10 @@
+// expect-error: E_OWNERSHIP
+// java: rejects
+define class Leaf as pub val int n = 42; end
+define class Root as pub let Leaf child = new Leaf(); end
+pub fnc main(): int {
+    let a = new Root();
+    let b = copy! a;
+    b.child.n = 0;
+    return a.child.n;
+}

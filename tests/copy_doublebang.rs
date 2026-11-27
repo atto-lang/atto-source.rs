@@ -64,11 +64,10 @@ fn copy_deep_disallows_mut_qualifier_and_missing_operand() {
 
 #[test]
 fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
-    // A shallow class copy without verified Copyable witness must still
-    // fail. The deep path is independently admitted for this flat class.
+    // Both witnesses must be independently derived for the closed flat layout.
     let prefix = "define class Parcel as pub let int value = 1; end pub fnc main(): int { val p = new Parcel(); ";
     let shallow = format!("{prefix}val q = copy! p; return 0; }}");
-    assert_eq!(compile(&shallow).unwrap_err().code, "E_COPY");
+    wasm(&shallow);
     let deep = format!("{prefix}val q = copy!! p; return q.value; }}");
     wasm(&deep);
 }
@@ -77,4 +76,80 @@ fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
 fn deep_copy_after_inferred_mutable_loan_end_is_accepted() {
     wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-unused-mut.atto"));
     wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto"));
+}
+
+#[test]
+fn shallow_copy_flat_root_and_live_loan_gate() {
+    wasm(include_str!("fixtures/pass/998-copy-shallow-flat-class.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/998-copy-shallow-exclusive-loan.atto")).unwrap_err().code, "E_BORROW");
+    assert_eq!(compile(include_str!("fixtures/fail/153-copy-noncopy-class.atto")).unwrap_err().code, "E_COPY_OVERRIDE");
+}
+#[test]
+fn shallow_copy_after_last_mutable_loan_use() {
+    let source = include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto").replace("copy!! original","copy! original");
+    wasm(&source);
+}
+
+#[test]
+fn nested_immutable_leaf_copy_and_projection_boundaries() {
+    wasm(include_str!("fixtures/pass/999-copy-immutable-leaf.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/999-copy-nested-handle-escape.atto")).unwrap_err().code, "E_BORROW");
+    assert_eq!(compile(include_str!("fixtures/fail/1000-copy-nested-mutable-unproved.atto")).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+    assert_eq!(compile(include_str!("fixtures/fail/1001-copy-nested-write.atto")).unwrap_err().code, "E_OWNERSHIP");
+}
+
+#[test]
+fn closed_mutable_leaf_sharing_and_detachment() {
+    wasm(include_str!("fixtures/pass/1002-copy-mutable-detachment.atto"));
+    wasm(include_str!("fixtures/pass/1003-copy-mutable-deep.atto"));
+    wasm(include_str!("fixtures/pass/1004-copy-mutable-third.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1005-copy-shared-source-write.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1006-copy-shared-copy-write.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1007-copy-shared-third-write.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1008-copy-mutable-control-flow.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1009-copy-mutable-handle-escape.atto")).unwrap_err().code, "E_BORROW");
+}
+
+#[test]
+fn lexical_copy_groups_restore_only_last_alias_authority() {
+    wasm(include_str!("fixtures/pass/1010-copy-lexical-release.atto"));
+    wasm(include_str!("fixtures/pass/1011-copy-lexical-third-release.atto"));
+    wasm(include_str!("fixtures/pass/1012-copy-source-recovery-on-detach.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1013-copy-live-sibling-after-block.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1014-copy-root-transfer.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1015-copy-root-take.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1016-copy-root-borrow.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1017-copy-root-rebind.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1018-copy-untracked-temp.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1019-copy-root-call-boundary.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+}
+
+#[test]
+fn fixed_nested_slot_remains_fixed_on_shallow_and_deep_copy() {
+    wasm(include_str!("fixtures/pass/1020-copy-fixed-slot.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1021-copy-fixed-slot-replace.atto")).unwrap_err().code, "E_COPY_READONLY_SLOT");
+}
+
+#[test]
+fn bounded_fresh_tree_copy_and_transitive_authority() {
+    wasm(include_str!("fixtures/pass/1022-copy-tree-detach.atto"));
+    wasm(include_str!("fixtures/pass/1023-copy-tree-deep.atto"));
+    wasm(include_str!("fixtures/pass/1024-copy-tree-release.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1025-copy-tree-source-write.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1026-copy-tree-inner-replace.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1027-copy-tree-shared-inner-replace.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1028-copy-tree-cycle.atto")).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+    assert_eq!(compile(include_str!("fixtures/fail/1029-copy-tree-depth.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+}
+
+#[test]
+fn projected_exclusive_call_requires_unique_subtree_and_closed_effects() {
+    wasm(include_str!("fixtures/pass/1030-copy-exclusive-call-detach.atto"));
+    wasm(include_str!("fixtures/pass/1031-copy-exclusive-call-release.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1032-copy-exclusive-shared-source.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1033-copy-exclusive-shared-copy.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1034-copy-exclusive-missing-mut.atto")).unwrap_err().code, "E_BORROW");
+    assert_eq!(compile(include_str!("fixtures/fail/1035-copy-exclusive-return-escape.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1036-copy-exclusive-nested-effect.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1037-copy-exclusive-unproved-callee.atto")).unwrap_err().code, "E_BORROW");
 }

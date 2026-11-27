@@ -253,7 +253,7 @@ fn flatten_declarations(source: &[StructWithTarget], names: &[(String, Pos)]) ->
                     let child = nominal_owner(p.ty, names, source, p.pos)?;
                     if plans[child].is_empty() { return Err(denied(p.pos, "empty nested parameter")); }
                     for (leaf, ty) in &plans[child] {
-                        flat_params.push(Param { name: format!("{}.{leaf}", p.name), ty: *ty, mutable: false, pos: p.pos });
+                        flat_params.push(Param { name: format!("{}.{leaf}", p.name), ty: *ty, mutable: false, exclusive: false, pos: p.pos });
                     }
                 }
                 if flat_params.len() > MAX_PARAMS { return Err(denied(p.pos, "nested constructor scalar parameter budget exceeded")); }
@@ -689,12 +689,12 @@ pub(crate) fn lower(tokens: Vec<Token>) -> R<Program> {
         for (j, (name, ty)) in decl.fields.iter().enumerate() {
             let local = internal("receiver", i, j);
             fields.insert(name.clone(), local.clone());
-            flat.push(Param { name: local, ty: *ty, mutable: false, pos: m.pos });
+            flat.push(Param { name: local, ty: *ty, mutable: false, exclusive: false, pos: m.pos });
         }
         for (j, p) in m.params.iter().enumerate() {
             let local = internal("param", i, j);
             params.insert(p.name.clone(), local.clone());
-            flat.push(Param { name: local, ty: p.ty, mutable: false, pos: p.pos });
+            flat.push(Param { name: local, ty: p.ty, mutable: false, exclusive: false, pos: p.pos });
         }
         let function = internal("method", i, 0);
         let entry = MethodEntry { function: function.clone(), arity: flat.len(),

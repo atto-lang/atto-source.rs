@@ -16,12 +16,55 @@ const positives = [
   '995-copy-doublebang-flat-class-mixed-fields.atto',
   '996-copy-doublebang-constructor-state.atto',
   '997-copy-doublebang-private-state.atto',
+  '998-copy-shallow-flat-class.atto',
+  '999-copy-immutable-leaf.atto',
+  '1002-copy-mutable-detachment.atto',
+  '1003-copy-mutable-deep.atto',
+  '1004-copy-mutable-third.atto',
+  '1010-copy-lexical-release.atto',
+  '1011-copy-lexical-third-release.atto',
+  '1012-copy-source-recovery-on-detach.atto',
+  '1020-copy-fixed-slot.atto',
+  '1022-copy-tree-detach.atto',
+  '1023-copy-tree-deep.atto',
+  '1024-copy-tree-release.atto',
+  '1030-copy-exclusive-call-detach.atto',
+  '1031-copy-exclusive-call-release.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
   '992-copy-doublebang-mut-invalid.atto',
   '996-copy-doublebang-exclusive-loan.atto',
   '997-copy-doublebang-nested-array-no-runtime.atto',
+  '998-copy-shallow-exclusive-loan.atto',
+  '153-copy-noncopy-class.atto',
+  '999-copy-nested-handle-escape.atto',
+  '1000-copy-nested-mutable-unproved.atto',
+  '1001-copy-nested-write.atto',
+  '1005-copy-shared-source-write.atto',
+  '1006-copy-shared-copy-write.atto',
+  '1007-copy-shared-third-write.atto',
+  '1008-copy-mutable-control-flow.atto',
+  '1009-copy-mutable-handle-escape.atto',
+  '1013-copy-live-sibling-after-block.atto',
+  '1014-copy-root-transfer.atto',
+  '1015-copy-root-take.atto',
+  '1016-copy-root-borrow.atto',
+  '1017-copy-root-rebind.atto',
+  '1018-copy-untracked-temp.atto',
+  '1019-copy-root-call-boundary.atto',
+  '1021-copy-fixed-slot-replace.atto',
+  '1025-copy-tree-source-write.atto',
+  '1026-copy-tree-inner-replace.atto',
+  '1027-copy-tree-shared-inner-replace.atto',
+  '1028-copy-tree-cycle.atto',
+  '1029-copy-tree-depth.atto',
+  '1032-copy-exclusive-shared-source.atto',
+  '1033-copy-exclusive-shared-copy.atto',
+  '1034-copy-exclusive-missing-mut.atto',
+  '1035-copy-exclusive-return-escape.atto',
+  '1036-copy-exclusive-nested-effect.atto',
+  '1037-copy-exclusive-unproved-callee.atto',
 ];
 const imports = {
   atto: {
@@ -72,7 +115,8 @@ try {
     const output = join(dir, filename + '.wasm');
     const result = run(source, output);
     assert.equal(result.error, undefined, filename + ': compiler process failed');
-    assert.notEqual(result.status, 0, filename + ': unsupported copy accepted');
+    assert.equal(result.status, 1, filename + ': compiler must reject normally');
+    assert.equal(result.signal, null, filename + ': compiler signal');
     assert.ok(result.stderr.includes(expected), filename + ': expected ' + expected + ', got: ' + result.stderr);
     await assert.rejects(stat(output), { code: 'ENOENT' }, filename + ': rejected compiler produced output');
     console.log('PASS rejected guest', filename, expected);
