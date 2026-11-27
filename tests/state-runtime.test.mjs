@@ -203,3 +203,23 @@ test('bounded deterministic differential ledger under mixed admission and releas
   for(const {ticket} of tickets)rt.imports.state_leave(ticket);
   rt.complete();assert.equal(rt.snapshot().quiescent,true);
 });
+
+test('state pointer domain is bounded by the signed i32 preview ABI', () => {
+  const rt=createStateRuntime({maxContainers:2,maxTickets:1});
+  const {state_register:reg,state_enter:enter,state_leave:leave}=rt.imports;
+  const before=rt.snapshot();
+  for(const ptr of [0x80000000,0xfffffff8,0x100000000,2**53,Infinity,NaN,-8,1.5,'8',8n]){
+    assert.throws(()=>reg(ptr),/invalid state pointer/);
+    assert.throws(()=>enter(ptr,0),/unknown state container/);
+    assert.throws(()=>rt.beginRetire(ptr),/unknown state container/);
+    assert.throws(()=>rt.quiescent(ptr),/unknown state container/);
+    assert.deepEqual(rt.snapshot(),before);
+  }
+  reg(0);reg(0x7ffffff8);
+  const ticket=enter(0x7ffffff8,1);
+  assert.equal(rt.snapshot().active,1);
+  assert.throws(()=>enter(0x100000000,1),/unknown state container/);
+  assert.equal(rt.snapshot().active,1);
+  leave(ticket);rt.complete();
+  assert.equal(rt.snapshot().quiescent,true);
+});
