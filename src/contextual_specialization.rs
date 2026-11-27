@@ -151,12 +151,28 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     let mut aliases = BTreeMap::<String,Vec<String>>::new();
     let mut i = main_at+1;
     let mut main_return_seen = false;
+    let mut writable = std::collections::BTreeSet::<String>::new();
     while i < main_end {
         let x = &t[i];
         if word(x)==Some("return") { main_return_seen = true; }
         if matches!(x.tok, Tok::LBrace | Tok::RBrace | Tok::Pipe | Tok::FatArrow)
             || word(x).is_some_and(|s| matches!(s,"if"|"for"|"while"|"loop"|"do"|"match"|"switch"|"try"|"defer"|"recover"|"select"|"fnc"|"generator"|"block"|"then"|"else"|"end"|"async"|"suspend"|"using")) {
             return Err(bad(i,"nested scopes and control flow are outside contextual scalar profile"));
+        }
+        // Explicit set is a standalone reassignment of an existing scalar let.
+        // Only the already checked legacy assignment lowering is reused.
+        let boundary = i==main_at+1 || is(&t,i-1,Tok::Semi);
+        if boundary && w(&t,i)==Some("let") && is(&t,i+2,Tok::Assign) {
+            let name=w(&t,i+1).ok_or_else(|| bad(i,"scalar let name required"))?;
+            if aliases.contains_key(name) || name==owner { return Err(bad(i,"scalar let conflicts with contextual binding")); }
+            writable.insert(name.into());
+        }
+        if boundary && w(&t,i)==Some("set") {
+            let name=w(&t,i+1).ok_or_else(|| bad(i,"set target required"))?;
+            if main_return_seen || !writable.contains(name) || aliases.contains_key(name) || !is(&t,i+2,Tok::Assign) {
+                return Err(bad(i,"set requires an existing writable scalar binding"));
+            }
+            i+=1; continue;
         }
         // Immutable stored binding. The source alias has no scalar value
         // representation; only its generated, typed capture slot does.
@@ -297,6 +313,7 @@ mod tests {
             (multi_program("let n = 3; const x = Scale::(n, n + 1); n = 9; return x.apply(5) + Scale::(2, 1).apply(7);"), "34"),
             (multi_program("const x = Scale::(2, 3); const y = Scale::(4, 5); return x.apply(7) + y.apply(7);"), "50"),
             (multi_program("const x = Scale::(offset=7,factor=5); return x.apply(7);"), "42"),
+            (multi_program("let n = 3; const x = Scale::(offset=n+1,factor=n); set n = 9; return x.apply(5) + Scale::(2,1).apply(7);"), "34"),
         ] {
             let wasm = crate::compile(&source).expect("compile guest");
             let mut child = Command::new("node").args(["-e",
@@ -323,6 +340,8 @@ mod tests {
             "return Scale::(2,).apply(3);",
             "return Scale::(,2).apply(3);",
             "const x = Scale::(factor=2, factor=1); return x.apply(3);",
+            "const x = Scale::(2,1); set x = 9; return x.apply(3);",
+            "set n = 9; return Scale::(2,1).apply(3);",
             "const x = Scale::(offset=2, 1); return x.apply(3);",
             "const x = Scale::(unknown=2, factor=1); return x.apply(3);",
             "return Scale::(offset=2, factor=1).apply(3);",
