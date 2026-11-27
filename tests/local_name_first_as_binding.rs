@@ -40,3 +40,14 @@ fn const_mut_and_val_emit_identical_fixed_scalar_bindings() {
     assert!(compile(&source("val mut int x = 42;")).is_err());
     assert!(compile("define fnc int • main() { const mut int x = 42; x = 7; return x; }").is_err());
 }
+
+#[test]
+fn repeated_scalar_let_uses_previous_initializer_then_fresh_slot() {
+    let shadow = "define fnc int • main() { let int x = 10; let x :int = x + 10; let x as int = x + 22; return x; }";
+    let renamed = "define fnc int • main() { let int a = 10; let b :int = a + 10; let c as int = b + 22; return c; }";
+    assert_eq!(compile(shadow).unwrap(), compile(renamed).unwrap());
+    for declaration in ["const int x = 1; const int x = 42;",
+        "int x = 1; const x as int = 42;", "val int x = 1; const mut int x = 42;"] {
+        assert!(compile(&source(declaration)).is_err(), "{declaration}");
+    }
+}
