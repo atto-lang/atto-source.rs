@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validRejection } from './copy_guest_receipt.mjs';
 
 const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc', import.meta.url));
 const positives = [
@@ -43,6 +44,7 @@ function run(source, output) {
   });
 }
 
+assert.equal(new Set([...positives, ...negatives]).size, positives.length + negatives.length, 'duplicate copy fixture');
 const dir = await mkdtemp(join(tmpdir(), 'atto-copy-doublebang-'));
 try {
   for (const filename of positives) {
@@ -76,8 +78,8 @@ try {
     assert.equal(result.error, undefined, filename + ': compiler process failed');
     assert.equal(result.signal, null, filename + ': compiler terminated by signal');
     assert.equal(result.status, 1, filename + ': expected compiler diagnostic exit');
-    assert.ok(result.stderr.includes(expected), filename + ': expected ' + expected + ', got: ' + result.stderr);
     await assert.rejects(stat(output), { code: 'ENOENT' }, filename + ': rejected compiler produced output');
+    assert.ok(validRejection(source, expected, result, false), filename + ': expected exact diagnostic ' + expected + ', got: ' + result.stderr);
     console.log('PASS rejected guest', filename, expected);
   }
   console.log('COPY_DEEP_GUEST_RESULT pass=' + positives.length + ' reject=' + negatives.length);
