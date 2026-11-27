@@ -18,6 +18,8 @@ pub struct Ticket {
     owner: Owner,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SinkTicket { descriptor: u64, id: u64 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     InvalidOwner, Oversize, Quota, Closed, SinkFailed, Exhausted, Stale,
 }
@@ -157,15 +159,15 @@ impl BufferedStdio {
     }
     /// Transfer a single record to the trusted independent sink. Its charge
     /// remains live until finish_sink, including during physical writes.
-    pub fn take_sink(&mut self) -> Option<(u64, String)> {
+    pub fn take_sink(&mut self) -> Option<(SinkTicket, String)> {
         if self.active.is_some() || self.failure.is_some() { return None; }
         let record = self.records.pop_front()?;
         self.active = Some((record.id, record.text.len()));
-        Some((record.id, record.text))
+        Some((SinkTicket { descriptor: self.descriptor, id: record.id }, record.text))
     }
-    pub fn finish_sink(&mut self, id: u64, success: bool) -> Result<(), Error> {
+    pub fn finish_sink(&mut self, ticket: SinkTicket, success: bool) -> Result<(), Error> {
         let Some((active, bytes)) = self.active else { return Err(Error::Stale); };
-        if active != id { return Err(Error::Stale); }
+        if ticket.descriptor != self.descriptor || active != ticket.id { return Err(Error::Stale); }
         self.active = None;
         self.accepted_bytes -= bytes;
         if !success { self.abort(); return Err(Error::SinkFailed); }
@@ -219,7 +221,7 @@ mod tests {
         assert_eq!(q.take_ready(B, b), Err(Error::Stale));
         assert!(!q.cancel(B, b));
         assert_eq!(q.accounting().accepted_bytes, 4);
-        assert_eq!(q.finish_sink(id + 1, true), Err(Error::Stale));
+        assert_eq!(q.finish_sink(SinkTicket { id: id.id + 1, ..id }, true), Err(Error::Stale));
         q.finish_sink(id, true).unwrap();
         let (id, text) = q.take_sink().unwrap();
         assert_eq!(text, "Y");
@@ -270,6 +272,11 @@ mod tests {
         assert!(!b.cancel(A, ta));
         assert_eq!(b.take_ready(A, ta), Err(Error::Stale));
         assert_eq!(b.take_ready(A, tb), Ok(None));
+        let (sa, _) = a.take_sink().unwrap();
+        let (sb, _) = b.take_sink().unwrap();
+        assert_eq!(b.finish_sink(sa, true), Err(Error::Stale));
+        b.finish_sink(sb, true).unwrap();
+        a.finish_sink(sa, true).unwrap();
     }
     #[test]
     fn seal_and_limits() {
