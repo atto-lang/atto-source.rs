@@ -81,3 +81,43 @@ fn node_limit_is_bounded() {
     source.push_str("end end");
     parser_code(&source, "E_SOURCE_LIMIT");
 }
+
+#[test]
+fn inspection_retains_resolved_graph_and_separate_storage() {
+    let source = GOOD.replace("state machine as", "state { let int count: 0; } state machine as");
+    let inspected = Parser::inspect_actor_machines(&source).expect("metadata only");
+    assert_eq!(inspected.len(), 1);
+    let actor = &inspected[0];
+    assert_eq!(actor.actor, "Foo");
+    assert_eq!(actor.storage.as_ref().unwrap()[0].name, "count");
+    let graph = actor.machine.as_ref().unwrap();
+    assert_eq!(graph.nodes[graph.initial].name, "Idle");
+    let (event, destination) = &graph.nodes[graph.initial].transitions[0];
+    assert_eq!(event, "Start");
+    assert_eq!(graph.nodes[*destination].name, "Running");
+    let terminal = graph.nodes.iter().find(|n| n.name == "Complete").unwrap();
+    assert!(terminal.terminal && terminal.transitions.is_empty());
+    parser_code(&source, "E_MACHINE_LOWERING_UNSUPPORTED");
+}
+
+#[test]
+fn empty_storage_is_retained_without_synthesizing_fields() {
+    let source = "define actor Foo as state {} end";
+    let inspected = Parser::inspect_actor_machines(source).unwrap();
+    assert_eq!(inspected.len(), 1);
+    assert!(inspected[0].storage.as_ref().unwrap().is_empty());
+    assert!(inspected[0].machine.is_none());
+    parser_code(source, "E_UNSUPPORTED");
+}
+
+#[test]
+fn inspection_rejects_duplicate_or_mixed_storage() {
+    for source in [
+        "define actor Foo as state {} state {} end",
+        "define actor Foo as state {} state machine: int = 0; end",
+        "define actor Foo as state { let int n: 0; let int n: 1; } end",
+    ] {
+        assert!(Parser::inspect_actor_machines(source).is_err());
+        assert!(compile(source).is_err());
+    }
+}
