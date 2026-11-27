@@ -37,10 +37,11 @@ const run=(name,source,positive)=>{
 try {
  const baseline=run('explicit',explicit,true);
  assert.deepEqual(run('contextual',contextual,true),baseline);
+ assert.deepEqual(run('reordered-literals',contextual.replace('x:40,y:2','y:2,x:40'),true),baseline);
  assert.deepEqual(run('type-first',contextual.replace('p: Point','Point p'),true),baseline);
  for(const [name,source] of [
  ['untyped',contextual.replace('p: Point','p')],
- ['reordered',contextual.replace('x:40,y:2','y:2,x:40')],
+ ['reordered-nonliteral',contextual.replace('x:40,y:2','y:1+1,x:40')],
  ['missing',contextual.replace('x:40,y:2','x:40')],
  ['duplicate',contextual.replace('x:40,y:2','x:40,x:2')],
  ['wrong-kind',contextual.replace('x:40,y:2','x:true,y:2')],
@@ -49,5 +50,5 @@ try {
  ['non-fieldwise',contextual.replace('self.x=a','self.x=a+1')],
  ['allocator',contextual.replace('new {x:40,y:2}','new {x:40,y:2} with actor_heap')]
  ]) run(name,source,false);
- console.log('3 positive guest executions and 9 negative no-artifact checks');
+ console.log('4 positive guest executions and 9 negative no-artifact checks');
 } finally {rmSync(dir,{recursive:true,force:true});}
