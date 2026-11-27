@@ -56,7 +56,8 @@ try {
   guest('pub fnc main(): int { let x = 40; set x++; set ++x; return x; }', 42, true);
   guest('pub fnc main(): int { let x = 44; set x--; set --x; return x; }', 42, true);
   guest('pub fnc main(): int { let x = 20; set x += 2; set x -= 1; set x *= 2; return x; }', 42, true);
-  guest('pub fnc main(): int { let x = 84; set x /= 2; return x; }', 42, true);
+  // Spec S-25: integer division is unresolved; compound syntax cannot bypass it.
+  reject('pub fnc main(): int { let x = 84; set x /= 2; return x; }', 'E_UNSUPPORTED', true);
   guest('pub fnc main(): int { let x = 32; for let i = 0; i < 10; set i++ { set x++; } return x; }', 42, true);
   guest('pub fnc main(): int { let x = 32; for (let i = 10; i > 0; set --i) { set x++; } return x; }', 42, true);
   guest('pub fnc main(): int { let x = 32; for let i = 0; i < 10; set i += 2 { set x += 2; } return x; }', 42, true);
