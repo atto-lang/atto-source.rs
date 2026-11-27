@@ -1,0 +1,31 @@
+use atto_compiler::compile;
+
+fn source(binding: &str) -> String {
+    format!("define fnc int • main() {{ {binding} return x; }}")
+}
+
+#[test]
+fn name_first_as_matches_prefix_and_colon_scalar_bindings() {
+    for qualifier in ["const", "val", "let"] {
+        let prefix = compile(&source(&format!("{qualifier} int x = 42;"))).unwrap();
+        let colon = compile(&source(&format!("{qualifier} x :int = 42;"))).unwrap();
+        let name_as = compile(&source(&format!("{qualifier} x as int = 42;"))).unwrap();
+        assert_eq!(prefix, colon, "{qualifier}: colon");
+        assert_eq!(prefix, name_as, "{qualifier}: name-first as");
+        assert_eq!(&name_as[..4], b"\0asm");
+    }
+}
+
+#[test]
+fn name_first_as_does_not_bypass_type_or_initializer_checks() {
+    for binding in ["const x as int = true;", "val x as = 42;",
+                    "let x as int;", "const x as int : int = 42;"] {
+        assert!(compile(&source(binding)).is_err(), "{binding}");
+    }
+}
+
+#[test]
+fn postfix_identity_cast_remains_an_expression() {
+    assert!(compile(&source("const x = 42 as int;")).is_ok());
+    assert!(compile(&source("const x = true as int;")).is_err());
+}
