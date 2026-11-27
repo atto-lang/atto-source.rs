@@ -1,0 +1,11 @@
+define actor Foo as
+    state {}
+    state machine as
+        initial state Zed;
+        final state Alpha;
+        state Zed as
+            on Zulu() -> Zed;
+            on AlphaEvent() -> Alpha;
+        end
+    end
+end
