@@ -427,6 +427,27 @@ impl Parser {
             Tok::Ident(_) | Tok::Bang | Tok::PlusPlus | Tok::MinusMinus)
     }
 
+    // Use the canonical existing bitwise operators; no new precedence,
+    // shift-distance policy, macro expansion, or referent write permission.
+    fn explicit_bitwise_compound(&self) -> Option<(BinOp, usize)> {
+        if self.peek() == &Tok::Amp && self.peek_at(1) == &Tok::Assign && self.joined_at(0) {
+            Some((BinOp::BitAnd, 2))
+        } else if self.peek() == &Tok::Pipe && self.peek_at(1) == &Tok::Assign && self.joined_at(0) {
+            Some((BinOp::BitOr, 2))
+        } else if self.peek() == &Tok::Caret && self.peek_at(1) == &Tok::Caret
+            && self.peek_at(2) == &Tok::Assign && self.joined_at(0) && self.joined_at(1) {
+            Some((BinOp::BitXor, 3))
+        } else if self.triple_at(0, &Tok::Lt) && self.peek_at(3) == &Tok::Assign && self.joined_at(2) {
+            Some((BinOp::Shl, 4))
+        } else if self.triple_at(0, &Tok::Gt) && self.peek_at(3) == &Tok::Assign && self.joined_at(2) {
+            Some((BinOp::LShr, 4))
+        } else if self.is_word("ashr") && self.peek_at(1) == &Tok::Assign
+            && self.toks.get(self.i + 1).is_some_and(|t| t.pos.line == self.pos().line
+                && self.pos().col.checked_add(4) == Some(t.pos.col)) {
+            Some((BinOp::AShr, 2))
+        } else { None }
+    }
+
     fn parse_explicit_rebind(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("set")?;
@@ -445,6 +466,9 @@ impl Parser {
         } else {
             let compound = if self.eat(&Tok::PlusAssign) {
                 Some(BinOp::Add)
+            } else if let Some((op, width)) = self.explicit_bitwise_compound() {
+                for _ in 0..width { self.advance(); }
+                Some(op)
             } else {
                 // Existing lexer emits two tokens for these compounds.
                 // Require physical adjacency, not merely token adjacency.
