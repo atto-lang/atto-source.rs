@@ -21,6 +21,9 @@ const positives = [
   '1002-copy-mutable-detachment.atto',
   '1003-copy-mutable-deep.atto',
   '1004-copy-mutable-third.atto',
+  '1010-copy-lexical-release.atto',
+  '1011-copy-lexical-third-release.atto',
+  '1012-copy-source-recovery-on-detach.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
@@ -37,6 +40,13 @@ const negatives = [
   '1007-copy-shared-third-write.atto',
   '1008-copy-mutable-control-flow.atto',
   '1009-copy-mutable-handle-escape.atto',
+  '1013-copy-live-sibling-after-block.atto',
+  '1014-copy-root-transfer.atto',
+  '1015-copy-root-take.atto',
+  '1016-copy-root-borrow.atto',
+  '1017-copy-root-rebind.atto',
+  '1018-copy-untracked-temp.atto',
+  '1019-copy-root-call-boundary.atto',
 ];
 const imports = {
   atto: {

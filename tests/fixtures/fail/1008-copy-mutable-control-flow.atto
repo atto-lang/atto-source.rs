@@ -2,4 +2,4 @@
 // java: rejects
 define class Scores as pub let int n = 20; end
 define class Person as pub let mut Scores scores = new Scores(); pub let int age = 1; end
-pub fnc main(): int { let mut Person a = new Person(); block { a.age = 2; } let mut Person b = copy! a; return b.scores.n; }
+pub fnc main(): int { let mut Person a = new Person(); if true then a.age = 2; fi let mut Person b = copy! a; return b.scores.n; }

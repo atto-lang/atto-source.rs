@@ -1,0 +1,5 @@
+// expect-exit: 42
+// java: rejects
+define class Scores as pub let int n = 20; end
+define class Person as pub let mut Scores scores = new Scores(); pub let int age = 1; end
+pub fnc main(): int { let mut Person a = new Person(); let int before = 0; block { let mut Person b = copy! a; block { let mut Person c = copy! b; before = c.scores.n; } b.age = 2; } a.scores.n = 22; return before + a.scores.n; }

@@ -109,3 +109,17 @@ fn closed_mutable_leaf_sharing_and_detachment() {
     assert_eq!(compile(include_str!("fixtures/fail/1008-copy-mutable-control-flow.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
     assert_eq!(compile(include_str!("fixtures/fail/1009-copy-mutable-handle-escape.atto")).unwrap_err().code, "E_BORROW");
 }
+
+#[test]
+fn lexical_copy_groups_restore_only_last_alias_authority() {
+    wasm(include_str!("fixtures/pass/1010-copy-lexical-release.atto"));
+    wasm(include_str!("fixtures/pass/1011-copy-lexical-third-release.atto"));
+    wasm(include_str!("fixtures/pass/1012-copy-source-recovery-on-detach.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1013-copy-live-sibling-after-block.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1014-copy-root-transfer.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1015-copy-root-take.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1016-copy-root-borrow.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1017-copy-root-rebind.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1018-copy-untracked-temp.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1019-copy-root-call-boundary.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+}
