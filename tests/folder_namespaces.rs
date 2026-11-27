@@ -131,3 +131,33 @@ fn v2_rejects_ambiguous_paths_mixed_headers_and_depth_errors() {
         assert_eq!(resolve_mode_v2(&lex(src).unwrap(), path).unwrap_err().code, "E_SYNTAX");
     }
 }
+
+#[test]
+fn opt_in_file_v2_compiles_all_three_spellings_through_real_emitters() {
+    use atto_compiler::{compile_namespace_file_v2, compile_js_namespace_file_v2};
+    let body = "pub fnc main(): int { return 42; }";
+    let baseline = format!("\n\n{body}");
+    let wasm = compile_namespace_file_v2(&baseline).unwrap();
+    let js = compile_js_namespace_file_v2(&baseline).unwrap();
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+    for header in ["use default namespace;", "use file namespace;", "use /* é */\n file namespace;"] {
+        let source = if header.contains('\n') { format!("{header}\n{body}") }
+            else { format!("{header}\n\n{body}") };
+        assert_eq!(compile_namespace_file_v2(&source).unwrap(), wasm);
+        assert_eq!(compile_js_namespace_file_v2(&source).unwrap(), js);
+    }
+}
+
+#[test]
+fn opt_in_file_v2_never_falls_back_to_a_shared_namespace_or_erases_errors() {
+    use atto_compiler::compile_namespace_file_v2;
+    for (source, code) in [
+        ("use namespace x; pub fnc main(): int { return 42; }", "E_UNSUPPORTED"),
+        ("use folder namespace; pub fnc main(): int { return 42; }", "E_NAMESPACE_PATH"),
+        ("use default namespace(1); pub fnc main(): int { return 42; }", "E_NAMESPACE_PATH"),
+        ("use file namespace; use default namespace; pub fnc main(): int { return 42; }", "E_DUPLICATE"),
+        ("use file namespace pub fnc main(): int { return 42; }", "E_SYNTAX"),
+    ] { assert_eq!(compile_namespace_file_v2(source).unwrap_err().code, code); }
+    assert!(compile_namespace_file_v2("use file namespace; pub fnc main(): int { return true; }").is_err());
+    assert!(compile_namespace_file_v2("use file namespace; declare class Foo; pub fnc main(): int { return 42; }").is_err());
+}
