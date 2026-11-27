@@ -26,6 +26,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         active_iterators: Vec::new(),
         // Generator functions never receive protected-state authority.
         state_ticket_slot: None,
+        state_authority: None,
         state_write_depth: 0,
         uw: None,
         in_recover: false,

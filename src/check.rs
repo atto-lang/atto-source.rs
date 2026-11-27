@@ -379,8 +379,17 @@ pub struct TActor {
     pub receive: Option<u32>,
 }
 
+/// Checker-owned nominal state layout, retained independently of mutable typed nodes.
+#[derive(Clone, Debug)]
+struct StateMethodLayout {
+    receiver: Type,
+    fields: Vec<(u32, Type, bool)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct TProgram {
+    state_methods: BTreeMap<usize, StateMethodLayout>,
+    state_tuple_ctors: BTreeMap<u32, (u32, Vec<Type>)>,
     pub funcs: Vec<TFunc>,
     pub generators: Vec<TGenerator>,
     pub main: u32,
@@ -400,6 +409,29 @@ pub struct TProgram {
     /// A guest-global active-catch counter exists because some `recover`
     /// must defer to an outer caller's catch or trap (two-phase dispatch).
     pub catch_depth: bool,
+}
+
+impl TProgram {
+    pub(crate) fn state_method_receiver(&self, function: usize) -> Option<Type> {
+        let layout = self.state_methods.get(&function)?;
+        let f = self.funcs.get(function)?;
+        (f.params.first() == Some(&layout.receiver)).then_some(layout.receiver)
+    }
+
+    pub(crate) fn state_field_slot(&self, function: usize, offset: u32, ty: Type, write: bool) -> bool {
+        self.state_method_receiver(function).is_some()
+            && self.state_methods.get(&function).is_some_and(|layout|
+                layout.fields.iter().any(|(slot, field_ty, writable)|
+                    *slot == offset && *field_ty == ty && (!write || *writable)))
+    }
+
+    pub(crate) fn state_snapshot_ctor(&self, result: Type, ctor: u32, fields: &[(Type, u32)]) -> bool {
+        let Type::Class(class) = result else { return false; };
+        let Some((expected_ctor, params)) = self.state_tuple_ctors.get(&class) else { return false; };
+        *expected_ctor == ctor && params.len() == fields.len()
+            && params.iter().zip(fields).all(|(param, (ty, _))| param == ty)
+            && self.funcs.get(ctor as usize).is_some_and(|f| f.ret == result && &f.params == params)
+    }
 }
 
 /// Defense-in-depth for the bounded scalar lease region, independent of
@@ -1589,7 +1621,26 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
     let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
+    let mut state_methods = BTreeMap::new();
+    let mut state_tuple_ctors = BTreeMap::new();
+    for (ci, class) in g.classes.iter().enumerate() {
+        if class.state_container {
+            let fields: Vec<_> = class.fields.iter()
+                .filter(|f| f.mode == FieldMode::ActorState && matches!(f.ty, Type::Int | Type::Bool))
+                .map(|f| (f.slot, f.ty, f.binding.rebindable())).collect();
+            for method in class.methods.iter().filter(|m| !m.is_static) {
+                state_methods.insert(method.idx as usize, StateMethodLayout {
+                    receiver: Type::Class(ci as u32), fields: fields.clone(),
+                });
+            }
+        }
+        if class.name.starts_with("__atto_tuple_private_") {
+            state_tuple_ctors.insert(ci as u32, (class.new_idx, class.ctor_params.clone()));
+        }
+    }
     Ok(TProgram {
+        state_methods,
+        state_tuple_ctors,
         funcs,
         main,
         imports,
