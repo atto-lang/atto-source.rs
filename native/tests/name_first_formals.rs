@@ -19,7 +19,8 @@ fn mixed_formals_preserve_parameter_order_and_mir_names() {
 
 #[test]
 fn name_first_forward_calls_and_multiple_parameters_are_admitted() {
-    let source = "pub fnc main(): int { return f(20, 22); }\nfnc f(a: int, b: int): int { return a + b; }";
+    let source =
+        "pub fnc main(): int { return f(20, 22); }\nfnc f(a: int, b: int): int { return a + b; }";
     assert!(
         compile(source).is_ok(),
         "forward calls must preserve the same ABI"
@@ -78,10 +79,9 @@ fn mixed_formals_link_and_execute_real_native_object() {
         .duration_since(UNIX_EPOCH)
         .expect("clock must be after UNIX epoch")
         .as_nanos();
-    let scratch = Scratch(std::env::temp_dir().join(format!(
-        "ores-rs-name-first-{}-{nonce}",
-        std::process::id()
-    )));
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("ores-rs-name-first-{}-{nonce}", std::process::id())),
+    );
     fs::create_dir(&scratch.0).expect("create isolated native test directory");
     let object = compile(MIXED).expect("compile scalar source");
     assert!(object.starts_with(b"\x7fELF"), "expected native ELF object");
