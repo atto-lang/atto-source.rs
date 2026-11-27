@@ -3,6 +3,8 @@
 //! generation and deliver readiness only on that execution's scheduler.
 #![forbid(unsafe_code)]
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+static NEXT_DESCRIPTOR: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Owner {
@@ -11,6 +13,7 @@ pub struct Owner {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ticket {
+    descriptor: u64,
     id: u64,
     owner: Owner,
 }
@@ -56,6 +59,7 @@ pub struct BufferedStdio {
     max_waiters: usize,
     max_pending: usize,
     next: u64,
+    descriptor: u64,
     sealed: bool,
     failure: Option<Error>,
 }
@@ -65,11 +69,13 @@ impl BufferedStdio {
             || !(1..=64).contains(&max_waiters) || !(1..=1_048_576).contains(&max_pending) {
             return Err(Error::Quota);
         }
+        let descriptor = NEXT_DESCRIPTOR.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+            |last| last.checked_add(1)).map_err(|_| Error::Exhausted)? + 1;
         Ok(Self {
             records: VecDeque::new(), pending: VecDeque::new(), ready: VecDeque::new(),
             active: None, accepted_bytes: 0, pending_bytes: 0,
             max_records, max_bytes, max_waiters, max_pending,
-            next: 0, sealed: false, failure: None,
+            next: 0, descriptor, sealed: false, failure: None,
         })
     }
     pub fn accounting(&self) -> Accounting {
@@ -118,7 +124,7 @@ impl BufferedStdio {
             || text.len() > self.max_pending - self.pending_bytes {
             return Err(Error::Quota);
         }
-        let ticket = Ticket { id: self.id()?, owner };
+        let ticket = Ticket { descriptor: self.descriptor, id: self.id()?, owner };
         self.pending_bytes += text.len();
         self.pending.push_back(Pending { ticket, text: text.to_owned() });
         Ok(Admission::Pending(ticket))
@@ -252,6 +258,18 @@ mod tests {
         assert!(q.drained());
         assert_eq!(q.accounting().accepted_bytes, 0);
         assert_eq!(q.finish_sink(id, true), Err(Error::Stale));
+    }
+    #[test]
+    fn receipt_cannot_cross_descriptors() {
+        let mut a = BufferedStdio::new(1, 4, 2, 4).unwrap();
+        let mut b = BufferedStdio::new(1, 4, 2, 4).unwrap();
+        a.admit(A, "x").unwrap(); b.admit(A, "x").unwrap();
+        let ta = ticket(a.admit(A, "a").unwrap());
+        let tb = ticket(b.admit(A, "b").unwrap());
+        assert_ne!(ta, tb);
+        assert!(!b.cancel(A, ta));
+        assert_eq!(b.take_ready(A, ta), Err(Error::Stale));
+        assert_eq!(b.take_ready(A, tb), Ok(None));
     }
     #[test]
     fn seal_and_limits() {
