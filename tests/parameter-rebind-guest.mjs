@@ -53,6 +53,16 @@ try {
   reject('pub fnc main(): int { let x = 40; x = 42; return x; }', 'E_EXPLICIT_REBIND', true);
   reject('pub fnc main(): int { let x = 0; for (x = 40; x < 42; x++) {} return x; }', 'E_EXPLICIT_REBIND', true);
   reject('pub fnc main(): int { let x = 40; for (; x < 42; x = x + 1) {} return x; }', 'E_EXPLICIT_REBIND', true);
+  guest('pub fnc main(): int { let x = 40; set x++; set ++x; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 44; set x--; set --x; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 20; set x += 2; set x -= 1; set x *= 2; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 84; set x /= 2; return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 32; for let i = 0; i < 10; set i++ { set x++; } return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 32; for (let i = 10; i > 0; set --i) { set x++; } return x; }', 42, true);
+  guest('pub fnc main(): int { let x = 32; for let i = 0; i < 10; set i += 2 { set x += 2; } return x; }', 42, true);
+  reject('pub fnc main(): int { let x = 40; x += 2; return x; }', 'E_EXPLICIT_REBIND', true);
+  reject('pub fnc main(): int { for let i = 0; i < 10; i++ {} return 42; }', 'E_EXPLICIT_REBIND', true);
+  reject('pub fnc main(): int { const x = 40; set x++; return x; }', 'E_IMMUTABLE', true);
   console.log('scalar rebind guest cases passed (including explicit binding preview)');
 } finally {
   rmSync(dir, { recursive: true, force: true });
