@@ -2625,12 +2625,26 @@ impl<'a> FnCx<'a> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        self.declare_local(name, ty, mutable, false, pos)
+    }
+
+    // Fresh copied-scalar let versions only; preserve capability/loan gates.
+    fn declare_local(&mut self, name: &str, ty: Type, mutable: bool,
+                     scalar_let_shadow: bool, pos: Pos) -> R<u32> {
         if self.telemetry_aliases.iter().any(|alias| alias == name) {
             return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
                 format!("opaque span alias '{name}' cannot be shadowed")));
         }
-        if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
-            return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+        if let Some(previous) = self.scopes.last().unwrap().iter().rev().find(|l| l.name == name) {
+            let eligible = scalar_let_shadow && mutable && previous.mutable
+                && previous.mail.is_none() && previous.slot >= self.nparams
+                && matches!(previous.ty, Type::Int | Type::Bool)
+                && matches!(ty, Type::Int | Type::Bool)
+                && !self.loans.contains_key(&previous.slot)
+                && !self.loans.values().any(|loan| loan.owner == previous.slot);
+            if !eligible {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+            }
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
@@ -2776,7 +2790,8 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
-                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                let is_let = *kind == BindKind::Let;
+                let slot = self.declare_local(name, v.ty, is_let, is_let, *pos)?;
                 if let Some(tr) = self.trace.as_mut() {
                     // Exactly `x`, `take! x` or `copy!! x`: the binding receives
                     // that moved/copied value; anything else is a fresh owner.
