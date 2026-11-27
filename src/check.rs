@@ -3147,6 +3147,41 @@ impl<'a> FnCx<'a> {
             }
             ExprKind::Member(base, name) => self.member(base, name, pos)?,
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
+            ExprKind::PrefixRead(source) => {
+                // Direct unary `<< channel` is the checked suspending read,
+                // not a raw i64 or an unchecked imported function. Reuse the
+                // *same* ChannelRead/ChannelAwait IR as nb readch + await.
+                // This prevents a second, subtly incompatible guest ABI.
+                if !self.suspends {
+                    return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
+                        "unary << readable can suspend; declare susp/suspends"));
+                }
+                if !self.loans.is_empty() || self.state_read_scope || self.state_write_scope {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "unary << cannot suspend with a live object loan or critical state lease"));
+                }
+                let future = match self.channel_read(std::slice::from_ref(source.as_ref()), pos) {
+                    Ok(read) => read,
+                    Err(err) if err.code == "E_TYPE" => return Err(Diagnostic::new(pos,
+                        "E_IO_READABLE",
+                        "unary << requires a statically readable Channel<int> in the browser subset")),
+                    Err(err) => return Err(err),
+                };
+                self.imports.push(Import::ChannelAwaitRead);
+                let scratch = self.temp(Type::ChannelInt, pos)?;
+                let status = self.temp(Type::IoError, pos)?;
+                let result = self.temp(Type::ResultOptionIntIoError, pos)?;
+                let option = self.temp(Type::OptionInt, pos)?;
+                let awaited = TE {
+                    e: TExpr::ChannelAwait {
+                        ticket: Box::new(future), scratch, status, result, option,
+                    },
+                    ty: Type::ResultOptionIntIoError,
+                };
+                // Even an already-settled read cooperates exactly once.
+                self.imports.push(Import::Cooperate);
+                TE { e: TExpr::AwaitYield(Box::new(awaited)), ty: Type::ResultOptionIntIoError }
+            }
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "array literals are parsed but not yet lowered to browser Wasm")),
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",

@@ -172,12 +172,25 @@ fn read_binder(tokens: &[Token], start: usize, end: usize, pos: Pos) -> Result<S
     if !matches!(qualifier, Some("val" | "let")) {
         return Err(syntax(pos, "read shorthand requires val or let followed by a binding name"));
     }
-    let name = tokens.get(start + 1).and_then(word)
+    // Match the production binding grammar: both `val name: Type` and
+    // `val Type name` are supported, including nested generic types.
+    // This is syntax-only; the real type checker must still unify the exact
+    // checked read outcome with the declared type (never silently unwrap).
+    let name_index = if start + 2 == end {
+        start + 1
+    } else if valid_read_annotation(tokens, start + 2, end) {
+        start + 1
+    } else {
+        let mut cursor = start + 1;
+        if !type_ref(tokens, &mut cursor, end, 0) || cursor + 1 != end {
+            return Err(syntax(pos,
+                "read binding requires 'val name: Type' or 'val Type name' (complete type, no trailing tokens)"));
+        }
+        cursor
+    };
+    let name = tokens.get(name_index).and_then(word)
         .filter(|w| *w != "when" && !crate::parser::is_reserved(w))
         .ok_or_else(|| syntax(pos, "read shorthand requires a binding name"))?;
-    if start + 2 != end && !valid_read_annotation(tokens, start + 2, end) {
-        return Err(syntax(pos, "read shorthand requires a complete ': Type' annotation (no trailing tokens)"));
-    }
     Ok(name.to_owned())
 }
 
@@ -188,6 +201,26 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
         let Some(operator) = op_at(tokens, i) else { continue; };
+        // Prefix `<< readable` is an expression, not a binary directional
+        // statement. The production parser/checker owns this case, and the
+        // unary syntax preflight already validated its source-token shape.
+        // Do not steal `return << c`, `x += << c`, or grouped `(<< c)`
+        // as writes from a source named "return" or an incomplete sink.
+        let statement_start = (0..i).rev().find(|&j| matches!(
+            tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow
+        )).map_or(0, |j| j + 1);
+        // 'val return << inbox' is a malformed declaration: despite the
+        // preceding reserved word, this must NOT turn into an expression.
+        // Preserve the read-binder validator's E_IO_SYNTAX diagnostic.
+        let declaration_start = statement_start
+            + usize::from(tokens.get(statement_start).and_then(word) == Some("when"));
+        let declaration_head = matches!(tokens.get(declaration_start).and_then(word),
+            Some("val" | "let" | "const"))
+            && !tokens[declaration_start..i].iter().any(|t| matches!(t.tok, Tok::Assign));
+        if operator == Direction::Write && unary_read_start(tokens, i)
+            && !declaration_head {
+            continue;
+        }
         // Locate the beginning of the containing statement or select arm.
         // This deliberately does not reinterpret embedded numeric operators.
         let mut start = i;
@@ -356,4 +389,148 @@ pub fn inspect_pipe(tokens: &[Token]) -> Result<Vec<PipeCandidate>, Diagnostic> 
         out.push(PipeCandidate { source, sink, pos });
     }
     Ok(out)
+}
+
+
+/// Prefix \`<< readable\` produces one I/O read outcome as an expression.
+/// This preflight does not execute I/O: the browser compiler rejects the
+/// candidate before emission until the typed guest read ABI exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnaryReadCandidate {
+    pub source: String,
+    pub pos: Pos,
+}
+
+/// Only expression-start positions may begin a unary receive. In particular,
+/// \`sink << value\`, \`val x << source\`, \`x << n\`, and a \`>>\` binding
+/// remain untouched. The real parser will eventually own this distinction.
+fn unary_read_start(tokens: &[Token], i: usize) -> bool {
+    if i == 0 { return true; }
+    match &tokens[i - 1].tok {
+        Tok::Assign | Tok::PlusAssign | Tok::LParen | Tok::LBracket |
+        Tok::Comma | Tok::Plus | Tok::Minus | Tok::Star | Tok::Slash |
+        Tok::Question | Tok::Colon | Tok::Arrow | Tok::FatArrow |
+        Tok::Semi | Tok::LBrace => true,
+        Tok::Ident(s) if matches!(s.as_str(),
+            "return" | "trap" | "await" | "throw" | "raise" | "panic" |
+            "then" | "else") => true,
+        _ => false,
+    }
+}
+
+/// Recognize unary channel/stream reads in expression position without
+/// treating a binary writer, reverse declaration, numeric shift, or generic
+/// delimiter as a read. This is a conservative browser-subset preflight;
+/// complex receiver expressions require the checked production AST.
+pub fn inspect_unary_reads(tokens: &[Token]) -> Result<Vec<UnaryReadCandidate>, Diagnostic> {
+    let mut reads = Vec::new();
+    for i in 0..tokens.len().saturating_sub(1) {
+        if op_at(tokens, i) != Some(Direction::Write) ||
+            !unary_read_start(tokens, i) { continue; }
+
+        let pos = tokens[i].pos;
+        let operand = i + 2;
+        let Some(first) = tokens.get(operand) else {
+            return Err(syntax(pos, "unary << requires a readable operand"));
+        };
+        let (start, end) = if matches!(&first.tok, Tok::LParen) {
+            let mut cursor = operand + 1;
+            while cursor < tokens.len() &&
+                !matches!(&tokens[cursor].tok, Tok::RParen | Tok::Semi | Tok::Eof) {
+                cursor += 1;
+            }
+            if cursor >= tokens.len() || !matches!(&tokens[cursor].tok, Tok::RParen) {
+                return Err(syntax(pos, "unary << requires a complete parenthesized readable operand"));
+            }
+            (operand + 1, cursor)
+        } else {
+            let mut cursor = operand;
+            if tokens.get(cursor).and_then(word).is_none() {
+                return Err(syntax(pos, "unary << requires a readable operand"));
+            }
+            cursor += 1;
+            while cursor + 1 < tokens.len() &&
+                matches!(&tokens[cursor].tok, Tok::Dot) &&
+                tokens.get(cursor + 1).and_then(word).is_some() {
+                cursor += 2;
+            }
+            (operand, cursor)
+        };
+        let source = path(tokens, start, end)
+            .ok_or_else(|| syntax(pos, "unary << requires a simple channel/stream path in the browser compiler"))?;
+
+        // Runtime I/O is not a compile-time constant, even when the channel
+        // binding itself is immutable. Preserve the normal const discipline.
+        let stmt_start = (0..i).rev().find(|&j| matches!(
+            tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace
+        )).map(|j| j + 1).unwrap_or(0);
+        if tokens.get(stmt_start).and_then(word) == Some("const") &&
+            tokens[stmt_start..i].iter().any(|t| matches!(&t.tok, Tok::Assign)) {
+            return Err(Diagnostic::new(pos, "E_CONST_EFFECT",
+                "runtime channel reads cannot initialize const; use val or let"));
+        }
+
+        if i == stmt_start {
+            return Err(Diagnostic::new(pos, "E_IO_DISCARD",
+                "unary channel read outcome cannot be discarded; bind or handle it"));
+        }
+
+        reads.push(UnaryReadCandidate { source, pos });
+    }
+    Ok(reads)
+}
+
+
+/// Conservative effect preflight for braced callable bodies. It is not the
+/// production effect checker: nominal Readable resolution, nested `end`
+/// bodies and full lambda/actor effects are still rejected before guest ABI.
+/// Never let an obviously non-suspending function acquire a hidden read.
+pub fn validate_unary_read_suspension(
+    tokens: &[Token], reads: &[UnaryReadCandidate],
+) -> Result<(), Diagnostic> {
+    for read in reads {
+        let Some(read_index) = tokens.iter().position(|t| t.pos == read.pos) else {
+            continue;
+        };
+        // None means an ordinary lexical block. Some(bool) is a callable
+        // scope and its explicit susp/suspends modifier.
+        let mut scopes: Vec<Option<bool>> = Vec::new();
+        for i in 0..read_index {
+            match &tokens[i].tok {
+                Tok::LBrace => {
+                    let head_start = (0..i).rev().find(|&j| matches!(
+                        tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace
+                    )).map_or(0, |j| j + 1);
+                    let head = &tokens[head_start..i];
+                    let fn_index = head.iter().position(|t| matches!(
+                        word(t), Some("fnc" | "routine" | "mtd")
+                    ));
+                    let callable = if let Some(n) = fn_index {
+                        // A modifier on a nested type must not bless the
+                        // outer callable: only tokens BEFORE fnc count.
+                        Some(head[..n].iter().any(|t| matches!(
+                            word(t), Some("susp" | "suspends")
+                        )))
+                    } else if head.iter().any(|t| matches!(&t.tok, Tok::Arrow))
+                        && head.iter().any(|t| matches!(&t.tok, Tok::Pipe))
+                    {
+                        // Braced pipe lambdas are independent callables.
+                        Some(head.iter().any(|t| matches!(
+                            word(t), Some("susp" | "suspends")
+                        )))
+                    } else {
+                        None
+                    };
+                    scopes.push(callable);
+                }
+                Tok::RBrace => { scopes.pop(); }
+                _ => {}
+            }
+        }
+        if let Some(false) = scopes.iter().rev().copied().flatten().next() {
+            return Err(Diagnostic::new(read.pos, "E_SUSPENDS_REQUIRED",
+                "direct << channel read can suspend; declare enclosing callable susp/suspends and required io/suspend effects"));
+        }
+    }
+    Ok(())
 }
