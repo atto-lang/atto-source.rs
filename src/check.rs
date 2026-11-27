@@ -3872,7 +3872,10 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_BORROW",
                         "cannot write a field overlapping an active loan"));
                 }
-                let checked = self.consume_expected(value, fty)?;
+                // A proved fresh subtree is installed directly, not transferred
+                // from an existing lexical root. All other expressions still
+                // use the ordinary escape/ownership boundary.
+                let checked = if fresh_leaf_replacement { self.value(value)? } else { self.consume_expected(value, fty)? };
                 // RHS may execute nested calls and take! the owner, or
                 // introduce an overlapping loan. Revalidate AFTER effects.
                 if self.moved.contains(&slot) {
