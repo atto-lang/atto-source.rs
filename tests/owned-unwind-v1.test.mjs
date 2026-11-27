@@ -15,7 +15,7 @@ try{
   modules[key]=new WebAssembly.Module(readFileSync(file));
   assert.deepEqual(WebAssembly.Module.imports(modules[key]),[]);
   assert.ok(WebAssembly.Module.exports(modules[key]).every(e=>e.kind==='function'));
-  assert.deepEqual([...new Uint8Array(WebAssembly.Module.customSections(modules[key],'atto.browser.owned_unwind.v1')[0])],[1]);
+  assert.deepEqual([...new Uint8Array(WebAssembly.Module.customSections(modules[key],'atto.browser.owned_unwind.v1')[0])],[1,key==='defer'?2:3]);
  }
 }finally{rmSync(dir,{recursive:true,force:true});}
 function guest(key){

@@ -2,6 +2,7 @@
 // Inject the same JS backend claimFutures and Worker control loop used by
 // compiler-emitted JS. Not a guest capability or hostile artifact validator.
 const usedInstances=new WeakSet();
+const arities=new WeakMap();
 const MARKER='atto.browser.owned_unwind.v1';
 const NAMES=['start','pending','complete','resume','outcome','result','error','suppressed_count','suppressed_error','suppressed_rank','retire'];
 function quantum(fn){
@@ -11,24 +12,27 @@ function ensure(ok,msg){if(!ok)throw Error(msg);}
 export function instantiateOwnedUnwind(module){
   if(!(module instanceof WebAssembly.Module))throw TypeError('E_OWNED_UNWIND_MODULE');
   const markers=WebAssembly.Module.customSections(module,MARKER);
-  ensure(markers.length===1&&new Uint8Array(markers[0]).length===1&&new Uint8Array(markers[0])[0]===1,'E_OWNED_UNWIND_MARKER');
+  const marker=markers.length===1?new Uint8Array(markers[0]):null;
+  ensure(marker&&marker.length===2&&marker[0]===1&&marker[1]>=1&&marker[1]<=8,'E_OWNED_UNWIND_MARKER');
   ensure(WebAssembly.Module.imports(module).length===0,'E_OWNED_UNWIND_IMPORTS');
   const names=WebAssembly.Module.exports(module);
   ensure(names.length===NAMES.length&&names.every(n=>n.kind==='function'&&NAMES.some(k=>n.name==='unwind_'+k+'_v1')),'E_OWNED_UNWIND_EXPORTS');
   // ABI markers do not authenticate arbitrary hostile Wasm. Only trusted
   // compiler output may be instantiated by the embedding application.
-  return new WebAssembly.Instance(module);
+  const instance=new WebAssembly.Instance(module);
+  arities.set(instance,marker[1]);
+  return instance;
 }
 export function startOwnedUnwind({instance,scheduler,runtime,ownerKey,owner,epoch,futures,onDone}){
   quantum(onDone);
-  ensure(instance instanceof WebAssembly.Instance&&!usedInstances.has(instance),'E_OWNED_UNWIND_INSTANCE_USED');
+  ensure(instance instanceof WebAssembly.Instance&&arities.has(instance)&&!usedInstances.has(instance),'E_OWNED_UNWIND_INSTANCE_USED');
   ensure(Number.isInteger(owner)&&owner>0&&owner<=0x7fffffff&&Number.isInteger(epoch)&&epoch>0&&epoch<=0x7fffffff,'E_OWNED_UNWIND_OWNER');
-  ensure(Array.isArray(futures)&&futures.length>=1&&futures.length<=8,'E_OWNED_UNWIND_ARITY');
+  ensure(Array.isArray(futures)&&futures.length===arities.get(instance),'E_OWNED_UNWIND_ARITY');
   const e=instance.exports;
   const call=(n,...args)=>e['unwind_'+n+'_v1'](owner,epoch,...args);
-  // Caller is trusted and must supply exactly the compiler formal arity.
-  // The compiled guest's pending slot is independently range checked below.
-  const claim=runtime.claimFutures(futures,futures.length);
+  // Arity is compiler-pinned and verified before any claim or admission.
+  // The pending formal slot is independently range checked below.
+  const claim=runtime.claimFutures(futures,arities.get(instance));
   let lease,admitted=false;
   const errors=[];
   function receipt(error){

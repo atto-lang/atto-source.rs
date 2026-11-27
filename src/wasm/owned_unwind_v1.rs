@@ -211,7 +211,7 @@ fn emit(p:&Plan)->Vec<u8>{
         globals.extend([ty,1]);if ty==I64{lc(&mut globals,0)}else{ic(&mut globals,0)}end(&mut globals);
     }
     section(&mut out,6,globals);section(&mut out,7,exports);section(&mut out,10,code);
-    let mut marker=Vec::new();name(&mut marker,"atto.browser.owned_unwind.v1");marker.push(1);section(&mut out,0,marker);out
+    let mut marker=Vec::new();name(&mut marker,"atto.browser.owned_unwind.v1");marker.extend([1,p.stages.len() as u8]);section(&mut out,0,marker);out
 }
 pub(crate) fn compile(source:&str)->Result<Vec<u8>,Diagnostic>{
     if source.len()>crate::SOURCE_CAP{return Err(Diagnostic::new(Pos{line:1,col:1},"E_SOURCE_LIMIT","owned unwind source cap"))}

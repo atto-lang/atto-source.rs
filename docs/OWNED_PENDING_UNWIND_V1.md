@@ -40,5 +40,8 @@ one-shot scheduler tickets, runs Wasm complete/resume only on scheduled
 quanta, maps bounded numeric failure receipts back to original Error
 identities and releases only after terminal publication. Fatal invariant
 failure is fail-stop with retained credit; STOP deadlines and hostile
-artifact/owner authentication remain open. Numeric owner/epoch and formal
-arity are trusted embedder inputs, not guest-provided credentials.
+artifact/owner authentication remain open. Numeric owner/epoch are trusted embedder inputs, not guest-provided credentials.
+
+The versioned custom marker carries the exact formal arity. Only instances
+created by the adapter can be admitted; wrong arity is rejected before any
+Future claim. JS and Rust emitted guests share the same claim domain.

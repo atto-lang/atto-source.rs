@@ -65,3 +65,22 @@ test('real Node Worker executes Rust compiled guest under exact shared scheduler
   assert.deepEqual(messages.map(m=>m.kind),['body','cleanup','recover','done','retired']);
  }finally{await worker.terminate();}
 });
+
+test('compiler-pinned arity and instance provenance reject before claim',()=>{
+ const h=setup();
+ assert.throws(()=>h.start({futures:h.futures.slice(0,2)}),/ARITY/);
+ assert.throws(()=>h.start({futures:[...h.futures,new SelectableI64Future()]}),/ARITY/);
+ assert.throws(()=>h.start({instance:new WebAssembly.Instance(new WebAssembly.Module(bytes))}),/INSTANCE_USED/);
+ assert.equal(h.scheduler.stats.retainedOwners,0);assert.equal(h.start(),true);
+});
+test('JS and Rust guests share the same exclusive Future claim domain',async()=>{
+ const {compileScheduledUnwindV1}=await importJs('scheduled-unwind-compiler.mjs');
+ const source=readFileSync('tests/fixtures/owned-pending-recover.atto','utf8');
+ const guest=await import('data:text/javascript,'+encodeURIComponent(compileScheduledUnwindV1(source)));
+ const h=setup();assert.equal(h.start(),true);
+ const identity={tenant_id:'test',actor_id:8,generation:1};
+ assert.throws(()=>guest.start(runtime,h.scheduler,'b',identity,h.futures,()=>{}),/FUTURE_MOVED/);
+ const other=setup();
+ assert.equal(guest.start(runtime,other.scheduler,'b',identity,other.futures,()=>{}),true);
+ assert.throws(()=>other.start(),/FUTURE_MOVED/);
+});
