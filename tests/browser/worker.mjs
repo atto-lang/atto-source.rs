@@ -1,5 +1,5 @@
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
-import {createStateRuntime} from './state-runtime.mjs';
+import {createStateRuntime,runScalarStateTurn} from './state-runtime.mjs';
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
   if(Number.isNaN(x))return 'NaN';
@@ -140,26 +140,34 @@ self.onmessage=async ({data})=>{
     validateGuestImportABI(out, guest);
     let stdout='',instance;
     const state=createStateRuntime();
+    function write(value) {
+      if(state.snapshot().active)throw new Error('E_STATE_PUBLICATION: output while lease is active');
+      stdout+=value;
+    }
     const atto={
-      print_i64:v=>{stdout+=String(v)},
-      print_bool:v=>{stdout+=v?'true':'false'},
-      print_str:(p,n)=>{stdout+=new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(instance.exports.memory.buffer,p,n))},
-      print_newline:()=>{stdout+='\n'},
-      print_f64:v=>{stdout+=javaDouble(v)},
+      print_i64:v=>write(String(v)),
+      print_bool:v=>write(v?'true':'false'),
+      print_str:(p,n)=>write(new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(instance.exports.memory.buffer,p,n))),
+      print_newline:()=>write('\n'),
+      print_f64:v=>write(javaDouble(v)),
       ...state.imports,
     };
-    instance=new WebAssembly.Instance(guest,{atto});
-    let value;
-    try{value=instance.exports.main()}
+    let value, mainFailed=false;
+    try{
+      value=runScalarStateTurn(state,()=>{
+        instance=new WebAssembly.Instance(guest,{atto});
+        try{return instance.exports.main()}
+        catch(error){mainFailed=true;throw error}
+      });
+    }
     catch(e){
-      // The synchronous WebAssembly call has physically unwound. Release
-      // abandoned state leases only here, never while guest code still runs.
-      state.abort();
+      // The shared boundary already aborted after physical unwind.
+      // Preserve host errors for instantiation or invalid terminal state.
+      if(!mainFailed)throw e;
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':code===6?'stack overflow (logical call-depth quota)':'trap: '+e.message;
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
-    state.complete(); // rejects any scope that failed to release its lease
     self.postMessage({ok:true,value:String(value),stdout});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
 };
