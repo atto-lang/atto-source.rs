@@ -310,6 +310,7 @@ impl FlatMachineTable {
     pub fn initial(&self) -> usize { self.initial }
     pub fn names(&self) -> &[String] { &self.names }
     pub fn events(&self) -> &[String] { &self.events }
+    pub fn terminal(&self, node: usize) -> Option<bool> { self.rows.get(node).map(|row| row.0) }
     /// Pure lookup, not actor admission or mutation.
     pub fn successor(&self, node: usize, slot: usize) -> Option<Option<usize>> {
         if slot >= self.events.len() { return None; }
