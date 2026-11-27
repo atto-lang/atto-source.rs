@@ -1,0 +1,6 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Scores as pub let int n = 20; end
+define class Person as pub let mut Scores scores = new Scores(); end
+fnc read(Scores s): int { return s.n; }
+pub fnc main(): int { let mut Person a = new Person(); return read(mut a.scores); }

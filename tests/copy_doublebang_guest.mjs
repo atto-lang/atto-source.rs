@@ -28,6 +28,8 @@ const positives = [
   '1022-copy-tree-detach.atto',
   '1023-copy-tree-deep.atto',
   '1024-copy-tree-release.atto',
+  '1030-copy-exclusive-call-detach.atto',
+  '1031-copy-exclusive-call-release.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
@@ -57,6 +59,12 @@ const negatives = [
   '1027-copy-tree-shared-inner-replace.atto',
   '1028-copy-tree-cycle.atto',
   '1029-copy-tree-depth.atto',
+  '1032-copy-exclusive-shared-source.atto',
+  '1033-copy-exclusive-shared-copy.atto',
+  '1034-copy-exclusive-missing-mut.atto',
+  '1035-copy-exclusive-return-escape.atto',
+  '1036-copy-exclusive-nested-effect.atto',
+  '1037-copy-exclusive-unproved-callee.atto',
 ];
 const imports = {
   atto: {

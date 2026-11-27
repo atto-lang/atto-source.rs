@@ -1,0 +1,6 @@
+// expect-error: E_COPY_READONLY
+// java: rejects
+define class Scores as pub let int n = 20; end
+define class Person as pub let mut Scores scores = new Scores(); end
+fnc adjust(mut Scores s): void { s.n = 22; }
+pub fnc main(): int { let mut Person a = new Person(); let mut Person b = copy! a; adjust(mut a.scores); return b.scores.n; }

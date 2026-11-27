@@ -141,3 +141,15 @@ fn bounded_fresh_tree_copy_and_transitive_authority() {
     assert_eq!(compile(include_str!("fixtures/fail/1028-copy-tree-cycle.atto")).unwrap_err().code, "E_UNSUPPORTED_TYPE");
     assert_eq!(compile(include_str!("fixtures/fail/1029-copy-tree-depth.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
 }
+
+#[test]
+fn projected_exclusive_call_requires_unique_subtree_and_closed_effects() {
+    wasm(include_str!("fixtures/pass/1030-copy-exclusive-call-detach.atto"));
+    wasm(include_str!("fixtures/pass/1031-copy-exclusive-call-release.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1032-copy-exclusive-shared-source.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1033-copy-exclusive-shared-copy.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1034-copy-exclusive-missing-mut.atto")).unwrap_err().code, "E_BORROW");
+    assert_eq!(compile(include_str!("fixtures/fail/1035-copy-exclusive-return-escape.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1036-copy-exclusive-nested-effect.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1037-copy-exclusive-unproved-callee.atto")).unwrap_err().code, "E_BORROW");
+}

@@ -1,0 +1,6 @@
+// expect-exit: 42
+// java: rejects
+define class Scores as pub let int n = 20; end
+define class Person as pub let mut Scores scores = new Scores(); end
+fnc adjust(mut Scores s): void { s.n = 22; }
+pub fnc main(): int { let mut Person a = new Person(); let int n = 0; block { let mut Person b = copy! a; n = b.scores.n; } adjust(mut a.scores); return n + a.scores.n; }
