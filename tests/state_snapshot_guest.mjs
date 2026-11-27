@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { createStateRuntime } from './browser/state-runtime.mjs';
+import {assertStateTrace} from './state-trace-oracle.mjs';
 
 const dir = mkdtempSync(join(tmpdir(), 'atto-state-snapshot-'));
 try {
@@ -16,8 +17,8 @@ try {
   const { instance } = await WebAssembly.instantiate(readFileSync(output), {
     atto: {
       ...runtime.imports,
-      print_i64: v => printed.push(v),
-      print_newline: () => {},
+      print_i64: v => { assert.equal(runtime.snapshot().active, 0); printed.push(v); },
+      print_newline: () => { assert.equal(runtime.snapshot().active, 0); },
     },
   });
   try {
@@ -29,6 +30,6 @@ try {
   const expected = [[1,1], [1,0], [1,1], [1,0], [2,0]]
     .flatMap(([containerId, mode]) => ['enter','leave'].map(kind => ({kind,containerId,mode})));
   assert.deepEqual(leases, expected);
-  assert.equal(runtime.snapshot().active, 0);
+  assertStateTrace({ok:true,state:runtime.snapshot(),events}, {claims:[[1,1],[1,0],[1,1],[1,0],[2,0]],containers:2,terminal:'complete'});
   console.log('STATE_SNAPSHOT_GUEST_OK: three one-ticket read snapshots, two balanced writes, independent owned results');
 } finally { rmSync(dir, { recursive: true, force: true }); }
