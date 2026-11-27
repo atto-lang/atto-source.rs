@@ -253,7 +253,7 @@ fn flatten_declarations(source: &[StructWithTarget], names: &[(String, Pos)]) ->
                     let child = nominal_owner(p.ty, names, source, p.pos)?;
                     if plans[child].is_empty() { return Err(denied(p.pos, "empty nested parameter")); }
                     for (leaf, ty) in &plans[child] {
-                        flat_params.push(Param { name: format!("{}.{leaf}", p.name), ty: *ty, mutable: false, pos: p.pos });
+                        flat_params.push(Param { omittable: false, name: format!("{}.{leaf}", p.name), ty: *ty, mutable: false, pos: p.pos });
                     }
                 }
                 if flat_params.len() > MAX_PARAMS { return Err(denied(p.pos, "nested constructor scalar parameter budget exceeded")); }
