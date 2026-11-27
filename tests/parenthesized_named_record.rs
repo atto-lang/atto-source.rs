@@ -261,3 +261,38 @@ fn wrong_context_and_nested_owned_fields_do_not_bypass_guest_types() {
     rejected("pub fnc main():int {let y=(foo=(bar=1));return 0;}","E_UNSUPPORTED");
     rejected("pub fnc main():int {let y=(foo=1,bar=[1,2]);return 0;}","E_UNSUPPORTED");
 }
+
+#[test]
+fn lexical_capture_matches_explicit_record_ast_and_type() {
+    let p = binding("const name = \"Alice\"; const age = 42; val a = {:name,:age}; val b = {name:name,age:age};");
+    let Stmt::Bind {init,..} = &p.funcs[0].body[2] else {panic!("missing capture")};
+    let ExprKind::Record(fields) = &init.kind else {panic!("not a Record")};
+    assert_eq!(fields.len(),2);
+    assert_eq!(fields[0].0,"name");
+    assert!(matches!(&fields[0].1.kind, ExprKind::Var(n) if n=="name"));
+    assert!(matches!(&fields[1].1.kind, ExprKind::Var(n) if n=="age"));
+    let typed = collection_types::analyze(&p).unwrap();
+    assert_eq!(typed[2].value.ty, typed[3].value.ty);
+    assert_eq!(typed[2].value.source_to_record_slot, typed[3].value.source_to_record_slot);
+}
+
+#[test]
+fn lexical_capture_compiles_checked_scalar_record() {
+    guest("pub fnc main(): int { const name=\"Alice\"; const age=42; val z={:name,:age}; stdio.println(z.name); return z[\"age\"]; }");
+    guest("pub fnc main(): int { val age=40; val z={:age,offset:2}; return z.age+z.offset; }");
+}
+
+#[test]
+fn lexical_capture_rejects_duplicate_mixed_and_nonidentifier_items() {
+    for (expr,code) in [
+        ("{:age,age:1}","E_DUPLICATE"),
+        ("{:age,\"x\"=>1}","E_LITERAL_KIND"),
+        ("{\"x\"=>1,:age}","E_LITERAL_KIND"),
+    ] {
+        rejected(&format!("pub fnc main(): int {{ const age=42; val z={expr}; return 0; }}"),code);
+    }
+    for expr in ["{:age.value}","{:42}","{:return}","{:missing}"] {
+        let s=format!("pub fnc main(): int {{ const age=42; val z={expr}; return 0; }}");
+        assert!(compile(&s).is_err(),"{s}");
+    }
+}
