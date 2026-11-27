@@ -18,6 +18,7 @@ pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
+mod pair_local_lower;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
@@ -65,6 +66,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             }
         }
     }
+    let source_tokens = pair_local_lower::lower(source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor

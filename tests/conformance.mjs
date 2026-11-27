@@ -13,6 +13,8 @@ import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { formatJavaDouble } from './java-double.mjs';
 import {createStateRuntime} from './browser/state-runtime.mjs';
 import { verify_actor_trace, BROWSER_MAX_ACTORS, BROWSER_MAX_MAILBOX } from './actor-trace-refinement.mjs';
@@ -188,6 +190,79 @@ function check(label, fn) {
   try { fn(); passed++; } catch (e) { failures.push(`${label}: ${e.message}`); }
 }
 const digests = [];
+
+// Stored local Pair<int> profile: real browser compiler, executed guest,
+// native-host byte differential, and strict no-artifact rejection.
+// Separate from general fixture Java claims: this is Rust/Wasm only.
+check('pair/local-stored-equivalence', () => {
+  const source = body => 'pub fnc main(): int { ' + body + ' }';
+  const tail = 'const Pair<int> p = x; return p.key == "x" ? p.value : 99;';
+  const positives = [
+    ['short', 'const x := 5; ' + tail, 5n],
+    ['expanded', 'const x = x := 5; ' + tail, 5n],
+    ['factory', 'const x = Pair.of("x", 5); ' + tail, 5n],
+    ['different-key', 'const x = y := 5; return x.key == "y" ? x.value : 99;', 5n],
+    ['runtime-local', 'val n = 21; val x := n+n; return x.value;', 42n],
+    ['let-shadow', 'let x := 5; let x := x.value + 1; return x.value;', 6n],
+  ];
+  const negatives = [
+    ['scalar-escape', 'const x := 5; return x;', 'E_PAIR_ESCAPE_UNSUPPORTED'],
+    ['unbound-short', 'const x := x; return x.value;', 'E_UNBOUND'],
+    ['unbound-expanded', 'const x = x := x; return x.value;', 'E_UNBOUND'],
+    ['duplicate', 'const x := 5; const x := 6; return x.value;', 'E_DUPLICATE'],
+    ['runtime-const', 'val n = 5; const x := n; return x.value;', 'E_PAIR_CONSTEXPR'],
+    ['key-write', 'let x := 5; x.key = "other"; return x.value;', 'E_PAIR_STORAGE_UNSUPPORTED'],
+    ['forged-slot', 'val __atto_pair_local_0 = 5; return 5;', 'E_RESERVED'],
+  ];
+  const dir = mkdtempSync(join(tmpdir(), 'atto-pair-local-'));
+  const digests = [];
+  try {
+    for (const [id, body, expected] of positives) {
+      const input = source(body);
+      const compiled = compile(input);
+      assert.equal(compiled.ok, true, id + ': ' + compiled.message);
+      const guest = runGuest(compiled.wasm);
+      assert.equal(guest.ok, true, id + ': ' + guest.error);
+      assert.equal(guest.value, expected, id);
+      assert.equal(guest.stdout, '');
+      assert.equal(guest.actors, 0);
+      const sha = createHash('sha256').update(compiled.wasm).digest('hex');
+      if (id === 'short' || id === 'expanded' || id === 'factory') digests.push(sha);
+      if (attoc) {
+        const path = join(dir, id + '.atto');
+        writeFileSync(path, input);
+        const result = spawnSync(attoc, [path], { timeout: 30000, maxBuffer: 1 << 22 });
+        assert.ifError(result.error);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, 0, result.stderr.toString());
+        assert.deepEqual(new Uint8Array(result.stdout), compiled.wasm, id + ' host byte parity');
+        nativeChecked++;
+      }
+      console.log(JSON.stringify({pair_case:id, status:'GUEST_PASS', result:String(expected), wasm_sha256:sha, native_compiler_compared:!!attoc}));
+    }
+    assert.equal(new Set(digests).size, 1, 'three spellings emit identical bytes');
+    for (const [id, body, code] of negatives) {
+      const input = source(body);
+      const rejected = compile(input);
+      assert.equal(rejected.ok, false, id);
+      assert.equal(rejected.code, code, id);
+      assert.equal('wasm' in rejected, false);
+      if (attoc) {
+        const path = join(dir, id + '.atto'), output = join(dir, id + '.wasm');
+        writeFileSync(path, input);
+        const result = spawnSync(attoc, [path, '-o', output], {timeout:30000, encoding:'utf8'});
+        assert.ifError(result.error);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, 1, id + ': ' + result.stderr);
+        assert.ok(result.stderr.includes(': ' + code + ': '), id + ': ' + result.stderr);
+        assert.equal(existsSync(output), false, id + ' emitted artifact');
+        nativeChecked++;
+      }
+      console.log(JSON.stringify({pair_case:id, status:'EXPECTED_REJECT', diagnostic:code, native_compiler_compared:!!attoc}));
+    }
+  } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+
 
 
 // ---- reviewed site source: compiler byte parity and real guest outcomes ----

@@ -2084,13 +2084,19 @@ impl Parser {
         } else {
             return Err(self.expected("'val', 'const' or 'let'"));
         };
-        // Referent mutation is independent of binding rebinding.
-        // `val mut` and `let mut` are both legal; neither bypasses ownership.
-        let referent_mutable = self.eat_word("mut");
-        if kind == BindKind::Const && referent_mutable {
-            return Err(Diagnostic::new(pos, "E_CONST_MUT_TARGET",
-                "const mut is not supported for the scalar/Record guest profile"));
+        // Match the canonical Java qualifier rule: val already means
+        // const mut; a second mut is redundant. The existing checked
+        // referent policy for val applies equally to either spelling.
+        let written_mut = self.eat_word("mut");
+        if kind == BindKind::Val && written_mut {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "val already means const mut; val mut is a duplicate qualifier"));
         }
+        let (kind, referent_mutable) = if kind == BindKind::Const && written_mut {
+            (BindKind::Val, true)
+        } else {
+            (kind, kind == BindKind::Val || written_mut)
+        };
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
@@ -2116,6 +2122,10 @@ impl Parser {
         }
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
+        }
+        if *self.peek() == Tok::ColonEqual {
+            return Err(Diagnostic::new(self.pos(), "E_PAIR_STORAGE_UNSUPPORTED",
+                "stored Pair bindings require nominal typed lowering"));
         }
         if *self.peek() != Tok::Assign {
             return Err(Diagnostic::new(
@@ -2608,6 +2618,10 @@ impl Parser {
         let r = self.parse_ternary();
         self.cond = saved;
         self.leave();
+        if r.is_ok() && *self.peek() == Tok::ColonEqual {
+            return Err(Diagnostic::new(self.pos(), "E_PAIR_STORAGE_UNSUPPORTED",
+                "standalone Pair values require nominal typed lowering"));
+        }
         r
     }
 
@@ -3190,7 +3204,7 @@ impl Parser {
                     "brace literal exceeds 1024 entries"));
             }
             let identifier_field = matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                && matches!(self.peek_at(1), Tok::Colon | Tok::Assign);
+                && matches!(self.peek_at(1), Tok::Colon | Tok::Assign | Tok::ColonEqual);
             let quoted_map_key = matches!(self.peek(), Tok::Str(_))
                 && *self.peek_at(1) == Tok::Colon;
             let captured_field = *self.peek() == Tok::Colon;
@@ -3209,7 +3223,9 @@ impl Parser {
                 };
                 self.advance();
                 if !captured_field {
-                    if !self.eat(&Tok::Assign) { self.expect(Tok::Colon, "':' or '=' after record field")?; }
+                    if !self.eat(&Tok::Assign) && !self.eat(&Tok::ColonEqual) {
+                        self.expect(Tok::Colon, "':' or '=' or ':=' after record field")?;
+                    }
                 }
                 if !seen_record_names.insert(name.clone()) {
                     return Err(Diagnostic::new(at, "E_DUPLICATE",
@@ -3283,6 +3299,7 @@ impl Parser {
     fn parse_named_record_parens(&mut self, pos: Pos) -> R<Expr> {
         let mut fields: Vec<(String, Expr)> = Vec::new();
         let mut seen = BTreeSet::<String>::new();
+        let mut ordinary_field = false;
         loop {
             if fields.len() >= 1024 {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
@@ -3296,7 +3313,13 @@ impl Parser {
                     "parenthesized Record fields require identifier=expression, identifier:expression or :identifier")),
             };
             self.advance();
-            if !captured && !self.eat(&Tok::Assign) { self.expect(Tok::Colon, "'=' or ':' after named Record field")?; }
+            if captured { ordinary_field = true; }
+            else if !self.eat(&Tok::ColonEqual) {
+                ordinary_field = true;
+                if !self.eat(&Tok::Assign) {
+                    self.expect(Tok::Colon, "'=' or ':' after named Record field")?;
+                }
+            }
             if !seen.insert(name.clone()) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE",
                     format!("duplicate Record field '{name}'")));
@@ -3310,15 +3333,19 @@ impl Parser {
                     break;
                 }
                 if *self.peek() != Tok::Colon && !(matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon | Tok::ColonEqual))
                 {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix named Record fields and positional Tuple items; expected field=value, field:value or :field"));
+                        "cannot mix named Record fields and positional Tuple items; expected field=value, field:value, field:=value or :field"));
                 }
                 continue;
             }
             self.expect(Tok::RParen, "')' after parenthesized Record")?;
             break;
+        }
+        if !ordinary_field {
+            return Err(Diagnostic::new(pos, "E_LITERAL_KIND",
+                "Pair-only parentheses are not a Record"));
         }
         Ok(Expr { kind: ExprKind::Record(fields), pos })
     }
@@ -3347,7 +3374,7 @@ impl Parser {
                 // Identifier '=' or a leading capture ':' selects Record.
                 // Equality, Pair syntax and ordinary positional items do not.
                 if *self.peek() == Tok::Colon || (matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon | Tok::ColonEqual))
                 {
                     return self.parse_named_record_parens(pos);
                 }
@@ -3501,6 +3528,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Comma => ",",
                 Tok::Colon => ":",
                 Tok::ColonColon => "::",
+                Tok::ColonEqual => ":=",
                 Tok::Arrow => "->",
                 Tok::FatArrow => "=>",
                 Tok::Dot => ".",
@@ -3528,6 +3556,23 @@ fn describe(t: &Tok) -> String {
                 _ => "?",
             };
             format!("'{s}'")
+        }
+    }
+}
+
+#[cfg(test)]
+mod pair_binding_tests {
+    use super::*;
+    use crate::lexer::lex;
+    #[test]
+    fn both_stored_forms_fail_closed_at_pair_token() {
+        for body in ["const x := 5;", "const x = x := 5;", "val x := 5;", "val x = x := 5;"] {
+            let source = format!("pub fnc main(): int {{ {body} return 5; }}");
+            let mut parser = Parser::new(lex(&source).unwrap());
+            let result = parser.parse_program();
+            assert!(result.is_err(), "unexpected acceptance of {body}");
+            let err = result.err().unwrap();
+            assert!(format!("{err:?}").contains("E_PAIR_STORAGE_UNSUPPORTED"), "{err:?}");
         }
     }
 }

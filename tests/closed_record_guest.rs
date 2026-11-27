@@ -538,7 +538,7 @@ fn checked_owned_scalar_record_writes_emit_guest_wasm() {
             return r.foo;
         }"#,
         r#"pub fnc main(): int {
-            val mut Record r = {content_type: 1};
+            val Record r = {content_type: 1};
             r["content_type"] = 42;
             return r["content_type"];
         }"#,
@@ -562,7 +562,13 @@ fn checked_owned_scalar_record_writes_emit_guest_wasm() {
 fn record_write_fail_closed_immutable_type_missing_or_computed() {
     for (source, code) in [
         (r#"pub fnc main(): int { let Record r={foo:1}; r["foo"]=42; return 0; }"#, "E_IMMUTABLE"),
-        (r#"pub fnc main(): int { val Record r={foo:1}; r.foo=42; return 0; }"#, "E_IMMUTABLE"),
+        // v2: val is fixed-root, with ordinary checked referent access;
+        // a repeated mut is not an alternate spelling or extra permission.
+        (r#"pub fnc main(): int { val mut Record r={foo:1}; r.foo=42; return 0; }"#, "E_SYNTAX"),
+        (r#"pub fnc main(): int { val Record r={foo:1}; val reader=borrow! r; r.foo=42; return 0; }"#, "E_BORROW"),
+        (r#"pub fnc main(): int { const mut Record r={foo:1}; val reader=borrow! r; r.foo=42; return 0; }"#, "E_BORROW"),
+        (r#"pub fnc main(): int { val Record r={foo:1}; val moved=take! r; r.foo=42; return 0; }"#, "E_MOVED"),
+        (r#"pub fnc main(): int { const mut Record r={foo:1}; val moved=take! r; r.foo=42; return 0; }"#, "E_MOVED"),
         (r#"pub fnc main(): int { let mut Record r={foo:1}; r["bar"]=42; return 0; }"#, "E_NO_FIELD"),
         (r#"pub fnc main(): int { let mut Record r={foo:1}; r["foo"]="bad"; return 0; }"#, "E_TYPE"),
         (r#"pub fnc main(): int { let mut Record r={foo:1}; let string key="foo"; r[key]=42; return 0; }"#, "E_UNSUPPORTED"),
