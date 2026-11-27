@@ -7,6 +7,15 @@ import {join} from 'node:path';
 const attoc = process.env.ATTOC || 'target/release/attoc';
 const program = (subject, arms) => 'pub fnc main(): int { return match ' + subject + ' over ' + arms + ' end; }';
 const pass = [
+  'const Pattern p = on 5; '+program('5','on p -> 42, on _ -> 0'),
+  'const Pattern p = in [5,6,7]; '+program('6','on p -> 42, on _ -> 0'),
+  'const Pattern[] z = [on 1,in [2,3],on true]; '+program('3','in z -> 42, on _ -> 0'),
+  'const Pattern[] z = [on 1,on true]; '+program('true','in z -> 42, on _ -> 0'),
+  'const Pattern[] z = [is int,is bool]; '+program('7','is in z -> 42'),
+  program('3','in [on 1,in [2,3]] -> 42, on _ -> 0'),
+  'const Pattern p = is Int; '+program('7','on p -> 42'),
+  'const Pattern[] z = [on true,on false]; '+program('false','in z -> 42'),
+  'const Pattern[] z = [on 1,on 2]; '+program('2','in z when false -> 0, in z -> 42, on _ -> 0'),
   program('2','in [0,1,2] -> 42, on _ -> 0'),
   program('7','in [0,1,2] -> 0, on _ -> 42'),
   program('7','is in [int, string] -> 42'),
@@ -19,6 +28,16 @@ const pass = [
   'fnc get(): int { return 2; } ' + program('get()','in [1,2] -> 42, on _ -> 0')
 ];
 const fail = [
+  'const Pattern p = on 5; pub fnc main(): int { return p; }',
+  'const Pattern p = on q; const Pattern q = on p; '+program('2','on _ -> 42'),
+  'const Pattern[] z = [on 1,2]; '+program('2','on _ -> 42'),
+  'const Pattern[] z = [is int,on 1]; '+program('2','is in z -> 42'),
+  'const Pattern[] z = [on 1,on 1]; '+program('2','on _ -> 42'),
+  'const Pattern[] z = [is int,is Int]; '+program('2','on _ -> 42'),
+  'const Pattern p = on 1; '+program('1','in p -> 42, on _ -> 0'),
+  'const Pattern[] z = [on 1]; '+program('1','on z -> 42, on _ -> 0'),
+  'const Pattern p = on 1; fnc f(Pattern x): int { return 42; } pub fnc main(): int { return f(p); }',
+  'const Pattern[] z = [on 1,on 2]; '+program('2','in z -> 42, on 2 -> 0, on _ -> 0'),
   // A guard is still statically checked even when its pattern cannot match.
   program('7','in [0,1,2] when (1 / 0) eq 1 -> 0, on _ -> 42'),
   program('2','in [2,2] -> 42, on _ -> 0'),

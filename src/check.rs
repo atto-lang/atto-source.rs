@@ -3253,6 +3253,28 @@ impl<'a> FnCx<'a> {
                         None,
                     )
                 }
+                Pattern::ConstSet { ints, bools, types } => {
+                    if types.contains(&sty) {
+                        (None, None, None)
+                    } else {
+                        let literals: Vec<TE> = match sty {
+                            Type::Int => ints.iter().map(|v| TE { e: TExpr::I64(*v), ty: sty }).collect(),
+                            Type::Bool => bools.iter().map(|v| TE { e: TExpr::Bool(*v), ty: sty }).collect(),
+                            _ => Vec::new(),
+                        };
+                        if literals.is_empty() {
+                            return Err(Diagnostic::new(arm.pos, "E_MATCH", "stored pattern set has no alternative for subject"));
+                        }
+                        let keys = if sty == Type::Int { ints.clone() } else { bools.iter().map(|b| i64::from(*b)).collect() };
+                        let mut test = TE { e: TExpr::Bool(false), ty: Type::Bool };
+                        for lit in literals.into_iter().rev() {
+                            let eq = TE { e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)), ty: Type::Bool };
+                            test = TE { e: TExpr::Ternary(Box::new(eq),
+                                Box::new(TE { e: TExpr::Bool(true), ty: Type::Bool }), Box::new(test)), ty: Type::Bool };
+                        }
+                        (Some(test), Some(keys), None)
+                    }
+                }
                 Pattern::StaticTypes(types) => {
                     if !types.contains(&sty) {
                         return Err(Diagnostic::new(arm.pos, "E_MATCH",
