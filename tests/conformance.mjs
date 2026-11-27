@@ -13,6 +13,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { sha256, writeEvidence } from './guest-evidence.mjs';
 import { formatJavaDouble } from './java-double.mjs';
 import {createStateRuntime} from './browser/state-runtime.mjs';
 import { verify_actor_trace, BROWSER_MAX_ACTORS, BROWSER_MAX_MAILBOX } from './actor-trace-refinement.mjs';
@@ -198,6 +199,7 @@ function check(label, fn) {
   try { fn(); passed++; } catch (e) { failures.push(`${label}: ${e.message}`); }
 }
 const digests = [];
+const executedGuestCases = []; // recorded only after observed guest assertions pass
 
 
 // ---- reviewed site source: compiler byte parity and real guest outcomes ----
@@ -324,6 +326,13 @@ for (const f of await fixtures('pass')) {
       }
       javaChecked++;
     }
+    executedGuestCases.push({
+      case_id:`pass/${f.name}`,
+      source_sha256:sha256(Buffer.from(f.source,'utf8')),
+      guest_module_sha256:sha256(r.wasm),
+      observed_stdout_sha256:sha256(Buffer.from(g.stdout,'utf8')),
+      outcome:{kind:'returned',value:g.value.toString()},
+    });
   });
 }
 
@@ -363,8 +372,36 @@ for (const f of await fixtures('panic')) {
     const want = header(f.source, 'expect-stdout');
     assert.equal(g.stdout, want.length ? want.join('\n') + '\n' : '');
     if (attoc) { assert.deepEqual(nativeBytes(f.path), r.wasm); nativeChecked++; }
+    executedGuestCases.push({
+      case_id:`panic/${f.name}`,
+      source_sha256:sha256(Buffer.from(f.source,'utf8')),
+      guest_module_sha256:sha256(r.wasm),
+      observed_stdout_sha256:sha256(Buffer.from(g.stdout,'utf8')),
+      outcome:{kind:'panic',code:g.panic},
+    });
   });
 }
+
+// One fixed source-free witness with observable stdout and return value;
+// it must execute inside the actual JS WebAssembly VM, not a mock host.
+const witnessSource = 'pub fnc main(): int { stdio.println(42); return 42; }';
+let witnessStdout = null;
+check('witness/stdio-42', () => {
+  const built = compile(witnessSource);
+  assert.ok(built.ok, built.message);
+  const observed = runGuest(built.wasm);
+  assert.equal(observed.ok, true, observed.error);
+  assert.equal(observed.value, 42n, 'real guest return value');
+  assert.equal(observed.stdout, '42\n', 'real guest stdout');
+  witnessStdout = observed.stdout;
+  executedGuestCases.push({
+    case_id:'witness/stdio-42',
+    source_sha256:sha256(Buffer.from(witnessSource,'utf8')),
+    guest_module_sha256:sha256(built.wasm),
+    observed_stdout_sha256:sha256(Buffer.from(observed.stdout,'utf8')),
+    outcome:{kind:'returned',value:observed.value.toString()},
+  });
+});
 
 // The binary name subsection must enumerate exactly the actual function indices.
 // A stale checked_rem label previously shifted main's debug name after that
@@ -804,4 +841,28 @@ console.log(`conformance: ${passed} passed, ${failures.length} failed` +
 if (failures.length) {
   console.error(failures.join('\n'));
   process.exit(1);
+}
+
+// Never publish evidence on a failed suite. A successful receipt is a signed
+// runner's *claim*, not independent proof of execution or release readiness.
+// The output directory is supplied only by the source-controlled CI workflow.
+if (process.env.ATTO_EVIDENCE_DIR) {
+  const git = (...args) => execFileSync('git',args,{encoding:'utf8'}).trim();
+  const head = git('rev-parse','HEAD');
+  assert.equal(head,process.env.ATTO_EVIDENCE_EXPECTED_HEAD,
+    'checkout is not the exact GitHub PR/push head');
+  const tree = git('rev-parse','HEAD^{tree}');
+  assert.ok(witnessStdout, 'guest witness did not execute');
+  const emitted = await writeEvidence(process.env.ATTO_EVIDENCE_DIR,{
+    repository:process.env.GITHUB_REPOSITORY,
+    sourceSha:head, treeSha:tree,
+    runId:Number(process.env.GITHUB_RUN_ID),
+    runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),
+    jobId:Number(process.env.ATTO_GUEST_JOB_ID),
+    nonce:process.env.ATTO_GUEST_NONCE,
+    compilerBytes,
+    cases:executedGuestCases,
+    witnessStdout,
+  });
+  console.log('source-free guest execution claim (NOT_CERTIFIED):',emitted);
 }
