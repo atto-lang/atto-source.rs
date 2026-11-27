@@ -44,6 +44,10 @@ try {
   const fixed = 'fnc id(int n): int { return n; } pub fnc main(): int { return id(42); }';
   assert.deepEqual(guest(fixed, 42), guest(fixed.replace('int n', 'rebind int n'), 42));
   reject('fnc replace(rebind mut Foo f): void {} pub fnc main(): int { return 0; }', 'E_UNSUPPORTED');
+  guest('pub fnc main(): int { let int x = 39; set x = x + 1; set! x = x + 1; set! (x = x + 1); return x; }', 42);
+  guest('pub fnc main(): int { let x = 40; let x = x + 1; set x = x + 1; return x; }', 42);
+  reject('pub fnc main(): int { const x = 40; set! x = 42; return x; }', 'E_IMMUTABLE');
+  reject('pub fnc main(): int { const x = 40; const x = 42; return x; }', 'E_DUPLICATE');
   console.log('scalar rebind guest cases passed');
 } finally {
   rmSync(dir, { recursive: true, force: true });
