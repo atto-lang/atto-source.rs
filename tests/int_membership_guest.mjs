@@ -7,6 +7,9 @@ import {join} from 'node:path';
 const attoc = process.env.ATTOC || 'target/release/attoc';
 const program = (subject, arms) => 'pub fnc main(): int { return match ' + subject + ' over ' + arms + ' end; }';
 const pass = [
+  'type X = int | bool; const Pattern p = is X; '+program('7','on p -> 42'),
+  'type X = int; type Y = X | bool; const Pattern[] z = [is Y]; '+program('true','is in z -> 42'),
+  'type X = int | bool; '+program('7','is in [X,string] -> 42'),
   'const Pattern p = on 5; pub fnc main(): int { return match |5| over on p -> 42, on _ -> 0 end; }',
   'const Pattern[] z = [on 1,on 2]; pub fnc main(): int { return match |(1 + 1)| over in z -> 42, on _ -> 0 end; }',
   'const Pattern p = on 5; '+program('5','on p -> 42, on _ -> 0'),
@@ -30,6 +33,10 @@ const pass = [
   'fnc get(): int { return 2; } ' + program('get()','in [1,2] -> 42, on _ -> 0')
 ];
 const fail = [
+  'type X = Y; type Y = X; '+program('7','on _ -> 42'),
+  'type X = int; type Y = X | Int; '+program('7','on _ -> 42'),
+  'type X = int; const Pattern X = on 5; '+program('7','on _ -> 42'),
+  'type X = int; pub fnc main(): int { return X; }',
   'const Pattern p = on 5; pub fnc main(): int { return match |5 over on p -> 42, on _ -> 0 end; }',
   'const Pattern p = on 5; pub fnc main(): int { return match |5,6| over on p -> 42, on _ -> 0 end; }',
   'const Pattern p = on 5; pub fnc main(): int { return p; }',

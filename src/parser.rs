@@ -268,6 +268,8 @@ pub struct Parser {
     pattern_constants: std::collections::BTreeMap<String, (bool, Pattern)>,
     pattern_name_uses: std::collections::BTreeSet<usize>,
     pattern_type_spellings: std::collections::BTreeMap<String, Pos>,
+    pattern_type_aliases: std::collections::BTreeMap<String, Vec<Type>>,
+    pattern_alias_uses: std::collections::BTreeSet<usize>,
 }
 
 struct TypeFirstField {
@@ -406,6 +408,8 @@ impl Parser {
             pattern_constants: Default::default(),
             pattern_name_uses: Default::default(),
             pattern_type_spellings: Default::default(),
+            pattern_type_aliases: Default::default(),
+            pattern_alias_uses: Default::default(),
         }
     }
 
@@ -715,8 +719,13 @@ impl Parser {
     pub fn parse_program(&mut self) -> R<Program> {
         let mut prog = Program::default();
         let mut decls = 0usize;
-        while self.is_word("const") && self.word_at(1) == Some("Pattern") {
-            self.parse_pattern_constant()?;
+        loop {
+            if self.is_word("const") && self.word_at(1) == Some("Pattern") {
+                self.parse_pattern_constant()?;
+            } else if self.is_word("type") && matches!(self.peek_at(2), Tok::Assign)
+                && self.word_at(3) != Some("struct") {
+                self.parse_pattern_type_alias()?;
+            } else { break; }
         }
         while *self.peek() != Tok::Eof {
             if decls >= MAX_FUNCS {
@@ -823,6 +832,10 @@ impl Parser {
         // shadowing rather than guessing at lexical binding identity.
         for (i, token) in self.toks.iter().enumerate() {
             if let Tok::Ident(name) = &token.tok {
+                if self.pattern_type_aliases.contains_key(name) && !self.pattern_alias_uses.contains(&i) {
+                    return Err(Diagnostic::new(token.pos, "E_PATTERN_TYPE",
+                        "scalar pattern alias used outside a resolved pattern type position"));
+                }
                 if self.pattern_constants.contains_key(name) && !self.pattern_name_uses.contains(&i) {
                     return Err(Diagnostic::new(token.pos, "E_PATTERN_ESCAPE",
                         "compile-time Pattern name cannot escape or be shadowed"));
@@ -3782,7 +3795,7 @@ impl Parser {
         let name_index = self.i;
         let (name, _) = self.ident("compile-time pattern name")?;
         if matches!(name.as_str(), "Pattern" | "Int" | "int" | "bool" | "boolean" | "float" | "f64" | "String" | "string") ||
-            self.pattern_constants.contains_key(&name) {
+            self.pattern_constants.contains_key(&name) || self.pattern_type_aliases.contains_key(&name) {
             return Err(Diagnostic::new(pos, "E_PATTERN_NAME", "duplicate or reserved Pattern name"));
         }
         if self.pattern_constants.len() >= 128 {
@@ -3841,6 +3854,67 @@ impl Parser {
 
     /// Static scalar type disjunction. The ordinary checker verifies the
     /// subject type and every reachable body before emitting any guest.
+    fn parse_pattern_type_atom(&mut self) -> R<Vec<Type>> {
+        let pos = self.pos();
+        let spelling = match self.peek() {
+            Tok::Ident(w) => w.clone(),
+            _ => return Err(Diagnostic::new(pos, "E_SYNTAX", "expected a scalar pattern type")),
+        };
+        if let Some(types) = self.pattern_type_aliases.get(&spelling).cloned() {
+            self.pattern_alias_uses.insert(self.i);
+            self.advance();
+            return Ok(types);
+        }
+        let ty = match spelling.as_str() {
+            "int" | "Int" => Type::Int,
+            "bool" | "boolean" => Type::Bool,
+            "float" | "f64" => Type::Float,
+            "string" | "String" => Type::Str,
+            _ => return Err(unsupported(pos, "unknown, forward/cyclic or non-scalar pattern type")),
+        };
+        self.pattern_type_spellings.insert(spelling, pos);
+        self.advance();
+        Ok(vec![ty])
+    }
+
+    fn append_pattern_types(target: &mut Vec<Type>, alternatives: Vec<Type>, pos: Pos) -> R<()> {
+        for ty in alternatives {
+            if target.contains(&ty) {
+                return Err(Diagnostic::new(pos, "E_MATCH", "duplicate canonical type in pattern type set"));
+            }
+            if target.len() >= 64 {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pattern type expansion limit"));
+            }
+            target.push(ty);
+        }
+        Ok(())
+    }
+
+    fn parse_pattern_type_alias(&mut self) -> R<()> {
+        let pos = self.pos();
+        self.expect_word("type")?;
+        let name_index = self.i;
+        let (name, _) = self.ident("scalar pattern type alias")?;
+        if matches!(name.as_str(), "Pattern" | "Int" | "int" | "bool" | "boolean" | "float" | "f64" | "String" | "string")
+            || self.pattern_constants.contains_key(&name) || self.pattern_type_aliases.contains_key(&name) {
+            return Err(Diagnostic::new(pos, "E_PATTERN_NAME", "duplicate or reserved scalar pattern type alias"));
+        }
+        if self.pattern_type_aliases.len() >= 128 {
+            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "scalar pattern alias declaration limit"));
+        }
+        self.expect(Tok::Assign, "'=' in scalar pattern type alias")?;
+        let mut types = Vec::new();
+        loop {
+            let next = self.parse_pattern_type_atom()?;
+            Self::append_pattern_types(&mut types, next, pos)?;
+            if !self.eat(&Tok::Pipe) { break; }
+        }
+        self.expect(Tok::Semi, "';' after scalar pattern type alias")?;
+        self.pattern_alias_uses.insert(name_index);
+        self.pattern_type_aliases.insert(name, types);
+        Ok(())
+    }
+
     fn parse_static_type_pattern(&mut self) -> R<Pattern> {
         let pos = self.pos();
         self.expect_word("is")?;
@@ -3859,23 +3933,8 @@ impl Parser {
             if *self.peek() == Tok::RBracket {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "type list must contain a type"));
             }
-            let ty = match self.peek() {
-                Tok::Ident(w) if w == "int" || w == "Int" => Type::Int,
-                Tok::Ident(w) if w == "bool" || w == "boolean" => Type::Bool,
-                Tok::Ident(w) if w == "float" || w == "f64" => Type::Float,
-                Tok::Ident(w) if w == "string" || w == "String" => Type::Str,
-                _ => return Err(unsupported(self.pos(), "non-scalar or unresolved type pattern")),
-            };
-            if types.contains(&ty) {
-                return Err(Diagnostic::new(self.pos(), "E_MATCH", "duplicate canonical type in type list"));
-            }
-            let spelling = match self.peek() {
-                Tok::Ident(w) => w.clone(),
-                _ => unreachable!("scalar type spelling already validated"),
-            };
-            self.pattern_type_spellings.insert(spelling, self.pos());
-            self.advance();
-            types.push(ty);
+            let alternatives = self.parse_pattern_type_atom()?;
+            Self::append_pattern_types(&mut types, alternatives, pos)?;
             if !plural || self.eat(&Tok::RBracket) { break; }
             self.expect(Tok::Comma, "comma between type alternatives")?;
         }
