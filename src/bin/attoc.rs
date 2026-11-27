@@ -19,7 +19,7 @@ enum Input {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: attoc [--verify=strict] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
+    eprintln!("usage: attoc [--verify=strict|--emit=js] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto --trusted-lock-sha256 DIGEST [-o out.wasm]");
     ExitCode::from(2)
 }
 
@@ -27,9 +27,15 @@ fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut args = Vec::new();
     let mut strict = false;
+    let mut javascript = false;
     let (mut report_path, mut compiler_sha, mut case) = (None, None, None);
     let mut it = raw.into_iter();
     while let Some(a) = it.next() {
+        if a == "--emit=js" {
+            if javascript { return usage(); }
+            javascript = true;
+            continue;
+        }
         if a == "--verify=strict" {
             if strict { return usage(); }
             strict = true;
@@ -59,6 +65,10 @@ fn main() -> ExitCode {
             None => return usage(),
         }
     }
+    if javascript && (strict || report_path.is_some() || compiler_sha.is_some() || case.is_some()) {
+        eprintln!("JavaScript output is single-source only and cannot be combined with strict or borrow reports");
+        return ExitCode::from(2);
+    }
     if strict && (report_path.is_some() || compiler_sha.is_some() || case.is_some()) {
         eprintln!("strict verification cannot be combined with borrow reports");
         return ExitCode::from(2);
@@ -75,7 +85,7 @@ fn main() -> ExitCode {
     }
     let mut report_source: Option<Vec<u8>> = None;
     if matches!(args.as_slice(), [flag] if flag == "--help" || flag == "-h") {
-        println!("usage: attoc [--verify=strict] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
+        println!("usage: attoc [--verify=strict|--emit=js] <input.atto> [-o out.wasm]\n       attoc --check <input.atto>\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root DIR --entry relative.atto [-o out.wasm]");
         return ExitCode::SUCCESS;
     }
     let (input, output) = match args.as_slice() {
@@ -98,6 +108,7 @@ fn main() -> ExitCode {
             (Input::LockedPackage { root: root.clone(), entry: entry.clone(), digest: digest.clone() }, Some(out.clone())),
         _ => return usage(),
     };
+    if javascript && !matches!(&input, Input::Single(_)) { return usage(); }
     if strict && !matches!(&input, Input::Single(_) | Input::Check(_)) {
         eprintln!("strict verification currently supports only single-source inputs");
         return ExitCode::from(2);
@@ -113,7 +124,9 @@ fn main() -> ExitCode {
                 }
             };
             if report_path.is_some() { report_source = Some(source.as_bytes().to_vec()); }
-            if strict {
+            if javascript {
+                (path, atto_compiler::compile_js(&source).map(String::into_bytes))
+            } else if strict {
                 (path, atto_compiler::compile_verified_strict(&source))
             } else {
             // A caller-relative logical path enables use default namespace(N)
@@ -199,7 +212,7 @@ fn main() -> ExitCode {
             if check_only { return ExitCode::SUCCESS; }
             if let Some(output) = output {
                 if std::fs::write(&output, &bytes).is_err() {
-                    eprintln!("{output}: cannot write Wasm output");
+                    eprintln!("{output}: cannot write compiler output");
                     return ExitCode::from(2);
                 }
             } else {

@@ -72,3 +72,9 @@ fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
     let deep = format!("{prefix}val q = copy!! p; return q.value; }}");
     wasm(&deep);
 }
+
+#[test]
+fn deep_copy_after_inferred_mutable_loan_end_is_accepted() {
+    wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-unused-mut.atto"));
+    wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto"));
+}

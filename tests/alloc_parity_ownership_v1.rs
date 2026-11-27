@@ -13,6 +13,17 @@ fn ownership_double_drop_rejected() {
 #[test]
 fn borrow_drop_while_live_read_rejected() {
     let source = include_str!("fixtures/alloc-parity-v1/borrow-drop-while-live-read.atto");
-    let failure = compile(source).expect_err("live loan must prevent owner drop");
+    // Keep the shared fixture bytes pinned. Its original unused loan now
+    // expires under NLL; make this local witness genuinely live at drop.
+    assert_eq!(source.matches("return 0;").count(), 1);
+    let live = source.replace("return 0;", "return loan.value;");
+    let failure = compile(&live).expect_err("live loan must prevent owner drop");
     assert_eq!(failure.code, "E_BORROW", "wrong semantic rejection: {failure}");
+}
+
+#[test]
+fn expired_loan_does_not_authorize_unimplemented_destructor() {
+    let source = include_str!("fixtures/alloc-parity-v1/borrow-drop-while-live-read.atto");
+    let failure = compile(source).expect_err("class destruction is still unsupported");
+    assert_eq!(failure.code, "E_DROP_UNSUPPORTED", "wrong semantic rejection: {failure}");
 }
