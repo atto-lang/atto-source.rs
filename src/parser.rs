@@ -2680,6 +2680,14 @@ impl Parser {
             Some("using") if self.word_at(1) == Some("telemetry")
                 && self.peek_at(2) == &Tok::Dot && self.word_at(3) == Some("span") =>
                 self.parse_telemetry_scope(pos),
+            Some("self") if self.state_method && *self.peek_at(1) == Tok::Dot
+                && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen => {
+                // Only the exact direct intrinsic spelling is equivalent to
+                // the bare call; do not expose ordinary self member access.
+                self.advance();
+                self.advance();
+                self.parse_state_critical_stmt()
+            }
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
             Some("val" | "const" | "let") => {
@@ -4923,6 +4931,12 @@ impl Parser {
                     ExprKind::Bool(false)
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
+                "self" if self.state_method && *self.peek_at(1) == Tok::Dot
+                    && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen => {
+                    self.advance();
+                    self.advance();
+                    self.parse_state_critical_read()?
+                }
                 "self" => {
                     if self.state_method {
                         return Err(Diagnostic::new(pos, "E_STATE_ACCESS",
