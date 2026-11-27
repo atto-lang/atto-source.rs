@@ -9,6 +9,8 @@
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+/// Fixed-capacity host spawn quota and lease substrate; not guest execution.
+pub mod actor_spawn_reservation;
 /// Bounded static synchronous actor call graphs; not continuation lowering.
 pub mod actor_stack_bound;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
