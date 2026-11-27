@@ -467,9 +467,32 @@ fn state_ir_scalar(v: &TE, depth: usize) -> bool {
         TExpr::Bool(_) => v.ty == Type::Bool,
         TExpr::F64(_) => v.ty == Type::Float,
         TExpr::Local(slot) => *slot != 0,
-        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => sub(a),
-        TExpr::Bin(_, a, b) => sub(a) && sub(b),
-        TExpr::Ternary(c, a, b) => sub(c) && sub(a) && sub(b),
+        TExpr::Neg(a) => v.ty == Type::Int && a.ty == Type::Int && sub(a),
+        TExpr::Not(a) => v.ty == Type::Bool && a.ty == Type::Bool && sub(a),
+        TExpr::FNeg(a) => v.ty == Type::Float && a.ty == Type::Float && sub(a),
+        TExpr::IntToFloat(a) => v.ty == Type::Float && a.ty == Type::Int && sub(a),
+        TExpr::Bin(op, a, b) => {
+            // Recheck the actual opcode signature, not merely whether every
+            // child advertises some scalar type. A forged Bool/i64 operand
+            // can otherwise generate invalid Wasm or bypass checked helpers.
+            let numeric = matches!(a.ty, Type::Int | Type::Float);
+            let signature = a.ty == b.ty && match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul => numeric && v.ty == a.ty,
+                BinOp::Div => a.ty == Type::Float && v.ty == Type::Float,
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr =>
+                    a.ty == Type::Int && v.ty == Type::Int,
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge =>
+                    numeric && v.ty == Type::Bool,
+                BinOp::Eq | BinOp::Ne =>
+                    matches!(a.ty, Type::Int | Type::Bool | Type::Float) && v.ty == Type::Bool,
+                BinOp::And | BinOp::Or => a.ty == Type::Bool && v.ty == Type::Bool,
+            };
+            signature && sub(a) && sub(b)
+        }
+        TExpr::Ternary(c, a, b) =>
+            c.ty == Type::Bool && a.ty == v.ty && b.ty == v.ty
+                && sub(c) && sub(a) && sub(b),
         TExpr::StateFieldRead { obj, offset } =>
             matches!(v.ty, Type::Int | Type::Bool) && state_receiver(obj) && state_offset(*offset),
         _ => false,
