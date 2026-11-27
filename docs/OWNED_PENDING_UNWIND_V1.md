@@ -30,3 +30,15 @@ completion authority, enforce exclusive Future handoff and scheduler lanes.
 This profile does NOT implement the authenticated host adapter, actor
 STOP deadlines, full physical actor retirement, general typed MIR or full
 cross-backend parity. Node test drives real Wasm exports, not host simulation.
+
+## Shared scheduler adapter
+
+The trusted browser/Node host adapter uses the exact JS #121 scheduler and
+Future claim runtime, not a second JS continuation engine. It reserves the
+physical generation before admission, publishes host completions into
+one-shot scheduler tickets, runs Wasm complete/resume only on scheduled
+quanta, maps bounded numeric failure receipts back to original Error
+identities and releases only after terminal publication. Fatal invariant
+failure is fail-stop with retained credit; STOP deadlines and hostile
+artifact/owner authentication remain open. Numeric owner/epoch and formal
+arity are trusted embedder inputs, not guest-provided credentials.
