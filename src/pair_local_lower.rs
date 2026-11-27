@@ -94,9 +94,32 @@ fn expression(ts: &[Token], locals: &BTreeMap<String, Local>, out: &mut Vec<Toke
 fn factory(ts: &[Token]) -> bool {
     word(ts.first(), "Pair") && is(ts.get(1), &Tok::Dot) && word(ts.get(2), "of")
 }
-fn binding_factory(ts: &[Token]) -> bool {
-    ts.windows(6).any(|w| matches!(&w[0].tok, Tok::Ident(s) if matches!(s.as_str(), "const"|"val"|"let"))
-        && matches!(&w[1].tok, Tok::Ident(_)) && w[2].tok == Tok::Assign && factory(&w[3..]))
+fn stored_pair_binding(ts: &[Token]) -> bool {
+    for (i, t) in ts.iter().enumerate() {
+        if !matches!(&t.tok, Tok::Ident(s) if matches!(s.as_str(), "const"|"val"|"let")) {
+            continue;
+        }
+        let tail = &ts[i+1..];
+        if !matches!(tail.first().map(|t| &t.tok), Some(Tok::Ident(_))) { continue; }
+        if word(tail.first(), "Pair") && is(tail.get(1), &Tok::Lt) { return true; }
+        if is(tail.get(1), &Tok::ColonEqual) { return true; }
+        if !is(tail.get(1), &Tok::Assign) { continue; }
+        if matches!(tail.get(2).map(|t| &t.tok), Some(Tok::Ident(_) | Tok::Str(_)))
+            && is(tail.get(3), &Tok::ColonEqual) { return true; }
+        if !factory(&tail[2..]) || !is(tail.get(5), &Tok::LParen) { continue; }
+        let mut depth = 0usize;
+        for (j, t) in tail[5..].iter().enumerate() {
+            if t.tok == Tok::LParen { depth += 1; }
+            else if t.tok == Tok::RParen {
+                depth -= 1;
+                if depth == 0 {
+                    if is(tail.get(6+j), &Tok::Semi) { return true; }
+                    break;
+                }
+            }
+        }
+    }
+    false
 }
 
 pub fn lower(ts: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
@@ -106,7 +129,9 @@ pub fn lower(ts: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
             return Err(err(t.pos, "E_RESERVED", "compiler-owned Pair scalar slot name"));
         }
     }
-    if !ts.iter().any(|t| t.tok == Tok::ColonEqual) && !binding_factory(&ts) {
+    // Do not intercept Record fields, grouped expressions or immediate
+    // factory projections just because their tokens contain a Pair operator.
+    if !stored_pair_binding(&ts) {
         return Ok(ts);
     }
     let header = [ident("pub"),ident("fnc"),ident("main"),Tok::LParen,Tok::RParen,Tok::Colon,ident("int"),Tok::LBrace];
