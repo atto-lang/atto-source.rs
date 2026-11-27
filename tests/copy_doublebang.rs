@@ -97,3 +97,15 @@ fn nested_immutable_leaf_copy_and_projection_boundaries() {
     assert_eq!(compile(include_str!("fixtures/fail/1000-copy-nested-mutable-unproved.atto")).unwrap_err().code, "E_UNSUPPORTED_TYPE");
     assert_eq!(compile(include_str!("fixtures/fail/1001-copy-nested-write.atto")).unwrap_err().code, "E_OWNERSHIP");
 }
+
+#[test]
+fn closed_mutable_leaf_sharing_and_detachment() {
+    wasm(include_str!("fixtures/pass/1002-copy-mutable-detachment.atto"));
+    wasm(include_str!("fixtures/pass/1003-copy-mutable-deep.atto"));
+    wasm(include_str!("fixtures/pass/1004-copy-mutable-third.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/1005-copy-shared-source-write.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1006-copy-shared-copy-write.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1007-copy-shared-third-write.atto")).unwrap_err().code, "E_COPY_READONLY");
+    assert_eq!(compile(include_str!("fixtures/fail/1008-copy-mutable-control-flow.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
+    assert_eq!(compile(include_str!("fixtures/fail/1009-copy-mutable-handle-escape.atto")).unwrap_err().code, "E_BORROW");
+}

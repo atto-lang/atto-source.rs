@@ -18,6 +18,9 @@ const positives = [
   '997-copy-doublebang-private-state.atto',
   '998-copy-shallow-flat-class.atto',
   '999-copy-immutable-leaf.atto',
+  '1002-copy-mutable-detachment.atto',
+  '1003-copy-mutable-deep.atto',
+  '1004-copy-mutable-third.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
@@ -29,6 +32,11 @@ const negatives = [
   '999-copy-nested-handle-escape.atto',
   '1000-copy-nested-mutable-unproved.atto',
   '1001-copy-nested-write.atto',
+  '1005-copy-shared-source-write.atto',
+  '1006-copy-shared-copy-write.atto',
+  '1007-copy-shared-third-write.atto',
+  '1008-copy-mutable-control-flow.atto',
+  '1009-copy-mutable-handle-escape.atto',
 ];
 const imports = {
   atto: {
