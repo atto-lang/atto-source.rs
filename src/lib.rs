@@ -134,12 +134,23 @@ pub fn compile_js(source: &str) -> Result<String, Diagnostic> {
 /// are identical; named/folder membership remains a package-linker concern.
 /// Uses the existing checked compiler, never a second guest emitter.
 pub fn compile_namespace_file_v2(source: &str) -> Result<Vec<u8>, Diagnostic> {
-    compile(&namespace::prepare_file_v2(source)?)
+    let prepared = namespace::prepare_file_v2(source)?;
+    let tokens = lexer::lex(&prepared)?;
+    if let Some(completed) = target_syntax::complete_file_classes_v2(&tokens)? {
+        return compile_prelexed_target(completed, None, false);
+    }
+    compile(&prepared)
 }
 
 /// Same single-file profile for the existing checked JavaScript emitter.
 pub fn compile_js_namespace_file_v2(source: &str) -> Result<String, Diagnostic> {
-    compile_js(&namespace::prepare_file_v2(source)?)
+    let prepared = namespace::prepare_file_v2(source)?;
+    let tokens = lexer::lex(&prepared)?;
+    if let Some(completed) = target_syntax::complete_file_classes_v2(&tokens)? {
+        return String::from_utf8(compile_prelexed_target(completed, None, true)?)
+            .map_err(|_| js_scalar::unsupported());
+    }
+    compile_js(&prepared)
 }
 
 /// Opt-in verified scalar profile. The ordinary compiler and linked-source
