@@ -238,3 +238,60 @@ fn bae_two_field_effectful_call_keeps_original_abi() {
     assert_ne!(crate::compile(&source).expect("effectful call"),
         crate::compile(&direct).expect("direct reads"));
 }
+
+
+#[test]
+fn readonly_formal_forwarding_uses_original_handle_without_extra_locals() {
+    let source = include_str!("../tests/fixtures/pass/borrow-formal-forward-v1.atto");
+    let implicit = source.replace("calculate(borrow! p)", "calculate(p)");
+    let direct = source.replace("calculate(borrow! p)", "p.left - p.right");
+    let bytes = crate::compile(source).expect("readonly formal forwarding");
+    assert_eq!(bytes, crate::compile(&implicit).expect("implicit reborrow"));
+    assert_eq!(bytes, crate::compile(&direct).expect("direct checked arithmetic"),
+        "eligible nested call must lower like direct field access");
+    let program = typed(source);
+    for name in ["forward", "outer"] {
+        let f = program.funcs.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(f.param_ownership, [ParamOwnership::BorrowRead]);
+        assert!(f.locals.is_empty(), "no phantom owned or borrowed local: {name}");
+    }
+}
+
+#[test]
+fn readonly_formal_forwarding_does_not_expand_authority() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub mut int value = 42; end
+        fnc read(Parcel p): int { return p.value; }
+        fnc write(mut Parcel p): int { p.value = 1; return p.value; }
+        fnc consume(take! Parcel p): int { return p.value; }
+        fnc make(Parcel p): Parcel { return new Parcel(); }
+        fnc forward(Parcel p): int { BODY }
+        pub fnc main(): int { let parcel = new Parcel(); return forward(parcel); }
+    "#;
+    for body in [
+        "return write(mut p);",
+        "return consume(take! p);",
+        "val other = make(p); return other.value;",
+        "val alias = borrow! p; return read(alias);",
+    ] {
+        let err = crate::compile(&source.replace("BODY", body)).expect_err(body);
+        assert_eq!(err.code, "E_BORROW", "{body}");
+    }
+    let exclusive = source.replace("fnc forward(Parcel p)", "fnc forward(mut Parcel p)")
+        .replace("forward(parcel)", "forward(mut parcel)")
+        .replace("BODY", "return read(p);");
+    assert_eq!(crate::compile(&exclusive).expect_err("exclusive formal not admitted").code, "E_BORROW");
+}
+
+#[test]
+fn readonly_formal_forwarding_allows_two_shared_reads_but_not_lexical_aliases() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub let int value = 21; end
+        fnc sum(Parcel a, Parcel b): int { return a.value + b.value; }
+        fnc forward(Parcel p): int { return sum(p, borrow! p); }
+        pub fnc main(): int { let parcel = new Parcel(); return forward(parcel); }
+    "#;
+    crate::compile(source).expect("two call-scoped readonly reborrows");
+    let alias = source.replace("return forward(parcel);", "val alias = borrow! parcel; return forward(alias);");
+    assert_eq!(crate::compile(&alias).expect_err("lexical alias remains unsupported").code, "E_BORROW");
+}
