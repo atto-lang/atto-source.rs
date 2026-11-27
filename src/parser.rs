@@ -228,6 +228,9 @@ fn reject_intrinsic_type_name(name: &str, pos: Pos) -> R<()> {
     Ok(())
 }
 
+// Temporary syntax marker, consumed only by checked static callable lowering.
+pub(crate) const APPLY_TUPLE_LITERAL_NAME: &str = "$atto_apply_tuple_literal";
+
 pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
@@ -3704,7 +3707,7 @@ impl Parser {
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
-            Tok::Bang => UnOp::Not,
+            Tok::Bang | Tok::UnicodeNot => UnOp::Not,
             Tok::Tilde => UnOp::BitNot,
             Tok::Amp | Tok::Star => return Err(Diagnostic::new(
                 pos,
@@ -3790,6 +3793,61 @@ impl Parser {
             kind: ExprKind::Unary(op, Box::new(inner)),
             pos,
         })
+    }
+
+    // The legacy AST has no tuple value type. Preserve only an explicit
+    // parenthesized tuple operand to apply as a compiler-owned marker;
+    // ordinary grouped scalars and nominal method calls keep their grammar.
+    // The checker must consume this marker before any executable lowering.
+    fn immediate_apply_tuple_ahead(&self) -> bool {
+        if *self.peek() != Tok::LParen || *self.peek_at(1) != Tok::LParen {
+            return false;
+        }
+        if *self.peek_at(2) == Tok::RParen {
+            return true;
+        }
+        // Bounded lookahead prevents quadratic work on nested grouped calls.
+        let mut depth = 0usize;
+        for tok in self.toks.iter().skip(self.i + 2).take(512) {
+            match &tok.tok {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace if depth == 0 => return false,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
+                Tok::Comma if depth == 0 => return true,
+                Tok::Eof => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn parse_immediate_apply_tuple(&mut self) -> R<Vec<Expr>> {
+        self.expect(Tok::LParen, "'(' after apply")?;
+        let pos = self.pos();
+        self.expect(Tok::LParen, "'(' to open the tuple")?;
+        self.enter()?;
+        let parsed = (|| {
+            let mut elements = Vec::new();
+            if !self.eat(&Tok::RParen) {
+                loop {
+                    if elements.len() >= MAX_PARAMS {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                            "too many immediate apply tuple elements"));
+                    }
+                    elements.push(self.parse_expr()?);
+                    if self.eat(&Tok::RParen) { break; }
+                    self.expect(Tok::Comma, "',' between tuple elements")?;
+                    if self.eat(&Tok::RParen) { break; }
+                }
+            }
+            self.expect(Tok::RParen, "')' after the apply tuple")?;
+            Ok(vec![Expr {
+                kind: ExprKind::Call(APPLY_TUPLE_LITERAL_NAME.to_owned(), elements),
+                pos,
+            }])
+        })();
+        self.leave();
+        parsed
     }
 
     /// Call arguments after `(` up to and including `)`.
@@ -3896,7 +3954,11 @@ impl Parser {
                     self.grow(1)?;
                     *chain += 1;
                     if *self.peek() == Tok::LParen {
-                        let args = self.parse_args()?;
+                        let args = if member == "apply" && self.immediate_apply_tuple_ahead() {
+                            self.parse_immediate_apply_tuple()?
+                        } else {
+                            self.parse_args()?
+                        };
                         e = Expr {
                             kind: ExprKind::MethodCall(Box::new(e), member, args),
                             pos: dot,
@@ -4262,6 +4324,7 @@ fn describe(t: &Tok) -> String {
                 Tok::YieldStar => "yield*",
                 Tok::Slash => "/",
                 Tok::Bang => "!",
+                Tok::UnicodeNot => "¬",
                 Tok::Question => "?",
                 Tok::Pipe => "|",
                 Tok::PipeGt => "|>",
