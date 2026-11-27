@@ -63,6 +63,36 @@ pub fn bind<V: Clone>(
     Ok(result)
 }
 
+/// Explicit inherited holes require exactly the requested checked evidence.
+pub fn refine_inferred<V: Clone>(
+    schema: &[Formal<'_, V>],
+    seed: &[(&str, V)],
+    replacements: &[(&str, V)],
+    holes: &[&str],
+    evidence: &[(&str, V)],
+) -> Result<Vec<(String, V)>, BindError> {
+    use std::collections::BTreeSet;
+    let base = bind(schema, seed, &[], Mode::Application)?;
+    let explicit = bind(schema, replacements, &[], Mode::Application)?;
+    let observed = bind(schema, evidence, &[], Mode::Application)?;
+    let mut requested = BTreeSet::new();
+    for &hole in holes {
+        if !requested.insert(hole) || !base.iter().any(|(n, _)| n == hole)
+            || explicit.iter().any(|(n, _)| n == hole)
+        {
+            return Err(BindError::InvalidArgument(hole.into()));
+        }
+    }
+    if observed.len() != requested.len()
+        || observed.iter().any(|(n, _)| !requested.contains(n.as_str()))
+    {
+        return Err(BindError::InvalidArgument("inference evidence".into()));
+    }
+    let mut updates = replacements.to_vec();
+    updates.extend(evidence.iter().cloned());
+    bind(schema, seed, &updates, Mode::Refinement)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +140,26 @@ mod tests {
         }
         assert_eq!(bind(&schema, &seed, &[("unknown", Size(1))], Mode::Application),
             Err(BindError::UnknownFormal("unknown".into())));
+    }
+
+    #[test]
+    fn inherited_inference_requires_unique_requested_evidence() {
+        let schema = schema();
+        let seed = [("size", Size(5)), ("type", Type("int"))];
+        let run = |replacements: &[(&str, Value)], holes: &[&str], evidence: &[(&str, Value)]|
+            refine_inferred(&schema, &seed, replacements, holes, evidence);
+        assert_eq!(run(&[], &["size"], &[("size", Size(3))]).unwrap(),
+            vec![("type".into(), Type("int")), ("size".into(), Size(3))]);
+        assert_eq!(seed[0].1, Size(5));
+        assert_eq!(run(&[], &["size"], &[("size", Size(0))]).unwrap()[1].1, Size(0));
+        assert!(run(&[], &["size"], &[]).is_err());
+        assert!(run(&[], &["size"], &[("size", Size(3)), ("size", Size(3))]).is_err());
+        assert!(run(&[("size", Size(6))], &["size"], &[("size", Size(3))]).is_err());
+        assert!(run(&[], &["size"], &[("size", Size(3)), ("type", Type("int"))]).is_err());
+        assert!(run(&[], &["size", "size"], &[("size", Size(3))]).is_err());
+        assert!(refine_inferred(&schema, &seed[1..], &[], &["size"], &[("size", Size(3))]).is_err());
+        assert!(run(&[], &["size"], &[("size", Size(-1))]).is_err());
+        assert!(run(&[], &["size"], &[("size", Type("3"))]).is_err());
     }
 
     #[test]
