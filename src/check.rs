@@ -1135,8 +1135,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for m in &mut methods {
             m.idx = take();
         }
-        // This first AOT profile may copy only a flat class of verified
-        // identity-free slots. Class/actor/ADT handles require a graph memo,
+        // This bounded AOT profile permits scalar slots and proven immutable
+        // leaves only. Mutable class/actor/ADT handles require further proof,
         // and protected actor-state objects cannot bypass their sealed leases.
         // Custom copy_deep overrides need separate proof/hook chaining.
         let flat = !c.state_container && fields.iter().all(|f| match f.ty {
@@ -1403,7 +1403,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             body,
         });
         // Generated source-independent whole-concrete-type copy plan. The
-        // checker has proved that each slot can be copied by value; emitting
+        // checker has proved each slot is scalar or permanently immutable; emitting
         // an allocation plus typed field loads/stores creates a fresh object
         // without invoking any initializer or user constructor a second time.
         // The copy function is private and has no reflective field access.
@@ -4817,6 +4817,11 @@ impl<'a> FnCx<'a> {
             ));
         }
         let (idx, params) = (info.new_idx, info.ctor_params.clone());
+        if info.fields.iter().any(|f| matches!(f.ty, Type::Class(_))) {
+            if let Some(tr) = self.trace.as_mut() {
+                tr.unavailable("nested immutable allocation layout not represented in L3");
+            }
+        }
         let targs = self.args(&format!("{class} constructor"), args, &params)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
