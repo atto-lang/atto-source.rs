@@ -1,0 +1,58 @@
+name: Atto Rust native compiler core borrow REAL Wasm guest
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'tests/fixtures/core-borrow-v1/**'
+      - 'tests/core-borrow-real-guest.mjs'
+      - '.github/workflows/atto-core-borrow-real-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust-real-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prove exact checkout identity
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "ATTO_SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Build actual Rust Atto->Wasm compiler
+        run: |
+          set -euo pipefail
+          cargo --version
+          rustc --version
+          cargo build --locked --bin attoc
+          test -s target/debug/attoc
+          sha256sum target/debug/attoc
+      - name: Execute typed ownership compiler negatives and Wasm guests
+        env:
+          ATTO_COMPILER_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          node --version
+          node tests/core-borrow-real-guest.mjs | tee core-borrow-candidate-receipt.json
+          test -s core-borrow-candidate-receipt.json
+          echo 'ATTO_CORE_BORROW_REAL_GUEST_CANDIDATE=EXECUTED'
+          echo 'ATTO_CORE_BORROW_INDEPENDENTLY_CERTIFIED=NO'
+      - name: State exact evidence limits
+        if: always()
+        run: |
+          echo 'Actual Rust Atto->Wasm guest result, only if non-setup steps really executed.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No JVM, LLVM, NativeAOT, independent Wasm compiler or HDL parity is implied.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'External trusted job/artifact/tree attestation is required before CERTIFIED.' >> "$GITHUB_STEP_SUMMARY"
