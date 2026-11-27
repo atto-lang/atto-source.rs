@@ -2084,11 +2084,14 @@ impl Parser {
         } else {
             return Err(self.expected("'val', 'const' or 'let'"));
         };
-        // Canonical const mut is exactly val, including referent
-        // permissions; it does not independently grant a mutable loan.
-        // Preserve the existing explicit val mut/let mut profile until
-        // its separate compatibility contract is resolved.
+        // Match the canonical Java qualifier rule: val already means
+        // const mut; a second mut is redundant. The existing checked
+        // referent policy for val applies equally to either spelling.
         let written_mut = self.eat_word("mut");
+        if kind == BindKind::Val && written_mut {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "val already means const mut; val mut is a duplicate qualifier"));
+        }
         let (kind, referent_mutable) = if kind == BindKind::Const && written_mut {
             (BindKind::Val, false)
         } else {
