@@ -251,9 +251,12 @@ negatives.push([
 negatives.push([
  'pub fnc main(): int { let y=(foo=1,2); return 0; }', 'E_LITERAL_KIND'
 ]);
-negatives.push([
- 'pub fnc main(): int { let y=(foo=1,bar:2); return 0; }', 'E_LITERAL_KIND'
-]);
+for (const literal of ['{foo=40,bar:2}', '(foo:40,bar=2)', '{foo=40,bar=2,}', '(foo:40,bar:2)']) {
+ positives.push(['pub fnc main(): int { let r='+literal+'; return r.foo+r.bar; }',42n,'']);
+}
+negatives.push(['pub fnc main(): int { let r={foo=1,foo:2};return 0; }','E_DUPLICATE']);
+negatives.push(['pub fnc main(): int { let r=(foo:1,foo=2);return 0; }','E_DUPLICATE']);
+negatives.push(['pub fnc main(): int { let r={foo=1,"foo":2};return 0; }','E_LITERAL_KIND']);
 negatives.push([
  'pub fnc main(): int { let y=(foo=1,"bar"=2); return 0; }', 'E_LITERAL_KIND'
 ]);
@@ -342,7 +345,6 @@ for(const literal of [
  '(foo=1,bar)',
  '(foo=1,bar==2)',
  '(foo=1,if=2)',
- '(foo=1,bar:2)',
  '(foo=1,"bar"=2)',
  '(foo=1,bar=2,3)',
 ]){
