@@ -538,23 +538,37 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     // cannot accidentally switch the compiler into the target grammar.
     let mut braces = 0usize;
     let mut target = false;
+    let mut explicit_target = false;
     for i in 0..toks.len() {
         match &toks[i].tok {
             lexer::Tok::LBrace => braces = braces.saturating_add(1),
             lexer::Tok::RBrace => braces = braces.saturating_sub(1),
             lexer::Tok::Ident(word) if braces == 0 => {
                 let next = toks.get(i + 1).map(|token| &token.tok);
-                if word == "declare" || word == "mtd" ||
+                if word == "declare" ||
                     (word == "use" && matches!(next,
                         Some(lexer::Tok::Ident(name)) if name == "namespace")) {
+                    explicit_target = true;
                     target = true;
                     break;
+                }
+                // Inline mtd name(...) is not an external receiver. A bare
+                // callable named mtd() can still be ambiguous to this scan.
+                if word == "mtd" && matches!(next, Some(lexer::Tok::LParen)) {
+                    target = true;
                 }
             }
             _ => {}
         }
     }
-    let program = if target {
+    // Only ambiguous mtd tokens may use the ordinary parser first.
+    // Explicit target declarations retain every existing admission gate.
+    let ordinary = if target && !explicit_target {
+        parser::Parser::new(toks.clone()).parse_program().ok()
+    } else { None };
+    let program = if let Some(program) = ordinary {
+        program
+    } else if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the

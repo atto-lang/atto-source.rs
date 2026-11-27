@@ -1164,8 +1164,21 @@ impl Parser {
                     "protected state {} schema must precede instance methods"));
             }
             let method_public = self.eat_word("pub");
-            self.eat_word("fnc");
-            self.eat_word("method");
+            // Method markers are contextual and mutually exclusive.
+            // A bare method literally named mtd() or method() must remain valid.
+            if self.is_word("method")
+                && matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::LParen | Tok::Lt)
+            {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "obsolete method introducer; use mtd"));
+            }
+            let explicit_marker = self.is_word("fnc")
+                || (self.is_word("mtd")
+                    && matches!(self.peek_at(1), Tok::Ident(_))
+                    && *self.peek_at(2) == Tok::LParen);
+            if explicit_marker {
+                self.advance();
+            }
             if self.is_word("handle_state") {
                 return Err(Diagnostic::new(self.pos(), "E_STATE",
                     "handle_state is compiler-owned and cannot be overridden"));
@@ -1413,8 +1426,17 @@ impl Parser {
             } else { FieldVisibility::Private };
             let public = visibility == FieldVisibility::Public;
             let word = self.word_at(0).map(str::to_owned);
+            if word.as_deref() == Some("method")
+                && matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::LParen | Tok::Lt)
+            {
+                return Err(Diagnostic::new(mpos, "E_SYNTAX", "obsolete method introducer; use mtd"));
+            }
             if visibility == FieldVisibility::Package
-                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "receive"))
+                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "receive"))
+                    || (matches!(word.as_deref(), Some("mtd"))
+                        && matches!(self.peek_at(1), Tok::Ident(_))
+                        && matches!(self.peek_at(2), Tok::LParen | Tok::Lt))
                     || *self.peek_at(1) == Tok::LParen)
             {
                 return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
@@ -1509,7 +1531,16 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
-                Some("fnc" | "method") => {
+                Some("fnc") => {
+                    self.advance();
+                    let method = self.parse_method(public, false)?;
+                    m.methods.push(method);
+                }
+                Some("mtd")
+                    if matches!(self.peek_at(1), Tok::Ident(_))
+                        && matches!(self.peek_at(2), Tok::LParen | Tok::Lt) =>
+                {
+                    // Keep mtd() and method() as ordinary callable names.
                     self.advance();
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
@@ -1723,7 +1754,7 @@ impl Parser {
         })
     }
 
-    /// Method head after any `fnc`/`method`/`static fnc` keyword.
+    /// Method head after `mtd`/`fnc`/legacy `method`/`static fnc` keywords.
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,

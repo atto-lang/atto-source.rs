@@ -99,3 +99,43 @@ fn unrelated_method_same_name_with_wrong_arity_cannot_satisfy_trait() {
         pub fnc main(): int { return 0; }
     "#, "E_SIGNATURE");
 }
+
+#[test]
+fn nominal_signature_prefixes_admit_equivalent_contracts() {
+    for kind in ["interface", "trait"] {
+        let mut baseline: Option<Vec<u8>> = None;
+        for prefix in ["", "fnc ", "mtd "] {
+            let src = format!(
+                "define {kind} Required as {prefix}ping(): int; end\n\
+                 define class C implements Required as pub ping(): int {{ return 42; }} end\n\
+                 pub fnc main(): int {{ return new C().ping(); }}"
+            );
+            let wasm = compile(&src).expect("equivalent nominal signature spelling");
+            assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+            if let Some(ref expected) = baseline {
+                // A separate compile is deterministic for this exact spelling.
+                // Cross-spelling bytes may retain source metadata, so compare
+                // acceptance rather than assuming byte-identical debug info.
+                assert_eq!(wasm, compile(&src).unwrap());
+                assert!(!expected.is_empty());
+            } else {
+                baseline = Some(wasm.clone());
+            }
+            let missing = format!(
+                "define {kind} Required as {prefix}ping(): int; end\n\
+                 define class C implements Required as end\n\
+                 pub fnc main(): int {{ return 0; }}"
+            );
+            rejects(&missing, "E_INTERFACE");
+        }
+    }
+}
+
+#[test]
+fn trait_default_explicit_mtd_reaches_existing_class_lowering() {
+    accepts(r#"
+        define trait Default as pub mtd ping(): int { return 42; } end
+        define class C implements Default as end
+        pub fnc main(): int { return new C().ping(); }
+    "#);
+}
