@@ -30,7 +30,12 @@ impl Unit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArithmeticFailure { Overflow, DivisionByZero }
 pub(crate) type Outcome = Result<i64, ArithmeticFailure>;
-pub(crate) enum Lowered { Closed(Outcome), Typed(crate::check::TProgram) }
+pub(crate) enum Lowered {
+    // Non-strict quantity lowering is retained for the compiler's closed-mode tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Closed(Outcome),
+    Typed(crate::check::TProgram),
+}
 #[derive(Clone)]
 struct Value { unit: Unit, number: Outcome }
 fn error(pos: Pos, code: &'static str, message: &str) -> Diagnostic { Diagnostic::new(pos, code, message) }
@@ -59,6 +64,7 @@ pub(crate) fn has_declarations(tokens: &[Token]) -> bool {
     tokens.first().is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if n=="type")) && tokens.get(2).is_some_and(|t|t.tok==Tok::Assign) && tokens.get(3).is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if matches!(n.as_str(),"int"|"i64"|"i32"))) && tokens.get(4).is_some_and(|t|matches!(&t.tok,Tok::Ident(n) if n=="where")) || tokens.windows(2).any(|w| matches!((&w[0].tok,&w[1].tok),
         (Tok::Ident(a),Tok::Ident(b)) if a == "define" && (b == "dimension" || b == "unit")))
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn lower(source: &str, tokens: &[Token]) -> R<Option<Lowered>> {
     lower_mode(source, tokens, false)
 }

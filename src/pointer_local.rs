@@ -33,7 +33,7 @@ struct Cursor<'a> {
     at: usize,
 }
 
-impl<'a> Cursor<'a> {
+impl Cursor<'_> {
     fn token(&self) -> &Token {
         // The lexer always appends Eof. The caller admits only lexed input.
         &self.tokens[self.at.min(self.tokens.len() - 1)]

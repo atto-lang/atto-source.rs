@@ -105,20 +105,21 @@ fn file_constants_tokens(tokens: &[Token]) -> R<BTreeMap<String, ConstExport>> {
 
 // The declaration scanner is shared by the relative and frozen registry lanes.
 // Function ranges exclude EOF and never include a constant declaration.
-fn provider_declarations(tokens: &[Token]) -> R<(BTreeMap<String, ConstExport>, Vec<std::ops::Range<usize>>)> {
+type ProviderDeclarations = (BTreeMap<String, ConstExport>, Vec<std::ops::Range<usize>>);
+fn provider_declarations(tokens: &[Token]) -> R<ProviderDeclarations> {
     reject_reserved(tokens)?;
     let mut functions = Vec::new();
     let mut i = 0usize;
     let mut exports = BTreeMap::new();
     while tokens.get(i).is_some_and(|t| t.tok != Tok::Eof) {
         let pos = tokens[i].pos;
-        if i == 0 && word(&tokens, i, "use") {
+        if i == 0 && word(tokens, i, "use") {
             i += 1;
-            expect_word(&tokens, &mut i, "namespace", pos)?;
-            get_ident(&tokens, &mut i, pos)?;
+            expect_word(tokens, &mut i, "namespace", pos)?;
+            get_ident(tokens, &mut i, pos)?;
             while tokens.get(i).is_some_and(|t| t.tok == Tok::Dot) {
                 i += 1;
-                get_ident(&tokens, &mut i, pos)?;
+                get_ident(tokens, &mut i, pos)?;
             }
             if tokens.get(i).is_none_or(|t| t.tok != Tok::Semi) {
                 return Err(fail(pos, "E_SYNTAX", "expected ';' after source namespace"));
@@ -127,13 +128,13 @@ fn provider_declarations(tokens: &[Token]) -> R<(BTreeMap<String, ConstExport>, 
             continue;
         }
         let declaration_start = i;
-        let public = if word(&tokens, i, "pub") { i += 1; true } else { false };
-        if word(&tokens, i, "fnc") {
+        let public = if word(tokens, i, "pub") { i += 1; true } else { false };
+        if word(tokens, i, "fnc") {
             // Preserve negative kind evidence without executing or linking
             // imported functions. Only braced direct callable declarations
             // are recognized; their bodies are never evaluated.
             i += 1;
-            let name = get_ident(&tokens, &mut i, pos)?;
+            let name = get_ident(tokens, &mut i, pos)?;
             let start = i;
             while tokens.get(i).is_some_and(|t| !matches!(t.tok, Tok::LBrace | Tok::Eof)) {
                 i += 1;
@@ -183,19 +184,19 @@ fn provider_declarations(tokens: &[Token]) -> R<(BTreeMap<String, ConstExport>, 
             }
             continue;
         }
-        expect_word(&tokens, &mut i, "define", pos)?;
-        let public_define = if word(&tokens, i, "pub") { i += 1; true } else { false };
+        expect_word(tokens, &mut i, "define", pos)?;
+        let public_define = if word(tokens, i, "pub") { i += 1; true } else { false };
         if public && public_define {
             return Err(fail(pos, "E_SYNTAX", "duplicate pub modifier on constant"));
         }
         let public = public || public_define;
-        expect_word(&tokens, &mut i, "const", pos)?;
-        let ty = get_ident(&tokens, &mut i, pos)?;
+        expect_word(tokens, &mut i, "const", pos)?;
+        let ty = get_ident(tokens, &mut i, pos)?;
         if !matches!(ty.as_str(), "int" | "bool" | "string") {
             return Err(fail(pos, "E_UNSUPPORTED", "only scalar int/bool/string file constants are linkable"));
         }
-        let name = get_ident(&tokens, &mut i, pos)?;
-        if tokens.get(i).is_some_and(|t| t.tok == Tok::Assign) || word(&tokens, i, "as") {
+        let name = get_ident(tokens, &mut i, pos)?;
+        if tokens.get(i).is_some_and(|t| t.tok == Tok::Assign) || word(tokens, i, "as") {
             i += 1;
         } else {
             return Err(fail(pos, "E_SYNTAX", "expected = or as in static constant"));
@@ -353,14 +354,14 @@ where F: FnMut(&Path) -> std::io::Result<String> {
     reject_reserved(&tokens)?;
     // Validate the original source ordering before extracting the imports.
     // This prevents late namespace headers becoming first after rewriting.
-    let tokens = crate::namespace::normalize(&tokens, Some(logical))?;
+    let tokens = crate::namespace::normalize(tokens, Some(logical))?;
     // A namespace header is legal before import declarations. Preserve its
     // original tokens for namespace::normalize and the production checker:
     // this bounded literal linker must not silently discard source identity.
     let mut i = 0usize;
-    if word(&tokens, i, "use") {
+    if word(tokens, i, "use") {
         let pos = tokens[i].pos;
-        if !word(&tokens, i + 1, "namespace") && !word(&tokens, i + 1, "default") {
+        if !word(tokens, i + 1, "namespace") && !word(tokens, i + 1, "default") {
             return Err(fail(pos, "E_SYNTAX", "expected namespace header before const imports"));
         }
         while tokens.get(i).is_some_and(|t| !matches!(t.tok, Tok::Semi | Tok::Eof)) {
@@ -371,17 +372,17 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         }
         i += 1;
     }
-    if !word(&tokens, i, "import") {
+    if !word(tokens, i, "import") {
         return Err(fail(tokens[i.min(tokens.len() - 1)].pos, "E_UNSUPPORTED",
             "executable constant file imports require import declarations after the namespace header"));
     }
     let prefix = tokens[..i].to_vec();
     let mut loaded = BTreeMap::<PathBuf, BTreeMap<String, ConstExport>>::new();
     let mut bound = BTreeMap::<String, Vec<Tok>>::new();
-    while word(&tokens, i, "import") {
+    while word(tokens, i, "import") {
         let pos = tokens[i].pos;
         i += 1;
-        if !word(&tokens, i, "const") {
+        if !word(tokens, i, "const") {
             return Err(fail(pos, "E_UNSUPPORTED",
                 "mixed const/function imports need the full typed linker"));
         }
@@ -391,17 +392,17 @@ where F: FnMut(&Path) -> std::io::Result<String> {
             if names.len() >= MAX_BINDINGS {
                 return Err(fail(pos, "E_SOURCE_LIMIT", "too many constant selections"));
             }
-            let remote = get_ident(&tokens, &mut i, pos)?;
-            let local = if word(&tokens, i, "as") {
+            let remote = get_ident(tokens, &mut i, pos)?;
+            let local = if word(tokens, i, "as") {
                 i += 1;
-                get_ident(&tokens, &mut i, pos)?
+                get_ident(tokens, &mut i, pos)?
             } else { remote.clone() };
             names.push((remote, local));
             if tokens.get(i).is_some_and(|t| t.tok == Tok::Comma) { i += 1; }
             else { break; }
         }
-        expect_word(&tokens, &mut i, "from", pos)?;
-        if word(&tokens, i, "pkg") {
+        expect_word(tokens, &mut i, "from", pos)?;
+        if word(tokens, i, "pkg") {
             return Err(fail(pos, "E_UNSUPPORTED",
                 "named package constants need an authenticated package export resolver"));
         }
@@ -446,7 +447,7 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         if let Tok::Ident(name) = &item.tok {
             if let Some(value) = bound.get(name) {
                 let absolute = i + j;
-                if let Some(code) = is_disallowed_reference_context(&tokens, absolute) {
+                if let Some(code) = is_disallowed_reference_context(tokens, absolute) {
                     return Err(fail(item.pos, code,
                         format!("imported constant '{name}' used in disallowed context")));
                 }
