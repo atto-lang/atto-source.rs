@@ -4169,6 +4169,16 @@ impl Parser {
                         ));
                     }
                     self.advance();
+                    // A grouped spawn request is not a plain actor spawn.
+                    // Never emit the existing Spawn node while dropping the
+                    // startup schema, resource limits or scheduling policy.
+                    if self.is_word("with") && *self.peek_at(1) == Tok::LBrace {
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_SPAWN_OPTIONS_UNSUPPORTED",
+                            "grouped actor spawn requires typed initialization, resource admission and runtime lowering",
+                        ));
+                    }
                     ExprKind::Spawn(actor)
                 }
                 "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
