@@ -178,6 +178,8 @@ pub enum TExpr {
     AdtIs { obj: Box<TE>, tag: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
+    /// Terminal expectation failure, not an ordinary guest throw.
+    AdtExpect { source: Box<TE>, tmp: u32, success_tag: u32 },
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
@@ -1643,7 +1645,7 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         TExpr::RefinementCheck(v, _, _, _) | TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
-        | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
+        | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. } | TExpr::AdtExpect { source: v, .. }
         | TExpr::FieldGet { obj: v, .. }
         | TExpr::CollectionLoad { array: v, .. }
         | TExpr::StateFieldRead { obj: v, .. }
@@ -2421,7 +2423,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-        TExpr::AdtPropagate { .. } |
+        TExpr::AdtPropagate { .. } | TExpr::AdtExpect { .. } |
         TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. } => false,
     }
 }
@@ -2491,7 +2493,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
-        TExpr::AdtPropagate { source, .. } => any_in(source, f),
+        TExpr::AdtPropagate { source, .. } | TExpr::AdtExpect { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
@@ -5202,6 +5204,35 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn method_on(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        let predicate = match (recv.ty, name) {
+            (Type::OptionInt | Type::OptionResultIntStr, "is_none") => Some(0),
+            (Type::OptionInt | Type::OptionResultIntStr, "is_some") => Some(1),
+            (Type::ResultIntStr | Type::ResultIntInt, "is_ok") => Some(0),
+            (Type::ResultIntStr | Type::ResultIntInt, "is_err") => Some(1),
+            _ => None,
+        };
+        if let Some(tag) = predicate {
+            self.arity(name, 0, args.len(), pos)?;
+            return Ok(TE { e: TExpr::AdtIs { obj: Box::new(recv), tag }, ty: Type::Bool });
+        }
+        if name == "expect" {
+            let carrier = match recv.ty {
+                Type::OptionInt => Some((1, Type::Int)),
+                Type::OptionResultIntStr => Some((1, Type::ResultIntStr)),
+                Type::ResultIntStr | Type::ResultIntInt => Some((0, Type::Int)),
+                _ => None,
+            };
+            if let Some((success_tag, ty)) = carrier {
+                self.arity("Option/Result.expect", 1, args.len(), pos)?;
+                // Restricted profile: dynamic messages would require a new runtime
+                // panic-message ABI. Preserve the terminal-vs-ordinary distinction.
+                if !matches!(&args[0].kind, ExprKind::Str(_)) {
+                    return Err(type_err(args[0].pos, "expect requires a literal String message in this profile"));
+                }
+                let tmp = self.temp(recv.ty, pos)?;
+                return Ok(TE { e: TExpr::AdtExpect { source: Box::new(recv), tmp, success_tag }, ty });
+            }
+        }
         if recv.ty == Type::Str {
             return self.string_method(recv, name, args, pos);
         }

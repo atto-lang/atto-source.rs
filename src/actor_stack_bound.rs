@@ -65,6 +65,7 @@ fn direct_calls(mut work: Vec<Work<'_>>) -> Vec<usize> {
                 TExpr::StateFieldRead { obj: v, .. } |
                 TExpr::CollectionLoad { array: v, .. } |
                 TExpr::AdtIs { obj: v, .. } | TExpr::AdtPropagate { source: v, .. } |
+                TExpr::AdtExpect { source: v, .. } |
                 TExpr::Print { value: v, .. } | TExpr::PrintStrVal { value: v, .. } |
                 TExpr::Trap { value: v, .. } | TExpr::PrintObj { obj: v, .. } => {
                     work.push(Work::Expr(v));
