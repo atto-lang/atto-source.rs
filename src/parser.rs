@@ -2227,10 +2227,13 @@ impl Parser {
         self.finish_param(name, ty, mutable, omittable, allow_omittable, pos)
     }
 
-    // Keep '?' tokens separate from propagation and ternary. Only adjacent
-    // pairs in formal-default position are coalescing delimiters.
+    // Recognize contiguous ??, ??= and ?= only in formal-default
+    // position. The alias is not a writeback or a propagation operation.
+    // A single type/name '?' remains independent.
     fn default_pair(&self) -> bool {
-        if *self.peek() != Tok::Question || *self.peek_at(1) != Tok::Question { return false; }
+        if *self.peek() != Tok::Question || !matches!(self.peek_at(1), Tok::Question | Tok::Assign) {
+            return false;
+        }
         let a = &self.toks[self.i].pos;
         let b = &self.toks[self.i + 1].pos;
         a.line == b.line && a.col.checked_add(1) == Some(b.col)
@@ -2272,12 +2275,19 @@ impl Parser {
         while self.default_pair() {
             let p = self.pos();
             self.advance();
-            let question_pos = self.pos();
-            self.advance();
-            let equal_pos = self.pos();
-            let omission = *self.peek() == Tok::Assign && question_pos.line == equal_pos.line
-                && question_pos.col.checked_add(1) == Some(equal_pos.col);
-            if omission { self.advance(); }
+            // ?= is precisely the same None clause as ??. Only ??= is
+            // the omission clause; a separated '=' is never consumed.
+            let omission = if self.eat(&Tok::Assign) {
+                false
+            } else {
+                let question_pos = self.pos();
+                self.expect(Tok::Question, "second '?' of default operator")?;
+                let equal_pos = self.pos();
+                let omission = *self.peek() == Tok::Assign && question_pos.line == equal_pos.line
+                    && question_pos.col.checked_add(1) == Some(equal_pos.col);
+                if omission { self.advance(); }
+                omission
+            };
             if !allow_omittable || mutable || (omission && (!omittable || omission_default.is_some()))
                 || (!omission && (ty != Type::OptionInt || none_default.is_some() || omission_default.is_some())) {
                 return Err(Diagnostic::new(p, "E_DEFAULT_CLAUSE", "invalid, duplicate or out-of-order default clause"));
