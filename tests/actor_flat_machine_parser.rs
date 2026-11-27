@@ -185,3 +185,29 @@ fn graph_table_verifies_slots_and_rejects_forged_metadata() {
     bad.nodes[1].transitions.remove(0);
     assert!(bad.transition_table().is_err());
 }
+
+#[test]
+fn nominal_events_resolve_from_actual_source_declarations() {
+    let source = include_str!("fixtures/actor-machine-nominal-inspection-v1/nominal-forward.atto");
+    let inspected = Parser::inspect_nominal_machines(source).unwrap();
+    assert_eq!(inspected.len(), 1);
+    let machine = &inspected[0];
+    assert_eq!(machine.actor, "Foo");
+    assert_eq!(machine.declarations, vec!["Start".to_string(), "Stop".to_string()]);
+    assert_eq!(machine.table.events(), &["Start".to_string(), "Stop".to_string()]);
+    assert_eq!(machine.declaration_ids, vec![0, 1]);
+    assert!(compile(source).is_err());
+}
+
+#[test]
+fn nominal_inspection_refuses_unresolved_or_ineligible_declarations() {
+    for source in [
+        include_str!("fixtures/actor-machine-nominal-inspection-v1/nominal-unknown.atto"),
+        include_str!("fixtures/actor-machine-nominal-inspection-v1/nominal-actor.atto"),
+        include_str!("fixtures/actor-machine-nominal-inspection-v1/nominal-payload.atto"),
+        include_str!("fixtures/actor-machine-nominal-inspection-v1/nominal-duplicate.atto"),
+    ] {
+        assert!(Parser::inspect_nominal_machines(source).is_err());
+        assert!(compile(source).is_err());
+    }
+}
