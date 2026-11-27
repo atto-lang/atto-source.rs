@@ -15,6 +15,12 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 const programs = [
   {
+    name: 'contextual-make-soa-15',
+    filename: 'collection-layout-contextual-make-soa-15.atto',
+    expectedReturn: 15n,
+    expectedWords: [15n, 30n, 20n, 40n, 1n, 2n],
+  },
+  {
     name: 'fixed-size-soa-15',
     filename: 'collection-layout-fixed-size-soa-15.atto',
     expectedReturn: 15n,
@@ -97,7 +103,12 @@ try {
   // Prove fail-closed compiler negatives with no generated guest artifact.
   const milestone = readFileSync(resolve(here, 'fixtures/pass/collection-layout-soa-15.atto'), 'utf8');
   const fixed = readFileSync(resolve(here, 'fixtures/pass/collection-layout-fixed-size-soa-15.atto'), 'utf8');
+  const contextual = readFileSync(resolve(here, 'fixtures/pass/collection-layout-contextual-make-soa-15.atto'), 'utf8');
   const invalid = [
+    ['contextual-new-in-inline-slot', contextual.replace('make {', 'new {'), 'E_CONSTRUCTION_CATEGORY'],
+    ['contextual-make-missing', contextual.replace('x:10, y:20, velocity:1', 'x:10, y:20'), 'E_STRUCT_FIELD'],
+    ['contextual-make-duplicate', contextual.replace('x:10, y:20, velocity:1', 'x:10, x:20, velocity:1'), 'E_STRUCT_FIELD'],
+    ['contextual-make-extra', contextual.replace('x:10, y:20, velocity:1', 'x:10, y:20, unknown:1'), 'E_STRUCT_FIELD'],
     ['fixed-size-too-small', fixed.replace('size=2', 'size=1'), 'E_ARRAY_SIZE_MISMATCH'],
     ['fixed-size-too-large', fixed.replace('size=2', 'size=3'), 'E_ARRAY_SIZE_MISMATCH'],
     ['fixed-size-negative', fixed.replace('size=2', 'size=-1'), 'E_LAYOUT_SIZE'],
