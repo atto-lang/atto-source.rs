@@ -4088,10 +4088,40 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        // Binary nodes themselves have no trace effect; the original operand
+        // checks still execute exactly once, left before right. Use an explicit
+        // postorder stack rather than recursively stacking large checker frames.
+        enum Work<'a> {
+            Visit(&'a Expr),
+            Apply(BinOp, Pos),
+        }
+        let mut work = vec![Work::Apply(op, pos), Work::Visit(r), Work::Visit(l)];
+        let mut values = Vec::new();
+        while let Some(item) = work.pop() {
+            match item {
+                Work::Visit(expr) => {
+                    if let ExprKind::Binary(op, left, right) = &expr.kind {
+                        work.push(Work::Apply(*op, expr.pos));
+                        work.push(Work::Visit(right));
+                        work.push(Work::Visit(left));
+                    } else {
+                        values.push(self.value(expr)?);
+                    }
+                }
+                Work::Apply(op, pos) => {
+                    let b = values.pop().expect("verified binary traversal");
+                    let a = values.pop().expect("verified binary traversal");
+                    values.push(self.binary_values(op, a, b, pos)?);
+                }
+            }
+        }
+        Ok(values.pop().expect("verified binary root"))
+    }
+
+    #[inline(never)]
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
                 BinOp::Shl | BinOp::LShr | BinOp::AShr) {
                 if a.ty != Type::Int || b.ty != Type::Int {

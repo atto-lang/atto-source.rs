@@ -74,3 +74,16 @@ fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
     assert!(atto_compiler::compile(&elif(250)).is_ok());
     assert_eq!(atto_compiler::compile(&elif(300)).unwrap_err().code, "E_NESTING");
 }
+
+#[test]
+fn deep_binary_mixed_operators_and_elif_preserve_existing_budget() {
+    let chain = format!("pub fnc main(): int {{ return 291{}; }}", " - 1".repeat(249));
+    let bytes = atto_compiler::compile(&chain).expect("250-term left-associative subtraction");
+    assert_eq!(bytes, atto_compiler::compile(&chain).unwrap());
+    let invalid = format!("pub fnc main(): int {{ return 1{} + true; }}", " + 1".repeat(200));
+    assert_eq!(atto_compiler::compile(&invalid).unwrap_err().code, "E_TYPE");
+    let invalid = "pub fnc main(): int { return missing + absent; }";
+    let diagnostic = atto_compiler::compile(invalid).unwrap_err();
+    assert_eq!(diagnostic.code, "E_UNBOUND");
+    assert!(diagnostic.to_string().contains("missing"));
+}
