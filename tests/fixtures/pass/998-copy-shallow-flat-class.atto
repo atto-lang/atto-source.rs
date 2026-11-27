@@ -14,5 +14,8 @@ pub fnc main(): int {
         val writer = borrow! mut cloned;
         writer.value = 22;
     }
-    return original.value + cloned.value;
+    original.value = 19;
+    cloned.value = 23;
+    val observed = borrow! cloned.value;
+    return original.value + observed;
 }
