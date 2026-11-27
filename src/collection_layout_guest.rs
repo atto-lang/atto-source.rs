@@ -194,6 +194,24 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
         }
     }
     p.expect(Tok::RBracket, "']' after array literal")?;
+    // Narrow contextual parameter admission: explicit fixed size on an
+    // already typed local struct array. No alias, inference or cast fallback.
+    if matches!(p.peek(), Tok::Ident(word) if word == "with") {
+        p.word("with")?;
+        p.expect(Tok::LBrace, "'{' after parametric with")?;
+        p.word("size")?;
+        p.expect(Tok::Assign, "'=' after size")?;
+        let pos = p.pos();
+        let size = p.number()?;
+        p.expect(Tok::RBrace, "'}' after size parameter")?;
+        use crate::parametric_bundle::{bind, Formal, Mode};
+        let schema = [Formal { name: "size", accepts: |n: &i64| *n >= 0 && *n <= MAX_ROWS as i64 }];
+        let resolved = bind(&schema, &[], &[("size", size)], Mode::Application)
+            .map_err(|_| error(pos, "E_LAYOUT_SIZE", "fixed size outside the supported range"))?;
+        if resolved[0].1 != rows.len() as i64 {
+            return Err(error(pos, "E_ARRAY_SIZE_MISMATCH", "fixed size must equal explicit initialized row count"));
+        }
+    }
     p.expect(Tok::Semi, "';' after binding")?;
 
     let plan = Plan::new(ty.layout, vec![ScalarField { size: 8, align: 8 }; fields.len()], rows.len() as u64)
@@ -315,6 +333,24 @@ fnc main() -> int {
         let b = compiler(&PROGRAM.replace("Array<Particle, layout=soa>",
             "Array<layout=soa, T=Particle>")).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn explicit_literal_size_matches_initialization_before_wasm_emission() {
+        let original = compiler(PROGRAM).unwrap();
+        let with_size = |clause: &str| PROGRAM.replace("    ];", &format!("    ] {clause};"));
+        assert_eq!(compiler(&with_size("with {size=2}")).unwrap(), original);
+        for size in [0, 1, 3, 1024] {
+            assert_eq!(compiler(&with_size(&format!("with {{size={size}}}"))).unwrap_err().code,
+                "E_ARRAY_SIZE_MISMATCH");
+        }
+        for size in [-1, 1025] {
+            assert_eq!(compiler(&with_size(&format!("with {{size={size}}}"))).unwrap_err().code,
+                "E_LAYOUT_SIZE");
+        }
+        for invalid in ["with {size=infer}", "with {size=2,size=2}", "with {size:2}", "with {unknown=2}"] {
+            assert!(compiler(&with_size(invalid)).is_err(), "{invalid}");
+        }
     }
 
     #[test]
