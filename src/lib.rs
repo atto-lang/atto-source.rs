@@ -22,7 +22,8 @@ pub mod collection_layout_guest;
 /// Shared canonical generic binding for production and guest collection parsers.
 pub mod collection_layout_type;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
-/// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
+/// Upstream candidate commit 8b4d90f6b31b6c11483b9025a5055d91079ce220.
+/// Source Git blob c167fe483abed0d38d5c8a25777e529d705ba48c.
 // The canonical verifier is imported byte-identically from the independent
 // checker. Do not edit its SHA-pinned body for Clippy-only style changes.
 #[allow(clippy::needless_return)]
