@@ -64,11 +64,10 @@ fn copy_deep_disallows_mut_qualifier_and_missing_operand() {
 
 #[test]
 fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
-    // A shallow class copy without verified Copyable witness must still
-    // fail. The deep path is independently admitted for this flat class.
+    // Both witnesses must be independently derived for the closed flat layout.
     let prefix = "define class Parcel as pub let int value = 1; end pub fnc main(): int { val p = new Parcel(); ";
     let shallow = format!("{prefix}val q = copy! p; return 0; }}");
-    assert_eq!(compile(&shallow).unwrap_err().code, "E_COPY");
+    wasm(&shallow);
     let deep = format!("{prefix}val q = copy!! p; return q.value; }}");
     wasm(&deep);
 }
@@ -77,4 +76,16 @@ fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
 fn deep_copy_after_inferred_mutable_loan_end_is_accepted() {
     wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-unused-mut.atto"));
     wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto"));
+}
+
+#[test]
+fn shallow_copy_flat_root_and_live_loan_gate() {
+    wasm(include_str!("fixtures/pass/998-copy-shallow-flat-class.atto"));
+    assert_eq!(compile(include_str!("fixtures/fail/998-copy-shallow-exclusive-loan.atto")).unwrap_err().code, "E_BORROW");
+    assert_eq!(compile(include_str!("fixtures/fail/153-copy-noncopy-class.atto")).unwrap_err().code, "E_COPY_OVERRIDE");
+}
+#[test]
+fn shallow_copy_after_last_mutable_loan_use() {
+    let source = include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto").replace("copy!! original","copy! original");
+    wasm(&source);
 }
