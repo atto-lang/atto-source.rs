@@ -196,6 +196,8 @@ struct Emit<'a> {
     /// Owned generator handles active in nested for-in loops. Function-level
     /// returns close these in reverse order before exiting.
     active_iterators: Vec<u32>,
+    /// Owned channel read Future slots (params plus locals); zero means disarmed.
+    read_slots: Vec<u32>,
     /// Scratch i64 local for an opaque host-issued admission ticket.
     state_ticket_slot: Option<u32>,
     state_write_depth: u32,
@@ -284,6 +286,12 @@ impl Emit<'_> {
                 self.expr(v);
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
+                // Moving a linear Future must disarm its previous slot.
+                if v.ty == Type::FutureReadInt {
+                    if let TExpr::Local(from) = &v.e {
+                        if from != slot { self.i32c(0); self.set(*from); }
+                    }
+                }
             }
             TStmt::FieldSet { obj, offset, ty, value } => {
                 self.expr(obj);
@@ -334,6 +342,7 @@ impl Emit<'_> {
                 // exception carries the guest Error message as an i64 string
                 // view and automatically unwinds across ordinary Wasm calls.
                 self.expr(message);
+                self.channel_cleanup(&self.read_slots.clone());
                 self.op(0x08); // throw tag 0
                 uleb(&mut self.code, 0);
             }
@@ -348,6 +357,7 @@ impl Emit<'_> {
                     self.get(handle);
                     self.call(self.l.func(self.l.gen_first_func + 3));
                 }
+                self.channel_cleanup(&self.read_slots.clone());
                 self.op(0x0F);
             }
             TStmt::ForIn { source, handle_slot, value_slot, body } => {
@@ -395,6 +405,7 @@ impl Emit<'_> {
             }
             TStmt::Break => self.br_to(Frame::Break),
             TStmt::Continue => self.br_to(Frame::Continue),
+            TStmt::ChannelCleanup(slots) => self.channel_cleanup(slots),
             TStmt::Block(b) => self.stmts(b),
             TStmt::Unreachable => self.op(0x00),
         }
@@ -653,6 +664,9 @@ impl Emit<'_> {
                 self.open(0x04, 0x40, Frame::Other); // if (void)
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
+                // The '?' early exit is a real return and must run ticket
+                // cleanup just like a source-level return.
+                self.channel_cleanup(&self.read_slots.clone());
                 self.op(0x0F); // return original Err/None tagged pointer
                 self.close();
                 self.op(0x20);
@@ -1155,6 +1169,8 @@ fn emit_with_profile(p: &TProgram, version: u8) -> Vec<u8> {
             frames: Vec::new(),
             void_main: is_void_main,
             active_iterators: Vec::new(),
+            read_slots: f.params.iter().chain(f.locals.iter()).enumerate()
+                .filter(|(_,ty)| **ty == Type::FutureReadInt).map(|(slot,_)| slot as u32).collect(),
             state_ticket_slot: state_hooks.then_some((f.params.len()+f.locals.len()) as u32),
             state_write_depth: 0,
         };
@@ -1168,6 +1184,8 @@ fn emit_with_profile(p: &TProgram, version: u8) -> Vec<u8> {
             e.op(0x0F); // return the generation-fenced handle; never hit unreachable
         } else {
             e.stmts(&f.body);
+            // Void fallthrough still relinquishes every scoped read ticket.
+            if f.ret == Type::Void { e.channel_cleanup(&e.read_slots.clone()); }
         }
         if is_void_main {
             e.i64c(0);
@@ -1198,6 +1216,7 @@ fn emit_with_profile(p: &TProgram, version: u8) -> Vec<u8> {
             frames: Vec::new(),
             void_main: false,
             active_iterators: Vec::new(),
+            read_slots: Vec::new(),
             state_ticket_slot: None,
             state_write_depth: 0,
         };
@@ -1237,7 +1256,7 @@ fn emit_with_profile(p: &TProgram, version: u8) -> Vec<u8> {
     let task_invoke_idx = layout.func(p.funcs.len() as u32 + if has_actors { 2 } else { 0 });
     if has_tasks {
         func_types.push(types.idx(Sig(vec![I32], vec![I64])));
-        let mut e = Emit { l: &layout, code: vec![0], frames: Vec::new(), void_main: false, active_iterators: Vec::new(), state_ticket_slot: None, state_write_depth: 0 };
+        let mut e = Emit { l: &layout, code: vec![0], frames: Vec::new(), void_main: false, active_iterators: Vec::new(), read_slots: Vec::new(), state_ticket_slot: None, state_write_depth: 0 };
         for task in &p.tasks {
             e.op(0x20); e.op(0);
             e.i32c(*task as i32);

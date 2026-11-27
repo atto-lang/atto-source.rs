@@ -34,6 +34,8 @@ impl<'a> FnCx<'a> {
                 format!("nb readch expects Channel<int>, found {}",self.tn(channel.ty))));
         }
         self.imports.push(Import::ChannelNbRead);
+        // Every admitted guest read must have a deterministic drop hook.
+        self.imports.push(Import::ChannelAbandon);
         let scratch=self.temp(Type::ChannelInt,pos)?;
         let status=self.temp(Type::IoError,pos)?;
         Ok(TE{e:TExpr::ChannelRead{channel:Box::new(channel),scratch,status},

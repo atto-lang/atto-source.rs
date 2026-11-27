@@ -55,12 +55,26 @@ impl Emit<'_> {
     }
     pub(super) fn channel_finish(&mut self,channel:&TE,operation:Import,status:u32,result:u32) {
         self.expr(channel);self.call(self.l.import(operation));self.set(status);
+        // Only successful explicit abandonment consumes the guest capability.
+        if operation == Import::ChannelAbandon {
+            if let TExpr::Local(slot) = &channel.e {
+                self.get(status);self.op(0x45); // succeeded?
+                self.open(0x04,0x40,Frame::Other);
+                self.i32c(0);self.set(*slot);
+                self.close();
+            }
+        }
         self.channel_status_adt(status,result);
     }
     pub(super) fn channel_await(&mut self,ticket:&TE,scratch:u32,status:u32,result:u32,option:u32) {
         // Scratch is a checked 16-byte host output in guest-owned memory.
         self.channel_alloc(scratch);
         self.expr(ticket);self.set(status);
+        // A claimed one-shot Future cannot be retired a second time by a
+        // later lexical cleanup or by another return path.
+        if let TExpr::Local(slot) = &ticket.e {
+            self.i32c(0);self.set(*slot);
+        }
         self.get(status);self.i32c(0);self.op(0x48); // ticket < 0: immediately failed admission
         self.open(0x04,0x40,Frame::Other);
         self.channel_store_tag(scratch,2);
@@ -89,5 +103,18 @@ impl Emit<'_> {
         self.get(result);self.get(option);self.store_i32(8);
         self.close();
         self.get(result);
+    }
+    /// Idempotent, positive-ticket-only cleanup, generated for every scope
+    /// exit and on function returns/unwinds. abandon() rehomes committed data.
+    pub(super) fn channel_cleanup(&mut self, slots: &[u32]) {
+        for &slot in slots.iter().rev() {
+            self.get(slot);self.i32c(0);self.op(0x4a); // i32.gt_s
+            self.open(0x04,0x40,Frame::Other);
+            self.get(slot);
+            self.call(self.l.import(Import::ChannelAbandon));
+            self.op(0x1a); // discard checked status; Worker teardown is fallback
+            self.i32c(0);self.set(slot);
+            self.close();
+        }
     }
 }
