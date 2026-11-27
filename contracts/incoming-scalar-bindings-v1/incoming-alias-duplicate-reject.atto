@@ -1,0 +1,1 @@
+pub fnc main(): int { return match 42 over on _ as rebind rebind int z -> z end; }

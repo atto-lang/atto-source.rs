@@ -1,5 +1,6 @@
 // Execute actual compiled guests; no mock compiler or success on skip.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -74,6 +75,14 @@ try {
   reject("pub fnc main(): int { return match 42 over on _ as rebind rebind int z -> z end; }", "E_SYNTAX");
   reject("pub fnc main(): int { return match 42 over on _ as mut z -> 0 end; }", "E_UNSUPPORTED");
   reject("pub fnc main(): int { do match 42 over on _ as rebind z -> {} end return z; }", "E_UNBOUND");
+  // Pin the original conformance source bytes before compiler execution.
+  for (const [name, blob, expected, diagnostic] of [["incoming-alias-typed","a468f12a990b9e228b3dda649ba839526d3a32f9",42,null],["incoming-alias-rebind","389e63ac3aea25b4f20d2baac14908d98809b57a",42,null],["incoming-alias-fixed-reject","3f8fbcd373405d950a16bcc2779d78d46027f493",null,"E_IMMUTABLE"],["incoming-alias-type-reject","f92cd4e128cafdface1a1e0eb8abd3cb0d14698f",null,"E_TYPE"],["incoming-alias-duplicate-reject","c35ceb04f96e8aab70efded4d6ba09854167a390",null,"E_SYNTAX"],["scalar-name-first","acd7353fb5b0d17e48dffad206210e770304a2f8",23,null]]) {
+    const bytes = readFileSync(resolve('contracts/incoming-scalar-bindings-v1', name + '.atto'));
+    const actual = createHash('sha1').update(Buffer.from('blob ' + bytes.length + '\0')).update(bytes).digest('hex');
+    assert.equal(actual, blob, name + ': shared source identity');
+    if (expected === null) reject(bytes.toString('utf8'), diagnostic);
+    else guest(bytes.toString('utf8'), expected);
+  }
   console.log('scalar rebind and match alias guest cases passed');
 } finally {
   rmSync(dir, { recursive: true, force: true });

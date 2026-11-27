@@ -1,0 +1,6 @@
+pub fnc main(): int {
+    do match 42 over
+        on _ as int z -> { z = 5; }
+    end
+    return 0;
+}

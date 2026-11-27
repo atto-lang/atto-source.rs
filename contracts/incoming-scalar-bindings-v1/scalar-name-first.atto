@@ -1,0 +1,11 @@
+// expect-exit: 23
+fnc replace(rebind n: int): int {
+    n = 3;
+    return n;
+}
+
+pub fnc main(): int {
+    val int original = 2;
+    val result = replace(original);
+    return original * 10 + result;
+}
