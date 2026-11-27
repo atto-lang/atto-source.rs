@@ -19,3 +19,7 @@ Status: proposal only; no compiler implementation or execution claimed. Keep dra
 ## Backend-specific implementation and evidence
 
 Carry rebinding permission separately from referent mutability in parser/typed IR; use SSA and distinguish guest ownership from Rust host ownership. Inspect actual guest Wasm/native code rather than Rust compiler implementation allocations.
+
+## Canonical v2 update
+
+[Spec #318](https://github.com/atto-lang/atto-spec/pull/318) requires `set`, not bare assignment. The existing explicit-rebinding migration profile is now gated by real scalar formal guest and negative tests for both parameter spellings, fixed formals, and identical unused-marker Wasm. Legacy compatibility tests are historical and not canonical admission. General object loan/rebind support and default-profile promotion remain outstanding. [Shared cases #736](https://github.com/atto-lang/atto-platform-conformance/pull/736).

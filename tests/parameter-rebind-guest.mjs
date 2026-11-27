@@ -37,6 +37,16 @@ function reject(source, code, explicit = false) {
   assert.equal(existsSync(output), false);
 }
 try {
+  // Canonical v2 profile: explicit set, never a bare formal write.
+  const canonicalMain = 'pub fnc main(): int { val int n = 20; return bump(n) + n; }';
+  for (const formal of ['rebind int n', 'rebind n: int']) {
+    guest('fnc bump(' + formal + '): int { set n = n + 2; return n; } ' + canonicalMain, 42, true);
+    reject('fnc bump(' + formal + '): int { n = n + 2; return n; } ' + canonicalMain, 'E_EXPLICIT_REBIND', true);
+  }
+  reject('fnc bump(int n): int { set n = n + 2; return n; } ' + canonicalMain, 'E_IMMUTABLE', true);
+  const canonicalFixed = 'fnc id(int n): int { return n; } pub fnc main(): int { return id(42); }';
+  assert.deepEqual(guest(canonicalFixed, 42, true), guest(canonicalFixed.replace('int n', 'rebind int n'), 42, true));
+  // Historical compatibility mode tests follow. They are not canonical v2 admission.
   // Caller retains its original scalar; only the local formal changes.
   const main = 'pub fnc main(): int { val int n = 20; return bump(n) + n; }';
   guest('fnc bump(rebind int n): int { n = n + 2; return n; } ' + main, 42);

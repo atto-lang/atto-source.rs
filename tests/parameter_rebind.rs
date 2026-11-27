@@ -131,3 +131,21 @@ fn scalar_match_aliases_are_fixed_unless_rebind_is_explicit() {
     reject("pub fnc main(): int { return match 42 over on _ as mut z -> 0 end; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { do match 42 over on _ as rebind z -> {} end return z; }", "E_UNBOUND");
 }
+
+#[test]
+fn canonical_parameter_set_in_explicit_profile() {
+    let strict = atto_compiler::compile_explicit_rebinding;
+    let main = " pub fnc main(): int { val int n = 20; return bump(n) + n; }";
+    for formal in ["rebind int n", "rebind n: int"] {
+        let source = format!("fnc bump({formal}): int {{ set n = n + 2; return n; }}{main}");
+        assert!(strict(&source).is_ok(), "{source}");
+        let bare = source.replace("set n =", "n =");
+        assert_eq!(strict(&bare).unwrap_err().code, "E_EXPLICIT_REBIND");
+        let invalid = source.replace("set n =", "rebind n =");
+        assert!(strict(&invalid).is_err());
+    }
+    let fixed = format!("fnc bump(int n): int {{ set n = n + 2; return n; }}{main}");
+    assert_eq!(strict(&fixed).unwrap_err().code, "E_IMMUTABLE");
+    let fixed = "fnc id(int n): int { return n; } pub fnc main(): int { return id(42); }";
+    assert_eq!(strict(fixed).unwrap(), strict(&fixed.replace("int n", "rebind int n")).unwrap());
+}
