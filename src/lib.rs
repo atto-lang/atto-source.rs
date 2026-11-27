@@ -167,9 +167,21 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    if allocation_guarantees::present(&lexer::lex(source)?) {
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            format!("source exceeds {SOURCE_CAP} UTF-8 bytes")));
+    }
+    let lexical = lexer::lex(source)?;
+    if allocation_guarantees::present(&lexical) {
         return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
             "annotated linked-source compilation requires a verified cross-file effect contract"));
+    }
+    // The CLI uses this entry even for files with no imports. Preserve the
+    // same closed typed lane as the ordinary browser entry. Its complete
+    // source grammar rejects imports before any loader can be invoked.
+    // Do not restore the retired closed-expression evaluator.
+    if verified_quantities::scalar_contract_header(&lexical) || typed_quantity_header(&lexical) {
+        return compile_inner(source, Some(logical_path));
     }
     let mut checked_load = |path: &std::path::Path| -> std::io::Result<String> {
         let loaded = load(path)?;
