@@ -201,3 +201,56 @@ fn readonly_getter_elision_reloads_after_mutation_and_distinguishes_instances() 
         "elision must reload the field after mutation and retain each receiver identity"
     );
 }
+
+
+#[test]
+fn borrow_getter_elision_preserves_bool_and_float_field_widths() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as
+            pub let int prefix = 123;
+            pub let bool enabled = true;
+            pub let float weight = 1.5;
+        end
+        fnc enabled(Parcel p): bool { return p.enabled; }
+        fnc weight(Parcel p): float { return p.weight; }
+        pub fnc main(): int {
+            let parcel = new Parcel();
+            val yes = BOOL_ACCESS;
+            val amount = FLOAT_ACCESS;
+            if yes then
+                if amount < 1.5 then return 1; fi
+                if amount > 1.5 then return 2; fi
+                return 42;
+            fi
+            return 3;
+        }
+    "#;
+    let implicit = source.replace("BOOL_ACCESS", "enabled(parcel)")
+        .replace("FLOAT_ACCESS", "weight(parcel)");
+    let explicit = source.replace("BOOL_ACCESS", "enabled(borrow! parcel)")
+        .replace("FLOAT_ACCESS", "weight(borrow! parcel)");
+    let direct = source.replace("BOOL_ACCESS", "parcel.enabled")
+        .replace("FLOAT_ACCESS", "parcel.weight");
+    let expected = crate::compile(&direct).expect("direct bool and float fields");
+    assert_eq!(crate::compile(&implicit).expect("implicit scalar getters"), expected);
+    assert_eq!(crate::compile(&explicit).expect("explicit scalar getters"), expected);
+}
+
+#[test]
+fn borrow_getter_elision_keeps_multi_argument_call_abi() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub let int value = 42; end
+        fnc inspect(Parcel p, int unused): int { return p.value; }
+        pub fnc main(): int {
+            let parcel = new Parcel();
+            return ACCESS;
+        }
+    "#;
+    let call = source.replace("ACCESS", "inspect(parcel, 7)");
+    let direct = source.replace("ACCESS", "parcel.value");
+    assert_ne!(
+        crate::compile(&call).expect("ordinary two-argument call"),
+        crate::compile(&direct).expect("direct field"),
+        "one-field getter proof must not erase another formal or its evaluation"
+    );
+}
