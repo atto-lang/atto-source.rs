@@ -64,7 +64,7 @@ impl Ref32 {
         self.0.get()
     }
     fn from_offset(offset: usize) -> Option<Self> {
-        if !offset.is_multiple_of(8) {
+        if offset & 7 != 0 {
             return None;
         }
         let index = (offset / 8) as u64;
@@ -172,7 +172,7 @@ fn blocks_in_page(size: usize) -> u16 {
 fn class_for(bytes: usize, align: usize) -> Option<u8> {
     CLASS_BYTES
         .iter()
-        .position(|&c| c as usize >= bytes && (c as usize).is_multiple_of(align))
+        .position(|&c| c as usize >= bytes && (c as usize).checked_rem(align) == Some(0))
         .map(|c| c as u8)
 }
 
@@ -504,7 +504,7 @@ impl ActorSlabHeap {
         match page.kind {
             Kind::Small => {
                 let size = CLASS_BYTES[page.cls as usize] as usize;
-                if !(within - HEADER_BYTES).is_multiple_of(size) {
+                if (within - HEADER_BYTES).checked_rem(size) != Some(0) {
                     return Err(SlabError::InvalidRef);
                 }
                 let block = (within - HEADER_BYTES) / size;
