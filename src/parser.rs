@@ -709,6 +709,7 @@ impl Parser {
     }
 
     pub fn parse_program(&mut self) -> R<Program> {
+        Self::check_named_stage_profile(&self.toks)?;
         let mut prog = Program::default();
         let mut decls = 0usize;
         while *self.peek() != Tok::Eof {
@@ -1943,7 +1944,8 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        let has_keyword = self.eat_word("fnc") || self.eat_word("routine");
+        let ordinary_fnc = self.eat_word("fnc");
+        let has_keyword = ordinary_fnc || self.eat_word("routine");
         // The only permitted keyword-free top-level callable is the
         // unambiguous, return-first T <- name(args) declaration.
         if !has_keyword && !self.is_return_first_header() {
@@ -1978,7 +1980,8 @@ impl Parser {
         }
         self.in_generator = is_generator;
         let previous_stage = self.named_stage_allowed;
-        self.named_stage_allowed = !is_generator;
+        self.named_stage_allowed = ordinary_fnc && !is_generator && !infer
+            && *self.peek() == Tok::LBrace;
         let body = self.parse_callable_body(arrow_type, colon_type, return_first,
             if infer { Type::Int } else { ret });
         self.named_stage_allowed = previous_stage;
@@ -3848,13 +3851,34 @@ impl Parser {
         r
     }
 
+    /// The current stage lowering does not participate in the token-based
+    /// routine, module, generic or callback passes. Reject mixed profiles
+    /// before any of those passes can rewrite the lexical self-name.
+    pub(crate) fn check_named_stage_profile(tokens: &[Token]) -> R<()> {
+        let stage = tokens.windows(2).find(|w| w[0].tok == Tok::PipeGt
+            && matches!(&w[1].tok, Tok::Ident(n) if n == "fnc"));
+        let Some(stage) = stage else { return Ok(()); };
+        if tokens.iter().any(|t| matches!(&t.tok, Tok::Ident(n)
+            if matches!(n.as_str(), "routine" | "Fnc" | "module" | "namespace"
+                | "import" | "class" | "actor" | "struct" | "enum" | "type"
+                | "declare" | "export" | "extern")))
+            || tokens.windows(3).any(|w| matches!(&w[0].tok, Tok::Ident(n) if n == "fnc")
+                && matches!(&w[1].tok, Tok::Ident(_)) && w[2].tok == Tok::Lt)
+        {
+            return Err(unsupported(stage[0].pos,
+                "named pipeline stages require flat ordinary functions without mixed lowering profiles"));
+        }
+        Ok(())
+    }
+
     /// Initial direct AOT slice: an explicitly typed unary int function,
     /// one return expression or exhaustive scalar return-match, no captures,
     /// no arbitrary calls, and no escaping callable value. Reuse ordinary
     /// function checking and Wasm recursive-call quota, not a host evaluator.
     fn parse_closed_named_stage(&mut self) -> R<String> {
         let pos = self.pos();
-        if !self.named_stage_allowed {
+        if !self.named_stage_allowed || self.lambda_nesting != 0 || self.erlang_body
+            || self.state_method || self.struct_value_bindings.is_some() {
             return Err(unsupported(pos, "nested or non-function named pipeline stage"));
         }
         if self.named_stage_helpers.len() >= 64 {
