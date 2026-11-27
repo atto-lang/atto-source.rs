@@ -134,8 +134,17 @@ struct Token {
 /// Strip nested block comments without moving token offsets. Unsupported Unicode
 /// inside a comment becomes ASCII whitespace; outside stays byte-identical.
 fn without_block_comments(source: &str) -> Result<String, ParseError> {
-    let mut bytes = source.as_bytes().to_vec();
-    let src = source.as_bytes();
+    // Normalize accepted Unicode line separators to a newline plus padding
+    // before both scanners run. Preserve every original byte offset.
+    let mut normalized = source.as_bytes().to_vec();
+    for (offset, ch) in source.char_indices() {
+        if matches!(ch, '\u{0085}' | '\u{2028}' | '\u{2029}') {
+            normalized[offset] = b'\n';
+            normalized[offset + 1..offset + ch.len_utf8()].fill(b' ');
+        }
+    }
+    let src = normalized.as_slice();
+    let mut bytes = normalized.clone();
     let mut i = 0;
     let mut depth = 0_u32;
     let mut open = 0_usize;
@@ -255,6 +264,39 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+// HTTP actor declarations require transport, scheduling and actor admission.
+// Recognize only a declaration prefix; an ordinary function named http or a
+// comment must not request this unsupported execution domain.
+fn reject_http_actor_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define {
+            continue;
+        }
+        let mut http = false;
+        for part in &tokens[index + 1..] {
+            if part.kind == Kind::Pub {
+                continue;
+            }
+            if part.kind != Kind::Identifier {
+                break;
+            }
+            match part.text.as_str() {
+                "http" => http = true,
+                "serial" | "shared" | "untrusted" | "private" | "tcp" | "stream" => {}
+                "actor" | "isoactor" if http => {
+                    return Err(ParseError {
+                        offset: token.start,
+                        class: "http_actor_backend_unsupported",
+                        message: "HTTP_ACTOR_BACKEND_UNSUPPORTED: transport and actor scheduling are not lowered".into(),
+                    });
+                }
+                _ => break,
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -309,6 +351,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
+    reject_http_actor_declarations(&tokens)?;
     reject_execution_domains(&tokens)?;
     let mut parser = Parser {
         tokens,
