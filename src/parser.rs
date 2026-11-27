@@ -1781,6 +1781,76 @@ impl Parser {
         Ok(params)
     }
 
+    /// Parse a factory pipeline input. A parenthesized argument list
+    /// supplies multiple factory arguments in source order; a single scalar
+    /// is one argument. Do not send the closure-producing stage through the
+    /// ordinary named-function-only pipeline parser.
+    fn parse_cleanup_pipeline_args(&mut self) -> R<Vec<Expr>> {
+        let mut grouped = None;
+        if *self.peek() == Tok::LParen {
+            let mut trial = self.clone();
+            if let Ok(args) = trial.parse_args() {
+                if trial.eat(&Tok::PipeGt) {
+                    *self = trial;
+                    grouped = Some(args);
+                }
+            }
+        }
+        self.enter()?;
+        let saved = self.cond;
+        self.cond = 0;
+        let result = (|| -> R<Vec<Expr>> {
+            let mut args = match grouped {
+                Some(args) => args,
+                None => {
+                    let argument = self.parse_logical_or()?;
+                    self.expect(Tok::PipeGt, "'|>' before the cleanup factory")?;
+                    vec![argument]
+                }
+            };
+            let mut links = 0;
+            // Only the final inline stage produces a registration callback.
+            // Preceding scalar named stages use ordinary forward-call lowering.
+            while !(*self.peek() == Tok::LParen && *self.peek_at(1) == Tok::Pipe) {
+                let pos = self.pos();
+                if args.len() != 1 {
+                    return Err(unsupported(pos, "multi-argument intermediate cleanup pipeline stages"));
+                }
+                if self.is_word("await") || self.is_word("defer") || self.is_word("recover") {
+                    return Err(unsupported(pos, "suspending or registration-valued intermediate cleanup stages"));
+                }
+                let stage = self.parse_postfix()?;
+                let (name, mut stage_args) = match stage.kind {
+                    ExprKind::Var(name) => (name, Vec::new()),
+                    ExprKind::Call(name, args) => (name, args),
+                    _ => return Err(unsupported(pos, "cleanup pipeline stages other than named function calls")),
+                };
+                if stage_args.len() >= MAX_PARAMS {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pipeline exceeds the call argument limit"));
+                }
+                self.grow(1)?;
+                links += 1;
+                stage_args.insert(0, args.pop().expect("checked scalar pipeline input"));
+                args.push(Expr { kind: ExprKind::Call(name, stage_args), pos });
+                self.expect(Tok::PipeGt, "'|>' before the next stage or inline cleanup factory")?;
+            }
+            self.height -= links;
+            Ok(args)
+        })();
+        self.cond = saved;
+        self.leave();
+        result
+    }
+
+    fn parse_nullary_cleanup_body(&mut self) -> R<Vec<Stmt>> {
+        if !self.eat_word("_") {
+            self.expect(Tok::Pipe, "'_' or '||' for the zero-argument deferred cleanup")?;
+            self.expect(Tok::Pipe, "empty '||' for the deferred cleanup")?;
+        }
+        self.expect(Tok::Arrow, "'->' before the deferred cleanup body")?;
+        self.parse_block()
+    }
+
     /// A deferred cleanup can be a block, a zero-argument lambda, or a
     /// factory with explicit, single-evaluation captures.
     fn parse_defer(&mut self, pos: Pos) -> R<Stmt> {
@@ -1794,19 +1864,22 @@ impl Parser {
             self.expect(Tok::Pipe, "empty '||' lambda after 'defer'")?;
             self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
             (Vec::new(), self.parse_block()?, Vec::new())
-        } else if self.eat(&Tok::LParen) {
+        } else if *self.peek() == Tok::LParen && *self.peek_at(1) == Tok::Pipe {
+            self.advance();
             let params = self.parse_cleanup_factory_params()?;
             self.expect(Tok::Arrow, "'->' after the defer factory parameters")?;
-            if !self.eat_word("_") {
-                return Err(self.expected("'_' for the zero-argument deferred cleanup"));
-            }
-            self.expect(Tok::Arrow, "'->' before the deferred cleanup body")?;
-            let body = self.parse_block()?;
+            let body = self.parse_nullary_cleanup_body()?;
             self.expect(Tok::RParen, "')' after the defer factory")?;
             let args = self.parse_args()?;
             (params, body, args)
         } else {
-            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+            let args = self.parse_cleanup_pipeline_args()?;
+            self.expect(Tok::LParen, "'(' before the deferred cleanup factory")?;
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the defer factory parameters")?;
+            let body = self.parse_nullary_cleanup_body()?;
+            self.expect(Tok::RParen, "')' after the defer factory")?;
+            (params, body, args)
         };
         self.terminator()?;
         Ok(Stmt::Defer { params, body, args, pos })
@@ -1843,16 +1916,25 @@ impl Parser {
     /// \`recover (|T v| -> |err, cursor| -> { ... })(value);\`.
     fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
         self.advance();
-        let (params, err, cursor, body, args) = if self.eat(&Tok::LParen) {
+        let (params, err, cursor, body, args) = if *self.peek() == Tok::LParen && *self.peek_at(1) == Tok::Pipe {
+            self.advance();
             let params = self.parse_cleanup_factory_params()?;
             self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
             let (err, cursor, body) = self.parse_recovery_handler(&params)?;
             self.expect(Tok::RParen, "')' to close the recovery factory")?;
             let args = self.parse_args()?;
             (params, err, cursor, body, args)
-        } else {
+        } else if *self.peek() == Tok::Pipe {
             let (err, cursor, body) = self.parse_recovery_handler(&[])?;
             (Vec::new(), err, cursor, body, Vec::new())
+        } else {
+            let args = self.parse_cleanup_pipeline_args()?;
+            self.expect(Tok::LParen, "'(' before the recovery factory")?;
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
+            let (err, cursor, body) = self.parse_recovery_handler(&params)?;
+            self.expect(Tok::RParen, "')' to close the recovery factory")?;
+            (params, err, cursor, body, args)
         };
         self.terminator()?;
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
@@ -2292,7 +2374,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
             }
-            Some("throw") => {
+            Some("throw" | "throw!") => {
                 self.advance();
                 // Only the typed Error constructor is admitted by the
                 // checker. A raw string is never silently throwable.
@@ -2300,12 +2382,13 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Throw(error, pos))
             }
-            Some("raise") => {
+            Some("raise" | "raise!") => {
                 self.advance();
                 let error = self.parse_expr()?;
                 self.terminator()?;
                 Ok(Stmt::Raise(error, pos))
             }
+            Some("panic!") => Err(unsupported(pos, "typed panic! and supervisor CONTROL lowering")),
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
@@ -2410,7 +2493,7 @@ impl Parser {
                     pos,
                 }))
             }
-            Some("trap") => {
+            Some("trap" | "trap!") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;
                 self.terminator()?;
@@ -3723,6 +3806,10 @@ impl Parser {
                 // Lifetime binders are type-level. Do not emit guest values.
                 return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
                     "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
+            }
+            Tok::Ident(s) if s == "trap!" => {
+                return Err(Diagnostic::new(pos, "E_TRAP_BANG_RESULT_UNVERIFIED",
+                    "trap! requires checked Result<T,Error>; legacy Option trap is not equivalent"));
             }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
