@@ -167,9 +167,16 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    if allocation_guarantees::present(&lexer::lex(source)?) {
+    let entry_tokens = lexer::lex(source)?;
+    if allocation_guarantees::present(&entry_tokens) {
         return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
             "annotated linked-source compilation requires a verified cross-file effect contract"));
+    }
+    // The verified quantity lane is file-local. Route it before generic import
+    // lowering, which would otherwise discard the dedicated declaration path.
+    // The complete typed parser rejects imports and trailing unsupported syntax.
+    if typed_quantity_header(&entry_tokens) || verified_quantities::scalar_contract_header(&entry_tokens) {
+        return compile_inner(source, Some(logical_path));
     }
     let mut checked_load = |path: &std::path::Path| -> std::io::Result<String> {
         let loaded = load(path)?;
