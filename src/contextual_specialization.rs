@@ -150,8 +150,10 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     out.extend_from_slice(&t[params_at+1..=main_at]);
     let mut aliases = BTreeMap::<String,Vec<String>>::new();
     let mut i = main_at+1;
+    let mut main_return_seen = false;
     while i < main_end {
         let x = &t[i];
+        if word(x)==Some("return") { main_return_seen = true; }
         if matches!(x.tok, Tok::LBrace | Tok::RBrace | Tok::Pipe | Tok::FatArrow)
             || word(x).is_some_and(|s| matches!(s,"if"|"for"|"while"|"loop"|"do"|"match"|"switch"|"try"|"defer"|"recover"|"select"|"fnc"|"generator"|"block"|"then"|"else"|"end"|"async"|"suspend"|"using")) {
             return Err(bad(i,"nested scopes and control flow are outside contextual scalar profile"));
@@ -189,6 +191,9 @@ pub fn lower(t: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
         // immutable values. No context expression is re-evaluated and no
         // new runtime storage is required. Resource captures remain denied.
         if w(&t,i)==Some("const") && is(&t,i+2,Tok::Assign) && is(&t,i+4,Tok::Semi) {
+            if main_return_seen && w(&t,i+3).is_some_and(|name| aliases.contains_key(name)) {
+                return Err(bad(i,"context alias cannot follow terminating return"));
+            }
             if let Some(slots) = w(&t,i+3).and_then(|name| aliases.get(name)).cloned() {
                 let name = w(&t,i+1).ok_or_else(|| bad(i,"context alias name required"))?;
                 if crate::parser::is_reserved(name) || name==owner || aliases.contains_key(name)
@@ -337,6 +342,7 @@ mod tests {
             "const x = Scale::(6); const y = x; y = 3; return x.apply(7);",
             "const x = Scale::(6); const x = x; return x.apply(7);",
             "const x = Scale::(6); const y = x; return y;",
+            "const x = Scale::(6); return x.apply(7); const y = x;",
         ] { assert!(crate::compile(&program(body)).is_err(), "{body}"); }
     }
     #[test] fn separate_bindings_compile() {
