@@ -39,6 +39,7 @@ pub mod detached_io;
 pub mod parser;
 /// Closed-world, nonescaping Pointer<int> lexical read loan; general pointers remain gated.
 pub mod pointer_local;
+mod point_placement;
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
@@ -172,6 +173,9 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // The reusable RawPointer<int> profile is independent of the consuming
     // Pointer<int> handle. Authenticate the entire bounded program before
     // generic lowering can erase or reinterpret any slot operation.
+    if let Some(plan) = point_placement::try_plan(&tokens)? {
+        return wasm::emit_point_placement(&plan);
+    }
     let tokens = pointer_local::lower_slot(tokens)?;
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // Affine Future-family violations are diagnosed before any lowerer/emitter.

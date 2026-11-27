@@ -1488,6 +1488,48 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
     out
 }
 
+
+// Closed typed placement guest. A fixed private 16-byte region is reserved
+// at offset 8 (8-byte aligned) for the duration of the sole nonreentrant
+// main invocation. No imports, exported addresses or allocator bump. The
+// standard guest memory export is retained; no untrusted call occurs during
+// main. Zero the region on destruction/free, allowing repeated invocations.
+pub(crate) fn emit_point_placement(p:&crate::point_placement::Plan)->Result<Vec<u8>,crate::diag::Diagnostic>{
+    use crate::point_placement::Step;
+    let copies=p.verify()?;
+    let mut out=b"\0asm\x01\0\0\0".to_vec();
+    section(&mut out,1,vec![1,0x60,0,1,I64]);
+    section(&mut out,3,vec![1,0]);
+    section(&mut out,5,vec![1,1,1,1]); // one fixed page
+    section(&mut out,6,vec![1,I32,1,0x41,0,0x0b]); // panic_code
+    let mut exports=vec![3];
+    name(&mut exports,"main");exports.extend([0,0]);
+    name(&mut exports,"memory");exports.extend([2,0]);
+    name(&mut exports,"panic_code");exports.extend([3,0]);
+    section(&mut out,7,exports);
+    let mut body=vec![];
+    if copies==0 {body.push(0);}else{body.push(1);uleb(&mut body,copies as u64);body.push(I64);}
+    let store=|b:&mut Vec<u8>,offset:u8,value:i64|{
+        b.extend([0x41,8,0x42]);sleb(b,value);b.extend([0x37,3,offset]);
+    };
+    let mut local=0u64;
+    for step in &p.steps {
+        match *step {
+            Step::Construct(x,y)=>{store(&mut body,0,x);store(&mut body,8,y);}
+            Step::CopyField(f)=>{
+                body.extend([0x41,8,0x29,3,f*8,0x21]);uleb(&mut body,local);local+=1;
+            }
+            Step::Destroy|Step::Free=>{store(&mut body,0,0);store(&mut body,8,0);}
+            Step::Bind|Step::Detach=>{} // verified, nonescaping authority
+        }
+    }
+    body.push(0x20);uleb(&mut body,p.result[0] as u64);
+    if p.result.len()==2 {body.push(0x20);uleb(&mut body,p.result[1] as u64);body.push(0x7c);}
+    body.push(0x0b);
+    let mut code=vec![1];uleb(&mut code,body.len() as u64);code.extend(body);section(&mut out,10,code);
+    Ok(out)
+}
+
 pub fn emit(p: &TProgram) -> Vec<u8> {
     emit_inner(p, false)
 }
