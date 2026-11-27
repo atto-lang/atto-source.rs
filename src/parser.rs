@@ -2623,7 +2623,11 @@ impl Parser {
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
-            Some("if") => self.parse_if(),
+            Some("if") => self.parse_if(false),
+            Some("do") if self.word_at(1) == Some("if") => {
+                self.advance();
+                self.parse_if(true)
+            }
             Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
@@ -3090,13 +3094,13 @@ impl Parser {
         })
     }
 
-    fn parse_if(&mut self) -> R<Stmt> {
+    fn parse_if(&mut self, prefix_do: bool) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("if")?;
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        if !prefix_do && *self.peek() == Tok::LBrace {
             arms.push((cond, self.parse_block()?));
             loop {
                 if self.eat_word("elif")
@@ -3119,8 +3123,10 @@ impl Parser {
             }
         } else {
             self.eat(&Tok::Semi);
-            if !(self.eat_word("then") || self.eat_word("do")) {
-                return Err(self.expected("'then'"));
+            if prefix_do {
+                self.expect_word("then")?;
+            } else if !(self.eat_word("then") || self.eat_word("do")) {
+                return Err(self.expected("'do' or legacy 'then'"));
             }
             let stops = ["elif", "elseif", "else", "fi"];
             arms.push((cond, self.parse_stmts_until(&stops)?));
@@ -3136,8 +3142,10 @@ impl Parser {
                     self.grow(1)?;
                     let c = self.parse_cond_head()?;
                     self.eat(&Tok::Semi);
-                    if !(self.eat_word("then") || self.eat_word("do")) {
-                        return Err(self.expected("'then'"));
+                    if prefix_do {
+                        self.expect_word("then")?;
+                    } else if !(self.eat_word("then") || self.eat_word("do")) {
+                        return Err(self.expected("'do' or legacy 'then'"));
                     }
                     arms.push((c, self.parse_stmts_until(&stops)?));
                 } else if self.eat_word("else") {
@@ -4412,6 +4420,42 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+    // Single-expression keyword arms share typed, lazy ternary lowering.
+    // Multi-statement value sequences are a separate checked-lowering gate.
+    fn parse_value_if(&mut self) -> R<Expr> {
+        let pos = self.pos();
+        self.expect_word("if")?;
+        let mut arms = Vec::new();
+        loop {
+            if arms.len() >= 127 {
+                return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                    "value if exceeds 128 total arms"));
+            }
+            self.grow(1)?;
+            let cond = self.parse_cond_head()?;
+            self.expect_word("then")?;
+            let value = self.parse_expr()?;
+            arms.push((cond, value));
+            if !self.eat_word("elif") {
+                break;
+            }
+        }
+        if !self.eat_word("else") {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "value if requires an else arm"));
+        }
+        let mut result = self.parse_expr()?;
+        self.expect_word("fi")?;
+        self.height -= arms.len() as u32;
+        for (cond, value) in arms.into_iter().rev() {
+            result = Expr {
+                kind: ExprKind::Ternary(Box::new(cond), Box::new(value), Box::new(result)),
+                pos,
+            };
+        }
+        Ok(result)
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -4447,6 +4491,7 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "if" => return self.parse_value_if(),
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
