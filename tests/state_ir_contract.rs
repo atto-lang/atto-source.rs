@@ -241,7 +241,10 @@ fn protected_state_emission_authenticates_nominal_receiver_and_field_layout() {
 fn protected_snapshot_authenticates_slots_and_generated_tuple_constructor() {
     use atto_compiler::wasm;
     let source = fs::read_to_string("tests/fixtures/pass/state-owned-tuple-snapshot.atto").unwrap();
-    let parsed = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
+    // Match the production frontend: tuples are lowered to checked owned
+    // scalar classes before the ordinary parser sees the type annotation.
+    let tokens = atto_compiler::tuple_binding_lower::lower(lexer::lex(&source).unwrap()).unwrap();
+    let parsed = Parser::new(tokens).parse_program().unwrap();
     let original = check::check(&parsed).unwrap();
     assert!(!wasm::emit(&original).is_empty());
     for variant in 0..5 {
