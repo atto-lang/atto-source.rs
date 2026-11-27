@@ -18,6 +18,7 @@ use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
 mod loan_liveness;
+pub mod typed_cfg_census;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
