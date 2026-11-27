@@ -1050,7 +1050,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>> = BTreeMap::new();
     for f in &p.funcs {
         for q in &f.params {
-            if (q.none_default.is_some() && (!matches!(q.ty, Type::OptionInt | Type::OptionStr) | Type::OptionStr || q.mutable))
+            if (q.none_default.is_some() && (!matches!(q.ty, Type::OptionInt | Type::OptionStr) || q.mutable))
                 || (q.omission_default.is_some() && (!q.omittable || q.mutable))
                 || (q.omittable && !matches!(q.ty, Type::OptionInt | Type::OptionStr | Type::OptionResultIntStr) && q.omission_default.is_none()) {
                 return Err(type_err(q.pos, "invalid default metadata"));
@@ -1355,7 +1355,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for (j, q) in f.params.iter().enumerate() {
             let omitted_slot = if q.omittable { let s = flag; flag += 1; Some(s) } else { None };
             if let Some(default) = &q.none_default {
-                if !matches!(q.ty, Type::OptionInt | Type::OptionStr) | Type::OptionStr || q.mutable {
+                if !matches!(q.ty, Type::OptionInt | Type::OptionStr) || q.mutable {
                     return Err(type_err(q.pos, "unsupported None default formal"));
                 }
                 if body.1.len() >= MAX_LOCALS {
