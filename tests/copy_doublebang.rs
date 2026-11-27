@@ -93,3 +93,20 @@ fn deep_copy_after_inferred_mutable_loan_end_is_accepted() {
     wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-unused-mut.atto"));
     wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto"));
 }
+
+#[test]
+fn verified_flat_copies_get_independent_direct_field_authority() {
+    let prefix = "define class Boxed as pub let int n = 20; pub let int other = 0; end ";
+    for op in ["copy!", "copy!!"] {
+        let source = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); let b = {op} a; a.n = 21; b.n = 21; return a.n + b.n; }}");
+        wasm(&source);
+        let borrowed = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); let b = {op} a; val n = borrow! b.n; b.other = 22; return n + b.other; }}");
+        wasm(&borrowed);
+        let conflict = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); let b = {op} a; val n = borrow! b.n; b.n = 22; return n + b.n; }}");
+        assert_eq!(compile(&conflict).unwrap_err().code, "E_BORROW");
+        let fixed = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); val b = {op} a; b.n = 22; return a.n + b.n; }}");
+        assert_eq!(compile(&fixed).unwrap_err().code, "E_OWNERSHIP");
+        let moved = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); let b = {op} a; let c = b; b.n = 22; return c.n; }}");
+        assert_eq!(compile(&moved).unwrap_err().code, "E_MOVED");
+    }
+}
