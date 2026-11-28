@@ -163,7 +163,12 @@ fn explicit_inline_actor_mtd_still_satisfies_nominal_method_contracts() {
         end
         pub fnc main(): int { return 0; }
     "#;
-    let program = Parser::new(lex(source).unwrap()).parse_program().unwrap();
+    // The raw subset parser runs after nominal interface lowering in the
+    // production pipeline. Exercise its inline mtd AST with the same actor
+    // body and exercise the full contract through compile() below.
+    let raw_actor = source.replace("define interface IPing as ping(): int; end", "")
+        .replace("define actor Worker implements IPing as", "define actor Worker as");
+    let program = Parser::new(lex(&raw_actor).unwrap()).parse_program().unwrap();
     assert_eq!(program.actors[0].methods[0].name, "ping");
     assert!(atto_compiler::compile(source).is_ok(),
         "mtd must lower exactly like an inline actor method, without skipping interface checks");
