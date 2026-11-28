@@ -8,7 +8,7 @@ use crate::ast::*;
 use crate::diag::Pos;
 use std::collections::BTreeSet;
 
-const MAX_SLOTS: usize = 8;
+const MAX_SLOTS: usize = 16;
 const CLASS: &str = "__atto_local_set_v1";
 
 fn expr(kind: ExprKind, pos: Pos) -> Expr { Expr { kind, pos } }
@@ -92,7 +92,7 @@ fn storage(n: usize, pos: Pos) -> ClassDecl {
 }
 
 /// Rewrite only one completely closed main: scalar declarations, one inferred
-/// non-const factory, then a scalar return querying that factory. Never
+/// non-const factory, optional scalar query bindings, then a scalar return. Never
 /// partially mutate an unsupported program. The normal checker and emitters
 /// still own all type, ownership, heap and runtime validation.
 pub(crate) fn lower(p: &mut Program) {
@@ -109,9 +109,10 @@ pub(crate) fn lower(p: &mut Program) {
     let mut queried = false;
     for (index, s) in prefix.iter().enumerate() {
         let Stmt::Bind { kind, name, ty, init, pos } = s else { return; };
-        if factory.is_some() || name == "Set" || name == CLASS || locals.contains(name) { return; }
+        if name == "Set" || name == CLASS || locals.contains(name)
+            || factory.is_some_and(|(_, owner, _, _)| owner == name) { return; }
         if let ExprKind::MethodCall(base, method, args) = &init.kind {
-            if method == "of" && matches!(&base.kind, ExprKind::Var(n) if n == "Set")
+            if factory.is_none() && method == "of" && matches!(&base.kind, ExprKind::Var(n) if n == "Set")
                 && *kind != BindKind::Const && ty.is_none()
                 && (1..=MAX_SLOTS).contains(&args.len())
                 && args.iter().all(|a| scalar(a, &locals, None, &mut queried))
@@ -121,7 +122,7 @@ pub(crate) fn lower(p: &mut Program) {
             }
         }
         if ty.is_some_and(|t| t != Type::Int && t != Type::Bool)
-            || !scalar(init, &locals, None, &mut queried) { return; }
+            || !scalar(init, &locals, factory.map(|(_, owner, _, _)| owner), &mut queried) { return; }
         locals.insert(name.clone());
     }
     let Some((index, owner, count, pos)) = factory else { return; };
