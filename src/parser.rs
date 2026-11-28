@@ -236,6 +236,8 @@ fn reject_intrinsic_type_name(name: &str, pos: Pos) -> R<()> {
 
 // Temporary syntax marker, consumed only by checked static callable lowering.
 pub(crate) const APPLY_TUPLE_LITERAL_NAME: &str = "$atto_apply_tuple_literal";
+// Alternating static string labels and expression operands; consumed only by checked callable lowering.
+pub(crate) const APPLY_RECORD_LITERAL_NAME: &str = "$atto_apply_record_literal";
 
 pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
@@ -5114,6 +5116,43 @@ impl Parser {
         parsed
     }
 
+    // Bounded immediate Record profile. This is not a general Record value ABI.
+    // Preserve source order and labels until the checked lexical callable is resolved.
+    fn parse_immediate_apply_record(&mut self) -> R<Vec<Expr>> {
+        self.expect(Tok::LParen, "'(' after apply")?;
+        let pos = self.pos();
+        self.expect(Tok::LBrace, "'{' to open the Record")?;
+        self.enter()?;
+        let parsed = (|| {
+            let mut fields = Vec::new();
+            if !self.eat(&Tok::RBrace) {
+                loop {
+                    if fields.len() / 2 >= MAX_PARAMS {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                            "too many immediate apply Record fields"));
+                    }
+                    let (label, label_pos) = self.ident("a static Record field name")?;
+                    if !self.eat(&Tok::Colon) && !self.eat(&Tok::Assign) {
+                        return Err(self.expected("':' or '=' after Record field"));
+                    }
+                    let value = self.parse_expr()?;
+                    fields.push(Expr { kind: ExprKind::Str(label), pos: label_pos });
+                    fields.push(value);
+                    if self.eat(&Tok::RBrace) { break; }
+                    self.expect(Tok::Comma, "',' between Record fields")?;
+                    if self.eat(&Tok::RBrace) { break; }
+                }
+            }
+            self.expect(Tok::RParen, "')' after the apply Record")?;
+            Ok(vec![Expr {
+                kind: ExprKind::Call(APPLY_RECORD_LITERAL_NAME.to_owned(), fields),
+                pos,
+            }])
+        })();
+        self.leave();
+        parsed
+    }
+
     /// Call arguments after `(` up to and including `)`.
     fn parse_args(&mut self) -> R<Vec<Expr>> {
         self.expect(Tok::LParen, "'('")?;
@@ -5123,7 +5162,7 @@ impl Parser {
                 if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                     return Err(unsupported(self.pos(), "named arguments"));
                 }
-                if *self.peek() == Tok::Dot {
+                if *self.peek() == Tok::Ellipsis {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
                 args.push(self.parse_expr()?);
@@ -5244,6 +5283,8 @@ impl Parser {
                     if *self.peek() == Tok::LParen {
                         let args = if member == "apply" && self.immediate_apply_tuple_ahead() {
                             self.parse_immediate_apply_tuple()?
+                        } else if member == "apply" && *self.peek_at(1) == Tok::LBrace {
+                            self.parse_immediate_apply_record()?
                         } else {
                             self.parse_args()?
                         };
