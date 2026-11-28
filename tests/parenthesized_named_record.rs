@@ -104,7 +104,6 @@ fn named_record_mixes_duplicates_and_quoted_labels_reject_before_wasm() {
         ("(\"foo\":1,\"foo\":2)","E_DUPLICATE"),
         ("(\"foo\":1,2)","E_LITERAL_KIND"),
         ("(\"foo\":1,bar:2)","E_RECORD_LABEL"),
-        ("(\"foo\"=1)","E_SYNTAX"),
         ("(\"foo\":1,,\"bar\":2)","E_LITERAL_KIND"),
         ("(\"foo\":1, (\"bar\":2))","E_LITERAL_KIND"),
     ] {
@@ -414,4 +413,24 @@ fn record_bracket_fields_preserve_array_kind_and_heterogeneous_child_shapes() {
     }
     let p = binding("const Record a={x:[1,true]};");
     assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_TYPE");
+}
+
+#[test]
+fn quoted_dynrecord_equals_separator_preserves_existing_parser_and_guest_slice() {
+    let p = binding(r#"val a=("name" = "Alice", "age" = 30); val b=("name": "Alice", "age": 30);"#);
+    let typed = collection_types::analyze(&p).unwrap();
+    assert_eq!(typed[0].value.ty, typed[1].value.ty);
+    guest(r#"pub fnc main():int {val r=("first name" = 40, "age": 2); return r["first name"]+r.age;}"#);
+    guest(r#"pub fnc main():int {val r=("foo" = 40, "bar" = 2); return r.foo+r.bar;}"#);
+    for expr in [r#"(name = 1)"#, r#"("name" = 1, age = 2)"#] {
+        rejected(&format!("pub fnc main():int {{let r={expr};return 0;}}"),"E_RECORD_LABEL");
+    }
+    for expr in [r#"("x" = 1, "x": 2)"#, r#"("x" = 1, "\u{78}": 2)"#] {
+        rejected(&format!("pub fnc main():int {{let r={expr};return 0;}}"),"E_DUPLICATE");
+    }
+    assert!(compile(r#"pub fnc main():int {let r=("x" := 1);return 0;}"#).is_err());
+    let p = parse(r#"fnc f(int x):int {return x;} pub fnc main():int {return f(("x" = 1));}"#);
+    assert!(matches!(&p.funcs[1].body[0],Stmt::Return(Some(e),_)
+        if matches!(&e.kind,ExprKind::Call(_,args)
+            if args.len()==1 && matches!(&args[0].kind,ExprKind::Record(_)))));
 }

@@ -3308,7 +3308,9 @@ impl Parser {
                     "parenthesized Record requires double-quoted explicit keys")),
             };
             self.advance();
-            if !captured { self.expect(Tok::Colon, "':' after quoted Record field")?; }
+            if !captured && !self.eat(&Tok::Colon) {
+                self.expect(Tok::Assign, "':' or '=' after quoted Record field")?;
+            }
             if !seen.insert(name.clone()) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE",
                     format!("duplicate Record field '{name}'")));
