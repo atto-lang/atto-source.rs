@@ -1,0 +1,16 @@
+// expect-exit: 9
+define struct Particle {
+    x: int;
+    y: int;
+}
+type Base = <T=Particle, size=5, layout=aosoa(3)>;
+fnc main() -> int {
+    let particles: Array<infer X from Base> = [
+        make {y:10, x:1},
+        make {y:20, x:2},
+        make {y:30, x:3},
+        make {y:40, x:4}
+    ] with {size=infer};
+    particles[3].x += 5;
+    return particles.columns.x[3];
+}
