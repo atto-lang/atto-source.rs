@@ -237,7 +237,9 @@ mod tests {
         }
     }
     #[test] fn contextual_capture_count_is_bounded() {
-        let body: String = (0..64).map(|i| format!("const cap{i} = Scale::(2); ")).collect();
+        use std::fmt::Write as _;
+        let mut body = String::new();
+        for i in 0..64 { write!(&mut body, "const cap{i} = Scale::(2); ").unwrap(); }
         let accepted = program(&format!("{body}return cap63.apply(3);"));
         assert!(lower(crate::lexer::lex(&accepted).unwrap()).is_ok());
         let denied = program(&format!("{body}const extra = Scale::(2); return extra.apply(3);"));
