@@ -35,14 +35,106 @@ pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
 
+#[cfg(test)]
+mod borrow_mut_tests;
+
 pub use diag::{Diagnostic, Pos};
 
 pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Compile one `.atto` source file to a guest WebAssembly module.
+/// Migration gate for the language decision that bare *class* formals
+/// borrow by default. Existing packages keep the historical consuming ABI
+/// until they opt in; this avoids changing the meaning of source silently.
+/// The source marker is intentionally versioned and constrained to the first
+/// line. Package/CLI profile discovery can replace this migration mechanism
+/// once it is ratified without changing the checked BorrowClass ABI.
+fn prepare_borrow_default_v1(program: &mut ast::Program) -> Result<(), Diagnostic> {
+    use ast::{Type, ParamOwnership};
+    use std::collections::BTreeSet;
+    let classes: BTreeSet<String> = program.classes.iter().map(|c| c.name.clone()).collect();
+    let type_names = &program.type_names;
+
+    // Constructor, class-method and actor-method class loans require method
+    // receiver effects and inter-domain provenance not yet implemented in
+    // this compiler. Do not let v1 silently retain their legacy owned ABI.
+    for class in &program.classes {
+        for params in class.methods.iter().map(|m| m.params.as_slice())
+            .chain(class.ctor.iter().map(|c| c.params.as_slice()))
+        {
+            for p in params {
+                if let Type::Named(i) = p.ty {
+                    if classes.contains(&type_names[i as usize].0) && !p.explicit_take {
+                        return Err(Diagnostic::new(p.pos, "E_UNSUPPORTED_TYPE",
+                            "borrow-default-v1 method/constructor class formals need verified receiver and lifetime lowering; use top-level fnc for now"));
+                    }
+                }
+            }
+        }
+    }
+    for actor in &program.actors {
+        for method in &actor.methods {
+            for p in &method.params {
+                if let Type::Named(i) = p.ty {
+                    if classes.contains(&type_names[i as usize].0) && !p.explicit_take {
+                        return Err(Diagnostic::new(p.pos, "E_SHARE_DOMAIN",
+                            "borrow-default-v1 actor method class loans require explicit domain admission"));
+                    }
+                }
+            }
+        }
+    }
+    for function in &mut program.funcs {
+        for p in &mut function.params {
+            if let Type::Named(i) = p.ty {
+                if classes.contains(&type_names[i as usize].0) {
+                    if p.explicit_take {
+                        p.ownership = ParamOwnership::Take;
+                    } else if p.mutable {
+                        // Unlike a mutable owned argument, this is a
+                        // caller-proven exclusive loan over the same class
+                        // allocation. No ownership is moved or cloned.
+                        p.ty = Type::BorrowMutNamed(i);
+                        p.ownership = ParamOwnership::BorrowWrite;
+                    } else {
+                        p.ty = Type::BorrowNamed(i);
+                        p.ownership = ParamOwnership::BorrowRead;
+                    }
+                }
+            }
+        }
+    }
+    program.borrow_default_v1 = true;
+    Ok(())
+}
+
+/// Ownership contract selected by the *invoking* compiler/package, not
+/// inferred from a callee's implementation. Imported signatures will require
+/// compatible versioned metadata before cross-package linking is supported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnershipProfile {
+    Legacy,
+    BorrowDefaultV1,
+}
+
+/// Compile using a source's first-line migration marker when present.
+/// Existing browser ABI and unversioned source behavior remain unchanged.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, None)
+}
+
+/// An explicit compiler/package integration point. A build driver may select
+/// the version without injecting source text; conflicting inline markers
+/// reject instead of silently overriding ownership semantics.
+pub fn compile_with_profile(
+    source: &str, profile: OwnershipProfile
+) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, Some(profile))
+}
+
+/// Compile one `.atto` source file to a guest WebAssembly module.
+fn compile_inner(source: &str, selected: Option<OwnershipProfile>) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -96,7 +188,38 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    // Versioned opt-in until the package-level compatibility migration is
+    // approved. Unversioned source keeps legacy ownership so existing code
+    // cannot silently stop consuming class parameters.
+    // Misplaced version headers must reject rather than silently using the
+    // *legacy consuming* ABI. An innocuous comment above the marker, or a
+    // copy/pasted header in the wrong position, cannot change ownership
+    // meaning without an explicit diagnostic. Support an ordinary UTF-8
+    // BOM on the very first line only.
+    let first_line = source.lines().next().unwrap_or("")
+        .trim_start_matches('\u{feff}').trim_end_matches('\r');
+    let header = match first_line {
+        "// atto-ownership: borrow-default-v1" => Some(OwnershipProfile::BorrowDefaultV1),
+        other if other.starts_with("// atto-ownership:") =>
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_PROFILE",
+                "unknown AttoLang ownership profile; use borrow-default-v1")),
+        _ => None,
+    };
+    if let (Some(explicit), Some(header_profile)) = (selected, header) {
+        if explicit != header_profile {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_PROFILE",
+                "explicit compiler ownership profile conflicts with source ownership marker"));
+        }
+    }
+    let borrow_default_v1 = selected.or(header).unwrap_or(OwnershipProfile::Legacy)
+        == OwnershipProfile::BorrowDefaultV1;
+    for (i, line) in source.lines().enumerate().skip(1) {
+        if line.trim_start().starts_with("// atto-ownership:") {
+            return Err(Diagnostic::new(Pos { line: i as u32 + 1, col: 1 },
+                "E_PROFILE", "ownership migration marker must be on the first source line"));
+        }
+    }
+    let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -118,6 +241,23 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     } else {
         parser::Parser::new(toks).parse_program()?
     };
+    if borrow_default_v1 {
+        prepare_borrow_default_v1(&mut program)?;
+    } else {
+        // The new canonical 'mut Foo p' spelling is deliberately unavailable
+        // in legacy modules. Do not silently interpret it as an owned mutable
+        // parameter when migration metadata was omitted.
+        for param in program.funcs.iter().flat_map(|f| f.params.iter()) {
+            if param.ownership == ast::ParamOwnership::BorrowWrite {
+                return Err(Diagnostic::new(param.pos, "E_PROFILE",
+                    "mut Foo borrowed formals require borrow-default-v1"));
+            }
+            if param.ownership == ast::ParamOwnership::Take {
+                return Err(Diagnostic::new(param.pos, "E_PROFILE",
+                    "take! Foo consuming formals require borrow-default-v1; legacy owned Foo remains the unversioned form"));
+            }
+        }
+    }
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;

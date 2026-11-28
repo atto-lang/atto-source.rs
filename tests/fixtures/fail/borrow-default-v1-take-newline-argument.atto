@@ -1,0 +1,10 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_SYNTAX
+// Cross-line take and Bang cannot bind into an ownership operation.
+define class Parcel as pub let int value = 42; end
+fnc consume(take! Parcel p): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return consume(take
+  ! parcel);
+}

@@ -1,0 +1,5 @@
+// expect-error: E_PROFILE
+// java: rejects
+define class Counter as pub mut int value = 1; end
+fnc update(mut Counter p): void { p.value = 42; }
+pub fnc main(): int { return 42; }

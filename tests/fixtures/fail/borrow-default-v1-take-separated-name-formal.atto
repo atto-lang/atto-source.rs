@@ -1,0 +1,6 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_SYNTAX
+// Name-first form needs exactly take! without an intervening space.
+define class Parcel as pub let int value = 42; end
+fnc consume(p: take ! Parcel): int { return p.value; }
+pub fnc main(): int { return 42; }

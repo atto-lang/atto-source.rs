@@ -1,0 +1,13 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+define class Parcel as
+    pub let int left = 48;
+    pub let int right = 6;
+end
+fnc calculate(Parcel p): int { return p.left - p.right; }
+fnc forward(Parcel p): int { return calculate(borrow! p); }
+fnc outer(Parcel p): int { return forward(p); }
+pub fnc main(): int {
+    let parcel = new Parcel();
+    return outer(parcel);
+}

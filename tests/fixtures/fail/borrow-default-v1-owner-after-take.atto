@@ -1,0 +1,9 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_MOVED
+define class Parcel as pub let int value = 42; end
+fnc consume(take! Parcel p): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val answer = consume(take! parcel);
+  return answer + parcel.value;
+}

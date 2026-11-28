@@ -1,0 +1,6 @@
+// prior ordinary comment
+// atto-ownership: borrow-default-v1
+// expect-error: E_PROFILE
+// java: rejects
+// The marker in the wrong position must never silently use legacy moving Foo.
+pub fnc main(): int { return 42; }

@@ -1,0 +1,5 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_UNSUPPORTED_TYPE
+// Primitive formals cannot use the consuming class-ownership mode.
+fnc consume(n: take! int): int { return n; }
+pub fnc main(): int { return 42; }

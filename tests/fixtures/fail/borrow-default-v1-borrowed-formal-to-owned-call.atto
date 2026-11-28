@@ -1,0 +1,10 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_BORROW
+// Readonly formal cannot satisfy an owned callee, even with explicit take!.
+define class Parcel as pub let int value = 42; end
+fnc consume(take! Parcel p): int { return p.value; }
+fnc inspect(Parcel p): int { return consume(take! p); }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return inspect(parcel);
+}

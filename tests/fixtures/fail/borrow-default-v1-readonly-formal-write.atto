@@ -1,0 +1,10 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_BORROW
+// 'Foo' parameter is non-owning read-only even if caller declared mut.
+define class Parcel as pub mut int value = 1; end
+fnc change(Parcel p): void { p.value = 42; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  change(parcel);
+  return 42;
+}

@@ -1,0 +1,21 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+define class Parcel as
+    pub let int prefix = 123;
+    pub let bool enabled = true;
+    pub let float weight = 1.5;
+end
+fnc enabled(Parcel p): bool { return p.enabled; }
+fnc weight(Parcel p): float { return p.weight; }
+fnc inspect(Parcel p, int delta): int { return p.prefix + delta; }
+pub fnc main(): int {
+    let parcel = new Parcel();
+    val yes = enabled(parcel);
+    val amount = weight(borrow! parcel);
+    if yes then
+        if amount < 1.5 then return 1; fi
+        if amount > 1.5 then return 2; fi
+        return inspect(parcel, -81);
+    fi
+    return 3;
+}

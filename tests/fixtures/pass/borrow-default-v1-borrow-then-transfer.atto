@@ -1,0 +1,11 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+// Borrowing does not consume the caller; later explicit transfer does.
+define class Parcel as pub let int value = 21; end
+fnc inspect(Parcel p): int { return p.value; }
+fnc consume(take! Parcel p): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val read_value = inspect(parcel);
+  return read_value + consume(take! parcel);
+}

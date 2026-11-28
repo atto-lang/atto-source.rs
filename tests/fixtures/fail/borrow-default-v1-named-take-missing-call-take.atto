@@ -1,0 +1,9 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_OWNERSHIP
+// Name-first consuming formals do not permit implicit owner transfer.
+define class Parcel as pub let int value = 42; end
+fnc consume(p: take! Parcel): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return consume(parcel);
+}

@@ -1,0 +1,12 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+// java: rejects
+// The pre-existing type-first Foo mut p spelling also resolves to an
+// exclusive nonowning parameter under the v1 opt-in profile.
+define class Parcel as pub mut int value = 1; end
+fnc update(Parcel mut p): void { p.value = 42; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  update(mut parcel);
+  return parcel.value;
+}

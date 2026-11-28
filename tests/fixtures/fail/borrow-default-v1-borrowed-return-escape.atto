@@ -1,0 +1,10 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_BORROW
+// Returning a loan as an owned Parcel would escape its caller lifetime.
+define class Parcel as pub let int value = 42; end
+fnc steal(Parcel p): Parcel { return p; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val stolen = steal(parcel);
+  return stolen.value;
+}
