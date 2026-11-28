@@ -47,3 +47,24 @@ fn nominal_names_cannot_be_rebound_as_scalars() {
 fn contextual_word_does_not_reserve_callable_name() {
     assert!(compile("fnc denote(int n): int { return n; } pub fnc main(): int { return denote(42); }").is_ok());
 }
+
+#[test]
+fn forward_scalar_denotations_preserve_wasm_identity() {
+    let control = "pub fnc main(): int { const int n = 42; return n; }";
+    let source = "denote type First = Second; denote type Second = Third; denote type Third = int; pub fnc main(): First { const Second n = 42; return n; }";
+    assert_eq!(compile(control).unwrap(), compile(source).unwrap());
+}
+
+#[test]
+fn unused_cycles_and_unknown_targets_have_distinct_diagnostics() {
+    for (decl, code) in [
+        ("denote type A = A;", "E_DENOTE_CYCLE"),
+        ("denote type A = B; denote type B = A;", "E_DENOTE_CYCLE"),
+        ("denote type A = B; denote type B = C; denote type C = B;", "E_DENOTE_CYCLE"),
+        ("denote type A = Missing;", "E_DENOTE_UNKNOWN"),
+    ] {
+        let source = format!("{decl} pub fnc main(): int {{ return 42; }}");
+        let error = Parser::new(lexer::lex(&source).unwrap()).parse_program().expect_err("invalid denotation");
+        assert_eq!(error.code, code, "{source}");
+    }
+}
