@@ -140,6 +140,7 @@ const STRING_HELPERS: u32 = 8;
 
 struct Layout {
     imports: Vec<Import>,
+    class_getters: Vec<Option<(Type, Type, u32)>>,
     helpers: u32,
     quantity_div: Option<u32>,
     refinement_check: Option<u32>,
@@ -873,12 +874,21 @@ impl Emit<'_> {
                 self.close();
             }
             TExpr::Call(f, args) => {
-                for a in args {
-                    self.expr(a);
+                if let Some((owner, result, offset)) = self.l.class_getters
+                    .get(*f as usize).copied().flatten()
+                    .filter(|(owner, result, _)| args.len() == 1 && args[0].ty == *owner
+                        && v.ty == *result && matches!(&args[0].e, TExpr::Local(_))) {
+                    debug_assert_eq!(args[0].ty, owner);
+                    self.expr(&args[0]);
+                    field_op(&mut self.code, result, offset, false);
+                } else {
+                    for a in args {
+                        self.expr(a);
+                    }
+                    let at = self.code.len();
+                    self.call(self.l.func(*f));
+                    self.calls.push((at, self.code.len(), *f));
                 }
-                let at = self.code.len();
-                self.call(self.l.func(*f));
-                self.calls.push((at, self.code.len(), *f));
             }
             TExpr::Builtin(b, x, y) => {
                 self.expr(x);
@@ -1562,12 +1572,36 @@ fn refinement_check_body() -> (Sig, Vec<u8>, Vec<u8>) {
     c.extend_from_slice(&[0x0b,0x20,0,0x0b]);
     (Sig(vec![I64,I64,I64,I32],vec![I64]),vec![0],c)
 }
+// First current-main forward-port slice: no checker or ownership semantic
+// changes. A completed typed ordinary class getter is a nonrecursive leaf;
+// it cannot allocate, write, escape, throw, park or issue a host call.
+// A legacy consuming formal is still consumed by the checker, even though
+// its machine-level transfer is elided. Existing checked method receivers
+// are also eligible. Do not infer borrowed/default ownership from this proof.
+fn verified_class_getter(f: &crate::check::TFunc) -> Option<(Type, Type, u32)> {
+    let [owner @ Type::Class(_)] = f.params.as_slice() else { return None };
+    if !f.locals.is_empty() || !matches!(f.ret, Type::Int | Type::Bool | Type::Float) {
+        return None;
+    }
+    let [TStmt::Return(Some(TE { e: TExpr::FieldGet { obj, offset }, ty }))] =
+        f.body.as_slice() else { return None };
+    if *ty != f.ret || obj.ty != *owner || !matches!(&obj.e, TExpr::Local(0)) {
+        return None;
+    }
+    Some((*owner, *ty, *offset))
+}
+
 fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let base_helpers = str_base + if p.strings { STRING_HELPERS } else { 0 };
     let layout = Layout {
         imports: p.imports.clone(),
+        class_getters: if p.actors.is_empty() && p.generators.is_empty() && !p.guest_eh {
+            p.funcs.iter().map(verified_class_getter).collect()
+        } else {
+            vec![None; p.funcs.len()]
+        },
         helpers: base_helpers + 2 * u32::from(quantity_division),
         quantity_div: quantity_division.then_some(base_helpers),
         refinement_check: quantity_division.then_some(base_helpers + 1),
@@ -2006,3 +2040,26 @@ mod allocator_safety_tests {
 
 // Explicit isolated continuation ABI; ordinary emission remains unchanged.
 pub(crate) mod owned_unwind_v1;
+
+#[cfg(test)]
+mod class_getter_current_main_tests {
+    const S: &str = "define class Parcel as pub let int pad = 99; pub let int value = 42; pub get(): int { return self.value; } end\npub fnc main(): int { let p = new Parcel(); return p.get(); }";
+    #[test]
+    fn checked_method_receiver_matches_direct_field_bytes() {
+        let direct = S.replace("return p.get();", "return p.value;");
+        assert_eq!(crate::compile(S).expect("getter"), crate::compile(&direct).expect("field"));
+    }
+    #[test]
+    fn checked_getter_effectful_or_computed_receiver_is_not_elided() {
+        let effect = S.replace("return self.value;", "stdio.print(1); return self.value;");
+        assert_ne!(crate::compile(&effect).expect("effect"), crate::compile(&effect.replace("return p.get();", "return p.value;")).expect("direct"));
+        let computed = S.replace("return p.get();", "return new Parcel().get();");
+        let local = S.replace("return p.get();", "let q = new Parcel(); return q.value;");
+        assert_ne!(crate::compile(&computed).expect("computed"), crate::compile(&local).expect("local"));
+    }
+    #[test]
+    fn legacy_consumption_is_not_relaxed_by_physical_elision() {
+        let s = "define class Parcel as pub let int value = 42; end\nfnc get(Parcel p): int { return p.value; }\npub fnc main(): int { let p = new Parcel(); return get(p) + p.value; }";
+        assert!(crate::compile(s).is_err());
+    }
+}
