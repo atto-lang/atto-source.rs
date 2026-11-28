@@ -8,6 +8,7 @@ use atto_compiler::target_syntax::parse_target_declarations;
 const INT_FORMS: &[&str] = &[
     "fnc calculate(int x) -> int { return x * 2; }",
     "fnc calculate(int x): int { return x * 2; }",
+    "fnc <int> calculate(int x) { return x * 2; }",
     "fnc calculate(int x): int -> { return x * 2; }",
     "fnc int <- calculate(int x) { return x * 2; }",
     "int <- calculate(int x) { return x * 2; }",
@@ -206,5 +207,44 @@ fn return_first_out_of_line_class_method_compiles_through_checked_guest_lowering
         let guest = compile(&src).unwrap_or_else(|e|
             panic!("return-first out-of-line class method {body}: {e}"));
         assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn angle_return_header_uses_normal_typed_parser_and_target_scanner() {
+    let prefix = "fnc <int> twice(int x) { return x * 2; }\npub fnc main() -> int { return twice(21); }";
+    let suffix = "fnc twice(int x): int { return x * 2; }\npub fnc main() -> int { return twice(21); }";
+    let a = Parser::new(lex(prefix).unwrap()).parse_program().unwrap();
+    let b = Parser::new(lex(suffix).unwrap()).parse_program().unwrap();
+    assert_eq!(a.funcs[0].ret, b.funcs[0].ret);
+    assert_eq!(a.funcs[0].params[0].ty, b.funcs[0].params[0].ty);
+    parse_target_declarations(&lex(prefix).unwrap()).unwrap();
+    // These sources have identical executable meaning; emitted bytes may
+    // retain source location metadata, so check executable compilation here.
+    for source in [prefix, suffix] {
+        assert_eq!(&compile(source).unwrap()[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn angle_return_nested_type_and_negative_controls() {
+    let src = "fnc <Option<Result<int,string>>> nested() { return None; }\npub fnc main() -> int { return 0; }";
+    let p = Parser::new(lex(src).unwrap()).parse_program().unwrap();
+    assert_eq!(p.funcs[0].ret, Type::OptionResultIntStr);
+    for (decl, code) in [
+        ("fnc <int> f(): int { return 1; }", "E_RETURN_ANNOTATION"),
+        ("fnc <int> f() {}", "E_RETURN"),
+    ] {
+        let src = format!("{decl}\npub fnc main() -> int {{ return 0; }}");
+        assert_eq!(compile(&src).unwrap_err().code, code, "{decl}");
+    }
+    for decl in [
+        "fnc <> f() { return 1; }",
+        "fnc <int f() { return 1; }",
+        "fnc <int,string> f() { return 1; }",
+        "fnc <Missing> f() { return 1; }",
+    ] {
+        let src = format!("{decl}\npub fnc main() -> int {{ return 0; }}");
+        assert!(compile(&src).is_err(), "{decl}");
     }
 }
