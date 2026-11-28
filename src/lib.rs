@@ -50,6 +50,7 @@ pub mod detached_io;
 pub mod parser;
 mod raw_pointer_slot;
 mod struct_value_guest;
+mod bounded_set_guest;
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
@@ -622,7 +623,7 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     let ordinary = if target && !explicit_target {
         parser::Parser::new(toks.clone()).parse_program().ok()
     } else { None };
-    let program = if let Some(program) = ordinary {
+    let mut program = if let Some(program) = ordinary {
         program
     } else if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
@@ -670,6 +671,9 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
+    if visibility.exports.is_empty() {
+        bounded_set_guest::lower(&mut program);
+    }
     let typed = check::check(&program)?;
     actor_stack_bound::verify(&typed)?;
     if javascript {
