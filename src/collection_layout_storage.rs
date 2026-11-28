@@ -409,3 +409,174 @@ mod array_slot_tests {
         assert_eq!(a.deep_copy().unwrap().len(), 0);
     }
 }
+
+
+/// Host-only reference model for scalar Map ownership. Copying a Map
+/// duplicates its entry table; copying a containing field retains its
+/// identity. This is not guest lowering or an Atto contextual allocator.
+pub mod scalar_map_ownership {
+    use std::{collections::BTreeMap, rc::Rc};
+    const MAX_ENTRIES: usize = 64;
+    const MAX_KEY_BYTES: usize = 256;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum MapError { Capacity, KeySize, DuplicateKey, ReadOnly, FixedSlot }
+
+    #[derive(Debug, Default)]
+    pub struct ScalarMap { entries: BTreeMap<String, i64> }
+
+    impl ScalarMap {
+        pub fn from_entries(entries: &[(&str, i64)]) -> Result<Self, MapError> {
+            if entries.len() > MAX_ENTRIES { return Err(MapError::Capacity); }
+            let mut result = Self::default();
+            for &(key, value) in entries {
+                if result.entries.contains_key(key) { return Err(MapError::DuplicateKey); }
+                result.insert(key, value)?;
+            }
+            Ok(result)
+        }
+        pub fn len(&self) -> usize { self.entries.len() }
+        pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+        pub fn get(&self, key: &str) -> Option<i64> { self.entries.get(key).copied() }
+        pub fn insert(&mut self, key: &str, value: i64) -> Result<Option<i64>, MapError> {
+            if key.len() > MAX_KEY_BYTES { return Err(MapError::KeySize); }
+            if let Some(old) = self.entries.get_mut(key) {
+                return Ok(Some(std::mem::replace(old, value)));
+            }
+            if self.entries.len() >= MAX_ENTRIES { return Err(MapError::Capacity); }
+            self.entries.insert(key.to_owned(), value);
+            Ok(None)
+        }
+        pub fn remove(&mut self, key: &str) -> Option<i64> { self.entries.remove(key) }
+        pub fn copy_entries(&self) -> Self { Self { entries: self.entries.clone() } }
+    }
+
+    /// Local, non-Send field slot. No backing Rc, Weak, or mutable reference
+    /// escapes this API. Replacement never mutates the retained allocation.
+    #[derive(Debug)]
+    pub struct MapFieldSlot {
+        map: Rc<ScalarMap>,
+        replaceable: bool,
+        referent_mutable: bool,
+    }
+    impl MapFieldSlot {
+        pub fn new(map: ScalarMap, replaceable: bool, referent_mutable: bool) -> Self {
+            Self { map: Rc::new(map), replaceable, referent_mutable }
+        }
+        pub fn shallow_copy(&self) -> Self {
+            Self { map: Rc::clone(&self.map), replaceable: self.replaceable,
+                referent_mutable: self.referent_mutable }
+        }
+        pub fn deep_copy(&self) -> Self {
+            Self::new(self.map.copy_entries(), self.replaceable, self.referent_mutable)
+        }
+        pub fn get(&self, key: &str) -> Option<i64> { self.map.get(key) }
+        pub fn len(&self) -> usize { self.map.len() }
+        pub fn is_empty(&self) -> bool { self.map.is_empty() }
+        pub fn replace(&mut self, fresh: ScalarMap) -> Result<(), MapError> {
+            if !self.replaceable { return Err(MapError::FixedSlot); }
+            self.map = Rc::new(fresh);
+            Ok(())
+        }
+        fn unique_mut(&mut self) -> Result<&mut ScalarMap, MapError> {
+            if !self.referent_mutable { return Err(MapError::ReadOnly); }
+            Rc::get_mut(&mut self.map).ok_or(MapError::ReadOnly)
+        }
+        pub fn insert(&mut self, key: &str, value: i64) -> Result<Option<i64>, MapError> {
+            self.unique_mut()?.insert(key, value)
+        }
+        pub fn remove(&mut self, key: &str) -> Result<Option<i64>, MapError> {
+            Ok(self.unique_mut()?.remove(key))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        fn initial() -> ScalarMap { ScalarMap::from_entries(&[("old", 20)]).unwrap() }
+
+        #[test]
+        fn direct_map_copy_has_independent_presence_and_values() {
+            let mut a = ScalarMap::from_entries(&[("old", 1)]).unwrap();
+            let mut b = a.copy_entries();
+            assert_eq!(a.insert("left", 10), Ok(None));
+            assert_eq!(b.insert("right", 20), Ok(None));
+            assert_eq!(a.insert("left", 20), Ok(Some(10)));
+            assert_eq!(b.insert("right", 22), Ok(Some(20)));
+            assert_eq!(a.get("right"), None);
+            assert_eq!(b.get("left"), None);
+            assert_eq!(a.get("left").unwrap() + b.get("right").unwrap(), 42);
+            assert_eq!(a.remove("old"), Some(1));
+            assert_eq!(b.get("old"), Some(1));
+        }
+
+        #[test]
+        fn containing_copy_denies_all_shared_mutations() {
+            let mut a = MapFieldSlot::new(initial(), true, true);
+            let mut b = a.shallow_copy();
+            let mut c = b.shallow_copy();
+            for slot in [&mut a, &mut b, &mut c] {
+                assert_eq!(slot.insert("old", 99), Err(MapError::ReadOnly));
+                assert_eq!(slot.insert("new", 99), Err(MapError::ReadOnly));
+                assert_eq!(slot.remove("old"), Err(MapError::ReadOnly));
+                assert_eq!(slot.get("old"), Some(20));
+                assert_eq!(slot.get("new"), None);
+                assert_eq!(slot.len(), 1);
+            }
+            b.replace(initial()).unwrap();
+            b.insert("old", 22).unwrap();
+            assert_eq!(a.get("old").unwrap() + b.get("old").unwrap() + c.get("old").unwrap(), 62);
+            assert_eq!(a.insert("new", 99), Err(MapError::ReadOnly));
+            assert_eq!(c.insert("new", 99), Err(MapError::ReadOnly));
+            drop(c);
+            assert_eq!(a.insert("new", 99), Ok(None));
+            assert_eq!(b.get("new"), None);
+        }
+
+        #[test]
+        fn slot_and_referent_mutability_are_independent() {
+            let mut fixed = MapFieldSlot::new(initial(), false, true);
+            let mut alias = fixed.shallow_copy();
+            assert_eq!(fixed.replace(initial()), Err(MapError::FixedSlot));
+            assert_eq!(alias.replace(initial()), Err(MapError::FixedSlot));
+            assert_eq!(fixed.insert("old", 7), Err(MapError::ReadOnly));
+            drop(alias);
+            assert_eq!(fixed.insert("old", 7), Ok(Some(20)));
+            let mut readonly = MapFieldSlot::new(initial(), true, false);
+            readonly.replace(initial()).unwrap();
+            assert_eq!(readonly.insert("old", 7), Err(MapError::ReadOnly));
+            assert_eq!(readonly.remove("old"), Err(MapError::ReadOnly));
+        }
+
+        #[test]
+        fn deep_copy_preserves_existing_shared_denial() {
+            let mut a = MapFieldSlot::new(initial(), true, true);
+            let b = a.shallow_copy();
+            let mut c = b.deep_copy();
+            c.insert("old", 22).unwrap();
+            assert_eq!(a.get("old"), Some(20));
+            assert_eq!(b.get("old"), Some(20));
+            assert_eq!(c.get("old"), Some(22));
+            assert_eq!(a.insert("old", 42), Err(MapError::ReadOnly));
+            drop(b);
+            assert_eq!(a.insert("old", 42), Ok(Some(20)));
+            assert_eq!(c.get("old"), Some(22));
+        }
+
+        #[test]
+        fn bounded_keys_capacity_and_duplicate_denials() {
+            assert!(matches!(ScalarMap::from_entries(&[("a", 1), ("a", 2)]), Err(MapError::DuplicateKey)));
+            let mut a = ScalarMap::default();
+            assert_eq!(a.insert(&"é".repeat(MAX_KEY_BYTES / 2 + 1), 1), Err(MapError::KeySize));
+            for i in 0..MAX_ENTRIES { a.insert(&i.to_string(), i as i64).unwrap(); }
+            assert_eq!(a.insert("overflow", 1), Err(MapError::Capacity));
+            assert_eq!(a.insert("0", 42), Ok(Some(0)));
+            assert_eq!(a.len(), MAX_ENTRIES);
+            assert_eq!(a.get("0"), Some(42));
+            assert_eq!(a.get("overflow"), None);
+            assert_eq!(a.remove("1"), Some(1));
+            assert_eq!(a.insert("new", 22), Ok(None));
+            assert_eq!(a.len(), MAX_ENTRIES);
+        }
+    }
+}
