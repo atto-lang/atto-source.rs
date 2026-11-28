@@ -25,7 +25,7 @@ fn error(pos: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic
 }
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(n), pos: _ }) if n.len() <= 96
+        Some(Token { tok: Tok::Ident(n), pos: _, .. }) if n.len() <= 96
             && !matches!(n.as_str(), "pub" | "export" | "class" | "fnc" | "as" | "end") =>
             Ok(n.clone()),
         Some(x) => Err(error(x.pos, "E_SYNTAX", "expected bounded export identifier")),
@@ -156,7 +156,7 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
             if !word(&t, i + 1, "final") {
                 return Err(error(pos, "E_UNSUPPORTED", "protected field requires final class-only profile"));
             }
-            out.push(Token { tok: Tok::Ident("private".into()), pos });
+            out.push(Token { tok: Tok::Ident("private".into()), pos, string_quote: None });
             i += 1;
             continue;
         }
@@ -165,7 +165,7 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
             if word(&out, n - 4, "private") && word(&out, n - 3, "let") &&
                 matches!(out[n - 2].tok, Tok::Ident(_)) &&
                 matches!(out[n - 1].tok, Tok::Ident(_)) {
-                out.push(Token { tok: Tok::Assign, pos });
+                out.push(Token { tok: Tok::Assign, pos, string_quote: None });
                 i += 1;
                 continue;
             }
@@ -190,7 +190,7 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
                 if exports.iter().any(|e| e.name == *id && e.kind == "class" &&
                        e.visibility == Visibility::Public) &&
                     !(j > 0 && word(&out, j - 1, "pub")) {
-                    lowered.push(Token { tok: Tok::Ident("pub".into()), pos: out[j].pos });
+                    lowered.push(Token { tok: Tok::Ident("pub".into()), pos: out[j].pos, string_quote: None });
                 }
             }
         }
