@@ -450,9 +450,11 @@ fn constant_default(value: &DefaultLiteral, ty: Type, tmp: u32, pos: Pos) -> R<T
     }
 }
 
+type OverloadTable = BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>>;
+
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
-    overloads: BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>>,
+    overloads: OverloadTable,
     presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>>,
     omission_defaults: Vec<Vec<Option<DefaultLiteral>>>,
     names: BTreeMap<String, Vec<usize>>,
@@ -1008,7 +1010,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // ---- top-level signatures keep indices 0..funcs.len()
     let mut sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)> = BTreeMap::new();
-    let mut overloads: BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>> = BTreeMap::new();
+    let mut overloads: OverloadTable = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None")
@@ -1068,7 +1070,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for (i, f) in p.funcs.iter().enumerate() {
         if let Some(family) = presence_families.get_mut(&f.name) {
             if f.is_generator || f.params.iter().any(|q| !matches!(q.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::OptionInt | Type::OptionResultIntStr)) || f.params.iter().any(|q| q.omittable &&
-                (q.mutable || (!matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr) && !(q.ty == Type::Int && q.omission_default.is_some())))) {
+                (q.mutable || !(matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr) || (q.ty == Type::Int && q.omission_default.is_some())))) {
                 return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "unsupported omittable overload family"));
             }
             let formals = f.params.iter().map(|q| Ok(crate::call_presence_v2::Formal {
