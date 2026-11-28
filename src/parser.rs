@@ -3035,6 +3035,12 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        // The recursive annotation path consumes more native stack per
+        // level than the ordinary parser budget models. Fail before descent.
+        if self.depth >= 32 {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda annotation exceeds bounded parser stack profile"));
+        }
         self.enter()?;
         let result = (|| {
             let mut name = match self.peek().clone() {
@@ -3072,6 +3078,12 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        // Each nested lambda recursively enters the expression precedence
+        // parser. Bound this path separately before growing the native stack.
+        if self.depth >= 32 {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda nesting exceeds bounded parser stack profile"));
+        }
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
