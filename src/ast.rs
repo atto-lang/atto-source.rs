@@ -297,6 +297,8 @@ pub struct Func {
 
 #[derive(Clone, Debug)]
 pub struct Param {
+    /// Independent name-position omission marker; never an Option type tag.
+    pub omittable: bool,
     pub name: String,
     pub ty: Type,
     pub mutable: bool,

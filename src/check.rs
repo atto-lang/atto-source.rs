@@ -440,6 +440,7 @@ struct ActorInfo {
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
     overloads: BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>>,
+    presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -1026,6 +1027,35 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
     }
 
+    // The full family is kept for any name with an omittable formal.
+    // Do not let the legacy name/arity table bypass provenance lowering.
+    if p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.omittable)) || c.methods.iter().any(|m| m.params.iter().any(|q| q.omittable)))
+        || p.actors.iter().any(|a| a.methods.iter().any(|m| m.params.iter().any(|q| q.omittable))) {
+        return Err(Diagnostic::new(Pos::default(), "E_UNSUPPORTED", "omittable method and constructor ABI is not implemented"));
+    }
+    let mut presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>> = BTreeMap::new();
+    for f in &p.funcs {
+        if f.params.iter().any(|q| q.omittable) {
+            if f.name == "main" || f.is_generator || f.params.len() + f.params.iter().filter(|q| q.omittable).count() > crate::parser::MAX_PARAMS {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "entrypoints, generators and over-budget hidden parameter frames cannot have omittable parameters in this slice"));
+            }
+            presence_families.entry(f.name.clone()).or_default();
+        }
+    }
+    for (i, f) in p.funcs.iter().enumerate() {
+        if let Some(family) = presence_families.get_mut(&f.name) {
+            if f.is_generator || f.params.iter().any(|q| !matches!(q.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::OptionInt | Type::OptionResultIntStr)) || f.params.iter().any(|q| q.omittable &&
+                (q.mutable || !matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr))) {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "unsupported omittable overload family"));
+            }
+            let formals = f.params.iter().map(|q| Ok(crate::call_presence_v2::Formal {
+                ty: res(q.ty)?, omittable: q.omittable,
+                none_default: false, omission_default: false,
+            })).collect::<R<Vec<_>>>()?;
+            family.push((i as u32, formals, res(f.ret)?));
+        }
+    }
+
     // ---- member function indices follow the top-level functions
     let mut next = p.funcs.len() as u32;
     let mut take = || {
@@ -1239,6 +1269,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let g = Globals {
         sigs,
         overloads,
+        presence_families,
         names,
         classes,
         enums: &p.enums,
@@ -1319,12 +1350,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             });
             continue;
         }
-        let named: Vec<(&str, Type, bool)> = f
+        let mut named: Vec<(&str, Type, bool)> = f
             .params
             .iter()
             .zip(&params)
             .map(|(q, t)| (q.name.as_str(), *t, q.mutable))
             .collect();
+        let hidden_names = f.params.iter().enumerate().filter(|(_, q)| q.omittable)
+            .map(|(i, _)| format!("\0omitted:{i}")).collect::<Vec<_>>();
+        named.extend(hidden_names.iter().map(|n| (n.as_str(), Type::Bool, false)));
         let body = body_check(
             &g,
             BodyCheckInput {
@@ -1335,7 +1369,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         )?;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
-            params,
+            params: named.iter().map(|n| n.1).collect(),
             ret,
             locals: body.1,
             body: body.0,
@@ -1531,6 +1565,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for (m, mi) in a.methods.iter().zip(&info.methods) {
             for (q, t) in m.params.iter().zip(&mi.params).map(|(q, t)| (q, *t)).chain(std::iter::once((
                 &Param {
+                    omittable: false,
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
@@ -5444,6 +5479,20 @@ impl<'a> FnCx<'a> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if name == "\0is_omitted" {
+            if self.owner != Owner::TopLevel || args.len() != 1 {
+                return Err(Diagnostic::new(pos, "E_OMISSION_PROVENANCE", "is omitted requires an omittable formal"));
+            }
+            if let ExprKind::Var(n) = &args[0].kind {
+                if let Some(local) = self.lookup(n) {
+                    let hidden = format!("\0omitted:{}", local.slot);
+                    if let Some(bit) = self.lookup(&hidden) {
+                        return Ok(TE { e: TExpr::Local(bit.slot), ty: Type::Bool });
+                    }
+                }
+            }
+            return Err(Diagnostic::new(pos, "E_OMISSION_PROVENANCE", "is omitted requires an original omittable formal binding"));
+        }
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
         }
@@ -5595,6 +5644,47 @@ impl<'a> FnCx<'a> {
             if self.g.names.contains_key(name) {
                 return Err(isolation(pos, me, "file/module callable", name));
             }
+        }
+        if let Some(family) = self.g.presence_families.get(name) {
+            use crate::call_presence_v2::{self, Item, Origin, Error};
+            let items = args.iter().map(|a| {
+                if matches!(&a.kind, ExprKind::Var(n) if (n == "omit" || n == "_") && self.lookup(n).is_none()) {
+                    Ok(Item::Hole)
+                } else {
+                    self.overload_item(a)
+                }
+            }).collect::<R<Vec<_>>>()?;
+            let candidates = family.iter().map(|s| s.1.clone()).collect::<Vec<_>>();
+            let plan = call_presence_v2::select(&candidates, &items).map_err(|err| {
+                Diagnostic::new(pos, match err {
+                    Error::Ambiguous => "E_AMBIGUOUS",
+                    Error::NoMatch => "E_ARITY",
+                    _ => "E_DUPLICATE",
+                }, format!("omittable overload selection for '{name}' failed: {err:?}"))
+            })?;
+            let (idx, formals, ret) = family[plan.candidate].clone();
+            let mut typed = Vec::new();
+            let mut provenance = Vec::new();
+            for (formal, slot) in formals.iter().zip(&plan.slots) {
+                let supplied = match slot.origin {
+                    Origin::Supplied(i) => {
+                        let value = self.consume_expected(&args[i], formal.ty)?;
+                        if value.ty != formal.ty { return Err(type_err(pos, "selected argument type differs")); }
+                        typed.push(value);
+                        true
+                    }
+                    Origin::ExplicitHole(_) | Origin::Absent => {
+                        let none = Expr { kind: ExprKind::Var("None".into()), pos };
+                        typed.push(self.consume_expected(&none, formal.ty)?);
+                        false
+                    }
+                };
+                if formal.omittable {
+                    provenance.push(TE { e: TExpr::Bool(!supplied), ty: Type::Bool });
+                }
+            }
+            typed.extend(provenance);
+            return Ok(TE { e: TExpr::Call(idx, typed), ty: ret });
         }
         let key = (name.to_string(), args.len());
         if let Some(family) = self.g.overloads.get(&key) {
