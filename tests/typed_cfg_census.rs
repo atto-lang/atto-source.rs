@@ -81,3 +81,51 @@ fn nested_loop_transfers_bind_to_nearest_loop() {
     let cont = main.points.iter().find(|p| p.kind == PointKind::Continue).unwrap();
     assert_eq!(main.points[cont.successors[0]].kind, PointKind::LoopHead);
 }
+
+#[test]
+fn scalar_worklist_converges_on_actual_compiler_cycles() {
+    use check::typed_cfg_census::scalar_liveness;
+    let program = checked(include_str!("fixtures/pass/18-continue-in-for.atto"));
+    let graphs = from_checked_program(&program).unwrap();
+    let facts = scalar_liveness(&program).unwrap();
+    for (graph, fact) in graphs.iter().zip(&facts) {
+        assert_eq!(graph.name, fact.function);
+        for (id, point) in graph.points.iter().enumerate() {
+            if !fact.is_reachable(id) { continue; }
+            for slot in 0..8 {
+                let out = point.successors.iter().any(|&succ|
+                    fact.live_before(succ, slot) == Some(true));
+                let killed = point.kind == PointKind::Set(slot);
+                let input = point.reads.contains(&slot) || (out && !killed);
+                assert_eq!(fact.live_after(id, slot), Some(out));
+                assert_eq!(fact.live_before(id, slot), Some(input));
+            }
+        }
+        let (head, _) = graph.points.iter().enumerate()
+            .find(|(_, p)| p.kind == PointKind::LoopHead).unwrap();
+        assert!(fact.live_before(head, 0).unwrap());
+        assert!(fact.live_before(head, 2).unwrap());
+    }
+}
+
+#[test]
+fn overwritten_slots_do_not_extend_liveness_before_definition() {
+    use check::typed_cfg_census::scalar_liveness;
+    let program = checked("pub fnc main(): int { let x = 1; x = 42; return x; }");
+    let graphs = from_checked_program(&program).unwrap();
+    let facts = scalar_liveness(&program).unwrap();
+    let graph = &graphs[0];
+    let fact = &facts[0];
+    let first = graph.entry;
+    let second = graph.points[first].successors[0];
+    assert_eq!(fact.live_before(first, 0), Some(false));
+    assert_eq!(fact.live_after(first, 0), Some(false));
+    assert_eq!(fact.live_before(second, 0), Some(false));
+    assert_eq!(fact.live_after(second, 0), Some(true));
+    assert_eq!(fact.live_before(usize::MAX, 0), None);
+    for (id, point) in graph.points.iter().enumerate() {
+        if point.kind == PointKind::Exit {
+            assert_eq!(fact.live_before(id, 0), None);
+        }
+    }
+}
