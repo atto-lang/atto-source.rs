@@ -196,8 +196,8 @@ mod tests {
             generators: vec![], main: 0, imports: vec![], data: vec![],
             heap: false, globals: vec![], strings: false, guest_eh: false,
             raise_tag: false, catch_depth: false,
-            actors: vec![TActor { name: "Worker".into(), inits: vec![],
-                                 receive: Some(root) }],
+            actors: vec![TActor { name: "Worker".into(), kind: crate::ast::ActorKind::Default,
+                                 payload: Type::Int, inits: vec![], receive: Some(root) }],
         }
     }
     #[test] fn accepts_finite_calls() {
