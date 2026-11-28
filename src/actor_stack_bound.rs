@@ -24,6 +24,8 @@ fn direct_calls(mut work: Vec<Work<'_>>) -> Vec<usize> {
                     work.push(Work::Expr(obj)); work.push(Work::Expr(value));
                 }
                 TStmt::Return(v) => if let Some(v) = v { work.push(Work::Expr(v)); },
+                TStmt::Suspend { op, .. } =>
+                    work.extend(crate::check::suspend_operands(op).into_iter().map(Work::Expr)),
                 TStmt::Try { body, catch, finally, .. } => {
                     work.extend(body.iter().map(Work::Stmt));
                     if let Some(catch) = catch { work.extend(catch.iter().map(Work::Stmt)); }
@@ -192,6 +194,7 @@ mod tests {
     }
     fn program(bodies: Vec<Vec<TStmt>>, root: u32) -> TProgram {
         TProgram {
+            tasks: vec![], task_main: false,
             funcs: bodies.into_iter().map(function).collect(),
             generators: vec![], main: 0, imports: vec![], data: vec![],
             heap: false, globals: vec![], strings: false, guest_eh: false,

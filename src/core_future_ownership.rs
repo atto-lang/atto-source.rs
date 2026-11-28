@@ -113,9 +113,17 @@ fn check_body(t:&[Token],start:usize,end:usize,receipts:&[Receipt])->R<()> {
 /// Do not use this gate as proof of alias/liveness, suspension or actor runtime.
 pub fn preflight(t:&[Token])->R<()> {
     let mut seen=false;
+    // atto.task.v1 admits exactly `Future<int>` task receipts in programs with
+    // susp callables; the checker enforces their affine await-once use.
+    let mut only_task_futures=true;
+    let has_susp=(0..t.len()).any(|i|(word(t,i,"susp")||word(t,i,"suspends"))&&word(t,i+1,"fnc"));
+    let mut any_receipt=false;
     for i in 0..t.len() {
         if sealed(t,i) && t.get(i+1).is_some_and(|x|x.tok==Tok::Lt) {
             seen=true;
+            if !(word(t,i,"Future") && word(t,i+2,"int") && t.get(i+3).is_some_and(|x|x.tok==Tok::Gt)) {
+                only_task_futures=false;
+            }
         }
         if (word(t,i,"new")&&sealed(t,i+1)) ||
            ((word(t,i,"class")||word(t,i,"actor")||word(t,i,"struct"))
@@ -150,7 +158,7 @@ pub fn preflight(t:&[Token])->R<()> {
                 }
             }
             if j==param_end || (t[j].tok==Tok::Comma&&nested_angle==0) {
-                if let Some(r)=receipt(t,from,j)?{receipts.push(r);}
+                if let Some(r)=receipt(t,from,j)?{receipts.push(r);any_receipt=true;}
                 from=j+1;
             }
         }
@@ -163,6 +171,9 @@ pub fn preflight(t:&[Token])->R<()> {
             check_body(t,body+1,end,&receipts)?;
             i=end+1;
         } else {i=body.saturating_add(1);}
+    }
+    if has_susp && only_task_futures && !any_receipt {
+        return Ok(());
     }
     Err(err(t.first().map_or(Pos::default(),|x|x.pos),"E_UNSUPPORTED_TYPE",
         "sealed Future/TaskFuture/ActorFuture awaits need typed affine MIR and a trusted asynchronous runtime; no guest code was emitted"))

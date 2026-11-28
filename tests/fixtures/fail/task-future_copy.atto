@@ -1,0 +1,2 @@
+// expect-error: E_OWNERSHIP
+pub susp fnc main(): int { val t = task { return 1; }; val u = t; return await u; }

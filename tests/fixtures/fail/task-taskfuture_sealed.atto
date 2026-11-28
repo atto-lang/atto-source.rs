@@ -1,0 +1,2 @@
+// expect-error: E_UNSUPPORTED_TYPE
+pub susp fnc main(): int { val t: TaskFuture<int> = task { return 1; }; return await t; }

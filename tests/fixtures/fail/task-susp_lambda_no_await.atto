@@ -1,0 +1,2 @@
+// expect-error: E_SUSPEND
+pub susp fnc main(): int { val f = susp |int n| -> n + 1; return f(1); }
