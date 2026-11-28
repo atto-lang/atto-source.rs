@@ -38,10 +38,10 @@ fn heterogeneous_arrays_preserve_nested_record_shapes() {
 }
 
 #[test]
-fn record_fields_retain_nested_empty_list_bottom() {
+fn record_fields_retain_nested_empty_array_bottom() {
     let x = one("let Record foo = {bar: []};");
     assert_eq!(x.value.ty,
-        T::Record(vec![("bar".into(), T::List(Box::new(T::Bottom)))]));
+        T::Record(vec![("bar".into(), T::Array(Box::new(T::Bottom)))]));
     assert_eq!(x.value.children.len(), 1);
     let y = one("let record foo = {bar: []};");
     assert_eq!(x,y);
