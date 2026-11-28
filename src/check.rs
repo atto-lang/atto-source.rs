@@ -1588,8 +1588,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     audit_cleanup_call_effects(&funcs, &p.funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
-    let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+    // Match-only ADT functions emit memory loads even without constructors.
+    let adt_memory_access = funcs.iter().any(|f| any_in_stmts(&f.body,
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::AdtIs { .. }
+            | TExpr::AdtPayload(_) | TExpr::AdtPropagate { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
@@ -1599,7 +1601,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
+        heap: !p.classes.is_empty() || concat || adt_memory_access || !generators.is_empty(),
         generators,
         globals,
         actors: tactors,
