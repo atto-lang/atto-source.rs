@@ -117,3 +117,60 @@ fn existing_direct_lambda_wasm_path_remains_executable() {
     let output = atto_compiler::compile(source).unwrap();
     assert!(output.starts_with(b"\0asm"));
 }
+
+#[test]
+fn dotted_callable_spellings_preserve_structural_identity_and_arity() {
+    for (params, expected) in [
+        ("", vec![]),
+        ("int", vec![Type::Int]),
+        ("int,bool", vec![Type::Int, Type::Bool]),
+    ] {
+        let src = format!(
+            "type A = ({params}). => int;\n\
+             type B = ({params}). -> int;\n\
+             type C = |{params}|. => int;\n\
+             type D = |{params}|.->int;\n\
+             pub fnc main(): int {{ return 0; }}"
+        );
+        let p = parsed(&src);
+        assert_eq!(p.type_names.len(), 1, "{src}");
+        let signature = CallableSignature::from_source_type(
+            Type::Callable(0), &p.type_names, p.funcs[0].pos,
+        ).unwrap();
+        assert_eq!(signature.params, expected);
+        assert_eq!(signature.result, Type::Int);
+    }
+}
+
+#[test]
+fn dotted_inline_and_named_types_share_one_identity() {
+    let p = parsed("type F = |int|. => int;
+        pub fnc main(): int {
+            const F a = |x:int| :int -> x;
+            const (int). -> int b = |x:int| :int -> x;
+            const c: |int|.=>int = |x:int| :int -> x;
+            return 0;
+        }");
+    assert_eq!(p.type_names.len(), 1);
+    for stmt in &p.funcs[0].body[..3] {
+        let Stmt::Bind { ty: Some(t), init, .. } = stmt else {
+            panic!("expected typed callable binding");
+        };
+        assert_eq!(*t, Type::Callable(0));
+        assert!(matches!(init.kind, ExprKind::Lambda { .. }));
+    }
+}
+
+#[test]
+fn dotted_marker_is_not_a_value_or_a_recovery_path() {
+    for source in [
+        "type F = (int). int;",
+        "type F = (int).. => int;",
+        "type F = |int|. -> ;",
+        "type F = (int. => int;",
+        "pub fnc main(): int { const x = (int). => int; return 0; }",
+        "pub fnc main(): int { const x = |int|. -> int; return 0; }",
+    ] {
+        let _ = bad_parse(source);
+    }
+}
