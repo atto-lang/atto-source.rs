@@ -46,11 +46,12 @@ fn literal_type(e: &Expr) -> Option<Type> {
 pub fn lower(input: &Program) -> R<Program> {
     // A hand-built AST cannot introduce an executable declaration for the
     // temporary apply operand marker. Source identifiers cannot spell it.
-    let marker = crate::parser::APPLY_TUPLE_LITERAL_NAME;
-    if input.funcs.iter().any(|f| f.name == marker)
-        || input.classes.iter().any(|c| c.name == marker)
-        || input.enums.iter().any(|e| e.name == marker)
-        || input.actors.iter().any(|a| a.name == marker)
+    let reserved = |name: &str| name == crate::parser::APPLY_TUPLE_LITERAL_NAME
+        || name == crate::parser::APPLY_RECORD_LITERAL_NAME;
+    if input.funcs.iter().any(|f| reserved(&f.name))
+        || input.classes.iter().any(|c| reserved(&c.name))
+        || input.enums.iter().any(|e| reserved(&e.name))
+        || input.actors.iter().any(|a| reserved(&a.name))
     {
         return Err(error(Pos { line: 1, col: 1 }, "E_DUPLICATE",
             "reserved compiler tuple operand marker"));
@@ -424,6 +425,42 @@ fn rewrite_expr(e: &mut Expr, d: &mut Direct) -> R<()> {
     d.expression_depth -= 1;
     result
 }
+// Reorder only effect-free scalar literals, never arbitrary expressions.
+// A general Record apply needs evaluated-once source-order temporaries and
+// typed product ownership lowering. Do not infer names from an erased type.
+fn bind_immediate_record(elements: Vec<Expr>, params: &[String], pos: Pos) -> R<Vec<Expr>> {
+    if elements.len() % 2 != 0 {
+        return Err(error(pos, "E_UNSUPPORTED", "invalid compiler Record operand"));
+    }
+    let mut names = BTreeMap::new();
+    for (i, name) in params.iter().enumerate() {
+        if name.is_empty() || name == "_" || name.starts_with('$') || names.insert(name.as_str(), i).is_some() {
+            return Err(error(pos, "E_UNSUPPORTED", "Record apply needs unique retained formal names"));
+        }
+    }
+    let mut slots = vec![None; params.len()];
+    let mut fields = elements.into_iter();
+    while let Some(label) = fields.next() {
+        let value = fields.next().expect("even field count checked");
+        let ExprKind::Str(name) = label.kind else {
+            return Err(error(label.pos, "E_UNSUPPORTED", "invalid compiler Record field label"));
+        };
+        let Some(&i) = names.get(name.as_str()) else {
+            return Err(error(label.pos, "E_NAMED_ARG", "unknown Record apply field"));
+        };
+        if slots[i].is_some() {
+            return Err(error(label.pos, "E_DUPLICATE", "duplicate Record apply field"));
+        }
+        if literal_type(&value).is_none() {
+            return Err(error(value.pos, "E_UNSUPPORTED",
+                "effectful or nonliteral Record apply requires verified source-order projection lowering"));
+        }
+        slots[i] = Some(value);
+    }
+    slots.into_iter().collect::<Option<Vec<_>>>()
+        .ok_or_else(|| error(pos, "E_ARITY", "missing Record apply field"))
+}
+
 fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
     // Resolve only the lexically tracked immutable callable. Ordinary
     // nominal methods named call remain ordinary MethodCall expressions.
@@ -439,20 +476,26 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
                         "apply requires a closed source-typed callable in this profile"));
                 }
                 if args.len() != 1 {
-                    return Err(error(e.pos, "E_ARITY", "apply expects exactly one tuple"));
+                    return Err(error(e.pos, "E_ARITY", "apply expects exactly one fixed Product"));
                 }
                 let operand = args.pop().expect("arity checked");
                 let ExprKind::Call(marker, elements) = operand.kind else {
                     return Err(error(e.pos, "E_UNSUPPORTED",
-                        "apply requires an immediate parenthesized scalar tuple literal"));
+                        "apply requires an immediate scalar Tuple or Record literal"));
                 };
-                if marker != crate::parser::APPLY_TUPLE_LITERAL_NAME
-                    || elements.iter().any(|arg| literal_type(arg).is_none())
-                {
+                let ordered = if marker == crate::parser::APPLY_TUPLE_LITERAL_NAME {
+                    if elements.iter().any(|arg| literal_type(arg).is_none()) {
+                        return Err(error(e.pos, "E_UNSUPPORTED",
+                            "apply requires immediate scalar Tuple elements"));
+                    }
+                    elements
+                } else if marker == crate::parser::APPLY_RECORD_LITERAL_NAME {
+                    bind_immediate_record(elements, &d.params, e.pos)?
+                } else {
                     return Err(error(e.pos, "E_UNSUPPORTED",
-                        "apply requires an immediate parenthesized scalar tuple literal"));
-                }
-                e.kind = ExprKind::Call(d.source.clone(), elements);
+                        "apply requires an immediate scalar Tuple or Record literal"));
+                };
+                e.kind = ExprKind::Call(d.source.clone(), ordered);
             }
         }
     }

@@ -152,6 +152,42 @@ try {
     assert.ok(built.stderr.includes('E_UNSUPPORTED'),source+': '+built.stderr);
     await assert.rejects(stat(out),{code:'ENOENT'});
   }
+  // Noncommutative guest proves Record name association, not just arity.
+  for (const [id, call, want] of [
+    ['direct', 'f(4,2)', 42n],
+    ['named-forward', 'f.apply({x:4,y:2})', 42n],
+    ['named-reverse', 'f.apply({y:2,x:4})', 42n],
+    ['named-reverse-values', 'f.apply({y:4,x:2})', 24n],
+    ['named-equals', 'f.apply({y=2,x:4,})', 42n],
+  ]) {
+    const source = join(work, 'record-apply-' + id + '.atto');
+    const out = source + '.wasm';
+    await writeFile(source, 'pub fnc main():int { val f: fnc(int,int)->int = |x,y| : int -> x*10+y; return ' + call + '; }');
+    const built = run(source, out);
+    assert.equal(built.status, 0, id + ': ' + built.stderr);
+    const bytes = await readFile(out);
+    assert.ok(WebAssembly.validate(bytes));
+    const module = new WebAssembly.Module(bytes);
+    assert.deepEqual(WebAssembly.Module.imports(module), []);
+    const guest = new WebAssembly.Instance(module, {});
+    assert.equal(guest.exports.main(), want);
+    assert.equal(guest.exports.panic_code.value, 0);
+  }
+  for (const [id, call, diagnostic] of [
+    ['missing', 'f.apply({x:4})', 'E_ARITY'],
+    ['unknown', 'f.apply({x:4,z:2})', 'E_NAMED_ARG'],
+    ['duplicate', 'f.apply({x:4,x:2})', 'E_DUPLICATE'],
+    ['type', 'f.apply({x:4,y:true})', 'E_TYPE'],
+    ['effect-order-gated', 'f.apply({y:1+1,x:4})', 'E_UNSUPPORTED'],
+  ]) {
+    const source = join(work, 'record-apply-reject-' + id + '.atto');
+    const out = source + '.wasm';
+    await writeFile(source, 'pub fnc main():int { val f: fnc(int,int)->int = |x,y| : int -> x*10+y; return ' + call + '; }');
+    const built = run(source, out);
+    assert.equal(built.status, 1, id + ': ' + built.stderr);
+    assert.match(built.stderr, new RegExp('\\b' + diagnostic + '\\b'));
+    await assert.rejects(stat(out), {code:'ENOENT'});
+  }
   for (const name of negative) {
     const path = fileURLToPath(new URL('./fixtures/fail/' + name, import.meta.url));
     const source = await readFile(path, 'utf8');

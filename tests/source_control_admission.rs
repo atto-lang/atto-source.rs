@@ -1,5 +1,11 @@
 //! Raw terminal control rejection before comment preprocessing.
-use oreslang_source_rs::frontend;
+use atto_compiler::{compile, lexer::lex};
+
+fn pos_at(source: &str, offset: usize) -> (u32,u32) {
+    let prefix = &source[..offset];
+    (1 + prefix.chars().filter(|&c| c == '\n').count() as u32,
+     1 + prefix.rsplit('\n').next().unwrap().chars().count() as u32)
+}
 
 #[test]
 fn terminal_controls_are_rejected_in_comments_and_other_source_regions() {
@@ -11,9 +17,10 @@ fn terminal_controls_are_rejected_in_comments_and_other_source_regions() {
             format!("/* café 😀 */{control}"),
         ] {
             let expected = source.find(control).expect("injected control");
-            let error = frontend::parse(&source).expect_err("terminal control must be rejected");
-            assert_eq!(error.class, "source_admission");
-            assert_eq!(error.offset, expected);
+            let error = lex(&source).expect_err("terminal control must be rejected");
+            assert_eq!(error.code, "E_SOURCE_CONTROL");
+            assert_eq!((error.pos.line, error.pos.col), pos_at(&source, expected));
+            assert!(compile(&source).is_err());
             assert_eq!(error.message, "source contains terminal control");
         }
     }
@@ -21,7 +28,7 @@ fn terminal_controls_are_rejected_in_comments_and_other_source_regions() {
 
 #[test]
 fn ordinary_whitespace_and_unicode_comments_remain_valid() {
-    frontend::parse("/* café 😀 */ pub fnc main(): int {\r\n\treturn 42;\r\n}")
+    lex("/* café 😀 */ pub fnc main(): int {\r\n\treturn 42;\r\n}")
         .expect("valid UTF-8 comment and whitespace");
 }
 
@@ -33,10 +40,11 @@ fn first_forbidden_byte_wins_and_offset_is_utf8_byte_based() {
         ("x\r\n\u{007f}\0", "source contains terminal control", 3),
         ("/* café 😀 */\u{001b}", "source contains terminal control", 16),
     ] {
-        let error = frontend::parse(source).expect_err("invalid raw byte admitted");
-        assert_eq!(error.class, "source_admission");
-        assert_eq!(error.message, expected_message);
-        assert_eq!(error.offset, expected_offset);
+        let error = lex(source).expect_err("invalid raw byte admitted");
+        let code = if expected_message.contains("NUL") { "E_NUL" } else { "E_SOURCE_CONTROL" };
+        assert_eq!(error.code, code);
+        assert!(error.message.contains(if code == "E_NUL" { "NUL" } else { "terminal control" }));
+        assert_eq!((error.pos.line, error.pos.col), pos_at(source, expected_offset));
     }
 }
 
@@ -47,6 +55,6 @@ fn block_comment_depth_is_bounded_before_lexer_processing() {
         "/*".repeat(65),
         "*/".repeat(65)
     );
-    let error = frontend::parse(&input).expect_err("too much comment nesting must be denied");
-    assert_eq!(error.class, "resource_limit");
+    let error = lex(&input).expect_err("too much comment nesting must be denied");
+    assert_eq!(error.code, "E_SOURCE_LIMIT");
 }
