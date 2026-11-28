@@ -215,3 +215,26 @@ fn bae_distinguishes_nominal_layout_and_nonzero_field_offset() {
         "each nominal class's own field offset must be retained");
     assert_eq!(bytes, crate::compile(&explicit).expect("alternate loan spellings"));
 }
+
+
+#[test]
+fn bae_two_field_checked_arithmetic_matches_direct_reads() {
+    let source = include_str!("../tests/fixtures/pass/borrow-int-pair-v1.atto");
+    for op in ["+", "-", "*"] {
+        let input = source.replace("p.left - p.right", &format!("p.left {op} p.right"));
+        let direct = input.replace("difference(parcel)", &format!("parcel.left {op} parcel.right"));
+        let explicit = input.replace("difference(parcel)", "difference(borrow! parcel)");
+        let bytes = crate::compile(&input).expect("readonly checked arithmetic");
+        assert_eq!(bytes, crate::compile(&direct).expect("direct checked arithmetic"));
+        assert_eq!(bytes, crate::compile(&explicit).expect("explicit readonly loan"));
+    }
+}
+
+#[test]
+fn bae_two_field_effectful_call_keeps_original_abi() {
+    let source = include_str!("../tests/fixtures/pass/borrow-int-pair-v1.atto")
+        .replace("return p.left - p.right;", "stdio.print(1); return p.left - p.right;");
+    let direct = source.replace("difference(parcel)", "parcel.left - parcel.right");
+    assert_ne!(crate::compile(&source).expect("effectful call"),
+        crate::compile(&direct).expect("direct reads"));
+}
