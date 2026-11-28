@@ -44,10 +44,11 @@ fn tuple_grouping_empty_and_named_record_grammars_do_not_alias() {
         if matches!(&init.kind,ExprKind::Tuple(items) if items.len()==1)));
     assert!(matches!(&b[3], Stmt::Bind {init,..}
         if matches!(&init.kind,ExprKind::Tuple(items) if items.len()==2)));
-    for (i, stmt) in b.iter().enumerate().take(8).skip(4) {
+    for (i, stmt) in b.iter().enumerate().take(7).skip(4) {
         assert!(matches!(stmt, Stmt::Bind {init,..}
-            if matches!(&init.kind,ExprKind::Record(_))), "record at {i}");
+            if matches!(&init.kind,ExprKind::DynRecord(_))), "dynrecord at {i}");
     }
+    assert!(matches!(&b[7], Stmt::Bind{init,..} if matches!(&init.kind,ExprKind::Record(_))));
     assert!(matches!(&b[8], Stmt::Bind {init,..}
         if matches!(&init.kind,ExprKind::Map(_))));
     assert!(matches!(&b[9], Stmt::Bind {init,..}
@@ -55,12 +56,12 @@ fn tuple_grouping_empty_and_named_record_grammars_do_not_alias() {
 }
 
 #[test]
-fn parenthesized_record_and_braced_record_share_exact_typed_shape() {
+fn parenthesized_and_braced_products_have_distinct_typed_shape() {
     let p = binding("let a=(\"z\":true,\"foo\":42); let b={foo:42,z:true};");
     let typed = collection_types::analyze(&p).unwrap();
     assert_eq!(typed.len(), 2);
-    assert_eq!(typed[0].value.ty, typed[1].value.ty);
-    assert_eq!(typed[0].value.ty, LiteralType::Record(vec![
+    assert_ne!(typed[0].value.ty, typed[1].value.ty);
+    assert_eq!(typed[0].value.ty, LiteralType::DynRecord(vec![
         ("foo".into(),LiteralType::Int),
         ("z".into(),LiteralType::Bool)
     ]));
@@ -70,12 +71,12 @@ fn parenthesized_record_and_braced_record_share_exact_typed_shape() {
 }
 
 #[test]
-fn inferred_named_record_and_explicit_record_type_are_identical() {
-    let p = binding("let a=(\"name\":\"star\",\"count\":5); let b: Record=(\"name\":\"star\",\"count\":5);");
+fn inferred_named_dynrecord_and_explicit_dynrecord_type_are_identical() {
+    let p = binding("let a=(\"name\":\"star\",\"count\":5); let b: DynRecord=(\"name\":\"star\",\"count\":5);");
     let typed = collection_types::analyze(&p).unwrap();
     assert_eq!(typed.len(),2);
     assert_eq!(typed[0].value.ty, typed[1].value.ty);
-    assert_eq!(typed[0].value.ty, LiteralType::Record(vec![
+    assert_eq!(typed[0].value.ty, LiteralType::DynRecord(vec![
         ("count".into(),LiteralType::Int),
         ("name".into(),LiteralType::String)
     ]));
@@ -120,7 +121,7 @@ fn named_call_arguments_and_record_expansion_stay_distinct_fail_closed() {
     assert!(matches!(&p.funcs[1].body[0],Stmt::Return(Some(e),_)
         if matches!(&e.kind,ExprKind::Call(name,args)
             if name=="f" && args.len()==1 &&
-               matches!(&args[0].kind,ExprKind::Record(fields) if fields.len()==1))));
+               matches!(&args[0].kind,ExprKind::DynRecord(fields) if fields.len()==1))));
 }
 
 #[test]
@@ -244,7 +245,7 @@ fn parenthesized_record_compiles_via_existing_owned_scalar_guest_abi() {
         "pub fnc main():int {let y=(\"foo\":42);return y.foo;}",
         "pub fnc main():int {let a=(\"foo\":40,\"bar\":2);let b={bar:2,foo:40};return a.foo+b.bar;}",
         "pub fnc main():int {let mut r=(\"foo\":1,\"bar\":2);r[\"foo\"]=40;return r.foo+r.bar;}",
-        "pub fnc main():int {val mut Record r=(\"foo\":1);r.foo=42;return r[\"foo\"];}",
+        "pub fnc main():int {val mut DynRecord r=(\"foo\":1);r.foo=42;return r[\"foo\"];}",
     ] {
         guest(src);
     }
@@ -299,11 +300,11 @@ fn parenthesized_capture_is_record_including_anonymous_call_argument() {
     for expr in ["{:name,:age}", "(:name,:age)", "{foo:5,:name,:age}", "(\"foo\":5,:name,:age)", "(:age,)"] {
         let p = binding(&format!("const name=\"Alice\"; const age=42; val z={expr}; sink(z); sink({expr});"));
         let Stmt::Bind {init,..} = &p.funcs[0].body[2] else {panic!("missing binding")};
-        let ExprKind::Record(fields) = &init.kind else {panic!("not a Record")};
+        let (ExprKind::Record(fields) | ExprKind::DynRecord(fields)) = &init.kind else {panic!("not a product")};
         let Stmt::Expr(call) = &p.funcs[0].body[4] else {panic!("missing call")};
         let ExprKind::Call(_,args) = &call.kind else {panic!("not a call")};
         assert_eq!(args.len(),1);
-        let ExprKind::Record(anonymous) = &args[0].kind else {panic!("not an anonymous Record")};
+        let (ExprKind::Record(anonymous) | ExprKind::DynRecord(anonymous)) = &args[0].kind else {panic!("not an anonymous product")};
         assert_eq!(fields.iter().map(|f|&f.0).collect::<Vec<_>>(),
                    anonymous.iter().map(|f|&f.0).collect::<Vec<_>>());
     }
@@ -336,8 +337,8 @@ fn mixed_colon_equals_records_share_typed_shape_and_guest_codegen() {
     let p = binding("let a={foo=40,bar:2}; let b=(\"foo\":40,\"bar\":2); let c={foo:40,bar:2};");
     let typed = collection_types::analyze(&p).unwrap();
     assert_eq!(typed.len(), 3);
-    assert_eq!(typed[0].value.ty, typed[1].value.ty);
-    assert_eq!(typed[1].value.ty, typed[2].value.ty);
+    assert_ne!(typed[0].value.ty, typed[1].value.ty);
+    assert_eq!(typed[0].value.ty, typed[2].value.ty);
     for expr in ["{foo=40,bar:2}", "(\"foo\":40,\"bar\":2)", "{foo=40,bar=2,}"] {
         guest(&format!("pub fnc main():int {{let r={expr};return r.foo+r.bar;}}"));
     }
@@ -355,7 +356,7 @@ fn new_record_separators_keep_map_tuple_and_duplicate_checks() {
     let p = parse("fnc f(int foo):int {return foo;} pub fnc main():int {return f((\"foo\":1));}");
     assert!(matches!(&p.funcs[1].body[0],Stmt::Return(Some(e),_)
         if matches!(&e.kind,ExprKind::Call(_,args)
-            if args.len()==1 && matches!(&args[0].kind,ExprKind::Record(_)))));
+            if args.len()==1 && matches!(&args[0].kind,ExprKind::DynRecord(_)))));
 }
 
 #[test]
@@ -363,7 +364,7 @@ fn inline_pair_record_entries_preserve_shape_and_literal_key() {
     let p = binding("let a={foo := 40\nbar := 2}; let b=(\"foo\":40,\"bar\":2); let c=(\"foo\":40,\"bar\":2);");
     let typed=collection_types::analyze(&p).unwrap();
     assert_eq!(typed.len(),3);
-    assert_eq!(typed[0].value.ty,typed[1].value.ty);
+    assert_ne!(typed[0].value.ty,typed[1].value.ty);
     assert_eq!(typed[1].value.ty,typed[2].value.ty);
     for expr in ["{foo := 40\nbar := 2}", "{foo := 40,bar:2}", "(\"foo\":40,\"bar\":2)", "(\"foo\":40,\"bar\":2)"] {
         guest(&format!("pub fnc main():int {{let foo=7;let r={expr};return r.foo+r.bar+foo-7;}}"));
@@ -387,11 +388,12 @@ fn quoted_key_domains_and_recursive_array_parser() {
     let ExprKind::Record(fields) = &init.kind else {panic!("record")};
     assert!(matches!(&fields[0].1.kind,ExprKind::Array(items) if items.len()==3));
     let Stmt::Bind {init,..} = &p.funcs[0].body[1] else {panic!("binding")};
-    let ExprKind::Record(fields) = &init.kind else {panic!("record")};
+    let ExprKind::DynRecord(fields) = &init.kind else {panic!("record")};
     let ExprKind::Array(items) = &fields[0].1.kind else {panic!("array")};
     assert_eq!(items.len(),3);
     for (item,key) in items.iter().zip(["a","b","c"]) {
-        assert!(matches!(&item.kind,ExprKind::Record(fields) if fields.len()==1 && fields[0].0==key));
+        assert!(matches!(&item.kind,ExprKind::Record(fields) | ExprKind::DynRecord(fields) if fields.len()==1 && fields[0].0==key));
+        assert_eq!(matches!(&item.kind,ExprKind::DynRecord(_)), key=="b");
     }
     for expr in ["(x:1)", "(x=1)", "('x':1)", "(\x60x\x60:1)", r#"("x":1,y:2)"#] {
         rejected(&format!("pub fnc main():int {{let r={expr};return 0;}}"),"E_RECORD_LABEL");
@@ -402,14 +404,15 @@ fn quoted_key_domains_and_recursive_array_parser() {
 
 #[test]
 fn record_bracket_fields_preserve_array_kind_and_heterogeneous_child_shapes() {
-    let p = binding(r#"const Record a={x:[1,2,3]}; const Record b=("x":[{a:1},("b":2),{c:3}]);"#);
+    let p = binding(r#"const Record a={x:[1,2,3]}; const DynRecord b=("x":[{a:1},("b":2),{c:3}]);"#);
     let typed = collection_types::analyze(&p).unwrap();
     assert_eq!(typed[0].value.ty,LiteralType::Record(vec![("x".into(),LiteralType::Array(Box::new(LiteralType::Int)))]));
-    assert_eq!(typed[1].value.ty,LiteralType::Record(vec![("x".into(),LiteralType::Array(Box::new(LiteralType::OpenRecord)))]));
+    assert_eq!(typed[1].value.ty,LiteralType::DynRecord(vec![("x".into(),LiteralType::Array(Box::new(LiteralType::AnyProduct)))]));
     let items = &typed[1].value.children[0].children;
     assert_eq!(items.len(),3);
     for (item,key) in items.iter().zip(["a","b","c"]) {
-        assert_eq!(item.ty,LiteralType::Record(vec![(key.into(),LiteralType::Int)]));
+        let fields=vec![(key.into(),LiteralType::Int)];
+        assert_eq!(item.ty,if key=="b" {LiteralType::DynRecord(fields)} else {LiteralType::Record(fields)});
     }
     let p = binding("const Record a={x:[1,true]};");
     assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_TYPE");
@@ -432,5 +435,5 @@ fn quoted_dynrecord_equals_separator_preserves_existing_parser_and_guest_slice()
     let p = parse(r#"fnc f(int x):int {return x;} pub fnc main():int {return f(("x" = 1));}"#);
     assert!(matches!(&p.funcs[1].body[0],Stmt::Return(Some(e),_)
         if matches!(&e.kind,ExprKind::Call(_,args)
-            if args.len()==1 && matches!(&args[0].kind,ExprKind::Record(_)))));
+            if args.len()==1 && matches!(&args[0].kind,ExprKind::DynRecord(_)))));
 }

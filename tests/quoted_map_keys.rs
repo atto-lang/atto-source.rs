@@ -28,9 +28,8 @@ fn quoted_colon_and_arrow_are_maps_in_three_delimiters(){
             T::Map(Box::new(T::String),Box::new(T::Int)));
     }
     let p=parse("let r={foo:5}; let s=(\"foo\":5);").unwrap();
-    for stmt in &p.funcs[0].body[..2]{
-        assert!(matches!(stmt,Stmt::Bind{init,..} if matches!(&init.kind,ExprKind::Record(_))));
-    }
+    assert!(matches!(&p.funcs[0].body[0],Stmt::Bind{init,..} if matches!(&init.kind,ExprKind::Record(_))));
+    assert!(matches!(&p.funcs[0].body[1],Stmt::Bind{init,..} if matches!(&init.kind,ExprKind::DynRecord(_))));
 }
 #[test]
 fn inner_quotes_and_backtick_literals_are_preserved(){

@@ -112,11 +112,11 @@ fn mixed_scalar_field_types_do_not_cross_read_offsets() {
 #[test]
 fn exact_quoted_punctuation_and_multibyte_names_are_static_fields() {
     admit(
-        r#"let Record r = ("🚀 launch": 40, "x.y:z": 2);
+        r#"let DynRecord r = ("🚀 launch": 40, "x.y:z": 2);
            return r["🚀 launch"] + r["x.y:z"];"#,
     );
     reject(
-        r#"let Record r = ("🚀 launch": 42);
+        r#"let DynRecord r = ("🚀 launch": 42);
            return r["🚀 Launch"];"#,
         "E_NO_FIELD",
     );
@@ -125,7 +125,7 @@ fn exact_quoted_punctuation_and_multibyte_names_are_static_fields() {
 #[test]
 fn expression_keys_are_never_promoted_to_literal_static_fields() {
     reject(
-        r#"let Record r = ("content-type": 42);
+        r#"let DynRecord r = ("content-type": 42);
            return r["content" + "-type"];"#,
         "E_UNSUPPORTED",
     );
@@ -159,7 +159,7 @@ fn ordinary_string_map_index_is_not_a_closed_record_field() {
 #[test]
 fn immutable_aliases_retain_checked_quoted_field_identity() {
     admit(
-        r#"let Record r = ("": 41, "x-y": 1);
+        r#"let DynRecord r = ("": 41, "x-y": 1);
            val copy = r;
            return copy[""] + copy["x-y"];"#,
     );
