@@ -25,6 +25,12 @@ pub enum LiteralType {
     OpenRecord,
     /// Preserved concrete field-name -> field-type structure.
     Record(Vec<(String, LiteralType)>),
+    /// String-keyed closed structural product, distinct from Record.
+    DynRecord(Vec<(String, LiteralType)>),
+    AnyDynRecord,
+    /// Internal checked common product for heterogeneous mixed-kind children.
+    /// Never grants unchecked field projection or executable allocation.
+    AnyProduct,
     Map(Box<LiteralType>, Box<LiteralType>),
     List(Box<LiteralType>),
     Array(Box<LiteralType>),
@@ -110,6 +116,7 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
         "float" => LiteralType::Float,
         "string" => LiteralType::String,
         "Record" => LiteralType::OpenRecord,
+        "DynRecord" => LiteralType::AnyDynRecord,
         "Array" => LiteralType::Array(Box::new(LiteralType::Bottom)),
         "List" => LiteralType::List(Box::new(LiteralType::Bottom)),
         "Map" => LiteralType::Map(Box::new(LiteralType::Bottom), Box::new(LiteralType::Bottom)),
@@ -160,7 +167,9 @@ fn compatible(actual: &LiteralType, expected: &LiteralType) -> bool {
     match (actual, expected) {
         (_, Bottom) | (Bottom, _) => true,
         (Record(_), OpenRecord) | (OpenRecord, OpenRecord) => true,
-        (Record(a), Record(b)) =>
+        (DynRecord(_), AnyDynRecord) | (AnyDynRecord, AnyDynRecord) => true,
+        (Record(_) | OpenRecord | DynRecord(_) | AnyDynRecord | AnyProduct, AnyProduct) => true,
+        (Record(a), Record(b)) | (DynRecord(a), DynRecord(b)) =>
             a.len() == b.len() && a.iter().zip(b).all(|((na,ta),(nb,tb))|
                 na == nb && compatible(ta,tb)),
         (Array(a), Array(b)) | (List(a), List(b)) => compatible(a,b),
@@ -180,6 +189,11 @@ fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagno
     match (a, b) {
         (Record(_), Record(_)) | (Record(_), OpenRecord) |
         (OpenRecord, Record(_)) => Ok(OpenRecord),
+        (DynRecord(_), DynRecord(_) | AnyDynRecord) | (AnyDynRecord, DynRecord(_)) => Ok(AnyDynRecord),
+        (Record(_) | OpenRecord, DynRecord(_) | AnyDynRecord) |
+        (DynRecord(_) | AnyDynRecord, Record(_) | OpenRecord) |
+        (AnyProduct, Record(_) | OpenRecord | DynRecord(_) | AnyDynRecord) |
+        (Record(_) | OpenRecord | DynRecord(_) | AnyDynRecord, AnyProduct) => Ok(AnyProduct),
         (List(a), List(b)) => Ok(List(Box::new(common(*a, *b, at)?))),
         (Array(a), Array(b)) => Ok(Array(Box::new(common(*a, *b, at)?))),
         (Map(ka,va), Map(kb,vb)) => Ok(Map(
@@ -249,7 +263,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
             let element_ty = if element == Bottom { found } else { element };
             if kind { Array(Box::new(element_ty)) } else { List(Box::new(element_ty)) }
         }
-        ExprKind::Record(fields) => {
+        ExprKind::Record(fields) | ExprKind::DynRecord(fields) => {
             if matches!(expected, Some(Map(_,_) | Array(_) | List(_) | Tuple(_) | AnyTuple)) {
                 return Err(diag(e.pos,"E_TYPE", "record literal requires Record context"));
             }
@@ -285,7 +299,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
                     .expect("record field was inserted above");
                 source_to_record_slot.push(slot);
             }
-            Record(typed_fields)
+            if matches!(&e.kind, ExprKind::DynRecord(_)) { DynRecord(typed_fields) } else { Record(typed_fields) }
         }
         ExprKind::Map(entries) => {
             let (wanted_k, wanted_v) = match expected {
@@ -321,6 +335,8 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
         // a previously materialized Tuple value.
         ExprKind::Tuple(items) if items.is_empty() && matches!(expected, Some(OpenRecord) | Some(Record(_))) =>
             Record(Vec::new()),
+        ExprKind::Tuple(items) if items.is_empty() && matches!(expected, Some(AnyDynRecord) | Some(DynRecord(_))) =>
+            DynRecord(Vec::new()),
         ExprKind::Tuple(items) => {
             let slots = match expected {
                 Some(Tuple(slots)) => {
@@ -354,19 +370,19 @@ pub fn static_record_field_type(
     ty: &LiteralType, field: &str, at: Pos
 ) -> Result<LiteralType, Diagnostic> {
     match ty {
-        LiteralType::Record(fields) => fields.iter()
+        LiteralType::Record(fields) | LiteralType::DynRecord(fields) => fields.iter()
             .find(|(name, _)| name == field)
             .map(|(_, ty)| ty.clone())
             .ok_or_else(|| diag(at, "E_NO_FIELD",
                 format!("closed record has no field '{field}'"))),
-        LiteralType::OpenRecord => Err(diag(at, "E_FIELD_PRESENCE",
+        LiteralType::OpenRecord | LiteralType::AnyDynRecord | LiteralType::AnyProduct => Err(diag(at, "E_FIELD_PRESENCE",
             format!("open Record field '{field}' requires a verified presence/type guard"))),
         _ => Err(diag(at, "E_TYPE", "static record selection requires Record type")),
     }
 }
 
 fn starts_literal(e: &Expr) -> bool {
-    matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
+    matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) | ExprKind::DynRecord(_) |
         ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
 }
 
@@ -385,7 +401,7 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
                 let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
                 if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
                     LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::OpenRecord |
-                    LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
+                    LiteralType::Record(_) | LiteralType::DynRecord(_) | LiteralType::AnyDynRecord | LiteralType::Tuple(_) | LiteralType::AnyTuple))
                     || starts_literal(init)
                 {
                     let value = inferred(init,wanted.as_ref(),0,&scalar_locals)?;

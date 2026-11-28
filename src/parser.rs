@@ -194,6 +194,7 @@ const UNSUPPORTED_TYPES: &[&str] = &[
 fn collection_type_name(name: &str) -> Option<&'static str> {
     match name {
         "Record" | "record" => Some("Record"),
+        "DynRecord" => Some("DynRecord"),
         "Map" | "map" => Some("Map"),
         "List" | "list" => Some("List"),
         "Array" | "array" => Some("Array"),
@@ -463,7 +464,7 @@ impl Parser {
                     self.expect_type_close("'>' to close collection type arguments")?;
                 }
                 let correct_arity = match builtin {
-                    "Record" => !generic,
+                    "Record" | "DynRecord" => !generic,
                     "Array" | "List" => !generic || args.len() == 1,
                     "Map" => !generic || args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
@@ -3298,8 +3299,8 @@ impl Parser {
         }
     }
 
-    /// Parenthesized quoted-key Record literal. This is the same
-    /// closed structural Record AST as {foo: 1}, never a tuple or a call.
+    /// Parenthesized quoted-key DynRecord literal, distinct from brace Record,
+    /// never a tuple or a call.
     /// The source-order field inventory and static shape checks are shared.
     fn parse_named_record_parens(&mut self, pos: Pos) -> R<Expr> {
         let mut fields: Vec<(String, Expr)> = Vec::new();
@@ -3351,7 +3352,7 @@ impl Parser {
             self.expect(Tok::RParen, "')' after parenthesized Record")?;
             break;
         }
-        Ok(Expr { kind: ExprKind::Record(fields), pos })
+        Ok(Expr { kind: ExprKind::DynRecord(fields), pos })
     }
 
     // Called only when the first item is an inline Pair. A later explicit

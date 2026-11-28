@@ -3282,7 +3282,7 @@ impl<'a> FnCx<'a> {
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "array/list literals are parsed but not yet lowered to browser Wasm")),
-            ExprKind::Record(_) | ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_) =>
+            ExprKind::Record(_) | ExprKind::DynRecord(_) | ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_) =>
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                     "record, map and tuple literals are parsed but require checked collection types and guest allocation")),
             ExprKind::Index(receiver, key) => {
