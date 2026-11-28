@@ -3444,10 +3444,10 @@ impl Parser {
         Ok(ExprKind::StateRead(field))
     }
 
-    /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
+    /// Local binding: qualifier (IDENT (":"|"as") type_ref | [type_ref] IDENT) "=" expression.
     fn parse_binding(&mut self) -> R<Stmt> {
         let pos = self.pos();
-        let kind = if self.eat_word("val") {
+        let mut kind = if self.eat_word("val") {
             BindKind::Val
         } else if self.eat_word("const") {
             BindKind::Const
@@ -3469,8 +3469,13 @@ impl Parser {
                 ));
             }
             self.advance();
+            if kind == BindKind::Const {
+                kind = BindKind::Val;
+            }
         }
-        let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+        let (name, ty) = if matches!(self.peek(), Tok::Ident(_))
+            && (*self.peek_at(1) == Tok::Colon || self.word_at(1) == Some("as"))
+        {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
             (name, Some(self.parse_type()?))
@@ -5193,8 +5198,20 @@ impl Parser {
                             "too many immediate apply Record fields"));
                     }
                     let (label, label_pos) = self.ident("a static Record field name")?;
-                    if !self.eat(&Tok::Colon) && !self.eat(&Tok::Assign) {
-                        return Err(self.expected("':' or '=' after Record field"));
+                    // In a closed Record field only, accept the canonical
+                    // contiguous Pair spelling without changing ordinary
+                    // argument labels or enabling Pair extraction in tuples.
+                    let separator = self.pos();
+                    if self.eat(&Tok::Colon) {
+                        if *self.peek() == Tok::Assign {
+                            let equals = self.pos();
+                            if equals.line != separator.line || equals.col != separator.col + 1 {
+                                return Err(self.expected("contiguous ':=' Record field separator"));
+                            }
+                            self.advance();
+                        }
+                    } else if !self.eat(&Tok::Assign) {
+                        return Err(self.expected("':', '=' or ':=' after Record field"));
                     }
                     let value = self.parse_expr()?;
                     fields.push(Expr { kind: ExprKind::Str(label), pos: label_pos });

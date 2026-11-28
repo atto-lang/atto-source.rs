@@ -159,6 +159,8 @@ try {
     ['named-reverse', 'f.apply({y:2,x:4})', 42n],
     ['named-reverse-values', 'f.apply({y:4,x:2})', 24n],
     ['named-equals', 'f.apply({y=2,x:4,})', 42n],
+    ['named-pair-field', 'f.apply({y:=2,x:=4})', 42n],
+    ['named-pair-mixed', 'f.apply({y:=4,x=2,})', 24n],
   ]) {
     const source = join(work, 'record-apply-' + id + '.atto');
     const out = source + '.wasm';
@@ -177,6 +179,8 @@ try {
     ['missing', 'f.apply({x:4})', 'E_ARITY'],
     ['unknown', 'f.apply({x:4,z:2})', 'E_NAMED_ARG'],
     ['duplicate', 'f.apply({x:4,x:2})', 'E_DUPLICATE'],
+    ['duplicate-pair-field', 'f.apply({x:=4,x:=2})', 'E_DUPLICATE'],
+    ['noncontiguous-pair', 'f.apply({x : =4,y:=2})', 'E_SYNTAX'],
     ['type', 'f.apply({x:4,y:true})', 'E_TYPE'],
     ['effect-order-gated', 'f.apply({y:1+1,x:4})', 'E_UNSUPPORTED'],
   ]) {

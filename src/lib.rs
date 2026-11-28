@@ -243,11 +243,10 @@ where F: FnMut(&std::path::Path) -> std::io::Result<String> {
     compile_prelexed(tokens, Some(logical_path))
 }
 
-// Only select the typed lane for a file-leading sequence of dimension/unit
-// declarations followed by a scalar refinement alias. In particular, do not
-// revive the retired closed-expression evaluator, scan inside function bodies,
-// or hijack arbitrary type declarations. This is a routing predicate, not
-// semantic admission: verified_quantities validates every declaration and body.
+// Select the typed lane for file-leading dimension/unit declarations followed
+// by a scalar refinement alias or a standalone public main. Alias-free
+// quantities use the same checked IR emitter, never the retired closed-expression
+// evaluator. Do not scan function bodies or hijack arbitrary type declarations.
 fn typed_quantity_header(tokens: &[lexer::Token]) -> bool {
     use lexer::Tok;
     let word = |i: usize, s: &str| tokens.get(i)
@@ -262,6 +261,13 @@ fn typed_quantity_header(tokens: &[lexer::Token]) -> bool {
         }
         if !tokens.get(i).is_some_and(|t| t.tok == Tok::Semi) { return false; }
         i += 1;
+    }
+    if i != 0 && word(i, "pub") && word(i + 1, "fnc") && word(i + 2, "main")
+        && tokens.get(i + 3).is_some_and(|t| t.tok == Tok::LParen)
+        && tokens.get(i + 4).is_some_and(|t| t.tok == Tok::RParen)
+        && tokens.get(i + 5).is_some_and(|t| t.tok == Tok::Arrow)
+        && word(i + 6, "int") {
+        return true;
     }
     word(i, "type") &&
         tokens.get(i + 1).is_some_and(|t| matches!(&t.tok, Tok::Ident(_))) &&
