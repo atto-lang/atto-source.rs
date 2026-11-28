@@ -5156,6 +5156,14 @@ impl Parser {
                     self.advance();
                     let member = match self.peek().clone() {
                         Tok::Ident(m) if !is_reserved(&m) => m,
+                        // The collection factory spelling is contextual, not a
+                        // global relaxation of the reserved 'of' keyword.
+                        // Keep a normal method-call AST; semantic resolution and
+                        // backend allocation admission remain authoritative.
+                        Tok::Ident(m) if m == "of"
+                            && matches!(&e.kind, ExprKind::Var(base)
+                                if matches!(base.as_str(), "Map" | "Set" | "Record"))
+                            && *self.peek_at(1) == Tok::LParen => m,
                         _ => return Err(self.expected("a member name after '.'")),
                     };
                     self.advance();
