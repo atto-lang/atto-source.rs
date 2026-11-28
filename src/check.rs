@@ -521,24 +521,38 @@ fn bind_named_arguments(args: &[Expr], formals: &[String], pos: Pos) -> R<Vec<Ex
         return Err(Diagnostic::new(pos, "E_ARITY", format!(
             "named call expects {} arguments, found {}", formals.len(), args.len())));
     }
+    use crate::call_slot_plan::{self, Item, Error};
+    let items: Vec<_> = args.iter().map(|arg| match &arg.kind {
+        ExprKind::NamedArg(name, _) => Item::Named(name.as_str()),
+        _ => Item::Positional,
+    }).collect();
+    let names: Vec<_> = formals.iter().map(String::as_str).collect();
+    let defaults = vec![false; names.len()];
+    let plan = call_slot_plan::plan(&items, &names, &defaults)
+        .map_err(|(operand, error)| {
+            let at = args.get(operand).map(|arg| arg.pos).unwrap_or(pos);
+            let (code, msg) = match error {
+                Error::UnknownName => ("E_NAMED_ARG", "unknown named argument"),
+                Error::Duplicate => ("E_DUPLICATE", "parameter is supplied more than once"),
+                Error::Missing => ("E_ARITY", "missing named argument"),
+                Error::Arity => ("E_ARITY", "too many positional arguments"),
+                Error::PositionalAfterNamed => ("E_SYNTAX", "positional arguments must precede named arguments"),
+                Error::Limit => ("E_SOURCE_LIMIT", "argument slot limit exceeded"),
+                Error::InvalidSignature => ("E_NAMED_ARG", "invalid callable parameter metadata"),
+                _ => ("E_UNSUPPORTED", "unsupported argument shape"),
+            };
+            Diagnostic::new(at, code, msg)
+        })?;
     let mut ordered = vec![None; formals.len()];
-    let mut indices = Vec::with_capacity(args.len());
-    for (source_slot, arg) in args.iter().enumerate() {
-        let (slot, value) = match &arg.kind {
-            ExprKind::NamedArg(name, value) => (
-                formals.iter().position(|p| p == name).ok_or_else(||
-                    Diagnostic::new(arg.pos, "E_NAMED_ARG",
-                        format!("unknown named argument '{name}'")))?,
-                value.as_ref(),
-            ),
-            _ => (source_slot, arg),
+    let mut indices = Vec::with_capacity(plan.len());
+    for entry in plan {
+        let arg = &args[entry.operand];
+        let value = match &arg.kind {
+            ExprKind::NamedArg(_, value) => value.as_ref(),
+            _ => arg,
         };
-        if ordered[slot].is_some() {
-            return Err(Diagnostic::new(arg.pos, "E_DUPLICATE",
-                format!("parameter '{}' is supplied more than once", formals[slot])));
-        }
-        ordered[slot] = Some(value.clone());
-        indices.push(slot);
+        ordered[entry.parameter] = Some(value.clone());
+        indices.push(entry.parameter);
     }
     let reorders = indices.windows(2).any(|x| x[0] > x[1]);
     if reorders && args.iter().any(|a| {

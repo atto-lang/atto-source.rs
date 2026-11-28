@@ -236,3 +236,30 @@ fn bare_lambda_heads_never_emit_a_wasm_artifact() {
         );
     }
 }
+
+#[test]
+fn equals_named_args_share_colon_binder_and_preserve_order_gate() {
+    let prefix = "fnc f(int a, int b): int { return a * 10 + b; } fnc tick(): int { return 4; } pub fnc main(): int { return ";
+    for call in ["f(b=2,a=4)", "f(a=4,b:2)", "f(4,b=2)", "f(a=tick(),b=2)"] {
+        ok(&format!("{prefix}{call}; }}"));
+    }
+    for (call, code) in [
+        ("f(a=4,a:2)", "E_DUPLICATE"),
+        ("f(4,a=2)", "E_DUPLICATE"),
+        ("f(a=4,2)", "E_SYNTAX"),
+        ("f(z=4,b=2)", "E_NAMED_ARG"),
+        ("f(b=tick(),a=2)", "E_EFFECT_ORDER"),
+    ] {
+        bad(&format!("{prefix}{call}; }}"), code);
+    }
+    let colon = format!("{prefix}f(a:4,b:2); }}");
+    let equals = format!("{prefix}f(a=4,b=2); }}");
+    assert_eq!(atto_compiler::compile(&colon).unwrap(),
+               atto_compiler::compile(&equals).unwrap());
+}
+
+#[test]
+fn spread_is_explicitly_fail_closed_until_typed_lowering_is_connected() {
+    let source = "fnc f(int a, int b): int { return a*10+b; } pub fnc main(): int { return f(...(4,2)); }";
+    assert!(atto_compiler::compile(source).is_err());
+}
