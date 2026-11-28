@@ -4313,6 +4313,17 @@ impl<'a> FnCx<'a> {
                 Err(Diagnostic::new(pos, "E_PIN_UNSUPPORTED",
                     "pin! requires stable-address storage and verified cleanup; not lowered by this Wasm backend"))
             }
+            OwnershipOp::BindingTransfer => {
+                // Phase 1 only: intrinsic by-value scalars have no owning
+                // storage to invalidate. Do not inherit legacy take! rules.
+                // Non-Copy replacement needs checked retirement and cleanup.
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        "binding transfer of non-Copy or unproved storage requires lifecycle qualification"));
+                }
+                Ok(value)
+            }
             OwnershipOp::Take => {
                 let ExprKind::Var(name) = &inner.kind else {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a named owned local"));
