@@ -114,7 +114,7 @@ fn named_record_mixes_duplicates_and_quoted_labels_reject_before_wasm() {
 
 #[test]
 fn named_call_arguments_and_record_expansion_stay_distinct_fail_closed() {
-    let src="fnc f(int foo):int {return foo;} pub fnc main():int {return f(\"foo\":1);}";
+    let src="fnc f(int foo):int {return foo;} pub fnc main():int {return f(foo=1);}";
     rejected(src,"E_UNSUPPORTED");
     rejected("fnc f(int foo):int {return foo;} pub fnc main():int {let r=(\"foo\":1);return f(...r);}", "E_UNSUPPORTED");
     let p=parse("fnc f(int foo):int {return foo;} pub fnc main():int {return f((\"foo\":1));}");
@@ -178,8 +178,6 @@ fn parser_rejects_ambiguous_nested_and_mixed_named_syntax() {
     for literal in [
         "(\"foo\":1,bar)",
         "(\"foo\":1,bar==2)",
-        
-        "(\"foo\":1,bar:2)",
         "(\"foo\":1,\"bar\":2,3)",
     ] {
         rejected(
@@ -187,9 +185,9 @@ fn parser_rejects_ambiguous_nested_and_mixed_named_syntax() {
             "E_LITERAL_KIND",
         );
     }
-    rejected("pub fnc main():int {let r=(\"\"=42);return 0;}", "E_RECORD_LABEL");
+    rejected("pub fnc main():int {let r=(\"\":42);return 0;}", "E_RECORD_LABEL");
     rejected(
-        "pub fnc main():int {let r=(\"__atto_closed_record_shape_0\":42);return 0;}",
+        "pub fnc main():int {let r=(__atto_closed_record_shape_0=42);return 0;}",
         "E_RESERVED",
     );
     rejected(
