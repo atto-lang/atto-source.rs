@@ -49,7 +49,7 @@ fn is(t: &[Token], i: usize, value: &str) -> bool {
 }
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(s), pos: _ }) if s.len() <= 96 &&
+        Some(Token { tok: Tok::Ident(s), pos: _, .. }) if s.len() <= 96 &&
             !matches!(s.as_str(), "as" | "end" | "define" | "pub" | "class" | "trait" | "interface" | "extends" | "implements") =>
             Ok(s.clone()),
         Some(t) => Err(Diagnostic::new(t.pos, "E_SYNTAX", "expected a bounded nominal identifier")),
@@ -137,7 +137,7 @@ fn members(t: &[Token], kind: Kind, owner: &str) -> R<(BTreeMap<String, Method>,
         let mut copied = t[start..=end].to_vec();
         if let Some(at) = override_at { copied.remove(at - start); }
         if kind == Kind::Trait && !is(t, start, "pub") {
-            copied.insert(0, Token { pos: t[start].pos, tok: Tok::Ident("pub".into()) });
+            copied.insert(0, Token { pos: t[start].pos, tok: Tok::Ident("pub".into()), string_quote: None });
         }
         let m = Method {
             name: member_name.clone(), sig: signature,
@@ -359,12 +359,12 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             }
         }
         let mut output = Vec::new();
-        if d.export { output.push(Token { pos: d.pos, tok: Tok::Ident("pub".into()) }); }
+        if d.export { output.push(Token { pos: d.pos, tok: Tok::Ident("pub".into()), string_quote: None }); }
         output.extend([
-            Token { pos: d.pos, tok: Tok::Ident("define".into()) },
-            Token { pos: d.pos, tok: Tok::Ident("class".into()) },
-            Token { pos: d.pos, tok: Tok::Ident(d.name.clone()) },
-            Token { pos: d.pos, tok: Tok::Ident("as".into()) },
+            Token { pos: d.pos, tok: Tok::Ident("define".into()), string_quote: None },
+            Token { pos: d.pos, tok: Tok::Ident("class".into()), string_quote: None },
+            Token { pos: d.pos, tok: Tok::Ident(d.name.clone()), string_quote: None },
+            Token { pos: d.pos, tok: Tok::Ident("as".into()), string_quote: None },
         ]);
         // Remove only exact declaration-header override tokens. A token
         // spelled 'override' inside a method body is never a header marker.
@@ -377,7 +377,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             if !header_override { output.push(token.clone()); }
         }
         output.extend(additions);
-        output.push(Token { pos: d.pos, tok: Tok::Ident("end".into()) });
+        output.push(Token { pos: d.pos, tok: Tok::Ident("end".into()), string_quote: None });
         replace.insert(d.start, (d.end, output));
     }
     let mut out = Vec::with_capacity(t.len());
