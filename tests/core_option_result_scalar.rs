@@ -187,8 +187,8 @@ fn conditional_marker_and_ternary_are_lexically_distinct() {
         ("^? true?42:0; return 7;", 42),
         ("^?/* comment */ true ? 42 : 0; return 7;", 42),
         ("return? false ? 9 : true ? 42 : 0; return 7;", 42),
-        ("^? false ? 1 / 0 : 42; return 7;", 42),
-        ("return? true ? 0 : 1 / 0; return 42;", 42),
+        ("val int x = 9223372036854775807; ^? false ? x + 1 : 42; return 7;", 42),
+        ("val int x = 9223372036854775807; return? true ? 0 : x + 1; return 42;", 42),
         ("return?=[1,42] false ? 42 : 7; return 42;", 42),
         ("return true ? 0 : 42;", 0),
     ] {
@@ -223,4 +223,18 @@ fn postfix_failure_and_prefix_success_are_independent() {
     let source = "fnc read(bool x): Option<int> { if x then return Some(42); fi return None; } fnc next(bool x): Option<int> { val n: int = read(x)?; return Some(n); } pub fnc main(): int { ^? next(false); return? next(true); return 1; }";
     let bytes = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
     execute_guest(&bytes, 42);
+}
+
+#[test]
+fn conditional_ternary_only_evaluates_selected_branch_once() {
+    let source = "fnc attempt(int n): int { stdio.println(n); return n; } pub fnc main(): int { ^? false ? attempt(99) : attempt(0); return? true ? attempt(42) : attempt(98); return 1; }";
+    let bytes = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    execute_guest_with_trace(&bytes, 42, "0\n42\n");
+}
+
+#[test]
+fn conditional_return_does_not_bypass_static_division_admission() {
+    let source = "pub fnc main(): int { ^? false ? 1 / 0 : 42; return 7; }";
+    let error = compile(source).expect_err("both branches remain statically checked");
+    assert_eq!(error.code, "E_UNSUPPORTED", "{error}");
 }
