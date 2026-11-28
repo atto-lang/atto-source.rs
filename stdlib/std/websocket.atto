@@ -63,8 +63,8 @@ pub fnc websocket_next_fragment_state(int opcode, bool fin, bool fragmented_open
   fi
   if opcode == 0 then
     if !fragmented_open then return -1; fi
-  else
-    if fragmented_open then return -1; fi
+  elif fragmented_open then
+    return -1;
   fi
   if fin then return 0; fi
   return 1;
