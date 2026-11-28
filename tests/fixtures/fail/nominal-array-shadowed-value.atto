@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+define class Parcel as end
+pub fnc main(): int {
+    val int Parcel = 42;
+    val elements = [Parcel];
+    return 0;
+}
