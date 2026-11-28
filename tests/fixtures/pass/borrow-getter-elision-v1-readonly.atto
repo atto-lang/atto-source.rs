@@ -1,0 +1,12 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+// In the narrow BAE-v1 case a checked readonly getter can use the original
+// handle directly, without copying it to a runtime borrow-wrapper slot.
+define class Parcel as pub let int value = 21; end
+fnc inspect(Parcel p): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val inferred = inspect(parcel);
+  val explicit = inspect(borrow! parcel);
+  return inferred + explicit;
+}

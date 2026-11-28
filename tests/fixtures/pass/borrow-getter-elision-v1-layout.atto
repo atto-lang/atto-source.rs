@@ -1,0 +1,17 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+define class Left as
+    pub let int padding = 99;
+    pub let int value = 19;
+end
+define class Right as
+    pub let int value = 23;
+    pub let int padding = 88;
+end
+fnc read_left(Left p): int { return p.value; }
+fnc read_right(Right p): int { return p.value; }
+pub fnc main(): int {
+    let left = new Left();
+    let right = new Right();
+    return read_left(left) + read_right(borrow! right);
+}
