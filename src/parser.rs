@@ -2426,8 +2426,8 @@ impl Parser {
             let value = self.default_literal(ty)?;
             if omission { omission_default = Some(value); } else { none_default = Some(value); }
         }
-        if omittable && (!allow_omittable || mutable || (!matches!(ty, Type::OptionInt | Type::OptionResultIntStr)
-            && !(ty == Type::Int && omission_default.is_some()))) {
+        if omittable && (!allow_omittable || mutable || !(matches!(ty, Type::OptionInt | Type::OptionResultIntStr)
+            || (ty == Type::Int && omission_default.is_some()))) {
             return Err(Diagnostic::new(pos, "E_OMITTABLE_DEFAULT",
                 "omittable scalar requires a supported explicit default"));
         }
