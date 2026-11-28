@@ -1762,7 +1762,7 @@ impl Parser {
     pub(crate) fn return_first_header_tokens(tokens: &[Token]) -> bool {
         let at = |n: usize| tokens.get(n).map(|t| &t.tok);
         if !matches!(at(0), Some(Tok::Ident(_))) { return false; }
-        if at(1) == Some(&Tok::LeftArrow) { return true; }
+        if matches!(at(1), Some(Tok::LeftArrow | Tok::SignatureBullet)) { return true; }
         if at(1) != Some(&Tok::Lt) { return false; }
         let mut depth = 0usize;
         for n in 1..=MAX_DEPTH as usize {
@@ -1771,7 +1771,7 @@ impl Parser {
                 Some(Tok::Gt) => {
                     if depth == 0 { return false; }
                     depth -= 1;
-                    if depth == 0 { return at(n+1) == Some(&Tok::LeftArrow); }
+                    if depth == 0 { return matches!(at(n+1), Some(Tok::LeftArrow | Tok::SignatureBullet)); }
                 }
                 Some(Tok::Ident(_) | Tok::Comma | Tok::Dot) => {}
                 _ => return false,
@@ -1792,7 +1792,9 @@ impl Parser {
             } else {
                 (self.parse_type()?, false)
             };
-            self.expect(Tok::LeftArrow, "'<-' after return type")?;
+            if !self.eat(&Tok::SignatureBullet) {
+                self.expect(Tok::LeftArrow, "'<-' or '•' after return type")?;
+            }
             Some(annotation)
         } else {
             None
@@ -5578,6 +5580,7 @@ fn describe(t: &Tok) -> String {
                 Tok::ColonColon => "::",
                 Tok::Arrow => "->",
                 Tok::LeftArrow => "<-",
+                Tok::SignatureBullet => "•",
                 Tok::FatArrow => "=>",
                 Tok::Dot => ".",
                 Tok::Assign => "=",
