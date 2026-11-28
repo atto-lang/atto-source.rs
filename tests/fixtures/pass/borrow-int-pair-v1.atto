@@ -1,0 +1,11 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+define class Parcel as
+    pub let int left = 48;
+    pub let int right = 6;
+end
+fnc difference(Parcel p): int { return p.left - p.right; }
+pub fnc main(): int {
+    let parcel = new Parcel();
+    return difference(parcel);
+}
