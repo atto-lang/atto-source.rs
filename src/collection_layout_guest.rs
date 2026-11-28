@@ -144,11 +144,7 @@ fn seed_declaration(p: &mut Parser<'_>, nominal: &str) -> Result<Option<Seed>, D
             "T" if element.is_none() => element = Some(p.ident()?),
             "size" if size.is_none() => size = Some(p.number()?),
             "layout" if layout.is_none() => {
-                layout = Some(match p.ident()?.as_str() {
-                    "soa" => Storage::Soa,
-                    "aos" => Storage::Aos,
-                    _ => return Err(unsupported(pos, "seeded layout other than aos or soa")),
-                });
+                layout = Some(crate::collection_layout_type::layout(p.tokens, &mut p.at)?);
             }
             "T" | "size" | "layout" => return Err(error(pos, "E_GENERIC_DUP", "duplicate bundle field")),
             _ => return Err(error(pos, "E_GENERIC_NAME", "seed requires declared formals T, size, layout")),
@@ -468,6 +464,22 @@ fnc main() -> int {
         assert_eq!(compiler(&source.replace(" with {size=infer}", "")).unwrap_err().code, "E_ARRAY_SIZE_MISMATCH");
         assert_eq!(compiler(&source.replace("size=infer", "size=2")).unwrap(), compiler(PROGRAM).unwrap());
         assert!(compiler(&source.replace("Particle(x=10, y=20, velocity=1)", "make {x:X.size,y:20,velocity:1}")).is_err());
+    }
+
+    #[test]
+    fn seeded_aosoa_uses_canonical_parser_and_logical_size() {
+        let source = PROGRAM.replace("fnc main()", "type Base = <T=Particle,size=5,layout=aosoa(3)>;\nfnc main()")
+            .replace("Array<Particle, layout=soa>", "Array<infer X from Base>")
+            .replace("    ];", "    ] with {size=infer};");
+        assert_eq!(compiler(&source).unwrap(), compiler(&PROGRAM.replace("layout=soa", "layout=aosoa(3)")).unwrap());
+        for lanes in ["1", "4", "1024"] {
+            assert!(compiler(&source.replace("aosoa(3)", &format!("aosoa({lanes})"))).is_ok());
+        }
+        for lanes in ["0", "1025", "n", "-1"] {
+            assert_eq!(compiler(&source.replace("aosoa(3)", &format!("aosoa({lanes})"))).unwrap_err().code, "E_LAYOUT_SIZE");
+        }
+        assert_eq!(compiler(&source.replace("columns.x[0]", "columns.x[2]")).unwrap_err().code, "E_LAYOUT_BOUNDS");
+        assert_eq!(compiler(&source.replace(" with {size=infer}", "")).unwrap_err().code, "E_ARRAY_SIZE_MISMATCH");
     }
 
     #[test]
