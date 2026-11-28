@@ -257,6 +257,7 @@ pub struct Parser {
     type_names: Vec<(String, Pos)>,
     // Closed file-prefix scalar denotations, no nominal or generic erasure.
     scalar_denotations: std::collections::BTreeMap<String, (Type, Pos)>,
+    denotation_targets: std::collections::BTreeMap<String, (String, Pos)>,
     /// Canonically interned nominal Array<T, layout=...> type parameters.
     array_types: Vec<ArrayType>,
     /// Scope of an explicit generator function body.
@@ -397,6 +398,7 @@ impl Parser {
             lambda_nesting: 0,
             type_names: Vec::new(),
             scalar_denotations: std::collections::BTreeMap::new(),
+            denotation_targets: std::collections::BTreeMap::new(),
             array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
@@ -522,7 +524,7 @@ impl Parser {
         matches!(
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
-        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || UNLOWERED_OWNERSHIP_TYPES.contains(&w))
+        ) || self.word_at(n).is_some_and(|w| self.scalar_denotations.contains_key(w) || UNSUPPORTED_TYPES.contains(&w) || UNLOWERED_OWNERSHIP_TYPES.contains(&w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -730,6 +732,7 @@ impl Parser {
                 self.parse_scalar_denotation()?;
                 continue;
             }
+            if denotation_prefix { self.resolve_scalar_denotations()?; }
             denotation_prefix = false;
             let public = self.is_word("pub");
             let at = usize::from(public);
@@ -810,6 +813,7 @@ impl Parser {
                 _ => prog.funcs.push(self.parse_func()?),
             }
         }
+        if denotation_prefix { self.resolve_scalar_denotations()?; }
         // The checker uses distinct nominal references: never let a scalar
         // alias silently shadow a later class, actor, or enum declaration.
         for name in prog.classes.iter().map(|d| &d.name)
@@ -825,9 +829,8 @@ impl Parser {
         Ok(prog)
     }
 
-    /// Admit only already-resolved scalar aliases at the file prefix. A
-    /// single type token is intentional: no arbitrary RHS parsing, recursive
-    /// expansion, forward reference, or generic/union widening in this slice.
+    /// Collect bounded scalar alias targets at the file prefix; resolution
+    /// precedes every callable or nominal declaration. No union erasure.
     fn parse_scalar_denotation(&mut self) -> R<()> {
         self.advance(); // contextual denote
         if self.is_word("pub") || self.is_word("private") {
@@ -844,9 +847,12 @@ impl Parser {
                 | "Channel" | "Future" | "Task" | "Duration" | "UUID")
             || UNSUPPORTED_TYPES.contains(&name.as_str())
             || UNLOWERED_OWNERSHIP_TYPES.contains(&name.as_str())
-            || self.scalar_denotations.contains_key(&name) {
+            || self.denotation_targets.contains_key(&name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE",
                 "denotation name must be a fresh, non-core uppercase type identifier"));
+        }
+        if self.denotation_targets.len() >= 512 {
+            return Err(Diagnostic::new(pos, "E_DENOTE_LIMIT", "denotation count limit"));
         }
         self.expect(Tok::Assign, "'=' after denoted type name")?;
         let rhs_pos = self.pos();
@@ -854,17 +860,41 @@ impl Parser {
             Tok::Ident(w) => w.clone(),
             _ => return Err(unsupported(rhs_pos, "non-scalar denotation RHS")),
         };
-        let ty = match rhs.as_str() {
-            "int" => Type::Int,
-            "bool" | "boolean" => Type::Bool,
-            "float" | "f64" => Type::Float,
-            "string" | "String" => Type::Str,
-            _ => self.scalar_denotations.get(&rhs).map(|(t, _)| *t)
-                .ok_or_else(|| unsupported(rhs_pos, "unresolved or non-scalar denotation RHS"))?,
-        };
         self.advance();
         self.expect(Tok::Semi, "';' after scalar denotation")?;
-        self.scalar_denotations.insert(name, (ty, pos));
+        self.denotation_targets.insert(name, (rhs, pos));
+        Ok(())
+    }
+
+    fn resolve_scalar_denotations(&mut self) -> R<()> {
+        // Iterative, memoized resolution of every declaration, including
+        // unused aliases. No recursion or implicit nominal type creation.
+        for name in self.denotation_targets.keys() {
+            if self.scalar_denotations.contains_key(name) { continue; }
+            let mut current = name.clone();
+            let mut path = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            let ty = loop {
+                match current.as_str() {
+                    "int" => break Type::Int,
+                    "bool" | "boolean" => break Type::Bool,
+                    "float" | "f64" => break Type::Float,
+                    "string" | "String" => break Type::Str,
+                    _ => {}
+                }
+                if let Some((ty, _)) = self.scalar_denotations.get(&current) { break *ty; }
+                if !seen.insert(current.clone()) {
+                    return Err(Diagnostic::new(self.denotation_targets[name].1, "E_DENOTE_CYCLE",
+                        format!("cyclic type denotation '{current}'")));
+                }
+                let (target, pos) = self.denotation_targets.get(&current).ok_or_else(||
+                    Diagnostic::new(self.denotation_targets[name].1, "E_DENOTE_UNKNOWN",
+                        format!("unresolved denotation target '{current}'")))?;
+                path.push((current, *pos));
+                current = target.clone();
+            };
+            for (alias, pos) in path { self.scalar_denotations.insert(alias, (ty, pos)); }
+        }
         Ok(())
     }
 
