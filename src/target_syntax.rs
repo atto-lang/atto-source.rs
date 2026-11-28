@@ -172,7 +172,7 @@ impl Cursor<'_> {
     /// No expression operators are accepted in this declaration position.
     fn return_first_header(&self) -> bool {
         if !matches!(self.tok(), Tok::Ident(_)) { return false; }
-        if self.toks.get(self.i + 1).is_some_and(|t| t.tok == Tok::LeftArrow) {
+        if self.toks.get(self.i + 1).is_some_and(|t| matches!(t.tok, Tok::LeftArrow | Tok::SignatureBullet)) {
             return true;
         }
         if !self.toks.get(self.i + 1).is_some_and(|t| t.tok == Tok::Lt) {
@@ -189,7 +189,7 @@ impl Cursor<'_> {
                     depth -= 1;
                     if depth == 0 {
                         return self.toks.get(self.i + off + 1)
-                            .is_some_and(|t| t.tok == Tok::LeftArrow);
+                            .is_some_and(|t| matches!(t.tok, Tok::LeftArrow | Tok::SignatureBullet));
                     }
                 }
                 Tok::Ident(_) | Tok::Comma | Tok::Dot => {}
@@ -388,7 +388,9 @@ impl Cursor<'_> {
         let return_first = self.return_first_header();
         let prefix_type = if return_first {
             let t = self.type_name()?;
-            self.expect(&Tok::LeftArrow, "expected '<-' after return type")?;
+            if !self.take(&Tok::SignatureBullet) {
+                self.expect(&Tok::LeftArrow, "expected '<-' or '•' after return type")?;
+            }
             Some(t)
         } else { None };
         let name = self.ident()?;
@@ -471,7 +473,9 @@ impl Cursor<'_> {
         let return_first = self.return_first_header();
         if return_first {
             self.type_name()?;
-            self.expect(&Tok::LeftArrow, "expected '<-' after return type")?;
+            if !self.take(&Tok::SignatureBullet) {
+                self.expect(&Tok::LeftArrow, "expected '<-' or '•' after return type")?;
+            }
         }
         let name = self.ident()?;
         self.params()?;
