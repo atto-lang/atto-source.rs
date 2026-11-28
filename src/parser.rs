@@ -258,6 +258,7 @@ pub struct Parser {
     /// Canonically interned nominal Array<T, layout=...> type parameters.
     array_types: Vec<ArrayType>,
     fixed_array_slots: bool,
+    fixed_map_slots: bool,
     /// Scope of an explicit generator function body.
     in_generator: bool,
     /// Only the outer Erlang-style callable sequence accepts commas as
@@ -397,6 +398,7 @@ impl Parser {
             type_names: Vec::new(),
             array_types: Vec::new(),
             fixed_array_slots: false,
+            fixed_map_slots: false,
             in_generator: false,
             erlang_body: false,
             state_method: false,
@@ -406,6 +408,7 @@ impl Parser {
     }
 
     pub(crate) fn enable_fixed_array_slots(&mut self) { self.fixed_array_slots = true; }
+    pub(crate) fn enable_fixed_map_slots(&mut self) { self.fixed_map_slots = true; }
 
     fn peek(&self) -> &Tok {
         &self.toks[self.i].tok
@@ -536,6 +539,14 @@ impl Parser {
         reject_intrinsic_type_name(&name, pos)?;
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Map" if self.fixed_map_slots => {
+                self.expect(Tok::Lt, "'<' after Map")?;
+                self.expect_word("string")?;
+                self.expect(Tok::Comma, "',' after key type")?;
+                self.expect_word("int")?;
+                self.expect(Tok::Gt, "'>' after Map<string,int>")?;
+                Type::Named(self.type_name(crate::map_slot_guest::INTERNAL.to_string(), pos))
+            }
             "Array" => {
                 // Reuse the exact same generic binder used by the already
                 // executable, bounded scalar-collection guest profile.
@@ -3105,7 +3116,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array" | "Map"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -4607,6 +4618,20 @@ impl Parser {
                         };
                     }
                 }
+                Tok::LBracket if self.fixed_map_slots => {
+                    let at = self.pos();
+                    self.advance();
+                    let key = match self.peek().clone() {
+                        Tok::Str(key) => key,
+                        _ => return Err(unsupported(at, "bounded Map index requires a literal string")),
+                    };
+                    self.advance();
+                    self.expect(Tok::RBracket, "']' after Map key")?;
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr { kind: ExprKind::Member(Box::new(e),
+                        crate::map_slot_guest::encoded_key(&key)), pos: at };
+                }
                 Tok::LBracket if self.fixed_array_slots => {
                     let at = self.pos();
                     self.advance();
@@ -4957,6 +4982,27 @@ impl Parser {
             },
             Tok::Pipe => self.parse_lambda()?,
             Tok::LBracket => self.parse_array_literal()?,
+            Tok::LBrace if self.fixed_map_slots => {
+                self.advance();
+                let mut args = Vec::new();
+                if *self.peek() != Tok::RBrace {
+                    loop {
+                        if args.len() >= 64 { return Err(unsupported(pos, "bounded Map literal exceeds 32 entries")); }
+                        let key_pos = self.pos();
+                        let key = match self.peek().clone() {
+                            Tok::Str(key) => key,
+                            _ => return Err(unsupported(key_pos, "Map literal key must be a string")),
+                        };
+                        self.advance();
+                        self.expect(Tok::FatArrow, "'=>' after Map key")?;
+                        args.push(Expr { kind: ExprKind::Str(key), pos: key_pos });
+                        args.push(self.parse_expr()?);
+                        if !self.eat(&Tok::Comma) { break; }
+                    }
+                }
+                self.expect(Tok::RBrace, "'}' after Map literal")?;
+                ExprKind::New(crate::map_slot_guest::INTERNAL.to_string(), args)
+            }
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
             _ => return Err(self.expected("an expression")),
         };

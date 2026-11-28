@@ -187,3 +187,18 @@ fn fixed_array_field_candidate_requires_unique_indexed_receiver() {
     let source = format!("{defs} pub fnc main(): int {{ {setup} b.scores = Array.of(1); return 0; }}");
     assert_eq!(compile(&source).unwrap_err().code, "E_COPY_UNPROVEN");
 }
+
+#[test]
+fn fixed_scalar_map_candidate_independent_entries_and_shared_denial() {
+    let direct = "pub fnc main(): int { let mut Map<string,int> a = {\"old\" => 1}; let mut Map<string,int> b = copy! a; a[\"left\"] = 20; b[\"right\"] = 22; if a.get(\"right\").is_some() then return 1; fi if b.get(\"left\").is_some() then return 2; fi return a.get(\"left\").unwrap()+b.get(\"right\").unwrap(); }";
+    wasm(direct);
+    let defs = "define class Person as pub let mut Map<string,int> scores = {\"old\" => 20}; pub let int age = 1; end";
+    let setup = "let mut Person a = new Person(); let mut Person b = copy! a; a.age = 2;";
+    wasm(&format!("{defs} pub fnc main(): int {{ {setup} return a.scores.get(\"old\").unwrap()+b.scores.get(\"old\").unwrap()+a.age; }}"));
+    for root in ["a","b"] {
+        let source = format!("{defs} pub fnc main(): int {{ {setup} {root}.scores[\"new\"] = 99; return 42; }}");
+        assert_eq!(compile(&source).unwrap_err().code,"E_COPY_READONLY");
+    }
+    assert_eq!(compile("pub fnc main(): int { let mut Map<string,int> a = {\"x\" => 1}; return a.get(\"y\").unwrap(); }").unwrap_err().code,"E_COPY_UNPROVEN");
+    assert_eq!(compile("pub fnc main(): int { let mut Map<string,int> a = {\"x\" => 1,\"x\" => 2}; return 42; }").unwrap_err().code,"E_DUPLICATE");
+}

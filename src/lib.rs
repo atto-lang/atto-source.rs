@@ -22,6 +22,7 @@ pub mod collection_layout_storage;
 /// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
 pub mod collection_layout_guest;
 mod array_slot_guest;
+mod map_slot_guest;
 /// Shared canonical generic binding for production and guest collection parsers.
 pub mod collection_layout_type;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
@@ -348,6 +349,21 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
         nominal_contract_admission::preflight(&original_tokens)?;
         original_tokens
     };
+    // Closed literal-key scalar Map profile. Full production parser and
+    // ordinary ownership checker remain authoritative.
+    if map_slot_guest::selected(&source_tokens) {
+        if javascript { return Err(js_scalar::unsupported()); }
+        let mut parser = parser::Parser::new(source_tokens.clone());
+        parser.enable_fixed_map_slots();
+        let parsed = map_slot_guest::lower(parser.parse_program()?, &source_tokens)?;
+        let typed = check::check(&parsed)?;
+        actor_stack_bound::verify(&typed)?;
+        let bytes = wasm::emit(&typed);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos::default(), "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
+    }
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {

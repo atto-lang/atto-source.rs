@@ -617,7 +617,7 @@ fn isolation(pos: Pos, actor: &str, what: &str, name: &str) -> Diagnostic {
 /// reference forbids calls there, and this compiler admits only constants.
 fn fresh_nested_init(e: &Expr, expected: &str) -> bool {
     matches!(&e.kind, ExprKind::New(name, args) if name == expected &&
-        (args.is_empty() || (expected == crate::array_slot_guest::INTERNAL
+        (args.is_empty() || ((expected == crate::array_slot_guest::INTERNAL || expected == crate::map_slot_guest::INTERNAL)
             && args.iter().all(crate::array_slot_guest::literal_int))))
 }
 
@@ -1243,7 +1243,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let shallow_copy_idx = if flat && !c.methods.iter().any(|m| m.name == "copy") { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
-            None if c.name == crate::array_slot_guest::INTERNAL =>
+            None if c.name == crate::array_slot_guest::INTERNAL || c.name == crate::map_slot_guest::INTERNAL =>
                 vec![Type::Int; c.fields.len()],
             None => Vec::new(),
         };
@@ -1521,7 +1521,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for (i, (offset, ty, v)) in field_inits.into_iter().enumerate() {
             // Fixed scalar Array storage is initialized directly from its
             // checked factory parameters, not from a shared static descriptor.
-            let v = if c.name == crate::array_slot_guest::INTERNAL {
+            let v = if c.name == crate::array_slot_guest::INTERNAL || c.name == crate::map_slot_guest::INTERNAL {
                 TE { e: TExpr::Local(i as u32), ty: Type::Int }
             } else { v };
             body.push(TStmt::FieldSet {
