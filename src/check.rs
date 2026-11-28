@@ -5304,6 +5304,24 @@ impl<'a> FnCx<'a> {
                 if self.g.enum_(n).is_some() || self.g.actor(n).is_some() {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED", format!("'{n}' has no callable members")));
                 }
+                // Local and nominal resolution takes precedence over the
+                // compiler-owned factory. Validate int operands with the
+                // ordinary expression checker; never grant guest allocation.
+                if n == "Set" && name == "of" {
+                    if args.is_empty() {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "empty Set.of requires contextual element type inference"));
+                    }
+                    for arg in args {
+                        let checked = self.expr(arg)?;
+                        if checked.ty != Type::Int {
+                            return Err(Diagnostic::new(arg.pos, "E_UNSUPPORTED",
+                                "checked Set.of admission currently supports only int operands"));
+                        }
+                    }
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "typed Set<int>.of requires checked guest storage and ownership lowering"));
+                }
             }
         }
         // self.method(args)
