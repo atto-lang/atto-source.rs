@@ -162,10 +162,10 @@ fn constructor_tokens(decl: &Decl, values: BTreeMap<String,Token>, pos: Pos) -> 
     }
     let mut out=fragment(&format!("new {}(",decl.name),pos)?;
     for (i,f) in decl.fields.iter().enumerate() {
-        if i>0 {out.push(Token{tok:Tok::Comma,pos});}
+        if i>0 {out.push(Token{tok:Tok::Comma,pos, string_quote: None });}
         out.push(values[&f.name].clone());
     }
-    out.push(Token{tok:Tok::RParen,pos});
+    out.push(Token{tok:Tok::RParen,pos, string_quote: None });
     Ok(out)
 }
 fn synthetic_name(kind: &str, a: &str, b: &str) -> String {
@@ -245,10 +245,10 @@ fn typed_product(t:&[Token],i:usize,defs:&mut BTreeMap<String,Vec<Field>>)
         Field{name:named[0].into(),ty:a.clone()},Field{name:named[1].into(),ty:b.clone()}
     ]);
     let mut out=t[i..i+3].to_vec();
-    out.push(Token{tok:Tok::Ident(cls.clone()),pos:t[i+3].pos});
+    out.push(Token{tok:Tok::Ident(cls.clone()),pos:t[i+3].pos, string_quote: None });
     out.push(t[after].clone()); // =
-    out.push(Token{tok:Tok::Ident("new".into()),pos:t[open].pos});
-    out.push(Token{tok:Tok::Ident(cls),pos:t[open].pos});
+    out.push(Token{tok:Tok::Ident("new".into()),pos:t[open].pos, string_quote: None });
+    out.push(Token{tok:Tok::Ident(cls),pos:t[open].pos, string_quote: None });
     out.extend_from_slice(&t[open..=close]);
     out.push(t[close+1].clone()); // ;
     Ok(Some((out,close+2)))
@@ -330,7 +330,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         for (name,fields) in synthetic {
             out.extend(fragment(&synthesized(&name,&fields),pos)?);
         }
-        out.push(Token{tok:Tok::Eof,pos});
+        out.push(Token{tok:Tok::Eof,pos, string_quote: None });
     }
     if out.len()>lexer::MAX_TOKENS {
         return Err(error(t[0].pos,"E_SOURCE_LIMIT","checked product specialization exceeds token budget"));
