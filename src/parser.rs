@@ -243,6 +243,8 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
+    /// Exact closing bar token of the innermost explicit tuple.
+    tuple_closer: Option<usize>,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
     /// Scope of an explicit generator function body.
@@ -303,6 +305,7 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
+            tuple_closer: None,
             type_names: Vec::new(),
             in_generator: false,
             erlang_body: false,
@@ -2564,7 +2567,7 @@ impl Parser {
             } else {
                 self.parse_pattern()?
             };
-            let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
+            let guard = if self.eat_word("when") { Some(self.parse_expr_with_slim_arrow(false)?) } else { None };
             if *self.peek() == Tok::Assign && *self.peek_at(1) == Tok::Gt {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -2626,7 +2629,7 @@ impl Parser {
             // The guard sees a pattern binding only after that pattern
             // matches. A guarded catch-all does not prove exhaustiveness.
             // The existing match type checker enforces these properties.
-            let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
+            let guard = if self.eat_word("when") { Some(self.parse_expr_with_slim_arrow(false)?) } else { None };
             self.expect(Tok::Arrow, "'->' in a return match arm")?;
             let braced = *self.peek() == Tok::LBrace;
             let body = if braced {
@@ -2891,6 +2894,12 @@ impl Parser {
     }
 
     pub fn parse_expr(&mut self) -> R<Expr> {
+        self.parse_expr_with_slim_arrow(true)
+    }
+
+    // A match guard ends at its owning arm arrow. Nested groups/calls
+    // still use parse_expr, so a grouped Entry does not steal that arrow.
+    fn parse_expr_with_slim_arrow(&mut self, allow_slim: bool) -> R<Expr> {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
@@ -2903,10 +2912,10 @@ impl Parser {
                     "'::' is a callable-header separator, not a RecordEntry operator",
                 ));
             }
-            if !self.eat(&Tok::FatArrow) {
+            if !self.eat(&Tok::FatArrow) && !(allow_slim && self.eat(&Tok::Arrow)) {
                 return Ok(left);
             }
-            // Outside brace-map key position, => constructs a nominal Entry.
+            // Outside brace-map key position, either arrow constructs a nominal Entry.
             // Bracket literals ALWAYS retain Array/List meaning, including
             // the case where the array/list is the Map/Entry key.
             // The checked Hash/Eq gate rejects unsupported key collections.
@@ -2914,7 +2923,7 @@ impl Parser {
             self.grow(1)?;
             let val = self.parse_ternary()?;
             self.height -= 1;
-            if *self.peek() == Tok::FatArrow {
+            if *self.peek() == Tok::FatArrow || (allow_slim && *self.peek() == Tok::Arrow) {
                 return Err(Diagnostic::new(
                     self.pos(),
                     "E_LITERAL_KIND",
@@ -2961,6 +2970,7 @@ impl Parser {
         }
         self.height -= links;
         match self.peek() {
+            Tok::Pipe if self.tuple_closer == Some(self.i) => {}
             Tok::Pipe => {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -3456,6 +3466,11 @@ impl Parser {
                 }
                 Tok::Dot => {
                     let dot = self.pos();
+                    if matches!(self.peek_at(1), Tok::FatArrow | Tok::Arrow) {
+                        return Err(Diagnostic::new(
+                            dot, "E_SYNTAX", "dotted callable types cannot be runtime values",
+                        ));
+                    }
                     if let ExprKind::Var(base) = &e.kind {
                         if base == "stdio" {
                             if let Some(m @ ("print" | "println")) = self.word_at(1) {
@@ -3846,16 +3861,36 @@ impl Parser {
                     }
                 } else {
                     let key = self.parse_ternary()?;
-                    if !self.eat(&Tok::FatArrow) {
+                    if !self.eat(&Tok::FatArrow) && !self.eat(&Tok::Arrow) {
                         return Err(Diagnostic::new(
                             self.pos(),
                             "E_LITERAL_KIND",
-                            "expected '=>' for expression Map key",
+                            "expected '=>' or '->' for expression Map key",
                         ));
                     }
                     key
                 };
-                let value = self.parse_expr()?;
+                // A second top-level arrow belongs to an ambiguous Entry
+                // chain, not the Map value. Nested groups/lambdas retain
+                // their independent expression grammar.
+                let value = if quoted_map_key {
+                    self.parse_expr()?
+                } else {
+                    self.enter()?;
+                    let saved_cond = self.cond;
+                    self.cond = 0;
+                    let value = self.parse_ternary();
+                    self.leave();
+                    self.cond = saved_cond;
+                    let value = value?;
+                    if matches!(self.peek(), Tok::FatArrow | Tok::Arrow) {
+                        return Err(Diagnostic::new(
+                            self.pos(), "E_LITERAL_KIND",
+                            "group nested Entries in Map values explicitly",
+                        ));
+                    }
+                    value
+                };
                 // Constant duplicate keys are definite mistakes. Dynamically
                 // computed keys need checked equality/hash rules at runtime.
                 if let Some(fingerprint) = constant_map_key(&key) {
@@ -3893,6 +3928,56 @@ impl Parser {
         }
     }
 
+    // Called just after consuming '('; a complete explicit tuple ends
+    // with a bar immediately before this parent's matching ')'. A grouped
+    // lambda (|x| -> x) does not meet that condition. The lexer bounds total
+    // tokens and the parser bounds recursive nesting; no speculative ASTs.
+    fn explicit_tuple_closer(&self) -> Option<usize> {
+        if *self.peek() != Tok::Pipe {
+            return None;
+        }
+        let mut nested = 0usize;
+        for (index, token) in self.toks.iter().enumerate().skip(self.i + 1) {
+            match &token.tok {
+                Tok::LParen => nested += 1,
+                Tok::RParen if nested == 0 => {
+                    return (index > self.i + 1 && self.toks[index - 1].tok == Tok::Pipe)
+                        .then_some(index - 1);
+                }
+                Tok::RParen => nested -= 1,
+                Tok::Eof => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn parse_explicit_tuple(&mut self, closer: usize) -> R<ExprKind> {
+        self.expect(Tok::Pipe, "'|' to open explicit tuple")?;
+        let saved = self.tuple_closer.replace(closer);
+        let result = (|| {
+            let mut items = Vec::new();
+            while self.i != closer {
+                if self.i > closer {
+                    return Err(self.expected("closing explicit tuple bar"));
+                }
+                if items.len() >= 1024 {
+                    return Err(Diagnostic::new(
+                        self.pos(), "E_SOURCE_LIMIT", "tuple literal exceeds 1024 elements",
+                    ));
+                }
+                items.push(self.parse_expr()?);
+                if self.i == closer { break; }
+                self.expect(Tok::Comma, "',' between explicit tuple elements")?;
+            }
+            self.expect(Tok::Pipe, "'|' after explicit tuple elements")?;
+            self.expect(Tok::RParen, "')' after explicit tuple")?;
+            Ok(ExprKind::Tuple(items))
+        })();
+        self.tuple_closer = saved;
+        result
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -3915,6 +4000,10 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
+                if let Some(closer) = self.explicit_tuple_closer() {
+                    let kind = self.parse_explicit_tuple(closer)?;
+                    return Ok(Expr { kind, pos });
+                }
                 // Parenthesized named fields form a closed Record, distinct
                 // from positional tuples and grouping. '=' is field syntax
                 // here, never an assignment expression.

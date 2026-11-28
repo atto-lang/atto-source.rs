@@ -116,3 +116,69 @@ fn unknown_runtime_key_does_not_acquire_ambient_hash_authority() {
     assert_eq!(collection_types::analyze(&p).unwrap_err().code, "E_UNSUPPORTED");
     rejected(r#"let name="foo";let m={name=>5};"#, "E_UNSUPPORTED");
 }
+
+#[test]
+fn slim_and_fat_entry_arrows_share_ast_and_map_key_rules() {
+    let p = parse("let a=5->3;let b=(5)=>3;let c=(5)->3;let m={5->3,4=>3,};").unwrap();
+    for i in 0..3 {
+        assert!(matches!(init(&p,i), ExprKind::Entry(k,v)
+            if matches!(&k.kind, ExprKind::Int(Some(5))) && matches!(&v.kind, ExprKind::Int(Some(3)))));
+    }
+    assert!(matches!(init(&p,3), ExprKind::Map(xs) if xs.len()==2));
+    assert_eq!(parse("let m={5->3,5=>4};").unwrap_err().code, "E_DUPLICATE");
+    for body in ["let x=1->2->3;", "let x=1->2=>3;", "let x=1=>2->3;",
+                 "let x={1->2=>3};", "let x={1=>2->3};"] {
+        assert_eq!(parse(body).unwrap_err().code, "E_LITERAL_KIND", "{body}");
+    }
+    let p = parse("let a=1->(2=>3);let b=(1->2)=>3;").unwrap();
+    assert!(matches!(init(&p,0), ExprKind::Entry(_,v) if matches!(&v.kind, ExprKind::Entry(..))));
+    assert!(matches!(init(&p,1), ExprKind::Entry(k,_) if matches!(&k.kind, ExprKind::Entry(..))));
+}
+
+#[test]
+fn mixed_map_arrows_reuse_existing_scalar_guest_lowering() {
+    admitted("pub fnc main():int { val m={5->40,4=>2}; return m[5]+m[4]; }");
+    admitted("pub fnc main():int { val m=Map.of(5->40,4=>2); return m[5]+m[4]; }");
+}
+
+#[test]
+fn slim_entry_arrow_does_not_steal_guard_or_lambda_arrow() {
+    admitted("pub fnc main():int { return match 5 over on 5 when true -> 42, default -> 0, end; }");
+    let p = parse("val f=|k,v| -> k -> v;").unwrap();
+    assert!(matches!(init(&p,0), ExprKind::Lambda { .. }));
+    for body in ["let x=(50).=>3;", "let x=(50).->3;"] {
+        assert!(parse(body).is_err(), "{body}");
+    }
+}
+
+#[test]
+fn explicit_tuple_keys_do_not_turn_into_lambda_parameters() {
+    let p = parse("let a=5;let b=6;let x=(|a,b|)->3;let y=(|a,b|)=>3;let z=(|a|)->3;let e=(||)->3;").unwrap();
+    for (i, arity) in [(2,2),(3,2),(4,1),(5,0)] {
+        assert!(matches!(init(&p,i), ExprKind::Entry(k,v)
+            if matches!(&k.kind, ExprKind::Tuple(items) if items.len()==arity)
+                && matches!(&v.kind, ExprKind::Int(Some(3)))));
+    }
+    let p = parse("val f=|a,b|->3;val g=(|a,b|->3);val h=||->3;").unwrap();
+    for i in 0..3 {
+        assert!(matches!(init(&p,i), ExprKind::Lambda { .. }));
+    }
+}
+
+#[test]
+fn explicit_tuple_closing_bar_is_scoped_to_its_own_delimiter() {
+    let p = parse("let e=(|(|1,2|),3|)->4;let t=(|true||false,5|);").unwrap();
+    assert!(matches!(init(&p,0), ExprKind::Entry(k,_)
+        if matches!(&k.kind, ExprKind::Tuple(items)
+            if items.len()==2 && matches!(&items[0].kind, ExprKind::Tuple(inner) if inner.len()==2))));
+    assert!(matches!(init(&p,1), ExprKind::Tuple(items) if items.len()==2));
+    for body in [
+        "let e=(|1 2|)->3;",
+        "let e=(|1,2|).=>3;",
+        "let e=(|int v|)=>3;",
+        "let e=(|v:int|)=>3;",
+        "let e=(|1,2)->3;",
+    ] {
+        assert!(parse(body).is_err(), "{body}");
+    }
+}
