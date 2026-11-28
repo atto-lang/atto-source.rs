@@ -226,7 +226,7 @@ fn immediate_record_apply_binds_retained_formals_not_source_position() {
     for binding in ["val", "const"] {
         let prefix = format!("pub fnc main():int {{ {binding} f: fnc(int,int)->int = |x,y| : int -> x*10+y; return ");
         let expected = atto_compiler::compile(&format!("{prefix}f(4,2); }}")).unwrap();
-        for call in ["f.apply({x:4,y:2})", "f.apply({y:2,x:4})", "f.apply({y=2,x:4,})"] {
+        for call in ["f.apply({x:4,y:2})", "f.apply({y:2,x:4})", "f.apply({y=2,x:4,})", "f.apply({y:=2,x:=4})", "f.apply({y:=2,x=4,})"] {
             let source = format!("{prefix}{call}; }}");
             assert_eq!(atto_compiler::compile(&source).unwrap_or_else(|e| panic!("{source}: {e}")), expected, "{source}");
         }
@@ -242,6 +242,9 @@ fn immediate_record_apply_rejects_bad_shape_and_unproved_evaluation() {
         ("f.apply({x:4})", "E_ARITY"),
         ("f.apply({x:4,z:2})", "E_NAMED_ARG"),
         ("f.apply({x:4,x:2})", "E_DUPLICATE"),
+        ("f.apply({x:=4,x:=2})", "E_DUPLICATE"),
+        ("f.apply({x : =4,y:=2})", "E_SYNTAX"),
+        ("f.apply({x:/*gap*/=4,y:=2})", "E_SYNTAX"),
         ("f.apply({x:4,y:true})", "E_TYPE"),
         ("f.apply({y:1+1,x:4})", "E_UNSUPPORTED"),
     ] {
