@@ -300,3 +300,107 @@ fn readonly_formal_forwarding_allows_two_shared_reads_but_not_lexical_aliases() 
     let alias = source.replace("return forward(parcel);", "val alias = borrow! parcel; return forward(alias);");
     assert_eq!(crate::compile(&alias).expect_err("lexical alias remains unsupported").code, "E_BORROW");
 }
+
+
+#[test]
+fn bae_two_readonly_arguments_preserve_nominal_layout_and_operand_order() {
+    let source = include_str!("../tests/fixtures/pass/borrow-two-args-v1.atto");
+    let direct = source.replace("difference(left, borrow! right)", "right.value - left.value");
+    let alternate = source.replace("difference(left, borrow! right)", "difference(borrow! left, right)");
+    let bytes = crate::compile(source).expect("two readonly arguments");
+    assert_eq!(bytes, crate::compile(&direct).expect("direct reads"));
+    assert_eq!(bytes, crate::compile(&alternate).expect("alternate borrow spellings"));
+    let wrong = source.replace("difference(left, borrow! right)", "difference(right, borrow! left)");
+    assert!(crate::compile(&wrong).is_err(), "nominal type mismatch");
+    let effectful = source.replace("return b.value - a.value;", "stdio.print(1); return b.value - a.value;");
+    let effectful_direct = effectful.replace("difference(left, borrow! right)", "right.value - left.value");
+    assert_ne!(crate::compile(&effectful).expect("effectful call"),
+        crate::compile(&effectful_direct).expect("direct reads"));
+}
+
+#[test]
+fn bae_two_shared_arguments_may_alias_the_same_original_handle() {
+    let source = r#"// atto-ownership: borrow-default-v1
+        define class Parcel as pub let int value = 21; end
+        fnc sum(Parcel a, Parcel b): int { return a.value + b.value; }
+        pub fnc main(): int { let p = new Parcel(); return sum(p, borrow! p); }
+    "#;
+    let direct = source.replace("sum(p, borrow! p)", "p.value + p.value");
+    assert_eq!(crate::compile(source).expect("same-owner readonly arguments"),
+        crate::compile(&direct).expect("direct aliased reads"));
+}
+
+
+#[test]
+fn bae_transitive_forward_chain_matches_direct_original_field_reads() {
+    let source = include_str!("../tests/fixtures/pass/borrow-formal-forward-v1.atto");
+    let direct = source.replace("return outer(parcel);", "return parcel.left - parcel.right;");
+    assert_eq!(crate::compile(source).expect("forward chain"),
+        crate::compile(&direct).expect("direct original fields"),
+        "the complete bounded forwarding chain must elide at the caller");
+}
+
+#[test]
+fn bae_transitive_effectful_terminal_preserves_call() {
+    let source = include_str!("../tests/fixtures/pass/borrow-formal-forward-v1.atto")
+        .replace("return p.left - p.right;", "stdio.print(1); return p.left - p.right;");
+    let direct = source.replace("return outer(parcel);", "return parcel.left - parcel.right;");
+    assert_ne!(crate::compile(&source).expect("effectful chain"),
+        crate::compile(&direct).expect("direct fields"));
+}
+
+
+#[test]
+fn bae_method_getter_carries_proved_receiver_mode_and_elides_forwarding() {
+    let source = include_str!("../tests/fixtures/pass/borrow-method-getter-v1.atto");
+    let program = typed(source);
+    let getter = program.funcs.iter().find(|f| f.name == "Parcel.get").unwrap();
+    assert_eq!(getter.param_ownership, [ParamOwnership::BorrowRead]);
+    let direct = source.replace("return inspect(parcel);", "return parcel.value;");
+    assert_eq!(crate::compile(source).expect("readonly getter"),
+        crate::compile(&direct).expect("direct field"));
+}
+
+#[test]
+fn bae_method_getter_does_not_admit_effectful_or_computed_receiver() {
+    let source = include_str!("../tests/fixtures/pass/borrow-method-getter-v1.atto");
+    let effect = source.replace("return self.value;", "stdio.print(1); return self.value;");
+    let program = typed(&effect);
+    let getter = program.funcs.iter().find(|f| f.name == "Parcel.get").unwrap();
+    assert_eq!(getter.param_ownership, [ParamOwnership::Legacy]);
+    let direct = effect.replace("return inspect(parcel);", "return parcel.value;");
+    assert_ne!(crate::compile(&effect).expect("effectful method"),
+        crate::compile(&direct).expect("direct field"));
+    let computed = source.replace("return inspect(parcel);", "return new Parcel().get();");
+    let computed_direct = computed.replace("new Parcel().get()", "parcel.value");
+    assert_ne!(crate::compile(&computed).expect("computed receiver"),
+        crate::compile(&computed_direct).expect("local receiver"));
+}
+
+
+#[test]
+fn bae_many_borrowed_parameters_match_ordered_direct_reads() {
+    let source = include_str!("../tests/fixtures/pass/borrow-many-args-v1.atto");
+    let direct = source.replace("combine(p, borrow! q, p)", "(p.value + q.value) - p.value + p.value");
+    assert_eq!(crate::compile(source).expect("three borrowed arguments"),
+        crate::compile(&direct).expect("ordered direct reads"));
+    let effect = source.replace("return (c.value", "stdio.print(1); return (c.value");
+    let effect_direct = effect.replace("combine(p, borrow! q, p)", "(p.value + q.value) - p.value + p.value");
+    assert_ne!(crate::compile(&effect).expect("effectful call"),
+        crate::compile(&effect_direct).expect("direct reads"));
+}
+
+#[test]
+fn bae_many_borrowed_parameters_enforce_arity_and_expression_budget() {
+    for n in [3usize, 8, 9] {
+        let names: Vec<_> = (0..n).map(|i| format!("p{i}")).collect();
+        let params = names.iter().map(|p| format!("Parcel {p}")).collect::<Vec<_>>().join(", ");
+        let sum = names.iter().map(|p| format!("{p}.value")).collect::<Vec<_>>().join(" + ");
+        let actual = vec!["p"; n].join(", ");
+        let direct = vec!["p.value"; n].join(" + ");
+        let source = format!("// atto-ownership: borrow-default-v1\ndefine class Parcel as pub let int value = 1; end\nfnc sum({params}): int {{ return {sum}; }}\npub fnc main(): int {{ let p = new Parcel(); return CALL; }}");
+        let bytes = crate::compile(&source.replace("CALL", &format!("sum({actual})"))).expect("checked source");
+        let baseline = crate::compile(&source.replace("CALL", &direct)).expect("direct reads");
+        assert_eq!(bytes == baseline, n <= 8, "arity {n}");
+    }
+}
