@@ -417,7 +417,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         funcs.push(TFunc { name: name.clone(), params: vec![Type::Int;params.len()], ret: Type::Int, locals: slots, body });
         if public {
             p.expect(Tok::Eof)?;
-            return Ok(TProgram { funcs, generators: vec![], main: index, imports: vec![], data: vec![],
+            return Ok(TProgram { funcs, readonly_method_receivers: vec![], generators: vec![], main: index, imports: vec![], data: vec![],
                 heap: false, globals: vec![], actors: vec![], strings: false, guest_eh: false,
                 raise_tag: false, catch_depth: false });
         }
