@@ -14,3 +14,5 @@ ORESC_BIN=/absolute/path/to/oresc /tmp/oresc-structural-depth-test
 This is a separate execution profile, not evidence of passing native tests.
 The ordinary browser crate runs the actual attoc CLI with check and Wasm emission
 modes in `tests/structural_ast_depth_cli.rs`.
+
+The original `source_control_admission.rs` checks the separate legacy `oreslang_source_rs::frontend` crate and its byte-offset diagnostics. Run it in that native package's test profile; the browser compiler instead tests its own character-based diagnostics and actual compilation. Native cases are retained, not counted as executed.
