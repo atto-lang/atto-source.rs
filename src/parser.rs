@@ -2087,10 +2087,14 @@ impl Parser {
         // Referent mutation is independent of binding rebinding.
         // `val mut` and `let mut` are both legal; neither bypasses ownership.
         let referent_mutable = self.eat_word("mut");
-        if kind == BindKind::Const && referent_mutable {
-            return Err(Diagnostic::new(pos, "E_CONST_MUT_TARGET",
-                "const mut is not supported for the scalar/Record guest profile"));
+        if referent_mutable && self.is_word("mut") {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "duplicate mut qualifier"));
         }
+        // Owner-confirmed const mut spelling is an alias for val, not
+        // permission to rebind or mutate a readonly val referent.
+        let (kind, referent_mutable) = if kind == BindKind::Const && referent_mutable {
+            (BindKind::Val, false)
+        } else { (kind, referent_mutable) };
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a variable name")?;
             self.advance();

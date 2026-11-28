@@ -1,4 +1,4 @@
-// Java: `let mut` / `const mut` add a mutable-referent qualifier (no effect on scalars)
+// Scalar profile: const mut aliases val; let mut retains its existing permission.
 // expect-exit: 9
 pub fnc main(): int {
   let mut x: int = 7;
