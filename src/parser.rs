@@ -5330,7 +5330,7 @@ impl Parser {
                         // backend allocation admission remain authoritative.
                         Tok::Ident(m) if m == "of"
                             && matches!(&e.kind, ExprKind::Var(base)
-                                if matches!(base.as_str(), "Map" | "Set" | "Record"))
+                                if matches!(base.as_str(), "Map" | "Set" | "Record" | "Entry"))
                             && *self.peek_at(1) == Tok::LParen => m,
                         _ => return Err(self.expected("a member name after '.'")),
                     };

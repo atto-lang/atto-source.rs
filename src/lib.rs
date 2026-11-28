@@ -673,6 +673,7 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     if visibility.exports.is_empty() {
         bounded_set_guest::lower(&mut program);
+        bounded_set_guest::lower_map(&mut program);
     }
     let typed = check::check(&program)?;
     actor_stack_bound::verify(&typed)?;
