@@ -535,6 +535,7 @@ fn bind_named_arguments(args: &[Expr], formals: &[String], pos: Pos) -> R<Vec<Ex
                 Error::UnknownName => ("E_NAMED_ARG", "unknown named argument"),
                 Error::Duplicate => ("E_DUPLICATE", "parameter is supplied more than once"),
                 Error::Missing => ("E_ARITY", "missing named argument"),
+                Error::Arity => ("E_ARITY", "too many positional arguments"),
                 Error::PositionalAfterNamed => ("E_SYNTAX", "positional arguments must precede named arguments"),
                 Error::Limit => ("E_SOURCE_LIMIT", "argument slot limit exceeded"),
                 Error::InvalidSignature => ("E_NAMED_ARG", "invalid callable parameter metadata"),
