@@ -50,3 +50,15 @@ fn lexical_trivia_and_alias_spelling_do_not_bypass_gate() {
         assert_eq!(compile(&src).unwrap_err().code, CODE, "{body}");
     }
 }
+
+#[test]
+fn strict_and_namespace_profiles_preserve_ensemble_admission() {
+    use atto_compiler::{compile_verified_strict, compile_namespace_file_v2, compile_js_namespace_file_v2};
+    assert_eq!(compile_verified_strict(CANONICAL).unwrap_err().code, CODE);
+    assert_eq!(compile_namespace_file_v2(CANONICAL).unwrap_err().code, CODE);
+    assert_eq!(compile_js_namespace_file_v2(CANONICAL).unwrap_err().code, CODE);
+    let ordinary = "pub fnc main(): int { return 42; }";
+    assert!(compile_namespace_file_v2(ordinary).is_ok());
+    assert!(compile_js_namespace_file_v2(ordinary).is_ok());
+    assert_ne!(compile_verified_strict(ordinary).err().map(|e| e.code), Some(CODE));
+}

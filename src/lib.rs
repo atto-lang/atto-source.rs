@@ -150,6 +150,7 @@ pub fn compile_js(source: &str) -> Result<String, Diagnostic> {
 pub fn compile_namespace_file_v2(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let prepared = namespace::prepare_file_v2(source)?;
     let tokens = lexer::lex(&prepared)?;
+    reject_unlowered_ensemble_publication(&tokens)?;
     if let Some(completed) = target_syntax::complete_file_classes_v2(&tokens)? {
         return compile_prelexed_target(completed, None, false);
     }
@@ -160,6 +161,7 @@ pub fn compile_namespace_file_v2(source: &str) -> Result<Vec<u8>, Diagnostic> {
 pub fn compile_js_namespace_file_v2(source: &str) -> Result<String, Diagnostic> {
     let prepared = namespace::prepare_file_v2(source)?;
     let tokens = lexer::lex(&prepared)?;
+    reject_unlowered_ensemble_publication(&tokens)?;
     if let Some(completed) = target_syntax::complete_file_classes_v2(&tokens)? {
         return String::from_utf8(compile_prelexed_target(completed, None, true)?)
             .map_err(|_| js_scalar::unsupported());
@@ -175,6 +177,7 @@ pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
     }
     let tokens = lexer::lex(source)?;
+    reject_unlowered_ensemble_publication(&tokens)?;
     if allocation_guarantees::present(&tokens) {
         return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "allocation guarantees use the ordinary checked AOT profile"));
     }
