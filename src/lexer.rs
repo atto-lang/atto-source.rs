@@ -121,6 +121,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
                     depth += 1;
+                    if depth > 64 {
+                        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "block comment nesting exceeds 64"));
+                    }
                     bump!();
                     bump!();
                 } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {

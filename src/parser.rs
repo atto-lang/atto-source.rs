@@ -4906,13 +4906,15 @@ impl Parser {
                     "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
-                let is_transfer = action == OwnershipOp::Take;
+                let verb_width = s.len() as u32;
                 self.advance(); // name
                 let first_bang = self.advance(); // !
-                if is_transfer && (first_bang.pos.line != pos.line ||
-                    first_bang.pos.col != pos.col + 4) {
+                // Contextual ownership verbs require contiguous punctuation,
+                // including comments and newlines between verb and bang.
+                if first_bang.pos.line != pos.line ||
+                    first_bang.pos.col != pos.col + verb_width {
                     return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
-                        "take! and move! require an adjacent bang"));
+                        "ownership verbs require an adjacent bang"));
                 }
                 // 'copy!!' is a single canonical operator only when the word
                 // and both bangs are adjacent. 'copy! !x' stays a shallow copy
