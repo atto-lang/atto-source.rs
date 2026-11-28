@@ -77,6 +77,18 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     // Scan raw source before comments or quoted literals can hide controls.
     let (mut raw_line, mut raw_col) = (1u32, 1u32);
     for c in source.chars() {
+        if c == '\0' {
+            return Err(Diagnostic::new(Pos { line: raw_line, col: raw_col },
+                "E_NUL", "NUL characters are not allowed in source"));
+        }
+        if matches!(c, '\u{001b}' | '\u{007f}') {
+            return Err(Diagnostic::new(Pos { line: raw_line, col: raw_col },
+                "E_SOURCE_CONTROL", "terminal control in source"));
+        }
+        if matches!(c, '\u{0085}' | '\u{2028}' | '\u{2029}') {
+            return Err(Diagnostic::new(Pos { line: raw_line, col: raw_col },
+                "E_SOURCE_UNICODE_CONTROL", "Unicode line control in source"));
+        }
         if matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
             return Err(Diagnostic::new(Pos { line: raw_line, col: raw_col },
                 "E_SOURCE_BIDI", "bidirectional Unicode control in source"));
