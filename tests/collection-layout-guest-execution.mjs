@@ -15,6 +15,12 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 const programs = [
   {
+    name: 'seeded-make-aosoa-9',
+    filename: 'collection-layout-seeded-make-aosoa-9.atto',
+    expectedReturn: 9n,
+    expectedWords: [1n, 2n, 3n, 10n, 20n, 30n, 9n, 0n, 0n, 40n, 0n, 0n],
+  },
+  {
     name: 'seeded-make-soa-15',
     filename: 'collection-layout-seeded-make-soa-15.atto',
     expectedReturn: 15n,
@@ -132,7 +138,13 @@ try {
   const fixed = readFileSync(resolve(here, 'fixtures/pass/collection-layout-fixed-size-soa-15.atto'), 'utf8');
   const contextual = readFileSync(resolve(here, 'fixtures/pass/collection-layout-contextual-make-soa-15.atto'), 'utf8');
   const seeded = readFileSync(resolve(here, 'fixtures/pass/collection-layout-seeded-make-soa-15.atto'), 'utf8');
+  const tiled = readFileSync(resolve(here, 'fixtures/pass/collection-layout-seeded-make-aosoa-9.atto'), 'utf8');
   const invalid = [
+    ['seed-aosoa-zero', tiled.replace('aosoa(3)', 'aosoa(0)'), 'E_LAYOUT_SIZE'],
+    ['seed-aosoa-over-limit', tiled.replace('aosoa(3)', 'aosoa(1025)'), 'E_LAYOUT_SIZE'],
+    ['seed-aosoa-dynamic', tiled.replace('aosoa(3)', 'aosoa(n)'), 'E_LAYOUT_SIZE'],
+    ['seed-aosoa-tail-mutation', tiled.replace('particles[3]', 'particles[4]'), 'E_LAYOUT_BOUNDS'],
+    ['seed-aosoa-tail-read', tiled.replace('columns.x[3]', 'columns.x[4]'), 'E_LAYOUT_BOUNDS'],
     ['seed-size-inherited-mismatch', seeded.replace(' with {size=infer}', ''), 'E_ARRAY_SIZE_MISMATCH'],
     ['seed-size-invalid', seeded.replace('size=5', 'size=-1'), 'E_LAYOUT_SIZE'],
     ['seed-wrong-nominal', seeded.replace('T=Particle', 'T=Other'), 'E_UNKNOWN_TYPE'],
