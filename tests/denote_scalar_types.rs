@@ -68,3 +68,9 @@ fn unused_cycles_and_unknown_targets_have_distinct_diagnostics() {
         assert_eq!(error.code, code, "{source}");
     }
 }
+
+#[test]
+fn denote_and_pattern_aliases_fail_closed_until_type_names_are_unified() {
+    let src = "type Alias = int; denote type Count = int; pub fnc main(): int { return 42; }";
+    assert!(compile(src).is_err());
+}
