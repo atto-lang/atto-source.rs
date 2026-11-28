@@ -51,7 +51,7 @@ function run(bytes){
 const positives=[
  ['pub fnc main(): int {const name="Alice"; const age=42; val z=(:name,:age); stdio.println(z.name); return z["age"];}',42n,'Alice\n'],
  ['pub fnc main(): int {const name="Alice"; const age=42; val z={foo:5,:name,:age}; return z.foo+z.age-5;}',42n,''],
- ['pub fnc main(): int {const name="Alice"; const age=42; val z=(foo=5,:name,:age); return z.foo+z.age-5;}',42n,''],
+ ['pub fnc main(): int {const name="Alice"; const age=42; val z=("foo":5,:name,:age); return z.foo+z.age-5;}',42n,''],
  ['pub fnc main(): int {const name="Alice"; const age=42; val z={:name,:age}; stdio.println(z.name); return z["age"];}',42n,'Alice\n'],
  ['pub fnc main(): int {val age=40; val z={:age,offset:2}; return z.age+z.offset;}',42n,''],
  ['pub fnc main(): int {let Record p={y:2,x:40}; return p.x+p.y;}',42n,''],
@@ -75,7 +75,7 @@ const negatives=[
  ['pub fnc main():int {let r=("foo":1,"foo":2);return 0;}','E_DUPLICATE'],
  ['pub fnc main():int {let r=("foo":1,"foo":2);return 0;}','E_DUPLICATE'],
 
- ['pub fnc main(): int {const age=42; val z=(:age,age=5); return 0;}','E_DUPLICATE'],
+ ['pub fnc main(): int {const age=42; val z=(:age,"age":5); return 0;}','E_DUPLICATE'],
  ['pub fnc main(): int {const age=42; val z=(:age,5); return 0;}','E_LITERAL_KIND'],
  ['pub fnc main(): int {const age=42; val z={:age,age:1}; return 0;}','E_DUPLICATE'],
  ['pub fnc main(): int {const age=42; val z={:age,"x"=>1}; return 0;}','E_LITERAL_KIND'],
@@ -220,76 +220,76 @@ negatives.push([
 // Named parenthesized Records MUST lower through the same checked scalar
 // shape ABI as braced Records, not a Tuple, Map, or unverified guest object.
 positives.push([
- 'pub fnc main(): int { let y=(foo="star",abc=5); return y.abc; }',
+ 'pub fnc main(): int { let y=("foo":"star","abc":5); return y.abc; }',
  5n,''
 ]);
 positives.push([
- 'pub fnc main(): int { let y=(abc=5,foo="star"); return y.abc; }',
+ 'pub fnc main(): int { let y=("abc":5,"foo":"star"); return y.abc; }',
  5n,''
 ]);
 positives.push([
- 'pub fnc main(): int { let y=(foo=42); return y.foo; }',
+ 'pub fnc main(): int { let y=("foo":42); return y.foo; }',
  42n,''
 ]);
 positives.push([
- 'pub fnc main(): int { let y=(foo=42,); return y["foo"]; }',
+ 'pub fnc main(): int { let y=("foo":42,); return y["foo"]; }',
  42n,''
 ]);
 positives.push([
- 'pub fnc main(): int { let y=(foo=40,bar=2); return y.foo+y.bar; }',
+ 'pub fnc main(): int { let y=("foo":40,"bar":2); return y.foo+y.bar; }',
  42n,''
 ]);
 positives.push([
- 'pub fnc main(): int { let y=(bar=2,foo=40,); return y["foo"]+y.bar; }',
+ 'pub fnc main(): int { let y=("bar":2,"foo":40,); return y["foo"]+y.bar; }',
  42n,''
 ]);
 positives.push([
- 'pub fnc main(): int { let mut r=(foo=1,bar=2); r["foo"]=40; return r.foo+r.bar; }',
+ 'pub fnc main(): int { let mut r=("foo":1,"bar":2); r["foo"]=40; return r.foo+r.bar; }',
  42n,''
 ]);
 positives.push([
- 'pub fnc main(): int { let r=(foo=1,bar=2); let z={bar:2,foo:1}; return r.foo+z.foo+40; }',
+ 'pub fnc main(): int { let r=("foo":1,"bar":2); let z={bar:2,foo:1}; return r.foo+z.foo+40; }',
  42n,''
 ]);
 positives.push([
- 'pub fnc main(): int { val mut Record r=(foo=2); r.foo=42; return r["foo"]; }',
+ 'pub fnc main(): int { val mut Record r=("foo":2); r.foo=42; return r["foo"]; }',
  42n,''
 ]);
 negatives.push([
- 'pub fnc main(): int { let y=(foo=1,foo=2); return 0; }', 'E_DUPLICATE'
+ 'pub fnc main(): int { let y=("foo":1,"foo":2); return 0; }', 'E_DUPLICATE'
 ]);
 negatives.push([
- 'pub fnc main(): int { let y=(foo=1,2); return 0; }', 'E_LITERAL_KIND'
+ 'pub fnc main(): int { let y=("foo":1,2); return 0; }', 'E_LITERAL_KIND'
 ]);
-for (const literal of ['{foo=40,bar:2}', '(foo:40,bar=2)', '{foo=40,bar=2,}', '(foo:40,bar:2)']) {
+for (const literal of ['{foo=40,bar:2}', '("foo":40,"bar":2)', '{foo=40,bar=2,}', '("foo":40,"bar":2)']) {
  positives.push(['pub fnc main(): int { let r='+literal+'; return r.foo+r.bar; }',42n,'']);
 }
 negatives.push(['pub fnc main(): int { let r={foo=1,foo:2};return 0; }','E_DUPLICATE']);
-negatives.push(['pub fnc main(): int { let r=(foo:1,foo=2);return 0; }','E_DUPLICATE']);
+negatives.push(['pub fnc main(): int { let r=("foo":1,"foo":2);return 0; }','E_DUPLICATE']);
 negatives.push(['pub fnc main(): int { let r={foo=1,"foo":2};return 0; }','E_LITERAL_KIND']);
 negatives.push([
- 'pub fnc main(): int { let y=(foo=1,"bar"=2); return 0; }', 'E_LITERAL_KIND'
+ 'pub fnc main(): int { let y=("foo":1,bar:2); return 0; }', 'E_RECORD_LABEL'
 ]);
 negatives.push([
- 'pub fnc main(): int { let y=("foo"=1); return 0; }', 'E_LITERAL_KIND'
+ 'pub fnc main(): int { let y=("foo"=1); return 0; }', 'E_SYNTAX'
 ]);
 negatives.push([
- 'pub fnc main(): int { let y=(foo=1,,bar=2); return 0; }', 'E_LITERAL_KIND'
+ 'pub fnc main(): int { let y=("foo":1,,"bar":2); return 0; }', 'E_LITERAL_KIND'
 ]);
 negatives.push([
- 'pub fnc main(): int { let y=(foo=(bar=1)); return 0; }', 'E_UNSUPPORTED'
+ 'pub fnc main(): int { let y=("foo":("bar":1)); return 0; }', 'E_UNSUPPORTED'
 ]);
 negatives.push([
- 'pub fnc main(): int { let y=(foo=1,bar=[1,2]); return 0; }', 'E_UNSUPPORTED'
+ 'pub fnc main(): int { let y=("foo":1,"bar":[1,2]); return 0; }', 'E_UNSUPPORTED'
 ]);
 negatives.push([
- 'pub fnc main(): int { let y:Map<string,int>=(foo=1); return 0; }', 'E_TYPE'
+ 'pub fnc main(): int { let y:Map<string,int>=("foo":1); return 0; }', 'E_TYPE'
 ]);
 negatives.push([
- 'pub fnc main(): int { let y=(foo=1); y["foo"]=42; return 0; }', 'E_IMMUTABLE'
+ 'pub fnc main(): int { let y=("foo":1); y["foo"]=42; return 0; }', 'E_IMMUTABLE'
 ]);
 negatives.push([
- 'pub fnc main(): int { let y=(foo=1); return y["missing"]; }', 'E_NO_FIELD'
+ 'pub fnc main(): int { let y=("foo":1); return y["missing"]; }', 'E_NO_FIELD'
 ]);
 negatives.push([
  'pub fnc main(): int { let y={}; return 0; }', 'E_INFER'
@@ -301,7 +301,7 @@ negatives.push([
  'fnc f(int foo):int {return foo;} pub fnc main(): int {return f(foo=1);}', 'E_UNSUPPORTED'
 ]);
 negatives.push([
- 'fnc f(int foo):int {return foo;} pub fnc main(): int {let r=(foo=1);return f(...r);}', 'E_UNSUPPORTED'
+ 'fnc f(int foo):int {return foo;} pub fnc main(): int {let r=("foo":1);return f(...r);}', 'E_UNSUPPORTED'
 ]);
 
 // Exhaustive guest execution: four independent scalar fields, 24 source orders.
@@ -323,25 +323,25 @@ visit_record_orders([0,1,2,3],0,order=>{
 // Audit parity: source-field permutation cannot change a named Record's
 // canonical shape, source value evaluation order, or emitted guest behavior.
 visit_record_orders([0,1,2,3],0,order=>{
- const parts=order.map(i=>orderedFields[i][0]+'='+orderedFields[i][1]);
+ const parts=order.map(i=>JSON.stringify(orderedFields[i][0])+':'+orderedFields[i][1]);
  const source='pub fnc main(): int { let r=('+parts.join(',')+'); return r.a+r.b+r.c+r.d; }';
  positives.push([source,42n,'']);
 });
 positives.push([
- 'pub fnc main():int {let r=(Foo=40,foo=2);return r.Foo+r.foo;}',42n,''
+ 'pub fnc main():int {let r=("Foo":40,"foo":2);return r.Foo+r.foo;}',42n,''
 ]);
 positives.push([
- 'pub fnc main():int {let r=(café=40,cafe=2);return r.café+r.cafe;}',42n,''
+ 'pub fnc main():int {let r=("café":40,"cafe":2);return r.café+r.cafe;}',42n,''
 ]);
 positives.push([
- 'pub fnc main():int {let r=(f0=1,f1=1,f2=1,f3=1,f4=1,f5=1,f6=1,f7=35);return r.f0+r.f1+r.f2+r.f3+r.f4+r.f5+r.f6+r.f7;}',42n,''
+ 'pub fnc main():int {let r=("f0":1,"f1":1,"f2":1,"f3":1,"f4":1,"f5":1,"f6":1,"f7":35);return r.f0+r.f1+r.f2+r.f3+r.f4+r.f5+r.f6+r.f7;}',42n,''
 ]);
 positives.push([
  'pub fnc main():int {return 3>=2 ? 42 : 0;}',42n,''
 ]);
 for(const literal of [
- '(foo=1,foo=2)',
- '(café=1,café=2)',
+ '("foo":1,"foo":2)',
+ '("café":1,"café":2)',
  '{foo:1,"foo":2}',
  '{"foo":1,foo:2}',
  '{"foo" => 1,"foo" => 2}',
@@ -352,11 +352,9 @@ for(const literal of [
  negatives.push(['pub fnc main():int {let r='+literal+';return 0;}',kind]);
 }
 for(const literal of [
- '(foo=1,bar)',
- '(foo=1,bar==2)',
- '(foo=1,if=2)',
- '(foo=1,"bar"=2)',
- '(foo=1,bar=2,3)',
+ '("foo":1,bar)',
+ '("foo":1,bar==2)',
+ '("foo":1,"bar":2,3)',
 ]){
  negatives.push(['pub fnc main():int {let r='+literal+';return 0;}','E_LITERAL_KIND']);
 }
@@ -364,14 +362,14 @@ negatives.push([
  'pub fnc main():int {let r=(__atto_closed_record_shape_0=42);return 0;}', 'E_RESERVED'
 ]);
 negatives.push([
- 'pub fnc main():int {let r=(f0=1,f1=1,f2=1,f3=1,f4=1,f5=1,f6=1,f7=1,f8=1);return 0;}', 'E_UNSUPPORTED'
+ 'pub fnc main():int {let r=("f0":1,"f1":1,"f2":1,"f3":1,"f4":1,"f5":1,"f6":1,"f7":1,"f8":1);return 0;}', 'E_UNSUPPORTED'
 ]);
 negatives.push([
  'pub fnc main():int {let r:Map<string,int>={};return 0;}', 'E_UNSUPPORTED'
 ]);
 // Check the source-level 1,024-field bound on native AND independent Wasm
 // compiler in an unprivileged process, without evaluating a partial guest.
-const oversizedNamed=(new Array(1025)).fill(0).map((_,i)=>'field_'+i+'=1').join(',');
+const oversizedNamed=(new Array(1025)).fill(0).map((_,i)=>JSON.stringify('field_'+i)+':1').join(',');
 negatives.push([
  'pub fnc main():int {let r=('+oversizedNamed+');return 0;}', 'E_SOURCE_LIMIT'
 ]);
@@ -408,6 +406,11 @@ negatives.push([
  'define actor W as receive(ActorMail<Record> mail): void {return;} end pub fnc main(): int {return 0;}',
  'E_UNSUPPORTED'
 ]);
+positives.push(['pub fnc main():int {let Record r=("content-type":42);return r["content-type"];}',42n,'']);
+positives.push(['pub fnc main():int {let Record r=("":40,"x-y":2);return r[""]+r["x-y"];}',42n,'']);
+for(const literal of ['(x:1)','(x=1)','("x":1,y:2)', "('x':1)"])
+ negatives.push(['pub fnc main():int {let r='+literal+';return 0;}','E_RECORD_LABEL']);
+negatives.push(['pub fnc main():int {let Record r={"x":1};return 0;}','E_TYPE']);
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
  let n=0;
