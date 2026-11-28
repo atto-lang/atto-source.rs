@@ -214,7 +214,7 @@ impl Cx {
     /// `f` would let the lambda escape and is rejected.
     fn extract_susp_lambdas(&mut self, body: &mut Vec<Stmt>,
         parent: &str, env: &BTreeMap<String, Option<Binding>>) -> R<()> {
-        let mut found: Vec<(String, Pos, Vec<(String, Option<Type>)>, Option<Type>, Vec<Stmt>, bool)> = Vec::new();
+        let mut found: Vec<SuspLambdaBind> = Vec::new();
         take_susp_lambda_binds(body, &mut found, 0)?;
         for (index, (name, pos, params, ret, lambda_body, mutable)) in found.into_iter().enumerate() {
             if mutable {
