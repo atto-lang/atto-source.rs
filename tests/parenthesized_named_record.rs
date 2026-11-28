@@ -185,7 +185,7 @@ fn parser_rejects_ambiguous_nested_and_mixed_named_syntax() {
             "E_LITERAL_KIND",
         );
     }
-    rejected("pub fnc main():int {let r=(\"\":42);return 0;}", "E_RECORD_LABEL");
+    rejected("pub fnc main():int {let r=(\"\\u{0}\":42);return 0;}", "E_RECORD_LABEL");
     rejected(
         "pub fnc main():int {let r=(__atto_closed_record_shape_0=42);return 0;}",
         "E_RESERVED",
