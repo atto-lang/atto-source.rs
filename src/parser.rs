@@ -243,6 +243,8 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
+    /// Exact closing bar token of the innermost explicit tuple.
+    tuple_closer: Option<usize>,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
     /// Scope of an explicit generator function body.
@@ -303,6 +305,7 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
+            tuple_closer: None,
             type_names: Vec::new(),
             in_generator: false,
             erlang_body: false,
@@ -2967,6 +2970,7 @@ impl Parser {
         }
         self.height -= links;
         match self.peek() {
+            Tok::Pipe if self.tuple_closer == Some(self.i) => {}
             Tok::Pipe => {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -3462,6 +3466,11 @@ impl Parser {
                 }
                 Tok::Dot => {
                     let dot = self.pos();
+                    if matches!(self.peek_at(1), Tok::FatArrow | Tok::Arrow) {
+                        return Err(Diagnostic::new(
+                            dot, "E_SYNTAX", "dotted callable types cannot be runtime values",
+                        ));
+                    }
                     if let ExprKind::Var(base) = &e.kind {
                         if base == "stdio" {
                             if let Some(m @ ("print" | "println")) = self.word_at(1) {
@@ -3919,6 +3928,56 @@ impl Parser {
         }
     }
 
+    // Called just after consuming '('; a complete explicit tuple ends
+    // with a bar immediately before this parent's matching ')'. A grouped
+    // lambda (|x| -> x) does not meet that condition. The lexer bounds total
+    // tokens and the parser bounds recursive nesting; no speculative ASTs.
+    fn explicit_tuple_closer(&self) -> Option<usize> {
+        if *self.peek() != Tok::Pipe {
+            return None;
+        }
+        let mut nested = 0usize;
+        for (index, token) in self.toks.iter().enumerate().skip(self.i + 1) {
+            match &token.tok {
+                Tok::LParen => nested += 1,
+                Tok::RParen if nested == 0 => {
+                    return (index > self.i + 1 && self.toks[index - 1].tok == Tok::Pipe)
+                        .then_some(index - 1);
+                }
+                Tok::RParen => nested -= 1,
+                Tok::Eof => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn parse_explicit_tuple(&mut self, closer: usize) -> R<ExprKind> {
+        self.expect(Tok::Pipe, "'|' to open explicit tuple")?;
+        let saved = self.tuple_closer.replace(closer);
+        let result = (|| {
+            let mut items = Vec::new();
+            while self.i != closer {
+                if self.i > closer {
+                    return Err(self.expected("closing explicit tuple bar"));
+                }
+                if items.len() >= 1024 {
+                    return Err(Diagnostic::new(
+                        self.pos(), "E_SOURCE_LIMIT", "tuple literal exceeds 1024 elements",
+                    ));
+                }
+                items.push(self.parse_expr()?);
+                if self.i == closer { break; }
+                self.expect(Tok::Comma, "',' between explicit tuple elements")?;
+            }
+            self.expect(Tok::Pipe, "'|' after explicit tuple elements")?;
+            self.expect(Tok::RParen, "')' after explicit tuple")?;
+            Ok(ExprKind::Tuple(items))
+        })();
+        self.tuple_closer = saved;
+        result
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -3941,6 +4000,10 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
+                if let Some(closer) = self.explicit_tuple_closer() {
+                    let kind = self.parse_explicit_tuple(closer)?;
+                    return Ok(Expr { kind, pos });
+                }
                 // Parenthesized named fields form a closed Record, distinct
                 // from positional tuples and grouping. '=' is field syntax
                 // here, never an assignment expression.
