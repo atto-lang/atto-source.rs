@@ -2044,3 +2044,45 @@ mod allocator_safety_tests {
 
 // Explicit isolated continuation ABI; ordinary emission remains unchanged.
 pub(crate) mod owned_unwind_v1;
+
+
+#[cfg(test)]
+mod current_main_bae_method_tests {
+    use super::*;
+    const SOURCE: &str = include_str!("../tests/fixtures/pass/bae-mainline-readonly-method.atto");
+
+    #[test]
+    fn readonly_method_scalar_receiver_matches_direct_field_bytes() {
+        let direct = SOURCE.replace("p.get()", "p.value");
+        assert_eq!(crate::compile(SOURCE).expect("method getter"),
+            crate::compile(&direct).expect("direct field"),
+            "checked leaf receiver must not use the call ABI");
+    }
+
+    #[test]
+    fn effectful_and_computed_receivers_retain_call_abi() {
+        let effect = SOURCE.replace("return self.value;", "stdio.print(1); return self.value;");
+        let direct = effect.replace("p.get()", "p.value");
+        assert_ne!(crate::compile(&effect).expect("effectful getter"),
+            crate::compile(&direct).expect("direct field"));
+        let computed = SOURCE.replace("p.get()", "new Parcel().get()");
+        assert_ne!(crate::compile(&computed).expect("computed receiver"),
+            crate::compile(SOURCE).expect("local receiver"));
+    }
+
+    #[test]
+    fn proof_requires_exact_receiver_nominal_type_and_result() {
+        let owner = Type::Class(0);
+        let proof = vec![Some((owner, Type::Int, 8))];
+        let value = TE { ty: Type::Int, e: TExpr::I64(0) };
+        let local = TE { ty: owner, e: TExpr::Local(1) };
+        assert_eq!(verified_method_getter_call(&value, 0, &[local.clone()], &proof),
+            Some((Type::Int, 8)));
+        let wrong = TE { ty: Type::Class(1), e: TExpr::Local(1) };
+        assert_eq!(verified_method_getter_call(&value, 0, &[wrong], &proof), None);
+        let wrong_result = TE { ty: Type::Bool, e: TExpr::Local(0) };
+        assert_eq!(verified_method_getter_call(&wrong_result, 0, &[local.clone()], &proof), None);
+        assert_eq!(verified_method_getter_call(&value, 0, &[local.clone(), local], &proof), None);
+        assert_eq!(verified_method_getter_call(&value, 1, &[], &proof), None);
+    }
+}
