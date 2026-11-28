@@ -35,7 +35,7 @@ fn expect(tokens: &[Token], i: &mut usize, token: Tok, msg: &str) -> Result<(), 
     Ok(())
 }
 
-fn layout(tokens: &[Token], i: &mut usize) -> Result<Storage, Diagnostic> {
+pub(crate) fn layout(tokens: &[Token], i: &mut usize) -> Result<Storage, Diagnostic> {
     let start = *i;
     let word = match tokens.get(start).map(|t| &t.tok) {
         Some(Tok::Ident(word)) => word.as_str(),
