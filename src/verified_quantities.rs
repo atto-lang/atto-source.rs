@@ -87,7 +87,7 @@ pub(crate) fn lower_mode(source: &str, tokens: &[Token], strict: bool) -> R<Opti
     let scalar_contract_profile = !strict && scalar_contract_header(tokens);
     if !scalar_contract_profile && !has_declarations(tokens) { return Ok(None); }
     let mut p = Parser { tokens, at: 0, lines: source.lines().map(|l| l.chars().collect()).collect(),
-        dimensions: BTreeSet::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256, strict, scalar_contract_profile };
+        dimensions: BTreeMap::new(), bases: BTreeSet::new(), units: BTreeMap::new(), budget: 256, strict, scalar_contract_profile };
     let mut declarations = 0;
     while p.word("define") {
         declarations += 1;
@@ -113,7 +113,7 @@ pub(crate) fn lower_mode(source: &str, tokens: &[Token], strict: bool) -> R<Opti
 
 struct Parser<'a> {
     tokens: &'a [Token], at: usize, lines: Vec<Vec<char>>,
-    dimensions: BTreeSet<String>, bases: BTreeSet<String>, units: BTreeMap<String,Unit>, budget: usize, strict: bool, scalar_contract_profile: bool,
+    dimensions: BTreeMap<String, Powers>, bases: BTreeSet<String>, units: BTreeMap<String,Unit>, budget: usize, strict: bool, scalar_contract_profile: bool,
 }
 impl Parser<'_> {
     fn token(&self) -> &Token { &self.tokens[self.at.min(self.tokens.len()-1)] }
@@ -192,18 +192,40 @@ impl Parser<'_> {
         if crate::parser::is_reserved(&name) || matches!(name.as_str(), "int" | "i64" | "i32" | "bool" | "void" | "float" | "string") {
             return Err(self.err("E_RESERVED", "quantity declaration cannot shadow a reserved type or keyword"));
         }
-        if self.dimensions.contains(&name) || self.units.contains_key(&name) {
+        if self.dimensions.contains_key(&name) || self.units.contains_key(&name) {
             return Err(self.err("E_UNIT_DUPLICATE", "duplicate quantity name"));
         }
         if dimension {
+            let mut powers = BTreeMap::from([(name.clone(),1)]);
+            if self.take(Tok::Assign) {
+                if self.strict { return Err(self.err("E_VERIFY_UNSUPPORTED", "compound dimension pilot is not strict-profile admitted")); }
+                let first = self.name()?;
+                powers = self.dimensions.get(&first).cloned()
+                    .ok_or_else(|| self.err("E_UNIT_NAME", "unknown or forward dimension"))?;
+                let mut factors = 1;
+                loop {
+                    let divide = if self.take(Tok::Slash) { true }
+                        else if self.take(Tok::Star) { false } else { break };
+                    factors += 1;
+                    if factors > 128 { return Err(self.err("E_UNIT_LIMIT", "compound dimension factor budget exceeded")); }
+                    let next = self.name()?;
+                    let rhs = self.dimensions.get(&next).cloned()
+                        .ok_or_else(|| self.err("E_UNIT_NAME", "unknown or forward dimension"))?;
+                    powers = Unit { powers, scale: Scale::ONE }
+                        .combine(&Unit { powers: rhs, scale: Scale::ONE }, divide, self.token().pos)?.powers;
+                }
+                if powers.is_empty() || self.dimensions.values().any(|other| other == &powers) {
+                    return Err(self.err("E_UNIT_DIMENSION", "equal or empty vectors require explicit nominal kind admission"));
+                }
+            }
             self.expect(Tok::Semi)?;
-            self.dimensions.insert(name);
+            self.dimensions.insert(name, powers);
             return Ok(());
         }
         self.expect(Tok::Colon)?;
         let dim = self.name()?;
-        if !self.dimensions.contains(&dim) { return Err(self.err("E_UNIT_NAME", "unknown dimension")); }
-        let powers = BTreeMap::from([(dim.clone(),1)]);
+        let powers = self.dimensions.get(&dim).cloned()
+            .ok_or_else(|| self.err("E_UNIT_NAME", "unknown dimension"))?;
         let unit = if self.take(Tok::Assign) {
             let (base, factor) = if matches!(self.token().tok, Tok::Int(_) | Tok::Minus) {
                 let f = self.factor()?;

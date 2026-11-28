@@ -175,7 +175,8 @@ where F: FnMut(&std::path::Path) -> std::io::Result<String> {
     // The verified quantity lane is file-local. Route it before generic import
     // lowering, which would otherwise discard the dedicated declaration path.
     // The complete typed parser rejects imports and trailing unsupported syntax.
-    if typed_quantity_header(&entry_tokens) || verified_quantities::scalar_contract_header(&entry_tokens) {
+    if typed_quantity_header(&entry_tokens) || verified_quantities::scalar_contract_header(&entry_tokens)
+        || measure_prelude::requested(source, &entry_tokens) {
         return compile_inner(source, Some(logical_path));
     }
     let mut checked_load = |path: &std::path::Path| -> std::io::Result<String> {
@@ -224,6 +225,8 @@ fn typed_quantity_header(tokens: &[lexer::Token]) -> bool {
         word(i + 4, "where")
 }
 
+mod measure_prelude;
+
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     compile_inner_target(source, logical_path, false)
@@ -245,6 +248,12 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
     }
     if contextual_specialization::present(&tokens) {
         return compile_prelexed_target(tokens, logical_path, javascript);
+    }
+    // The standard measurement pilot admits a narrowly recognized standalone
+    // main only. Its explicit unit syntax cannot fall through on failure.
+    if measure_prelude::requested(source, &tokens) {
+        if javascript { return Err(js_scalar::unsupported()); }
+        return measure_prelude::compile(source);
     }
     // Admit bounded typed quantity/refinement sources and explicitly
     // contracted private scalar headers. The typed lowerer checks the entire
