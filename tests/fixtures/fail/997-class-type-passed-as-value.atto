@@ -1,7 +1,7 @@
 // expect-error: E_TYPE_NOT_VALUE
 // java: rejects
 define class Parcel as
-  int value = 42;
+  pub int value = 42;
 end
 
 fnc read(Parcel item): int { return item.value; }
