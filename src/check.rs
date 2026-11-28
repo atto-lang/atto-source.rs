@@ -3544,6 +3544,21 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
+        // Expand only the parser-owned approval arm before ordinary match
+        // checking. The subject is already checked once, and the existing
+        // match lowering evaluates it once into a temp. Ordinary Return
+        // checking handles type compatibility, ownership and cleanup.
+        let lowered;
+        let arms = if let Some(MatchArm {
+            pattern: Pattern::Approval { binding, selectors }, ..
+        }) = arms.first() {
+            let mut a = arms.to_vec();
+            let (pattern, guard) = Self::conditional_approval(sty, binding, selectors.as_ref(), pos)?;
+            a[0].pattern = pattern;
+            a[0].guard = guard;
+            lowered = a;
+            lowered.as_slice()
+        } else { arms };
         if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr) {
             return self.match_adt(subj, arms, pos);
         }
@@ -3585,6 +3600,8 @@ impl<'a> FnCx<'a> {
             }
             // (pattern test, literal key for reachability, binding name)
             let (test, keys, bind): (Option<TE>, Option<Vec<i64>>, Option<&str>) = match &arm.pattern {
+                Pattern::Approval { .. } => return Err(Diagnostic::new(arm.pos, "E_MATCH",
+                    "conditional return marker outside its checked match")),
                 Pattern::Wild => (None, None, None),
                 Pattern::Bind(n) => (None, None, Some(n.as_str())),
                 Pattern::Int(v) => {
@@ -3794,6 +3811,60 @@ impl<'a> FnCx<'a> {
         Ok(TStmt::Block(match_setup))
     }
 
+
+    /// Resolve approval using the static carrier type, not payload
+    /// truthiness or integer/boolean coercion. Use the ordinary match
+    /// predicate and payload binding path, so inactive payloads are unread.
+    fn conditional_approval(sty: Type, binding: &str,
+        selectors: Option<&(Vec<i64>, Vec<bool>)>, pos: Pos) -> R<(Pattern, Option<Expr>)> {
+        let var = || Expr { kind: ExprKind::Var(binding.to_owned()), pos };
+        let int = |n: i64| {
+            let magnitude = if n == i64::MIN { None } else { Some(n.unsigned_abs()) };
+            let literal = Expr { kind: ExprKind::Int(magnitude), pos };
+            if n < 0 {
+                Expr { kind: ExprKind::Unary(UnOp::Neg, Box::new(literal)), pos }
+            } else { literal }
+        };
+        let boolean = |b| Expr { kind: ExprKind::Bool(b), pos };
+        let compare = |op, rhs| Expr {
+            kind: ExprKind::Binary(op, Box::new(var()), Box::new(rhs)), pos
+        };
+        let scalar = |guard| Ok((Pattern::Bind(binding.to_owned()), Some(guard)));
+        if let Some((ints, bools)) = selectors {
+            let literals: Vec<Expr> = match sty {
+                Type::Int if !ints.is_empty() && bools.is_empty() =>
+                    ints.iter().map(|n| int(*n)).collect(),
+                Type::Bool if !bools.is_empty() && ints.is_empty() =>
+                    bools.iter().map(|b| boolean(*b)).collect(),
+                _ => return Err(type_err(pos,
+                    "conditional return selectors must match the exact static scalar operand type")),
+            };
+            // A balanced reduction is unnecessary at the bounded 64-item
+            // selector limit; every comparison reads the same typed local.
+            // Build the guard as a balanced tree to keep checker depth small.
+            let mut layer: Vec<Expr> = literals.into_iter().map(|v| compare(BinOp::Eq, v)).collect();
+            while layer.len() > 1 {
+                let mut next = Vec::new();
+                let mut items = layer.into_iter();
+                while let Some(a) = items.next() {
+                    next.push(if let Some(b) = items.next() {
+                        Expr { kind: ExprKind::Binary(BinOp::Or, Box::new(a), Box::new(b)), pos }
+                    } else { a });
+                }
+                layer = next;
+            }
+            return scalar(layer.pop().expect("nonempty checked selector set"));
+        }
+        match sty {
+            Type::Bool => scalar(var()),
+            Type::Int => scalar(compare(BinOp::Ne, int(0))),
+            Type::OptionInt | Type::OptionResultIntStr =>
+                Ok((Pattern::Adt("Some".into(), Some(binding.into())), None)),
+            Type::ResultIntStr | Type::ResultIntInt =>
+                Ok((Pattern::Adt("Ok".into(), Some(binding.into())), None)),
+            _ => Err(type_err(pos, "conditional return requires bool, int or an admitted Option/Result carrier")),
+        }
+    }
 
     /// Check a concrete tagged ADT match. Only v1 profiles are admitted:
     /// Option<int> and Result<int,string>. Each variant has a unique tag;
