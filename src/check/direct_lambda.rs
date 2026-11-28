@@ -277,7 +277,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 declared_effects: None,
                 params: d.params.into_iter().chain(
                     d.captures.into_iter().map(|c| c.source)
-                ).zip(all_types).map(|(name, ty)| Param { omittable: false,
+                ).zip(all_types).map(|(name, ty)| Param { omittable: false, none_default: None, omission_default: None,
                     name, ty, mutable: false, pos: d.lambda.pos,
                 }).collect(),
                 ret: callable.signature().result,
