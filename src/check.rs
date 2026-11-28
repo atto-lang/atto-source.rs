@@ -4948,8 +4948,22 @@ impl<'a> FnCx<'a> {
                 projected
             },
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
-            ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "array literals are parsed but not yet lowered to browser Wasm")),
+            ExprKind::Array(elements) => {
+                // Diagnose direct unshadowed nominal type names using ordinary
+                // value lookup precedence. No array evaluation or allocation.
+                for element in elements {
+                    if let ExprKind::Var(name) = &element.kind {
+                        if self.lookup(name).is_none() && !self.g.names.contains_key(name)
+                            && (self.g.class(name).is_some() || self.g.enum_(name).is_some()
+                                || self.g.actor(name).is_some()) {
+                            return Err(Diagnostic::new(element.pos, "E_TYPE_NOT_VALUE",
+                                format!("the type name '{name}' is not a value")));
+                        }
+                    }
+                }
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "array literals are parsed but not yet lowered to browser Wasm"));
+            },
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
         })
