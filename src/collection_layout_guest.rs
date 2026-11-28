@@ -256,6 +256,7 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
     Ok(TProgram {
         funcs: vec![TFunc { name: "main".to_owned(), params: vec![], ret: Type::Int,
             locals: vec![Type::Array(0)], body }],
+        readonly_method_receivers: vec![],
         generators: vec![], main: 0, imports: vec![], data: vec![],
         heap: true, globals: vec![], actors: vec![],
         strings: false, guest_eh: false, raise_tag: false, catch_depth: false,

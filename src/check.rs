@@ -361,6 +361,9 @@ pub struct TActor {
 #[derive(Clone, Debug)]
 pub struct TProgram {
     pub funcs: Vec<TFunc>,
+    /// Compiler-issued ordinary instance getter candidates, indexed by function.
+    /// The emitter independently revalidates the whole typed body before elision.
+    pub readonly_method_receivers: Vec<bool>,
     pub generators: Vec<TGenerator>,
     pub main: u32,
     pub imports: Vec<Import>,
@@ -1330,6 +1333,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut imports = Vec::new();
     let mut data = Vec::new();
     let mut funcs: Vec<Option<TFunc>> = (0..total).map(|_| None).collect();
+    let mut readonly_method_receivers = vec![false; total];
 
     // ---- top-level functions
     let mut generators = Vec::new();
@@ -1572,6 +1576,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 },
                 &mut imports, &mut data,
             )?;
+            // Do not infer ordinary receiver authority from a function name.
+            // Only the actual checked non-state instance declaration may mint
+            // this candidate; the emitter checks the scalar body and call site.
+            readonly_method_receivers[mi.idx as usize] = !m.is_static
+                && m.params.is_empty() && !c.state_container;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: named.iter().map(|x| x.1).collect(),
@@ -1697,6 +1706,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     Ok(TProgram {
         funcs,
+        readonly_method_receivers,
         main,
         imports,
         data,
