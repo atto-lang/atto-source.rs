@@ -1,0 +1,6 @@
+// expect-error: E_DUPLICATE
+define serial actor Worker as
+    receive(msg: int): void { return; }
+    receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 0; }

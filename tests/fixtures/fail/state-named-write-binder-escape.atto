@@ -1,0 +1,6 @@
+// expect-error: E_ESCAPE
+define state container Counter as
+  state { let int count: 0; }
+  pub bad(): void { handle_state(critical-write |current| -> { val escaped = current; }); }
+end
+pub fnc main(): int { return 0; }

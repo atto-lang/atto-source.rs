@@ -125,7 +125,18 @@ fn scan_methods(t: &[Token], kind: Kind) -> R<BTreeMap<String, Method>> {
         let public = if is(t, i, "pub") { i += 1; true }
             else if is(t, i, "private") { i += 1; false }
             else { matches!(kind, Kind::Trait | Kind::Interface) };
-        if is(t, i, "fnc") || is(t, i, "method") { i += 1; }
+        // Explicit mtd is a contextual prefix, not a reserved method name.
+        // Keep mtd() and type-first fields intact; consume only mtd name(.
+        if is(t, i, "method")
+            && matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::Ident(_)))
+            && matches!(t.get(i + 2).map(|x| &x.tok), Some(Tok::LParen | Tok::Lt))
+        {
+            return Err(err(t[i].pos, "E_SYNTAX", "obsolete method introducer; use mtd"));
+        }
+        let marked_mtd = is(t, i, "mtd")
+            && matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::Ident(_)))
+            && t.get(i + 2).map(|x| &x.tok) == Some(&Tok::LParen);
+        if is(t, i, "fnc") || marked_mtd { i += 1; }
         // A receive/constructor is not an ordinary method. Skip its entire
         // body; a nested call such as self.ping(...) cannot manufacture a
         // second method slot in the surrounding actor's declaration.

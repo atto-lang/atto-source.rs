@@ -29,7 +29,7 @@
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::{ActorKind, BinOp, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
@@ -51,6 +51,8 @@ pub const PANIC_STACK: i32 = 6;
 pub const PANIC_REFINEMENT: i32 = 7;
 /// Checked shift distance outside 0..63; terminal guest panic, not a masked shift.
 pub const PANIC_SHIFT_DISTANCE: i32 = 8;
+/// Terminal ADT expectation failure; distinct from refinement and shift panics.
+pub const PANIC_EXPECT: i32 = 9;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -62,7 +64,7 @@ const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
 const F64: u8 = 0x7C;
 
-fn uleb(out: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn uleb(out: &mut Vec<u8>, mut v: u64) {
     loop {
         let b = (v & 0x7F) as u8;
         v >>= 7;
@@ -74,7 +76,7 @@ fn uleb(out: &mut Vec<u8>, mut v: u64) {
     }
 }
 
-fn sleb(out: &mut Vec<u8>, mut v: i64) {
+pub(crate) fn sleb(out: &mut Vec<u8>, mut v: i64) {
     loop {
         let b = (v & 0x7F) as u8;
         v >>= 7;
@@ -86,12 +88,12 @@ fn sleb(out: &mut Vec<u8>, mut v: i64) {
     }
 }
 
-fn name(out: &mut Vec<u8>, s: &str) {
+pub(crate) fn name(out: &mut Vec<u8>, s: &str) {
     uleb(out, s.len() as u64);
     out.extend_from_slice(s.as_bytes());
 }
 
-fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
+pub(crate) fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
     out.push(id);
     uleb(out, body.len() as u64);
     out.extend(body);
@@ -111,7 +113,7 @@ fn vt(t: Type) -> Option<u8> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct Sig(Vec<u8>, Vec<u8>);
+pub(crate) struct Sig(pub(crate) Vec<u8>, pub(crate) Vec<u8>);
 
 struct Types(Vec<Sig>);
 impl Types {
@@ -988,6 +990,19 @@ impl Emit<'_> {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, 8, false);
             },
+            TExpr::AdtExpect { source, tmp, success_tag } => {
+                self.expr(source);
+                self.set(*tmp);
+                self.get(*tmp);
+                field_op(&mut self.code, Type::Bool, 0, false);
+                self.i32c(*success_tag as i32);
+                self.op(0x47);
+                self.open(0x04, 0x40, Frame::Other);
+                panic(&mut self.code, PANIC_EXPECT);
+                self.close();
+                self.get(*tmp);
+                field_op(&mut self.code, v.ty, 8, false);
+            }
             TExpr::AdtPropagate { source, tmp, success_tag } => {
                 // Source (and all of its effects) is evaluated exactly once.
                 self.expr(source);
@@ -1228,7 +1243,7 @@ fn panic(c: &mut Vec<u8>, code: i32) {
     c.extend_from_slice(&[0x24, 0x00, 0x00]);
 }
 
-fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
+pub(crate) fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     // (signature, extra locals as (count,type) pairs encoded, code)
     let bin = Sig(vec![I64, I64], vec![I64]);
     let r_local = vec![1u8, 1, I64]; // 1 group: 1 x i64 (local 2)
@@ -1797,12 +1812,31 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             if let Some(r) = a.receive {
                 c.extend_from_slice(&[0x20, 0, 0x41]);
                 sleb(&mut c, ai as i64);
-                c.extend_from_slice(&[0x46, 0x04, 0x40, 0x20, 1, 0x20, 2, 0x10]);
+                c.extend_from_slice(&[0x46, 0x04, 0x40]); // actor type match
+
+                // ActorMail.sequence is a nonnegative FIFO admission index.
+                // Even a foreign host must not forge a negative sequence.
+                // local.get 2; i64.const 0; i64.lt_s; if; unreachable; end.
+                c.extend_from_slice(&[0x20, 2, 0x42, 0, 0x53, 0x04, 0x40, 0x00, 0x0B]);
+
+                // The i64 mail transport is untagged. Only canonical 0/1
+                // encodes bool; treating any nonzero number as true would
+                // admit forged, ill-typed host messages.
+                if a.payload == Type::Bool {
+                    // (value == 0 || value == 1) else unreachable.
+                    c.extend_from_slice(&[
+                        0x20, 1, 0x42, 0, 0x51,
+                        0x20, 1, 0x42, 1, 0x51,
+                        0x72, 0x45, 0x04, 0x40, 0x00, 0x0B,
+                    ]);
+                }
+
+                c.extend_from_slice(&[0x20, 1, 0x20, 2, 0x10]);
                 uleb(&mut c, layout.func(r) as u64);
                 c.extend_from_slice(&[0x0F, 0x0B]);
             }
         }
-        c.extend_from_slice(&[0x00, 0x0B]); // no receive handler for this type
+        c.extend_from_slice(&[0x00, 0x0B]); // unknown actor type
         bodies.push(c);
     }
     // Task runtime ops come last, so every pre-existing index is unchanged.
@@ -2005,6 +2039,21 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             name(&mut a, &actor.name);
         }
         section(&mut out, 0, a);
+
+        // Runtime-visible actor kind table, one byte per actor in atto.actors
+        // order. 0 = default, 1 = serial. Unimplemented isolation modes were
+        // rejected by the checker rather than silently downgraded.
+        let mut modes = Vec::new();
+        name(&mut modes, "atto.actor_modes");
+        uleb(&mut modes, p.actors.len() as u64);
+        for actor in &p.actors {
+            modes.push(match actor.kind {
+                ActorKind::Default => 0,
+                ActorKind::Serial => 1,
+                _ => unreachable!("unsupported actor kind rejected by checker"),
+            });
+        }
+        section(&mut out, 0, modes);
     }
     if p.task_main {
         // custom "atto.task.v1": one version byte; opts into the task ABI.
@@ -2050,3 +2099,6 @@ mod allocator_safety_tests {
         assert!(!admitted(256, u32::MAX - 255)); // wrapped p + size
     }
 }
+
+// Explicit isolated continuation ABI; ordinary emission remains unchanged.
+pub(crate) mod owned_unwind_v1;

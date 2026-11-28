@@ -29,7 +29,9 @@ fn analyze_expr(expr: &Expr, out: &mut Vec<Value>) {
 /// Validate abstract resource budgets without recursing into attacker-shaped
 /// expressions. The analyzer itself admits at most 100,000 operation records.
 const MAX_EFFECT_OPERATIONS: usize = 100_000;
-const MAX_EFFECT_EXPR_DEPTH: usize = 64;
+// Keep checked effects admission in lockstep with the frontend's constructed-AST bound.
+// Source-authored trees deeper than this are rejected before MIR/object lowering.
+const MAX_EFFECT_EXPR_DEPTH: usize = crate::frontend::MAX_AST_DEPTH;
 const MAX_EFFECT_FUNCTIONS: usize = 4096;
 
 /// Checked export path required by CLI and paired compilation. The existing
@@ -132,7 +134,9 @@ mod tests {
     #[test]
     fn checked_effects_reject_adversarial_ast_depth() {
         let mut expression = Expr::Integer(1);
-        for _ in 0..70 {
+        // A programmatically constructed MIR can bypass the source frontend,
+        // so this independent checker must still deny a depth > MAX_AST_DEPTH.
+        for _ in 0..crate::frontend::MAX_AST_DEPTH {
             expression = Expr::Negate(Box::new(expression));
         }
         let module = Module {

@@ -1,0 +1,11 @@
+// expect-reject: E_BORROW
+use namespace counters;
+declare actor Counter;
+define actor Counter as
+    let int count = 0;
+    receive(ActorMail<int> mail): void { return; }
+end
+mtd (mut self: Counter) increment(int value): void {
+    self.handle_state(critical-write |s| -> { s.count = await value; });
+}
+pub fnc main(): int { return 0; }

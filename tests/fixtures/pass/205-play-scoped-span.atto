@@ -1,0 +1,16 @@
+// expect-exit: 0
+// java: rejects
+// expect-stdout: span retained over suspension
+import span from pkg "core.telemetry";
+import sleep from pkg "std.time";
+
+pub suspends fnc main(): int {
+  using span("playground.demo") as current_span {
+    with timeout(2000) {
+      current_span.set_attribute("feature", "import");
+      await sleep(1);
+      stdio.println("span retained over suspension");
+    }
+  }
+  return 0;
+}

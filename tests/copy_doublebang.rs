@@ -64,17 +64,49 @@ fn copy_deep_disallows_mut_qualifier_and_missing_operand() {
 
 #[test]
 fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
-    // A shallow class copy without verified Copyable witness must still
-    // fail. The deep path is independently admitted for this flat class.
+    // Flat class layouts have separate generated shallow/deep witnesses.
     let prefix = "define class Parcel as pub let int value = 1; end pub fnc main(): int { val p = new Parcel(); ";
     let shallow = format!("{prefix}val q = copy! p; return 0; }}");
-    assert_eq!(compile(&shallow).unwrap_err().code, "E_COPY");
+    wasm(&shallow);
     let deep = format!("{prefix}val q = copy!! p; return q.value; }}");
     wasm(&deep);
+}
+
+#[test]
+fn flat_shallow_copy_has_independent_root_and_distinct_witness() {
+    wasm(include_str!("fixtures/pass/998-copy-shallow-flat-class.atto"));
+    let rejected = include_str!("fixtures/fail/153-copy-noncopy-class.atto");
+    assert_eq!(compile(rejected).unwrap_err().code, "E_COPY_OVERRIDE");
+    let deep = rejected.replace("copy! parcel", "copy!! parcel");
+    wasm(&deep);
+}
+
+#[test]
+fn shallow_copy_cannot_read_exclusively_borrowed_owner() {
+    let source = include_str!("fixtures/fail/996-copy-doublebang-exclusive-loan.atto")
+        .replace("copy!! original", "copy! original");
+    assert_eq!(compile(&source).unwrap_err().code, "E_BORROW");
 }
 
 #[test]
 fn deep_copy_after_inferred_mutable_loan_end_is_accepted() {
     wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-unused-mut.atto"));
     wasm(include_str!("fixtures/pass/field-loan-nll-copy-after-last-mut-use.atto"));
+}
+
+#[test]
+fn verified_flat_copies_get_independent_direct_field_authority() {
+    let prefix = "define class Boxed as pub let int n = 20; pub let int other = 0; end ";
+    for op in ["copy!", "copy!!"] {
+        let source = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); let b = {op} a; a.n = 21; b.n = 21; return a.n + b.n; }}");
+        wasm(&source);
+        let borrowed = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); let b = {op} a; val n = borrow! b.n; b.other = 22; return n + b.other; }}");
+        wasm(&borrowed);
+        let conflict = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); let b = {op} a; val n = borrow! b.n; b.n = 22; return n + b.n; }}");
+        assert_eq!(compile(&conflict).unwrap_err().code, "E_BORROW");
+        let fixed = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); val b = {op} a; b.n = 22; return a.n + b.n; }}");
+        assert_eq!(compile(&fixed).unwrap_err().code, "E_OWNERSHIP");
+        let moved = format!("{prefix}pub fnc main(): int {{ let a = new Boxed(); let b = {op} a; let c = b; b.n = 22; return c.n; }}");
+        assert_eq!(compile(&moved).unwrap_err().code, "E_MOVED");
+    }
 }

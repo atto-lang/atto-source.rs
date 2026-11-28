@@ -67,6 +67,7 @@ fn direct_calls(mut work: Vec<Work<'_>>) -> Vec<usize> {
                 TExpr::StateFieldRead { obj: v, .. } |
                 TExpr::CollectionLoad { array: v, .. } |
                 TExpr::AdtIs { obj: v, .. } | TExpr::AdtPropagate { source: v, .. } |
+                TExpr::AdtExpect { source: v, .. } |
                 TExpr::Print { value: v, .. } | TExpr::PrintStrVal { value: v, .. } |
                 TExpr::Trap { value: v, .. } | TExpr::PrintObj { obj: v, .. } => {
                     work.push(Work::Expr(v));
@@ -198,7 +199,8 @@ mod tests {
             generators: vec![], main: 0, imports: vec![], data: vec![],
             heap: false, globals: vec![], strings: false, guest_eh: false,
             raise_tag: false, catch_depth: false,
-            actors: vec![TActor { name: "Worker".into(), inits: vec![],
+            actors: vec![TActor { name: "Worker".into(), kind: crate::ast::ActorKind::Default,
+                                 payload: Type::Int, inits: vec![],
                                  receive: Some(root) }],
         }
     }

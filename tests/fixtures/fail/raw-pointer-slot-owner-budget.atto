@@ -1,0 +1,23 @@
+// expect-error: E_POINTER_SLOT_PROFILE
+pub fnc main(): int {
+  let a0: int = 42;
+  let a1: int = 0;
+  let a2: int = 0;
+  let a3: int = 0;
+  let a4: int = 0;
+  let a5: int = 0;
+  let a6: int = 0;
+  let a7: int = 0;
+  let a8: int = 0;
+  let a9: int = 0;
+  let a10: int = 0;
+  let a11: int = 0;
+  let a12: int = 0;
+  let a13: int = 0;
+  let a14: int = 0;
+  let a15: int = 0;
+  let a16: int = 0;
+  let mut RawPointer<int> p = RawPointer.empty<int>();
+
+  return 42;
+}

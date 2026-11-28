@@ -1,4 +1,4 @@
-// Declaration-only top-level define forms.
+// Declaration-only class forms, plus a valid actor with its sealed ingress.
 // expect-exit: 42
 define class Point as
 end
@@ -7,6 +7,9 @@ pub define class Shape as
 end
 
 define actor Worker as
+    receive(msg: int): void {
+        return;
+    }
 end
 
 pub fnc main(): int {

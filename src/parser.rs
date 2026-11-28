@@ -53,6 +53,7 @@ const RESERVED: &[&str] = &[
     "routine",
     "pure",
     "async",
+    "sync",
     "suspends",
     "generator",
     "yield",
@@ -104,6 +105,7 @@ const RESERVED: &[&str] = &[
     "persistent",
     "durable",
     "isoactor",
+    "serial",
     "shared",
     "untrusted",
     "spawn",
@@ -150,9 +152,13 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "persistent",
     "durable",
     "isoactor",
+    "serial",
+    "shared",
+    "untrusted",
     "define",
     "import",
     "async",
+    "sync",
     "yield",
     "nb",
     "cb",
@@ -255,6 +261,9 @@ pub struct Parser {
     lambda_nesting: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    // Closed file-prefix scalar denotations, no nominal or generic erasure.
+    scalar_denotations: std::collections::BTreeMap<String, (Type, Pos)>,
+    denotation_targets: std::collections::BTreeMap<String, (String, Pos)>,
     /// Canonically interned nominal Array<T, layout=...> type parameters.
     array_types: Vec<ArrayType>,
     /// Scope of an explicit generator function body.
@@ -264,9 +273,16 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    // The nearest statement sequence owns a keyword conditional delimiter.
+    keyword_if_arm: bool,
     state_method: bool,
     state_binder: Option<String>,
     struct_value_bindings: Option<Vec<Pos>>,
+    pattern_constants: std::collections::BTreeMap<String, (bool, Pattern)>,
+    pattern_name_uses: std::collections::BTreeSet<usize>,
+    pattern_type_spellings: std::collections::BTreeMap<String, Pos>,
+    pattern_type_aliases: std::collections::BTreeMap<String, Vec<Type>>,
+    pattern_alias_uses: std::collections::BTreeSet<usize>,
 }
 
 struct TypeFirstField {
@@ -396,13 +412,21 @@ impl Parser {
             ascription_colon: true,
             lambda_nesting: 0,
             type_names: Vec::new(),
+            scalar_denotations: std::collections::BTreeMap::new(),
+            denotation_targets: std::collections::BTreeMap::new(),
             array_types: Vec::new(),
             in_generator: false,
             in_suspending: false,
             erlang_body: false,
+            keyword_if_arm: false,
             state_method: false,
             state_binder: None,
             struct_value_bindings: None,
+            pattern_constants: Default::default(),
+            pattern_name_uses: Default::default(),
+            pattern_type_spellings: Default::default(),
+            pattern_type_aliases: Default::default(),
+            pattern_alias_uses: Default::default(),
         }
     }
 
@@ -522,7 +546,7 @@ impl Parser {
         matches!(
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
-        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || UNLOWERED_OWNERSHIP_TYPES.contains(&w))
+        ) || self.word_at(n).is_some_and(|w| self.scalar_denotations.contains_key(w) || UNSUPPORTED_TYPES.contains(&w) || UNLOWERED_OWNERSHIP_TYPES.contains(&w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -672,12 +696,23 @@ impl Parser {
                     "ActorMail<T> is only the parameter type of an actor receive handler",
                 ))
             }
+            n if self.scalar_denotations.contains_key(n) => self.scalar_denotations[n].0,
             n if is_reserved(n) => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
-        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
-            return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
+        // Type-position '?' is Option sugar, never formal omission or
+        // expression propagation. Reuse the existing executable ADT ABI only.
+        let ty = if !self.default_pair() && self.eat(&Tok::Question) {
+            match ty {
+                Type::Int => Type::OptionInt,
+                Type::ResultIntStr => Type::OptionResultIntStr,
+                _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    "type suffix '?' requires a supported Option payload in this backend")),
+            }
+        } else { ty };
+        if (matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Pipe) || (*self.peek() == Tok::Question && !self.default_pair())) {
+            return Err(unsupported(self.pos(), "generic, nested optional, union and sequence types"));
         }
         Ok(ty)
     }
@@ -704,7 +739,7 @@ impl Parser {
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile)?;
+        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Default)?;
         Ok((decl, p.i))
     }
 
@@ -722,6 +757,15 @@ impl Parser {
     pub fn parse_program(&mut self) -> R<Program> {
         let mut prog = Program::default();
         let mut decls = 0usize;
+        loop {
+            if self.is_word("const") && self.word_at(1) == Some("Pattern") {
+                self.parse_pattern_constant()?;
+            } else if self.is_word("type") && matches!(self.peek_at(2), Tok::Assign)
+                && self.word_at(3) != Some("struct") {
+                self.parse_pattern_type_alias()?;
+            } else { break; }
+        }
+        let mut denotation_prefix = true;
         while *self.peek() != Tok::Eof {
             if decls >= MAX_FUNCS {
                 return Err(Diagnostic::new(
@@ -731,6 +775,18 @@ impl Parser {
                 ));
             }
             decls += 1;
+            if self.is_word("denote") && self.word_at(1).is_some_and(|w| matches!(w, "type" | "pub" | "private")) {
+                if !denotation_prefix {
+                    return Err(unsupported(self.pos(), "denotations after other file declarations"));
+                }
+                if !self.pattern_constants.is_empty() || !self.pattern_type_aliases.is_empty() {
+                    return Err(unsupported(self.pos(), "denotations combined with compile-time Pattern declarations"));
+                }
+                self.parse_scalar_denotation()?;
+                continue;
+            }
+            if denotation_prefix { self.resolve_scalar_denotations()?; }
+            denotation_prefix = false;
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
@@ -755,7 +811,7 @@ impl Parser {
                         ));
                     }
                     self.i += qualifier + 2;
-                    prog.actors.push(self.parse_actor(true, mode)?);
+                    prog.actors.push(self.parse_actor(true, mode, ActorKind::Default)?);
                     continue;
                 }
             }
@@ -779,15 +835,57 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 2;
-                    let decl = self.parse_actor(true, ActorPersistenceMode::Volatile)?;
+                    let decl = self.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Default)?;
                     prog.actors.push(decl);
+                }
+                // Actor kind is an explicit scheduling/isolation contract.
+                // The checker rejects unavailable isolation modes; syntax must
+                // never silently downgrade a declared untrusted actor.
+                (Some("define"), Some("serial" | "shared" | "untrusted")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    let kind = match self.word_at(at + 1) {
+                        Some("serial") => ActorKind::Serial,
+                        Some("shared") => ActorKind::Shared,
+                        _ => ActorKind::Untrusted,
+                    };
+                    self.i += at + 2;
+                    self.expect_word("actor")?;
+                    prog.actors.push(self.parse_actor(true, ActorPersistenceMode::Volatile, kind)?);
+                }
+                (Some("define"), Some("isoactor")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += at + 2;
+                    prog.actors.push(self.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Isolated)?);
+                }
+                (Some("serial" | "shared" | "untrusted"), Some("actor")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    let kind = match self.word_at(at) {
+                        Some("serial") => ActorKind::Serial,
+                        Some("shared") => ActorKind::Shared,
+                        _ => ActorKind::Untrusted,
+                    };
+                    self.i += at + 2;
+                    prog.actors.push(self.parse_actor(false, ActorPersistenceMode::Volatile, kind)?);
+                }
+                (Some("isoactor"), Some(w)) if w != "fnc" => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += at + 1;
+                    prog.actors.push(self.parse_actor(false, ActorPersistenceMode::Volatile, ActorKind::Isolated)?);
                 }
                 (Some("actor"), Some(w)) if w != "fnc" => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 1;
-                    let decl = self.parse_actor(false, ActorPersistenceMode::Volatile)?;
+                    let decl = self.parse_actor(false, ActorPersistenceMode::Volatile, ActorKind::Default)?;
                     prog.actors.push(decl);
                 }
                 (Some("define"), Some("enum")) => {
@@ -796,6 +894,14 @@ impl Parser {
                     }
                     self.i += 2;
                     prog.enums.push(self.parse_enum()?);
+                }
+                (Some("define"), _) if Self::return_first_header_tokens(
+                    &self.toks[self.i + at + 1..]) => {
+                    prog.funcs.push(self.parse_func()?);
+                }
+                (Some("define"), Some("pub")) if !public && Self::return_first_header_tokens(
+                    &self.toks[self.i + at + 2..]) => {
+                    prog.funcs.push(self.parse_func()?);
                 }
                 (Some("define"), Some(w)) => {
                     let what = match w {
@@ -810,9 +916,116 @@ impl Parser {
                 _ => prog.funcs.push(self.parse_func()?),
             }
         }
+        if denotation_prefix { self.resolve_scalar_denotations()?; }
+        // The checker uses distinct nominal references: never let a scalar
+        // alias silently shadow a later class, actor, or enum declaration.
+        for name in prog.classes.iter().map(|d| &d.name)
+            .chain(prog.actors.iter().map(|d| &d.name))
+            .chain(prog.enums.iter().map(|d| &d.name)) {
+            if let Some((_, pos)) = self.scalar_denotations.get(name) {
+                return Err(Diagnostic::new(*pos, "E_DUPLICATE",
+                    format!("denotation '{name}' collides with a nominal type")));
+            }
+        }
+        // Builtin spellings are not permission to erase nominal identity.
+        for name in prog.classes.iter().map(|d| &d.name)
+            .chain(prog.enums.iter().map(|d| &d.name))
+            .chain(prog.actors.iter().map(|d| &d.name)) {
+            if let Some(pos) = self.pattern_type_spellings.get(name) {
+                return Err(Diagnostic::new(*pos, "E_PATTERN_TYPE",
+                    "scalar pattern type spelling is shadowed by a nominal declaration"));
+            }
+            if name == "Pattern" {
+                return Err(Diagnostic::new(self.pos(), "E_PATTERN_TYPE",
+                    "Pattern is a compiler-owned compile-time category"));
+            }
+        }
+        // The initial file-scope profile prohibits runtime escape and
+        // shadowing rather than guessing at lexical binding identity.
+        for (i, token) in self.toks.iter().enumerate() {
+            if let Tok::Ident(name) = &token.tok {
+                if self.pattern_type_aliases.contains_key(name) && !self.pattern_alias_uses.contains(&i) {
+                    return Err(Diagnostic::new(token.pos, "E_PATTERN_TYPE",
+                        "scalar pattern alias used outside a resolved pattern type position"));
+                }
+                if self.pattern_constants.contains_key(name) && !self.pattern_name_uses.contains(&i) {
+                    return Err(Diagnostic::new(token.pos, "E_PATTERN_ESCAPE",
+                        "compile-time Pattern name cannot escape or be shadowed"));
+                }
+            }
+        }
         prog.type_names = std::mem::take(&mut self.type_names);
         prog.array_types = std::mem::take(&mut self.array_types);
         Ok(prog)
+    }
+
+    /// Collect bounded scalar alias targets at the file prefix; resolution
+    /// precedes every callable or nominal declaration. No union erasure.
+    fn parse_scalar_denotation(&mut self) -> R<()> {
+        self.advance(); // contextual denote
+        if self.is_word("pub") || self.is_word("private") {
+            return Err(unsupported(self.pos(), "denotation visibility"));
+        }
+        if !self.eat_word("type") { return Err(self.expected("'type' after denote")); }
+        let (name, pos) = self.ident("a denoted type name")?;
+        // Restrict the first profile to user type names beginning uppercase;
+        // protect every known core spelling (including unsupported intrinsics).
+        if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+            || matches!(name.as_str(), "String" | "Object" | "Actor" | "ActorRef" | "ActorMail"
+                | "Generator" | "Error" | "Newable" | "Sendable" | "Serializable"
+                | "Copyable" | "DeepCopyable" | "Any" | "Never" | "Record" | "Entry" | "Pair"
+                | "Channel" | "Future" | "Task" | "Duration" | "UUID")
+            || UNSUPPORTED_TYPES.contains(&name.as_str())
+            || UNLOWERED_OWNERSHIP_TYPES.contains(&name.as_str())
+            || self.denotation_targets.contains_key(&name) {
+            return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                "denotation name must be a fresh, non-core uppercase type identifier"));
+        }
+        if self.denotation_targets.len() >= 512 {
+            return Err(Diagnostic::new(pos, "E_DENOTE_LIMIT", "denotation count limit"));
+        }
+        self.expect(Tok::Assign, "'=' after denoted type name")?;
+        let rhs_pos = self.pos();
+        let rhs = match self.peek() {
+            Tok::Ident(w) => w.clone(),
+            _ => return Err(unsupported(rhs_pos, "non-scalar denotation RHS")),
+        };
+        self.advance();
+        self.expect(Tok::Semi, "';' after scalar denotation")?;
+        self.denotation_targets.insert(name, (rhs, pos));
+        Ok(())
+    }
+
+    fn resolve_scalar_denotations(&mut self) -> R<()> {
+        // Iterative, memoized resolution of every declaration, including
+        // unused aliases. No recursion or implicit nominal type creation.
+        for name in self.denotation_targets.keys() {
+            if self.scalar_denotations.contains_key(name) { continue; }
+            let mut current = name.clone();
+            let mut path = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            let ty = loop {
+                match current.as_str() {
+                    "int" => break Type::Int,
+                    "bool" | "boolean" => break Type::Bool,
+                    "float" | "f64" => break Type::Float,
+                    "string" | "String" => break Type::Str,
+                    _ => {}
+                }
+                if let Some((ty, _)) = self.scalar_denotations.get(&current) { break *ty; }
+                if !seen.insert(current.clone()) {
+                    return Err(Diagnostic::new(self.denotation_targets[name].1, "E_DENOTE_CYCLE",
+                        format!("cyclic type denotation '{current}'")));
+                }
+                let (target, pos) = self.denotation_targets.get(&current).ok_or_else(||
+                    Diagnostic::new(self.denotation_targets[name].1, "E_DENOTE_UNKNOWN",
+                        format!("unresolved denotation target '{current}'")))?;
+                path.push((current, *pos));
+                current = target.clone();
+            };
+            for (alias, pos) in path { self.scalar_denotations.insert(alias, (ty, pos)); }
+        }
+        Ok(())
     }
 
     /// Parse a bounded scalar struct declaration and its grouped/chained
@@ -1021,7 +1234,7 @@ impl Parser {
                 return Err(Diagnostic::new(pos, "E_SYNTAX", "constructor cannot have a mutable receiver modifier"));
             }
             self.expect(Tok::LParen, "'(' after constructor")?;
-            let params = self.parse_params()?;
+            let params = self.parse_params(false)?;
             if !(scalar_params(&params) || allow_nominal && params.iter().all(|p| matches!(p.ty, Type::Int | Type::Bool | Type::Named(_)))) {
                 return Err(unsupported(pos, "unsupported attached constructor parameters"));
             }
@@ -1129,8 +1342,21 @@ impl Parser {
                     "protected state {} schema must precede instance methods"));
             }
             let method_public = self.eat_word("pub");
-            self.eat_word("fnc");
-            self.eat_word("method");
+            // Method markers are contextual and mutually exclusive.
+            // A bare method literally named mtd() or method() must remain valid.
+            if self.is_word("method")
+                && matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::LParen | Tok::Lt)
+            {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "obsolete method introducer; use mtd"));
+            }
+            let explicit_marker = self.is_word("fnc")
+                || (self.is_word("mtd")
+                    && matches!(self.peek_at(1), Tok::Ident(_))
+                    && *self.peek_at(2) == Tok::LParen);
+            if explicit_marker {
+                self.advance();
+            }
             if self.is_word("handle_state") {
                 return Err(Diagnostic::new(self.pos(), "E_STATE",
                     "handle_state is compiler-owned and cannot be overridden"));
@@ -1161,7 +1387,7 @@ impl Parser {
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
-    fn parse_actor(&mut self, defined: bool, persistence: ActorPersistenceMode) -> R<ActorDecl> {
+    fn parse_actor(&mut self, defined: bool, persistence: ActorPersistenceMode, kind: ActorKind) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         reject_intrinsic_type_name(&name, pos)?;
         self.decl_head("actor")?;
@@ -1185,6 +1411,7 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            kind,
             persistence,
             persistence_hooks: m.persistence_hooks,
             fields: m.fields,
@@ -1377,8 +1604,17 @@ impl Parser {
             } else { FieldVisibility::Private };
             let public = visibility == FieldVisibility::Public;
             let word = self.word_at(0).map(str::to_owned);
+            if word.as_deref() == Some("method")
+                && matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::LParen | Tok::Lt)
+            {
+                return Err(Diagnostic::new(mpos, "E_SYNTAX", "obsolete method introducer; use mtd"));
+            }
             if visibility == FieldVisibility::Package
-                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "receive"))
+                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "receive"))
+                    || (matches!(word.as_deref(), Some("mtd"))
+                        && matches!(self.peek_at(1), Tok::Ident(_))
+                        && matches!(self.peek_at(2), Tok::LParen | Tok::Lt))
                     || *self.peek_at(1) == Tok::LParen)
             {
                 return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
@@ -1413,7 +1649,7 @@ impl Parser {
                     }
                     self.advance();
                     self.expect(Tok::LParen, "'('")?;
-                    let params = self.parse_params()?;
+                    let params = self.parse_params(false)?;
                     let body = self.parse_block()?;
                     m.ctor = Some(Constructor { pos: mpos, params, body });
                 }
@@ -1473,7 +1709,16 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
-                Some("fnc" | "method") => {
+                Some("fnc") => {
+                    self.advance();
+                    let method = self.parse_method(public, false)?;
+                    m.methods.push(method);
+                }
+                Some("mtd")
+                    if matches!(self.peek_at(1), Tok::Ident(_))
+                        && matches!(self.peek_at(2), Tok::LParen | Tok::Lt) =>
+                {
+                    // Keep mtd() and method() as ordinary callable names.
                     self.advance();
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
@@ -1623,19 +1868,24 @@ impl Parser {
     /// the declaration boundary; the real type parser must still validate
     /// each type and resolve its ownership/ABI contract.
     fn is_return_first_header(&self) -> bool {
-        if !matches!(self.peek(), Tok::Ident(_)) { return false; }
-        if *self.peek_at(1) == Tok::LeftArrow { return true; }
-        if *self.peek_at(1) != Tok::Lt { return false; }
+        Self::return_first_header_tokens(&self.toks[self.i..])
+    }
+
+    pub(crate) fn return_first_header_tokens(tokens: &[Token]) -> bool {
+        let at = |n: usize| tokens.get(n).map(|t| &t.tok);
+        if !matches!(at(0), Some(Tok::Ident(_))) { return false; }
+        if at(1) == Some(&Tok::LeftArrow) { return true; }
+        if at(1) != Some(&Tok::Lt) { return false; }
         let mut depth = 0usize;
         for n in 1..=MAX_DEPTH as usize {
-            match self.peek_at(n) {
-                Tok::Lt => depth += 1,
-                Tok::Gt => {
+            match at(n) {
+                Some(Tok::Lt) => depth += 1,
+                Some(Tok::Gt) => {
                     if depth == 0 { return false; }
                     depth -= 1;
-                    if depth == 0 { return *self.peek_at(n + 1) == Tok::LeftArrow; }
+                    if depth == 0 { return at(n+1) == Some(&Tok::LeftArrow); }
                 }
-                Tok::Ident(_) | Tok::Comma | Tok::Dot => {}
+                Some(Tok::Ident(_) | Tok::Comma | Tok::Dot) => {}
                 _ => return false,
             }
         }
@@ -1667,7 +1917,7 @@ impl Parser {
         if what == "a method name" && self.is_word("self") {
             return Err(unsupported(self.pos(), "explicit 'self' receivers"));
         }
-        let params = self.parse_params()?;
+        let params = self.parse_params(what == "a function name")?;
         if what == "a method name" && *self.peek() == Tok::LParen {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
@@ -1687,7 +1937,7 @@ impl Parser {
         })
     }
 
-    /// Method head after any `fnc`/`method`/`static fnc` keyword.
+    /// Method head after `mtd`/`fnc`/legacy `method`/`static fnc` keywords.
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let CallableHeader {
             name, pos, params, ret, infer, arrow_type, colon_type, return_first,
@@ -1708,48 +1958,48 @@ impl Parser {
         })
     }
 
-    /// `receive ( ActorMail < T > name ) [ : void ] block`.
+    /// Receive exactly one typed message or an explicit ActorMail envelope.
+    /// The envelope is the only spelling that exposes sequence metadata.
     fn parse_receive(&mut self, owner: &str) -> R<Receive> {
         let pos = self.pos();
         self.advance();
         self.expect(Tok::LParen, "'('")?;
-        if !self.is_word("ActorMail") {
+        let (mail, payload, envelope) = if self.is_word("ActorMail") {
+            self.advance();
+            if *self.peek() != Tok::Lt {
+                return Err(Diagnostic::new(
+                    self.pos(), "E_TYPE",
+                    "ActorMail requires an explicit payload type, for example ActorMail<int>",
+                ));
+            }
+            self.advance();
+            let payload = self.parse_type()?;
+            self.expect(Tok::Gt, "'>'")?;
+            let (mail, _) = self.ident("a mail parameter name")?;
+            (mail, payload, true)
+        } else if matches!(self.peek_at(1), Tok::Colon) {
+            let (mail, _) = self.ident("a message parameter name")?;
+            self.expect(Tok::Colon, "':' after message parameter")?;
+            let payload = self.parse_type()?;
+            (mail, payload, false)
+        } else {
             return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' parameter must be ActorMail<T>"),
+                self.pos(), "E_TYPE",
+                format!("actor '{owner}.receive' takes exactly one typed message (msg: T) or ActorMail<T> mail"),
             ));
-        }
-        self.advance();
-        if *self.peek() != Tok::Lt {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                "ActorMail requires an explicit payload type, for example ActorMail<int>",
-            ));
-        }
-        self.advance();
-        let payload = self.parse_type()?;
-        self.expect(Tok::Gt, "'>'")?;
-        let (mail, _) = self.ident("a mail parameter name")?;
+        };
         if *self.peek() == Tok::Comma {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' takes exactly one ActorMail<T> parameter"),
-            ));
+            return Err(Diagnostic::new(self.pos(), "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' takes exactly one typed message parameter")));
         }
         self.expect(Tok::RParen, "')'")?;
         let (result, inferred) = self.parse_return_spec(&[])?;
         if inferred || result != Type::Void {
-            return Err(Diagnostic::new(
-                pos,
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' must explicitly return void"),
-            ));
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' must explicitly return void")));
         }
         let body = self.parse_block()?;
-        Ok(Receive { pos, mail, payload, body })
+        Ok(Receive { pos, mail, payload, envelope, body })
     }
 
     /// Named callables MUST spell their return, including void. The second
@@ -1891,7 +2141,7 @@ impl Parser {
     }
 
     /// Parameters after `(` up to and including `)`.
-    fn parse_params(&mut self) -> R<Vec<Param>> {
+    fn parse_params(&mut self, allow_omittable: bool) -> R<Vec<Param>> {
         let mut params: Vec<Param> = Vec::new();
         if *self.peek() != Tok::RParen {
             loop {
@@ -1902,7 +2152,7 @@ impl Parser {
                         format!("more than {MAX_PARAMS} parameters"),
                     ));
                 }
-                let p = self.parse_param()?;
+                let p = self.parse_param(allow_omittable)?;
                 if params.iter().any(|q| q.name == p.name) {
                     return Err(Diagnostic::new(
                         p.pos,
@@ -1928,8 +2178,8 @@ impl Parser {
         let public_prefix = self.eat_word("pub");
         if self.eat_word("define") {
             if !public_prefix { self.eat_word("pub"); }
-            if !self.is_word("fnc") {
-                return Err(self.expected("'fnc' after 'define'"));
+            if !self.is_word("fnc") && !self.is_return_first_header() {
+                return Err(self.expected("'fnc' or return-first callable after 'define'"));
             }
         }
         let is_pure = self.eat_word("pure");
@@ -2219,34 +2469,94 @@ impl Parser {
         Ok(())
     }
 
-    fn parse_param(&mut self) -> R<Param> {
+    fn parse_param(&mut self, allow_omittable: bool) -> R<Param> {
         let pos = self.pos();
         self.reject_unlowered_callable_pattern()?;
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
-        // compatibility form `name: type [mut]`
-        if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+        let name_first = matches!(self.peek(), Tok::Ident(_))
+            && (*self.peek_at(1) == Tok::Colon
+                || (*self.peek_at(1) == Tok::Question && *self.peek_at(2) == Tok::Colon));
+        if name_first {
             let (name, pos) = self.ident("a parameter name")?;
-            self.advance();
+            let omittable = !self.default_pair() && self.eat(&Tok::Question);
+            self.expect(Tok::Colon, "':' after parameter name")?;
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, pos);
+            return self.finish_param(name, ty, mutable, omittable, allow_omittable, pos);
         }
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
         let (name, pos) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, pos)
+        let omittable = !self.default_pair() && self.eat(&Tok::Question);
+        self.finish_param(name, ty, mutable, omittable, allow_omittable, pos)
     }
 
-    fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
+    // Keep '?' tokens separate from propagation and ternary. Only adjacent
+    // pairs in formal-default position are coalescing delimiters.
+    fn default_pair(&self) -> bool {
+        if *self.peek() != Tok::Question || *self.peek_at(1) != Tok::Question { return false; }
+        let a = &self.toks[self.i].pos;
+        let b = &self.toks[self.i + 1].pos;
+        a.line == b.line && a.col.checked_add(1) == Some(b.col)
+    }
+
+    fn default_literal(&mut self, ty: Type) -> R<DefaultLiteral> {
+        let pos = self.pos();
+        if ty == Type::OptionInt && self.eat_word("None") {
+            return Ok(DefaultLiteral::None);
+        }
+        let wrapped = ty == Type::OptionInt && self.eat_word("Some");
+        if wrapped { self.expect(Tok::LParen, "'(' after Some")?; }
+        let negative = self.eat(&Tok::Minus);
+        let n = match self.peek() {
+            Tok::Int(Some(n)) if *n <= i64::MAX as u64 => {
+                if negative { -(*n as i64) } else { *n as i64 }
+            }
+            Tok::Int(None) if negative => i64::MIN,
+            _ => return Err(Diagnostic::new(pos, "E_DEFAULT_LITERAL", "expected a bounded integer literal default")),
+        };
+        self.advance();
+        if wrapped { self.expect(Tok::RParen, "')' after Some payload")?; }
+        if !matches!(ty, Type::Int | Type::OptionInt) {
+            return Err(Diagnostic::new(pos, "E_DEFAULT_LITERAL", "unsupported default payload type"));
+        }
+        Ok(DefaultLiteral::Int(n))
+    }
+
+    fn finish_param(&mut self, name: String, ty: Type, mutable: bool, omittable: bool,
+        allow_omittable: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
         }
         if *self.peek() == Tok::Assign {
-            return Err(unsupported(self.pos(), "default parameter values"));
+            return Err(unsupported(self.pos(), "bare '=' default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        let mut none_default = None;
+        let mut omission_default = None;
+        while self.default_pair() {
+            let p = self.pos();
+            self.advance();
+            let question_pos = self.pos();
+            self.advance();
+            let equal_pos = self.pos();
+            let omission = *self.peek() == Tok::Assign && question_pos.line == equal_pos.line
+                && question_pos.col.checked_add(1) == Some(equal_pos.col);
+            if omission { self.advance(); }
+            if !allow_omittable || mutable || (omission && (!omittable || omission_default.is_some()))
+                || (!omission && (ty != Type::OptionInt || none_default.is_some() || omission_default.is_some())) {
+                return Err(Diagnostic::new(p, "E_DEFAULT_CLAUSE", "invalid, duplicate or out-of-order default clause"));
+            }
+            let value = self.default_literal(ty)?;
+            if omission { omission_default = Some(value); } else { none_default = Some(value); }
+        }
+        if omittable && (!allow_omittable || mutable || !(matches!(ty, Type::OptionInt | Type::OptionResultIntStr)
+            || (ty == Type::Int && omission_default.is_some()))) {
+            return Err(Diagnostic::new(pos, "E_OMITTABLE_DEFAULT",
+                "omittable scalar requires a supported explicit default"));
+        }
+        Ok(Param { name, ty, mutable, omittable, none_default, omission_default, pos })
     }
 
     // ----------------------------------------------------------- statements
@@ -2427,6 +2737,8 @@ impl Parser {
         self.enter()?;
         let previous = self.erlang_body;
         self.erlang_body = false;
+        let previous_keyword_arm = self.keyword_if_arm;
+        self.keyword_if_arm = false;
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out = Vec::new();
             while *self.peek() != Tok::RBrace {
@@ -2439,6 +2751,7 @@ impl Parser {
             Ok(out)
         })();
         self.erlang_body = previous;
+        self.keyword_if_arm = previous_keyword_arm;
         self.leave();
         parsed
     }
@@ -2447,6 +2760,8 @@ impl Parser {
         self.enter()?;
         let previous = self.erlang_body;
         self.erlang_body = false;
+        let previous_keyword_arm = self.keyword_if_arm;
+        self.keyword_if_arm = stops.contains(&"fi");
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out = Vec::new();
             loop {
@@ -2467,6 +2782,7 @@ impl Parser {
             Ok(out)
         })();
         self.erlang_body = previous;
+        self.keyword_if_arm = previous_keyword_arm;
         self.leave();
         parsed
     }
@@ -2626,6 +2942,14 @@ impl Parser {
             Some("using") if self.word_at(1) == Some("telemetry")
                 && self.peek_at(2) == &Tok::Dot && self.word_at(3) == Some("span") =>
                 self.parse_telemetry_scope(pos),
+            Some("self") if self.state_method && *self.peek_at(1) == Tok::Dot
+                && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen => {
+                // Only the exact direct intrinsic spelling is equivalent to
+                // the bare call; do not expose ordinary self member access.
+                self.advance();
+                self.advance();
+                self.parse_state_critical_stmt()
+            }
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
             Some("val" | "const" | "let") => {
@@ -2714,7 +3038,11 @@ impl Parser {
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
-            Some("if") => self.parse_if(),
+            Some("if") => self.parse_if(false),
+            Some("do") if self.word_at(1) == Some("if") => {
+                self.advance();
+                self.parse_if(true)
+            }
             Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
@@ -2744,12 +3072,17 @@ impl Parser {
                 Ok(Stmt::Continue(pos))
             }
             Some("match") => self.parse_match(false),
-            Some("do") if self.word_at(1) == Some("task") && *self.peek_at(2) == Tok::LBrace => {
+            // `do task { }` is a detached atto.task.v1 task inside a susp callable.
+            Some("do") if self.in_suspending && self.word_at(1) == Some("task") && *self.peek_at(2) == Tok::LBrace => {
                 self.advance();
                 self.advance();
                 let body = self.parse_block()?;
                 self.eat(&Tok::Semi);
                 Ok(Stmt::Expr(Expr { kind: ExprKind::Task { body, detached: true }, pos }))
+            }
+            Some("do") if self.word_at(1) == Some("task")
+                || (self.word_at(1) == Some("sync") && self.word_at(2) == Some("task")) => {
+                Err(unsupported(pos, "supervised task statements"))
             }
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
@@ -3025,9 +3358,11 @@ impl Parser {
                 "critical-read is by-value s.field only; block scopes cannot request a write lease"));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
-        let (binder, _) = self.ident("state lease binder")?;
-        if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "this browser profile uses the binder s")); }
+        let (binder, binder_pos) = self.ident("state lease binder")?;
+        if matches!(binder.as_str(), "_" | "self" | "handle_state" | "true" | "false" | "null") {
+            return Err(Diagnostic::new(binder_pos, "E_STATE_BORROW",
+                "state lease requires a named, non-intrinsic binder"));
+        }
         self.expect(Tok::Pipe, "'|' after lease binder")?;
         self.expect(Tok::Arrow, "'->' after lease binder")?;
         self.state_binder = Some(binder);
@@ -3072,16 +3407,32 @@ impl Parser {
                 "critical-read must be immutable"));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
-        let (binder, _) = self.ident("state lease binder")?;
-        if binder != "s" { return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
-            "this browser profile uses the binder s")); }
+        let (binder, binder_pos) = self.ident("state lease binder")?;
+        if matches!(binder.as_str(), "_" | "self" | "handle_state" | "true" | "false" | "null") {
+            return Err(Diagnostic::new(binder_pos, "E_STATE_BORROW",
+                "state lease requires a named, non-intrinsic binder"));
+        }
         self.expect(Tok::Pipe, "'|' after lease binder")?;
         self.expect(Tok::Arrow, "'->' after lease binder")?;
-        let (projector, pos) = self.ident("s.field state projection")?;
-        if projector != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "critical-read requires s.field")); }
-        self.expect(Tok::Dot, "'.' in s.field")?;
+        // Both spellings lower to the same immutable scalar projection.
+        // No general statement AST, write ticket, or extra loan is created.
+        let block = self.eat(&Tok::LBrace);
+        if block && !self.eat_word("return") {
+            return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
+                "critical-read block requires a single returned scalar projection"));
+        }
+        let (projector, pos) = self.ident("state binder field projection")?;
+        if projector != binder { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "critical-read requires a field of its own lease binder")); }
+        self.expect(Tok::Dot, "'.' in state projection")?;
         let (field, _) = self.ident("state field")?;
+        if block {
+            self.eat(&Tok::Semi);
+            if !self.eat(&Tok::RBrace) {
+                return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
+                    "critical-read block permits only a single returned scalar projection"));
+            }
+        }
         self.expect(Tok::RParen, "')' after critical-read")?;
         Ok(ExprKind::StateRead(field))
     }
@@ -3118,7 +3469,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array" | "Future"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -3190,18 +3541,38 @@ impl Parser {
         })
     }
 
-    fn parse_if(&mut self) -> R<Stmt> {
+    // In a keyword arm, an elif after a completed brace belongs to
+    // the brace chain only if its own condition has a braced delimiter.
+    // Do not consume the enclosing keyword branch marker by speculation.
+    fn braced_elif_head(&self) -> bool {
+        let mut depth = 0usize;
+        for token in self.toks.iter().skip(self.i + 1) {
+            match &token.tok {
+                Tok::LParen | Tok::LBracket => depth += 1,
+                Tok::RParen | Tok::RBracket if depth != 0 => depth -= 1,
+                Tok::LBrace if depth == 0 => return true,
+                Tok::Ident(w) if depth == 0 && matches!(w.as_str(), "then" | "do" | "fi" | "else" | "elif" | "elseif") => return false,
+                Tok::Semi | Tok::RBrace | Tok::Eof if depth == 0 => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn parse_if(&mut self, prefix_do: bool) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("if")?;
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        let braced = !prefix_do && *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
-                if self.eat_word("elif")
-                    || self.eat_word("elseif")
-                    || (self.is_word("else") && self.word_at(1) == Some("if") && {
+                let braced_elif = (self.is_word("elif") || self.is_word("elseif"))
+                    && (!self.keyword_if_arm || self.braced_elif_head());
+                if (braced_elif && { self.advance(); true })
+                    || (!self.keyword_if_arm && self.is_word("else") && self.word_at(1) == Some("if") && {
                         self.advance();
                         self.advance();
                         true
@@ -3210,7 +3581,8 @@ impl Parser {
                     self.grow(1)?;
                     let c = self.parse_cond_head()?;
                     arms.push((c, self.parse_block()?));
-                } else if self.eat_word("else") {
+                } else if self.is_word("else") && (!self.keyword_if_arm || *self.peek_at(1) == Tok::LBrace) {
+                    self.advance();
                     otherwise = Some(self.parse_block()?);
                     break;
                 } else {
@@ -3219,9 +3591,15 @@ impl Parser {
             }
         } else {
             self.eat(&Tok::Semi);
-            if !(self.eat_word("then") || self.eat_word("do")) {
-                return Err(self.expected("'then'"));
-            }
+            let suffix_do = if prefix_do {
+                self.expect_word("then")?;
+                false
+            } else if self.eat_word("do") {
+                true
+            } else {
+                self.expect_word("then")?; // migration statement form
+                false
+            };
             let stops = ["elif", "elseif", "else", "fi"];
             arms.push((cond, self.parse_stmts_until(&stops)?));
             loop {
@@ -3236,8 +3614,12 @@ impl Parser {
                     self.grow(1)?;
                     let c = self.parse_cond_head()?;
                     self.eat(&Tok::Semi);
-                    if !(self.eat_word("then") || self.eat_word("do")) {
-                        return Err(self.expected("'then'"));
+                    if prefix_do {
+                        self.expect_word("then")?;
+                    } else if suffix_do {
+                        self.expect_word("do")?;
+                    } else if !(self.eat_word("then") || self.eat_word("do")) {
+                        return Err(self.expected("'do' or legacy 'then'"));
                     }
                     arms.push((c, self.parse_stmts_until(&stops)?));
                 } else if self.eat_word("else") {
@@ -3248,7 +3630,11 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        // Braces are self-delimiting. The migration spelling `} fi` is
+        // accepted only if the nearest enclosing keyword arm does not own fi.
+        if braced {
+            if !self.keyword_if_arm { self.eat_word("fi"); }
+        } else if !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
@@ -3359,15 +3745,19 @@ impl Parser {
             }
             self.grow(1)?;
             let apos = self.pos();
-            if over && !self.eat_word("on") {
+            let membership = over && self.eat_word("in");
+            let type_test = over && self.is_word("is");
+            if over && !membership && !type_test && !self.eat_word("on") {
                 let msg = if self.is_word("else") || self.is_word("default") {
                     "match has no default/else keyword; use 'on _ -> { ... }'"
                 } else {
-                    "every 'match ... over' arm must start with contextual keyword 'on'"
+                    "every 'match ... over' arm must start with 'on', 'in', or 'is'"
                 };
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX", msg));
             }
-            let pattern = if !over && self.eat_word("else") {
+            let pattern = if membership {
+                self.parse_int_membership()?
+            } else if !over && self.eat_word("else") {
                 Pattern::Wild
             } else {
                 self.parse_pattern()?
@@ -3630,6 +4020,10 @@ impl Parser {
             let apos = self.pos();
             let pattern = if self.eat_word("default") {
                 Pattern::Wild
+            } else if self.eat_word("in") {
+                self.parse_int_membership()?
+            } else if self.is_word("is") {
+                self.parse_static_type_pattern()?
             } else {
                 self.expect_word("on")?;
                 self.parse_pattern()?
@@ -3680,9 +4074,262 @@ impl Parser {
         Ok(Stmt::Match { subject, arms, pos })
     }
 
+    fn pattern_ref(&mut self, array: bool) -> R<Pattern> {
+        let pos = self.pos();
+        let (name, _) = self.ident("compile-time pattern name")?;
+        let (actual, pattern) = self.pattern_constants.get(&name).ok_or_else(||
+            Diagnostic::new(pos, "E_PATTERN_NAME", "unknown or forward/cyclic Pattern reference"))?;
+        if *actual != array {
+            return Err(Diagnostic::new(pos, "E_PATTERN_TYPE", "Pattern and Pattern[] are distinct"));
+        }
+        self.pattern_name_uses.insert(self.i - 1);
+        Ok(pattern.clone())
+    }
+
+    fn combine_patterns(parts: Vec<Pattern>, pos: Pos) -> R<Pattern> {
+        let mut ints = Vec::new();
+        let mut bools = Vec::new();
+        let mut types = Vec::new();
+        for part in parts {
+            let (iv, bv, tv) = match part {
+                Pattern::Int(v) => (vec![v], vec![], vec![]),
+                Pattern::InInts(v) => (v, vec![], vec![]),
+                Pattern::Bool(v) => (vec![], vec![v], vec![]),
+                Pattern::StaticTypes(v) => (vec![], vec![], v),
+                Pattern::ConstSet { ints, bools, types } => (ints, bools, types),
+                _ => return Err(unsupported(pos, "stored binding or non-scalar pattern")),
+            };
+            for v in iv {
+                if ints.contains(&v) { return Err(Diagnostic::new(pos, "E_MATCH", "duplicate pattern literal")); }
+                ints.push(v);
+            }
+            for v in bv {
+                if bools.contains(&v) { return Err(Diagnostic::new(pos, "E_MATCH", "duplicate boolean pattern")); }
+                bools.push(v);
+            }
+            for v in tv {
+                if types.contains(&v) { return Err(Diagnostic::new(pos, "E_MATCH", "duplicate canonical pattern type")); }
+                types.push(v);
+            }
+            if ints.len() + bools.len() + types.len() > 64 {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "expanded Pattern set exceeds 64 alternatives"));
+            }
+        }
+        if ints.is_empty() && bools.is_empty() && types.is_empty() {
+            return Err(Diagnostic::new(pos, "E_MATCH", "empty Pattern set"));
+        }
+        Ok(Pattern::ConstSet { ints, bools, types })
+    }
+
+    fn parse_pattern_array(&mut self, depth: u32) -> R<Pattern> {
+        let pos = self.pos();
+        if depth >= 32 { return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "nested Pattern limit")); }
+        self.expect(Tok::LBracket, "'[' in Pattern array")?;
+        let mut parts = Vec::new();
+        loop {
+            if parts.len() >= 64 {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "Pattern array limit"));
+            }
+            parts.push(self.parse_pattern_descriptor(depth + 1)?);
+            if self.eat(&Tok::RBracket) { break; }
+            self.expect(Tok::Comma, "comma between patterns")?;
+            if self.eat(&Tok::RBracket) { break; }
+        }
+        Self::combine_patterns(parts, pos)
+    }
+
+    fn parse_pattern_descriptor(&mut self, depth: u32) -> R<Pattern> {
+        let pos = self.pos();
+        if depth >= 32 { return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "nested Pattern limit")); }
+        if self.eat_word("on") {
+            if self.is_word("true") || self.is_word("false") {
+                let b = self.is_word("true"); self.advance(); return Ok(Pattern::Bool(b));
+            }
+            if matches!(self.peek(), Tok::Ident(_)) { return self.pattern_ref(false); }
+            let neg = self.eat(&Tok::Minus);
+            let n = match self.peek() {
+                Tok::Int(Some(v)) => if neg { -(*v as i64) } else { *v as i64 },
+                Tok::Int(None) if neg => i64::MIN,
+                _ => return Err(unsupported(pos, "stored pattern literal must be int or bool")),
+            };
+            self.advance(); return Ok(Pattern::Int(n));
+        }
+        if self.is_word("is") { return self.parse_static_type_pattern(); }
+        if self.eat_word("in") {
+            if *self.peek() == Tok::LBracket &&
+                (matches!(self.word_at(1), Some("on" | "is" | "in")) ||
+                 self.word_at(1).is_some_and(|name| self.pattern_constants.contains_key(name))) {
+                return self.parse_pattern_array(depth + 1);
+            }
+            return self.parse_int_membership();
+        }
+        self.pattern_ref(false)
+    }
+
+    fn parse_pattern_constant(&mut self) -> R<()> {
+        let pos = self.pos();
+        self.expect_word("const")?;
+        self.expect_word("Pattern")?;
+        let array = self.eat(&Tok::LBracket);
+        if array { self.expect(Tok::RBracket, "']' in Pattern[]")?; }
+        let name_index = self.i;
+        let (name, _) = self.ident("compile-time pattern name")?;
+        if matches!(name.as_str(), "Pattern" | "Int" | "int" | "bool" | "boolean" | "float" | "f64" | "String" | "string") ||
+            self.pattern_constants.contains_key(&name) || self.pattern_type_aliases.contains_key(&name) {
+            return Err(Diagnostic::new(pos, "E_PATTERN_NAME", "duplicate or reserved Pattern name"));
+        }
+        if self.pattern_constants.len() >= 128 {
+            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many Pattern declarations"));
+        }
+        self.expect(Tok::Assign, "'=' in Pattern declaration")?;
+        let pattern = if array { self.parse_pattern_array(0)? } else { self.parse_pattern_descriptor(0)? };
+        self.expect(Tok::Semi, "';' after Pattern declaration")?;
+        self.pattern_name_uses.insert(name_index);
+        self.pattern_constants.insert(name, (array, pattern));
+        Ok(())
+    }
+
+    /// First membership slice: a bounded, nonempty literal int list.
+    /// No dynamic collection expression or implicit runtime array allocation.
+    fn parse_int_membership(&mut self) -> R<Pattern> {
+        let pos = self.pos();
+        if matches!(self.peek(), Tok::Ident(name) if self.pattern_constants.contains_key(name)) {
+            return self.pattern_ref(true);
+        }
+        if *self.peek() == Tok::LBracket &&
+            (matches!(self.word_at(1), Some("on" | "is" | "in")) ||
+             self.word_at(1).is_some_and(|name| self.pattern_constants.contains_key(name))) {
+            return self.parse_pattern_array(0);
+        }
+        if !self.eat(&Tok::LBracket) {
+            return Err(unsupported(pos, "runtime collection membership arms"));
+        }
+        if self.eat(&Tok::RBracket) {
+            return Err(Diagnostic::new(pos, "E_MATCH", "empty membership arm cannot match any value"));
+        }
+        let mut values = Vec::new();
+        loop {
+            if values.len() == 64 {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "membership arm exceeds 64 literal values"));
+            }
+            let at = self.pos();
+            let negative = self.eat(&Tok::Minus);
+            let value = match self.peek().clone() {
+                Tok::Int(Some(v)) => if negative { -(v as i64) } else { v as i64 },
+                Tok::Int(None) if negative => i64::MIN,
+                Tok::Int(None) => return Err(Diagnostic::new(at, "E_INTEGER_RANGE", "integer literal out of range")),
+                _ => return Err(unsupported(at, "nonliteral or noninteger membership element")),
+            };
+            self.advance();
+            if values.contains(&value) {
+                return Err(Diagnostic::new(at, "E_MATCH", "duplicate integer membership element"));
+            }
+            values.push(value);
+            if self.eat(&Tok::RBracket) { break; }
+            self.expect(Tok::Comma, "comma between membership values")?;
+            if self.eat(&Tok::RBracket) { break; }
+        }
+        Ok(Pattern::InInts(values))
+    }
+
+    /// Static scalar type disjunction. The ordinary checker verifies the
+    /// subject type and every reachable body before emitting any guest.
+    fn parse_pattern_type_atom(&mut self) -> R<Vec<Type>> {
+        let pos = self.pos();
+        let spelling = match self.peek() {
+            Tok::Ident(w) => w.clone(),
+            _ => return Err(Diagnostic::new(pos, "E_SYNTAX", "expected a scalar pattern type")),
+        };
+        if let Some(types) = self.pattern_type_aliases.get(&spelling).cloned() {
+            self.pattern_alias_uses.insert(self.i);
+            self.advance();
+            return Ok(types);
+        }
+        let ty = match spelling.as_str() {
+            "int" | "Int" => Type::Int,
+            "bool" | "boolean" => Type::Bool,
+            "float" | "f64" => Type::Float,
+            "string" | "String" => Type::Str,
+            _ => return Err(unsupported(pos, "unknown, forward/cyclic or non-scalar pattern type")),
+        };
+        self.pattern_type_spellings.insert(spelling, pos);
+        self.advance();
+        Ok(vec![ty])
+    }
+
+    fn append_pattern_types(target: &mut Vec<Type>, alternatives: Vec<Type>, pos: Pos) -> R<()> {
+        for ty in alternatives {
+            if target.contains(&ty) {
+                return Err(Diagnostic::new(pos, "E_MATCH", "duplicate canonical type in pattern type set"));
+            }
+            if target.len() >= 64 {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pattern type expansion limit"));
+            }
+            target.push(ty);
+        }
+        Ok(())
+    }
+
+    fn parse_pattern_type_alias(&mut self) -> R<()> {
+        let pos = self.pos();
+        self.expect_word("type")?;
+        let name_index = self.i;
+        let (name, _) = self.ident("scalar pattern type alias")?;
+        if matches!(name.as_str(), "Pattern" | "Int" | "int" | "bool" | "boolean" | "float" | "f64" | "String" | "string")
+            || self.pattern_constants.contains_key(&name) || self.pattern_type_aliases.contains_key(&name) {
+            return Err(Diagnostic::new(pos, "E_PATTERN_NAME", "duplicate or reserved scalar pattern type alias"));
+        }
+        if self.pattern_type_aliases.len() >= 128 {
+            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "scalar pattern alias declaration limit"));
+        }
+        self.expect(Tok::Assign, "'=' in scalar pattern type alias")?;
+        let mut types = Vec::new();
+        loop {
+            let next = self.parse_pattern_type_atom()?;
+            Self::append_pattern_types(&mut types, next, pos)?;
+            if !self.eat(&Tok::Pipe) { break; }
+        }
+        self.expect(Tok::Semi, "';' after scalar pattern type alias")?;
+        self.pattern_alias_uses.insert(name_index);
+        self.pattern_type_aliases.insert(name, types);
+        Ok(())
+    }
+
+    fn parse_static_type_pattern(&mut self) -> R<Pattern> {
+        let pos = self.pos();
+        self.expect_word("is")?;
+        let plural = self.eat_word("in");
+        if plural && *self.peek() != Tok::LBracket {
+            let pattern = self.pattern_ref(true)?;
+            return match pattern {
+                Pattern::ConstSet { ints, bools, types } if ints.is_empty() && bools.is_empty() =>
+                    Ok(Pattern::StaticTypes(types)),
+                _ => Err(Diagnostic::new(pos, "E_PATTERN_TYPE", "is in requires type-test-only Pattern[]")),
+            };
+        }
+        if plural { self.expect(Tok::LBracket, "'[' in type list")?; }
+        let mut types = Vec::new();
+        loop {
+            if *self.peek() == Tok::RBracket {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "type list must contain a type"));
+            }
+            let alternatives = self.parse_pattern_type_atom()?;
+            Self::append_pattern_types(&mut types, alternatives, pos)?;
+            if !plural || self.eat(&Tok::RBracket) { break; }
+            self.expect(Tok::Comma, "comma between type alternatives")?;
+        }
+        if self.is_word("as") {
+            return Err(unsupported(pos, "static type-list binding requires dedicated narrowing"));
+        }
+        Ok(Pattern::StaticTypes(types))
+    }
+
     /// Java Parser.parsePattern, restricted to the forms this compiler lowers.
     fn parse_pattern(&mut self) -> R<Pattern> {
         let pos = self.pos();
+        if matches!(self.peek(), Tok::Ident(name) if self.pattern_constants.contains_key(name)) {
+            return self.pattern_ref(false);
+        }
         match self.peek().clone() {
             Tok::Int(Some(v)) => {
                 self.advance();
@@ -3729,7 +4376,8 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Wild)
                 }
-                "is" | "structural" => Err(unsupported(pos, "type patterns")),
+                "is" => self.parse_static_type_pattern(),
+                "structural" => Err(unsupported(pos, "structural type patterns")),
                 _ => {
                     self.advance();
                     if *self.peek() == Tok::Dot {
@@ -4207,6 +4855,17 @@ impl Parser {
                     self.advance();
                     BinOp::Ne
                 }
+                Tok::Ident(s) if s == "is" && self.word_at(1) == Some("omitted") => {
+                    if !matches!(&left.kind, ExprKind::Var(_)) {
+                        return Err(Diagnostic::new(pos, "E_OMISSION_PROVENANCE", "is omitted requires a formal binding"));
+                    }
+                    self.advance();
+                    self.advance();
+                    self.grow(1)?;
+                    links += 1;
+                    left = Expr { kind: ExprKind::Call("\0is_omitted".into(), vec![left]), pos };
+                    continue;
+                }
                 Tok::Ident(s) if s == "is" => return Err(unsupported(pos, "a type test using 'is' (requires a statically proven type tag in this backend)")),
                 _ => break,
             };
@@ -4402,13 +5061,15 @@ impl Parser {
                     "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
-                let is_transfer = action == OwnershipOp::Take;
+                let verb_width = s.len() as u32;
                 self.advance(); // name
                 let first_bang = self.advance(); // !
-                if is_transfer && (first_bang.pos.line != pos.line ||
-                    first_bang.pos.col != pos.col + 4) {
+                // Contextual ownership verbs require contiguous punctuation,
+                // including comments and newlines between verb and bang.
+                if first_bang.pos.line != pos.line ||
+                    first_bang.pos.col != pos.col + verb_width {
                     return Err(Diagnostic::new(pos, "E_BANG_KEYWORD_WHITESPACE",
-                        "take! and move! require an adjacent bang"));
+                        "ownership verbs require an adjacent bang"));
                 }
                 // 'copy!!' is a single canonical operator only when the word
                 // and both bangs are adjacent. 'copy! !x' stays a shallow copy
@@ -4518,7 +5179,8 @@ impl Parser {
                 if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                     return Err(unsupported(self.pos(), "named arguments"));
                 }
-                if *self.peek() == Tok::Dot {
+                // Adjacent spread is one Ellipsis token; lone dot is malformed.
+                if *self.peek() == Tok::Ellipsis {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
                 args.push(self.parse_expr()?);
@@ -4547,14 +5209,20 @@ impl Parser {
     // boundary and do not accidentally search into the next statement.
     fn question_opens_ternary(&self) -> bool {
         let mut depth = 0usize;
+        let mut keyword_if_depth = 0usize;
         for t in self.toks.iter().skip(self.i + 1) {
             match &t.tok {
                 Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
                 Tok::RParen | Tok::RBracket | Tok::RBrace if depth == 0 => return false,
                 Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
-                Tok::Colon if depth == 0 => return true,
-                Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
-                Tok::Ident(w) if depth == 0 && matches!(
+                Tok::Ident(w) if depth == 0 && w == "if" => keyword_if_depth += 1,
+                Tok::Ident(w) if depth == 0 && w == "fi" && keyword_if_depth != 0 => {
+                    keyword_if_depth -= 1;
+                }
+                Tok::Colon if depth == 0 && keyword_if_depth == 0 => return true,
+                Tok::Semi | Tok::Comma if depth == 0 && keyword_if_depth == 0 => return false,
+                Tok::Eof => return false,
+                Tok::Ident(w) if depth == 0 && keyword_if_depth == 0 && matches!(
                     w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
                 ) => return false,
                 _ => {}
@@ -4617,6 +5285,14 @@ impl Parser {
                     self.advance();
                     let member = match self.peek().clone() {
                         Tok::Ident(m) if !is_reserved(&m) => m,
+                        // The collection factory spelling is contextual, not a
+                        // global relaxation of the reserved 'of' keyword.
+                        // Keep a normal method-call AST; semantic resolution and
+                        // backend allocation admission remain authoritative.
+                        Tok::Ident(m) if m == "of"
+                            && matches!(&e.kind, ExprKind::Var(base)
+                                if matches!(base.as_str(), "Map" | "Set" | "Record"))
+                            && *self.peek_at(1) == Tok::LParen => m,
                         _ => return Err(self.expected("a member name after '.'")),
                     };
                     self.advance();
@@ -4844,6 +5520,42 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+    // Single-expression keyword arms share typed, lazy ternary lowering.
+    // Multi-statement value sequences are a separate checked-lowering gate.
+    fn parse_value_if(&mut self) -> R<Expr> {
+        let pos = self.pos();
+        self.expect_word("if")?;
+        let mut arms = Vec::new();
+        loop {
+            if arms.len() >= 127 {
+                return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                    "value if exceeds 128 total arms"));
+            }
+            self.grow(1)?;
+            let cond = self.parse_cond_head()?;
+            self.expect_word("then")?;
+            let value = self.parse_expr()?;
+            arms.push((cond, value));
+            if !self.eat_word("elif") {
+                break;
+            }
+        }
+        if !self.eat_word("else") {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "value if requires an else arm"));
+        }
+        let mut result = self.parse_expr()?;
+        self.expect_word("fi")?;
+        self.height -= arms.len() as u32;
+        for (cond, value) in arms.into_iter().rev() {
+            result = Expr {
+                kind: ExprKind::Ternary(Box::new(cond), Box::new(value), Box::new(result)),
+                pos,
+            };
+        }
+        Ok(result)
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -4883,6 +5595,7 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "if" => return self.parse_value_if(),
                 // A stateless, single-break value loop has no observable
                 // backedge or local bindings. Normalize only this exact
                 // braced form to its operand; ordinary checker/effect/loan
@@ -4930,6 +5643,12 @@ impl Parser {
                     ExprKind::Bool(false)
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
+                "self" if self.state_method && *self.peek_at(1) == Tok::Dot
+                    && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen => {
+                    self.advance();
+                    self.advance();
+                    self.parse_state_critical_read()?
+                }
                 "self" => {
                     if self.state_method {
                         return Err(Diagnostic::new(pos, "E_STATE_ACCESS",
@@ -4977,7 +5696,10 @@ impl Parser {
                     }
                     ExprKind::Spawn(actor)
                 }
-                "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "task" if matches!(self.peek_at(1), Tok::Lt | Tok::LBrace) => {
+                    return Err(unsupported(pos, "typed or inferred task expressions"));
+                }
+                "await" | "sync" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) && !(w == "types" && *self.peek_at(1) == Tok::Dot) => {

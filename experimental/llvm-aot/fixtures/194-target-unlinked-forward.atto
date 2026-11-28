@@ -1,0 +1,5 @@
+// expect-reject: E_UNLINKED
+use namespace workers;
+declare actor Foo1;
+mtd (Foo1 self) process_value(int value): int { return value + 1; }
+pub fnc main(): int { return 42; }

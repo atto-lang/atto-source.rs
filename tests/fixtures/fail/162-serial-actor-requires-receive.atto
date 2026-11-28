@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+define serial actor Worker as
+    let int count = 0;
+end
+pub fnc main(): int { return 0; }

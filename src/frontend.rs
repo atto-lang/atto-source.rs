@@ -169,6 +169,14 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
             if depth == 0 {
                 open = i;
             }
+            // Reject 65th nested comment before the counter increments.
+            if depth >= 64 {
+                return Err(ParseError {
+                    offset: i,
+                    class: "resource_limit",
+                    message: "block comment nesting exceeds 64".into(),
+                });
+            }
             depth += 1;
             bytes[i] = b' ';
             bytes[i + 1] = b' ';
@@ -224,6 +232,8 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+// Bounds constructed AST depth even when each individual parser chain fits its budget.
+pub const MAX_AST_DEPTH: usize = 128;
 pub const MAX_PRIMARY_DEPTH: usize = 64;
 pub const MAX_INFIX_OPERATORS: usize = 64;
 
@@ -359,6 +369,68 @@ fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+// Classify the canonical ownership-bang spellings before MIR. This backend
+// has no typed Copy/Take/BorrowMut/Share operations, so reject them explicitly
+// rather than allowing a future lexer change to accidentally admit them.
+fn is_ownership_bang(source: &str, offset: usize) -> bool {
+    let bytes = source.as_bytes();
+    if bytes.get(offset) != Some(&b'!') {
+        return false;
+    }
+    let mut start = offset;
+    while start > 0
+        && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+    {
+        start -= 1;
+    }
+    if !matches!(&source[start..offset], "copy" | "take" | "borrow" | "share") {
+        return false;
+    }
+    let suffix = &source[offset + 1..];
+    if suffix.starts_with('=') {
+        return false;
+    }
+    if let Some(tail) = suffix.strip_prefix("eq") {
+        if !tail
+            .as_bytes()
+            .first()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reject untrusted source control characters in source order, before any
+/// comment preprocessing, with the earliest UTF-8 byte offset. A separate
+/// raw-byte pass would misreport later NUL/ESC/DEL before earlier bidi controls.
+fn reject_source_controls(source: &str) -> Result<(), ParseError> {
+    for (offset, character) in source.char_indices() {
+        let codepoint = character as u32;
+        let (class, message) = match character {
+            '\0' => ("source_admission", "source contains NUL byte".to_owned()),
+            '\u{001b}' | '\u{007f}' => {
+                ("source_admission", "source contains terminal control".to_owned())
+            }
+            _ if matches!(
+                codepoint,
+                0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029
+            ) || (0x202a..=0x202e).contains(&codepoint)
+                || (0x2066..=0x2069).contains(&codepoint) =>
+            {
+                (
+                    "source_unicode_control",
+                    format!("forbidden source Unicode control U+{codepoint:04X}"),
+                )
+            }
+            _ => continue,
+        };
+        return Err(ParseError { offset, class, message });
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -367,24 +439,29 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
-    // Reject raw NUL before preprocessing. Otherwise an ignored /* ... */
-    // or // comment could erase it and produce a valid executable AST.
-    // The source is already a valid UTF-8 &str; report its byte offset.
-    if let Some(offset) = source.bytes().position(|byte| byte == 0) {
-        return Err(ParseError {
-            offset,
-            class: "source_admission",
-            message: "source contains NUL byte".into(),
-        });
-    }
+    // All forbidden controls must be evaluated in one source-order pass,
+    // including comments; preserve the earliest offending UTF-8 byte offset.
+    reject_source_controls(source)?;
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
     for (kind, range) in Kind::lexer(&prepared).spanned() {
-        let kind = kind.map_err(|_| ParseError {
-            offset: range.start,
-            class: "syntax_error",
-            message: "unsupported token".into(),
+        let kind = kind.map_err(|_| {
+            let ownership = is_ownership_bang(&prepared, range.start);
+            ParseError {
+                offset: range.start,
+                class: if ownership {
+                    "ownership_bang_unsupported"
+                } else {
+                    "syntax_error"
+                },
+                message: if ownership {
+                    "OWNERSHIP_BANG_BACKEND_UNSUPPORTED: checked native ownership MIR required"
+                        .into()
+                } else {
+                    "unsupported token".into()
+                },
+            }
         })?;
         if tokens.len() >= MAX_TOKENS {
             return Err(ParseError {
@@ -471,8 +548,46 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "expected a function declaration".into(),
         });
     }
+    // Parser-local infix and primary limits can compose into an unsafe AST spine.
+    // Validate ALL initializers and returns before recursive MIR or object lowering.
+    for function in &functions {
+        for local in &function.locals {
+            check_ast_depth(&local.value, source.len())?;
+        }
+        check_ast_depth(&function.expression, source.len())?;
+    }
     Ok(Program { functions, exports })
 }
+fn check_ast_depth(root: &Expr, source_len: usize) -> Result<(), ParseError> {
+    // Keep the guard itself iterative; never recurse on untrusted source trees.
+    let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    while let Some((expr, depth)) = pending.pop() {
+        if depth > MAX_AST_DEPTH {
+            return Err(ParseError {
+                offset: source_len,
+                class: "resource_limit",
+                message: "expression AST depth exceeds prototype limit".into(),
+            });
+        }
+        match expr {
+            Expr::Integer(_) | Expr::Name(_) => {}
+            Expr::Negate(inner) => pending.push((inner.as_ref(), depth + 1)),
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    pending.push((arg, depth + 1));
+                }
+            }
+            Expr::Add(left, right)
+            | Expr::Subtract(left, right)
+            | Expr::Multiply(left, right) => {
+                pending.push((left.as_ref(), depth + 1));
+                pending.push((right.as_ref(), depth + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,

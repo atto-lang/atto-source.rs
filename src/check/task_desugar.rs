@@ -175,7 +175,7 @@ impl Cx {
                 return Err(err(e.pos, "E_TASK_CAPTURE", format!(
                     "cannot infer the type of captured '{name}'; annotate its binding")));
             };
-            params.push(Param { name: name.clone(), ty, mutable: false, pos: e.pos });
+            params.push(Param { name: name.clone(), ty, mutable: false, pos: e.pos, omittable: false, none_default: None, omission_default: None });
             args.push(Expr { kind: ExprKind::Var(name.clone()), pos: e.pos });
         }
         if let Some(name) = assigned.iter().find(|a| !bound.contains(*a) && env.contains_key(*a)) {
@@ -262,8 +262,8 @@ impl Cx {
                 captures.push((c.clone(), ty));
             }
             let synthetic = format!("{parent}__susplambda{}", index + 1);
-            let mut fparams: Vec<Param> = typed.iter().map(|(n, t)| Param { name: n.clone(), ty: *t, mutable: false, pos }).collect();
-            fparams.extend(captures.iter().map(|(n, t)| Param { name: n.clone(), ty: *t, mutable: false, pos }));
+            let mut fparams: Vec<Param> = typed.iter().map(|(n, t)| Param { name: n.clone(), ty: *t, mutable: false, pos, omittable: false, none_default: None, omission_default: None }).collect();
+            fparams.extend(captures.iter().map(|(n, t)| Param { name: n.clone(), ty: *t, mutable: false, pos, omittable: false, none_default: None, omission_default: None }));
             self.generated.push(Func {
                 name: synthetic.clone(), pos, is_generator: false, is_suspending: true, is_pure: false,
                 declared_effects: None, params: fparams, ret, body: lambda_body,
