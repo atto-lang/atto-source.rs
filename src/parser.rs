@@ -5024,7 +5024,10 @@ impl Parser {
                 if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                     return Err(unsupported(self.pos(), "named arguments"));
                 }
-                if *self.peek() == Tok::Dot {
+                // The lexer emits one Ellipsis token for adjacent '...'.
+                // Do not mistake a valid but unlowered spread for bad syntax.
+                // A lone dot is still invalid in argument position.
+                if *self.peek() == Tok::Ellipsis {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
                 args.push(self.parse_expr()?);
