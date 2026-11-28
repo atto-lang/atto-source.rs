@@ -174,3 +174,51 @@ fn dotted_marker_is_not_a_value_or_a_recovery_path() {
         let _ = bad_parse(source);
     }
 }
+
+#[test]
+fn wrapped_typed_lambda_headers_keep_parameter_annotations() {
+    let p = parsed("pub fnc main(): int {
+        val a = (|int x|) -> x;
+        val b = (|x: int|) -> x;
+        val c = (|int x, y: int|) -> x + y;
+        val d = (|int x| -> x);
+        return 0;
+    }");
+    for (i, stmt) in p.funcs[0].body[..4].iter().enumerate() {
+        let Stmt::Bind { init, .. } = stmt else { panic!("expected binding"); };
+        let ExprKind::Lambda { params, param_types, .. } = &init.kind else {
+            panic!("expected lambda, not aggregate");
+        };
+        let expected = if i == 2 { 2 } else { 1 };
+        assert_eq!(params.len(), expected);
+        assert_eq!(param_types, &vec![Some("int".to_owned()); expected]);
+    }
+}
+
+#[test]
+fn wrapped_lambda_direct_call_compiles_without_erasing_types() {
+    let source = "pub fnc main(): int {
+        val add = (|int x, y: int|) -> x + y;
+        return add(20, 22);
+    }";
+    let wasm = atto_compiler::compile(source).unwrap();
+    assert!(wasm.starts_with(b"\0asm"));
+}
+
+#[test]
+fn wrapped_typed_header_never_falls_back_to_entry_or_untyped_lambda() {
+    for expression in [
+        "(|int v|) => 3", "(|v: int|) => 3", "(|int v|). => 3",
+        "(|v: int|). -> 3", "(|int v, int v|) -> 3",
+        "(|v|) -> 3", "(|v,w|) -> 3", "(||) -> 3",
+    ] {
+        let source = format!("pub fnc main(): int {{ val f = {expression}; return 0; }}");
+        let _ = bad_parse(&source);
+    }
+    for source in [
+        "type F = (50). => int;", "type F = (50.0). => int;",
+        "type F = |50|. -> int;", "type F = |50.0|. -> int;",
+    ] {
+        let _ = bad_parse(source);
+    }
+}
