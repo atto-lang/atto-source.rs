@@ -7,9 +7,7 @@ pub enum Item<'a> {
     Positional,
     Named(&'a str),
     Record(&'a [&'a str]),
-    /// All-Pair tuple: None means key provenance was not proved.
-    PairTuple(&'a [Option<&'a str>]),
-    /// Non-Pair or mixed tuple; actual elements remain intact.
+    /// Every fixed Tuple spreads by index; preserve each complete element.
     Tuple(usize),
     Unsupported,
 }
@@ -17,7 +15,7 @@ pub enum Item<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     UnknownName, Duplicate, Missing, PositionalAfterNamed,
-    UnprovedKey, Unsupported, Limit, InvalidSignature,
+    Unsupported, Limit, InvalidSignature,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,7 +54,6 @@ pub fn plan(items: &[Item<'_>], formals: &[&str], defaults: &[bool])
         let count = match item {
             Item::Positional | Item::Named(_) => 1,
             Item::Record(fields) => fields.len(),
-            Item::PairTuple(keys) => keys.len(),
             Item::Tuple(n) => *n,
             Item::Unsupported => return Err((operand, Error::Unsupported)),
         };
@@ -67,7 +64,6 @@ pub fn plan(items: &[Item<'_>], formals: &[&str], defaults: &[bool])
             let label = match item {
                 Item::Named(s) => Some(*s),
                 Item::Record(fields) => Some(fields[i]),
-                Item::PairTuple(keys) => Some(keys[i].ok_or((operand, Error::UnprovedKey))?),
                 _ => None,
             };
             let parameter = if let Some(name) = label {
@@ -99,9 +95,8 @@ pub fn plan(items: &[Item<'_>], formals: &[&str], defaults: &[bool])
 mod tests {
     use super::*;
     #[test]
-    fn pair_payloads_remap_without_reordering_operands() {
-        let keys = [Some("active"), Some("name"), Some("age")];
-        let p = plan(&[Item::PairTuple(&keys)], &["name","age","active"], &[false;3]).unwrap();
+    fn record_remaps_by_name_without_reordering_operands() {
+        let p = plan(&[Item::Record(&["active", "name", "age"])], &["name","age","active"], &[false;3]).unwrap();
         assert_eq!(p, vec![
             Slot { operand:0,projection:Some(0),parameter:2 },
             Slot { operand:0,projection:Some(1),parameter:0 },
@@ -116,19 +111,17 @@ mod tests {
         assert_eq!(p[1].projection,Some(0));
     }
     #[test]
-    fn mixed_tuple_and_apply_are_positional() {
+    fn every_tuple_is_positional_even_with_reversed_formal_names() {
         let p = plan(&[Item::Tuple(2)], &["a","b"], &[false;2]).unwrap();
-        assert_eq!(p.iter().map(|x|x.parameter).collect::<Vec<_>>(),vec![0,1]);
+        assert_eq!(p, vec![Slot { operand:0,projection:Some(0),parameter:0 }, Slot { operand:0,projection:Some(1),parameter:1 }]);
     }
     #[test]
-    fn reject_duplicate_unknown_dynamic_missing_order_and_unsupported() {
+    fn reject_duplicate_unknown_missing_order_and_unsupported() {
         let f = &["a","b"];
         let d = &[false;2];
         for (items, error) in [
             (vec![Item::Positional,Item::Record(&["a"])],Error::Duplicate),
-            (vec![Item::PairTuple(&[Some("a"),Some("a")])],Error::Duplicate),
             (vec![Item::Record(&["z"])],Error::UnknownName),
-            (vec![Item::PairTuple(&[None,Some("b")])],Error::UnprovedKey),
             (vec![Item::Named("a")],Error::Missing),
             (vec![Item::Named("a"),Item::Tuple(0),Item::Positional],Error::PositionalAfterNamed),
             (vec![Item::Unsupported],Error::Unsupported),
