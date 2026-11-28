@@ -2564,7 +2564,7 @@ impl Parser {
             } else {
                 self.parse_pattern()?
             };
-            let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
+            let guard = if self.eat_word("when") { Some(self.parse_expr_with_slim_arrow(false)?) } else { None };
             if *self.peek() == Tok::Assign && *self.peek_at(1) == Tok::Gt {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -2626,7 +2626,7 @@ impl Parser {
             // The guard sees a pattern binding only after that pattern
             // matches. A guarded catch-all does not prove exhaustiveness.
             // The existing match type checker enforces these properties.
-            let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
+            let guard = if self.eat_word("when") { Some(self.parse_expr_with_slim_arrow(false)?) } else { None };
             self.expect(Tok::Arrow, "'->' in a return match arm")?;
             let braced = *self.peek() == Tok::LBrace;
             let body = if braced {
@@ -2891,6 +2891,12 @@ impl Parser {
     }
 
     pub fn parse_expr(&mut self) -> R<Expr> {
+        self.parse_expr_with_slim_arrow(true)
+    }
+
+    // A match guard ends at its owning arm arrow. Nested groups/calls
+    // still use parse_expr, so a grouped Entry does not steal that arrow.
+    fn parse_expr_with_slim_arrow(&mut self, allow_slim: bool) -> R<Expr> {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
@@ -2903,10 +2909,10 @@ impl Parser {
                     "'::' is a callable-header separator, not a RecordEntry operator",
                 ));
             }
-            if !self.eat(&Tok::FatArrow) {
+            if !self.eat(&Tok::FatArrow) && !(allow_slim && self.eat(&Tok::Arrow)) {
                 return Ok(left);
             }
-            // Outside brace-map key position, => constructs a nominal Entry.
+            // Outside brace-map key position, either arrow constructs a nominal Entry.
             // Bracket literals ALWAYS retain Array/List meaning, including
             // the case where the array/list is the Map/Entry key.
             // The checked Hash/Eq gate rejects unsupported key collections.
@@ -2914,7 +2920,7 @@ impl Parser {
             self.grow(1)?;
             let val = self.parse_ternary()?;
             self.height -= 1;
-            if *self.peek() == Tok::FatArrow {
+            if *self.peek() == Tok::FatArrow || (allow_slim && *self.peek() == Tok::Arrow) {
                 return Err(Diagnostic::new(
                     self.pos(),
                     "E_LITERAL_KIND",
@@ -3846,16 +3852,31 @@ impl Parser {
                     }
                 } else {
                     let key = self.parse_ternary()?;
-                    if !self.eat(&Tok::FatArrow) {
+                    if !self.eat(&Tok::FatArrow) && !self.eat(&Tok::Arrow) {
                         return Err(Diagnostic::new(
                             self.pos(),
                             "E_LITERAL_KIND",
-                            "expected '=>' for expression Map key",
+                            "expected '=>' or '->' for expression Map key",
                         ));
                     }
                     key
                 };
-                let value = self.parse_expr()?;
+                // A second top-level arrow belongs to an ambiguous Entry
+                // chain, not the Map value. Nested groups/lambdas retain
+                // their independent expression grammar.
+                let saved_cond = self.cond;
+                self.cond = 0;
+                self.enter()?;
+                let value = self.parse_ternary();
+                self.leave();
+                self.cond = saved_cond;
+                let value = value?;
+                if matches!(self.peek(), Tok::FatArrow | Tok::Arrow) {
+                    return Err(Diagnostic::new(
+                        self.pos(), "E_LITERAL_KIND",
+                        "group nested Entries in Map values explicitly",
+                    ));
+                }
                 // Constant duplicate keys are definite mistakes. Dynamically
                 // computed keys need checked equality/hash rules at runtime.
                 if let Some(fingerprint) = constant_map_key(&key) {
