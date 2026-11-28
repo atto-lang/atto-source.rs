@@ -37,7 +37,7 @@ fn execute_guest_with_trace(bytes: &[u8], expected: i64, trace: &str) {
       })().catch(error => { console.error(error); process.exitCode = 1; });
     "#;
     let mut child = Command::new("node")
-        .arg("-e").arg(script).arg(expected.to_string()).arg(trace)
+        .arg("-e").arg(script).arg("--").arg(expected.to_string()).arg(trace)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn().expect("Node.js is required for real WebAssembly guest execution");
     child.stdin.take().expect("piped guest stdin")
