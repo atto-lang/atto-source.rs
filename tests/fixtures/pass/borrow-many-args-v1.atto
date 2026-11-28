@@ -1,0 +1,11 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+define class Parcel as pub let int value = 21; end
+fnc combine(Parcel a, Parcel b, Parcel c): int {
+    return (c.value + b.value) - a.value + c.value;
+}
+pub fnc main(): int {
+    let p = new Parcel();
+    let q = new Parcel();
+    return combine(p, borrow! q, p);
+}

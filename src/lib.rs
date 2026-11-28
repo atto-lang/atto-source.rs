@@ -35,6 +35,9 @@ pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
 
+#[cfg(test)]
+mod borrow_mut_tests;
+
 pub use diag::{Diagnostic, Pos};
 
 pub const SOURCE_CAP: usize = 64 * 1024;
@@ -48,7 +51,7 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// line. Package/CLI profile discovery can replace this migration mechanism
 /// once it is ratified without changing the checked BorrowClass ABI.
 fn prepare_borrow_default_v1(program: &mut ast::Program) -> Result<(), Diagnostic> {
-    use ast::Type;
+    use ast::{Type, ParamOwnership};
     use std::collections::BTreeSet;
     let classes: BTreeSet<String> = program.classes.iter().map(|c| c.name.clone()).collect();
     let type_names = &program.type_names;
@@ -85,15 +88,19 @@ fn prepare_borrow_default_v1(program: &mut ast::Program) -> Result<(), Diagnosti
     for function in &mut program.funcs {
         for p in &mut function.params {
             if let Type::Named(i) = p.ty {
-                if classes.contains(&type_names[i as usize].0) && !p.explicit_take {
-                    if p.mutable {
-                        return Err(Diagnostic::new(p.pos, "E_UNSUPPORTED_TYPE",
-                            "mut Foo borrowed formals require the future verified BorrowMut<T> loan ABI; use a readonly Foo or explicit take! Foo"));
+                if classes.contains(&type_names[i as usize].0) {
+                    if p.explicit_take {
+                        p.ownership = ParamOwnership::Take;
+                    } else if p.mutable {
+                        // Unlike a mutable owned argument, this is a
+                        // caller-proven exclusive loan over the same class
+                        // allocation. No ownership is moved or cloned.
+                        p.ty = Type::BorrowMutNamed(i);
+                        p.ownership = ParamOwnership::BorrowWrite;
+                    } else {
+                        p.ty = Type::BorrowNamed(i);
+                        p.ownership = ParamOwnership::BorrowRead;
                     }
-                    // Ordinary Foo is checked exactly like Borrow<Foo>.
-                    // Both signatures lower to the same nonowning guest class
-                    // handle, with the same alias, move and escape rules.
-                    p.ty = Type::BorrowNamed(i);
                 }
             }
         }
@@ -102,8 +109,32 @@ fn prepare_borrow_default_v1(program: &mut ast::Program) -> Result<(), Diagnosti
     Ok(())
 }
 
-/// Compile one `.atto` source file to a guest WebAssembly module.
+/// Ownership contract selected by the *invoking* compiler/package, not
+/// inferred from a callee's implementation. Imported signatures will require
+/// compatible versioned metadata before cross-package linking is supported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnershipProfile {
+    Legacy,
+    BorrowDefaultV1,
+}
+
+/// Compile using a source's first-line migration marker when present.
+/// Existing browser ABI and unversioned source behavior remain unchanged.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, None)
+}
+
+/// An explicit compiler/package integration point. A build driver may select
+/// the version without injecting source text; conflicting inline markers
+/// reject instead of silently overriding ownership semantics.
+pub fn compile_with_profile(
+    source: &str, profile: OwnershipProfile
+) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, Some(profile))
+}
+
+/// Compile one `.atto` source file to a guest WebAssembly module.
+fn compile_inner(source: &str, selected: Option<OwnershipProfile>) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -167,13 +198,21 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // BOM on the very first line only.
     let first_line = source.lines().next().unwrap_or("")
         .trim_start_matches('\u{feff}').trim_end_matches('\r');
-    let borrow_default_v1 = match first_line {
-        "// atto-ownership: borrow-default-v1" => true,
+    let header = match first_line {
+        "// atto-ownership: borrow-default-v1" => Some(OwnershipProfile::BorrowDefaultV1),
         other if other.starts_with("// atto-ownership:") =>
             return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_PROFILE",
                 "unknown AttoLang ownership profile; use borrow-default-v1")),
-        _ => false,
+        _ => None,
     };
+    if let (Some(explicit), Some(header_profile)) = (selected, header) {
+        if explicit != header_profile {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_PROFILE",
+                "explicit compiler ownership profile conflicts with source ownership marker"));
+        }
+    }
+    let borrow_default_v1 = selected.or(header).unwrap_or(OwnershipProfile::Legacy)
+        == OwnershipProfile::BorrowDefaultV1;
     for (i, line) in source.lines().enumerate().skip(1) {
         if line.trim_start().starts_with("// atto-ownership:") {
             return Err(Diagnostic::new(Pos { line: i as u32 + 1, col: 1 },
@@ -204,6 +243,20 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     };
     if borrow_default_v1 {
         prepare_borrow_default_v1(&mut program)?;
+    } else {
+        // The new canonical 'mut Foo p' spelling is deliberately unavailable
+        // in legacy modules. Do not silently interpret it as an owned mutable
+        // parameter when migration metadata was omitted.
+        for param in program.funcs.iter().flat_map(|f| f.params.iter()) {
+            if param.ownership == ast::ParamOwnership::BorrowWrite {
+                return Err(Diagnostic::new(param.pos, "E_PROFILE",
+                    "mut Foo borrowed formals require borrow-default-v1"));
+            }
+            if param.ownership == ast::ParamOwnership::Take {
+                return Err(Diagnostic::new(param.pos, "E_PROFILE",
+                    "take! Foo consuming formals require borrow-default-v1; legacy owned Foo remains the unversioned form"));
+            }
+        }
     }
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.

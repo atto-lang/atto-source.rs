@@ -21,6 +21,11 @@ pub enum Type {
     BorrowNamed(u32),
     /// Resolved non-owning class formal, passed as a class handle.
     BorrowClass(u32),
+    /// Unresolved exclusive class formal. The guest ABI is still an i32
+    /// object offset, but the checker enforces exclusive call authority.
+    BorrowMutNamed(u32),
+    /// Resolved exclusive class formal; not an owning class handle.
+    BorrowMutClass(u32),
     /// Source-level `fnc(T1, T2) -> R` signature. The index refers to a
     /// canonical, compiler-interned signature in `Program::type_names`.
     /// This type is recognized and checked, but cannot yet be represented
@@ -58,6 +63,7 @@ impl Type {
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
             Type::BorrowNamed(_) | Type::BorrowClass(_) => "Borrow<T>",
+            Type::BorrowMutNamed(_) | Type::BorrowMutClass(_) => "BorrowMut<T>",
             Type::Callable(_) => "fnc(...)->...",
             _ => "object",
         }
@@ -201,6 +207,20 @@ pub struct Func {
     pub body: Vec<Stmt>,
 }
 
+/// Class parameter authority preserved independently of the i32 guest
+/// Wasm handle ABI. This is never inferred from an untyped call-site value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamOwnership {
+    /// Legacy unversioned formal. Existing consuming behavior is retained.
+    Legacy,
+    /// Explicit consume: requires take! at a v1 call site.
+    Take,
+    /// Non-owning, readonly shared loan.
+    BorrowRead,
+    /// Non-owning exclusive loan for the synchronous call.
+    BorrowWrite,
+}
+
 #[derive(Clone, Debug)]
 pub struct Param {
     pub name: String,
@@ -210,6 +230,9 @@ pub struct Param {
     /// borrowing profile. Its presence distinguishes *owned* Foo from an
     /// otherwise borrow-by-default Foo without changing Wasm class ABI.
     pub explicit_take: bool,
+    /// Resolved by the versioned profile pass; never silently inferred from
+    /// the caller's package or imported module spelling.
+    pub ownership: ParamOwnership,
     pub pos: Pos,
 }
 

@@ -1386,39 +1386,45 @@ impl Parser {
             self.advance(); // take
             self.advance(); // !
         }
+        // The canonical exclusive-loan formal is 'mut Foo arg'. The
+        // historical post-type spelling Foo mut arg remains compatible.
+        let prefix_mut = self.eat_word("mut");
+        if prefix_mut && explicit_take {
+            return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                "take! and mut cannot both claim the same parameter"));
+        }
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
-        // compatibility form `name: type [mut]` also admits the same
-        // explicit consuming mode after the colon: `name: take! Class`.
-        // Both spellings preserve one owned formal and require take! at the
-        // call site; neither can silently turn a loan into a move.
+        // Name-first declarations admit the same explicit consuming mode:
+        // `name: take! Class` must retain the identical owned-formal
+        // authority as `take! Class name`, never a default/readonly loan.
         if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a parameter name")?;
             self.advance();
             let named_take = self.is_word("take") && *self.peek_at(1) == Tok::Bang;
             if named_take {
                 self.require_attached_take_bang()?;
-                if explicit_take {
+                if explicit_take || prefix_mut {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP",
-                        "take! cannot be declared twice on the same parameter"));
+                        "a consuming parameter cannot have a duplicate take! or mutable loan mode"));
                 }
                 self.advance(); // take
                 self.advance(); // !
             }
             let ty = self.parse_type()?;
-            let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable,
+            let mutable = prefix_mut || self.eat_word("mut");
+            return self.finish_param(name, ty, mutable, prefix_mut,
                 explicit_take || named_take, pos);
         }
         let ty = self.parse_type()?;
-        let mutable = self.eat_word("mut");
+        let mutable = prefix_mut || self.eat_word("mut");
         let (name, _) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, explicit_take, pos)
+        self.finish_param(name, ty, mutable, prefix_mut, explicit_take, pos)
     }
 
     fn finish_param(&self, name: String, ty: Type, mutable: bool,
-        explicit_take: bool, pos: Pos) -> R<Param> {
+        prefix_mut: bool, explicit_take: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
         }
@@ -1429,7 +1435,10 @@ impl Parser {
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, explicit_take, pos })
+        let ownership = if explicit_take { ParamOwnership::Take }
+            else if prefix_mut { ParamOwnership::BorrowWrite }
+            else { ParamOwnership::Legacy };
+        Ok(Param { name, ty, mutable, explicit_take, ownership, pos })
     }
 
     // ----------------------------------------------------------- statements
@@ -2937,7 +2946,19 @@ impl Parser {
                 if *self.peek() == Tok::Dot {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
-                args.push(self.parse_expr()?);
+                // 'mut owner' is the ergonomic call-only spelling of
+                // 'borrow! mut owner'. No ambient mutable value expression
+                // is invented for bindings or returns.
+                if self.eat_word("mut") {
+                    let pos = self.toks[self.i - 1].pos;
+                    let inner = self.parse_unary()?;
+                    args.push(Expr {
+                        kind: ExprKind::Ownership(OwnershipOp::Borrow, true, Box::new(inner)),
+                        pos,
+                    });
+                } else {
+                    args.push(self.parse_expr()?);
+                }
                 if args.len() > MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
                 }

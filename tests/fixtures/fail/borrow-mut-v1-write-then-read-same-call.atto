@@ -1,0 +1,9 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_BORROW
+// java: rejects
+define class Counter as pub mut int value = 1; end
+fnc conflict(mut Counter write, Counter read): int { return read.value; }
+pub fnc main(): int {
+  let counter = new Counter();
+  return conflict(mut counter, counter);
+}
