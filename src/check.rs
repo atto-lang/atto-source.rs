@@ -1916,7 +1916,7 @@ struct ConstructorInitFlow {
 
 fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) -> R<()> {
     match &e.kind {
-        ExprKind::Await(_) | ExprKind::Task { .. } | ExprKind::SpawnTask { .. } =>
+        ExprKind::Await(_) | ExprKind::Task { .. } | ExprKind::SpawnTask { .. } | ExprKind::SuspLambda { .. } =>
             Err(Diagnostic::new(e.pos, "E_SUSPEND", "constructors cannot suspend or start tasks")),
         ExprKind::Duration(_) => Ok(()),
         ExprKind::Member(base, name) if matches!(base.kind, ExprKind::SelfRef) => {
@@ -2155,7 +2155,7 @@ fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
     let denied = || Diagnostic::new(e.pos, "E_OWNERSHIP",
         "under-construction self cannot escape, be captured or dispatch methods");
     match &e.kind {
-        ExprKind::Await(_) | ExprKind::Task { .. } | ExprKind::SpawnTask { .. } => Err(denied()),
+        ExprKind::Await(_) | ExprKind::Task { .. } | ExprKind::SpawnTask { .. } | ExprKind::SuspLambda { .. } => Err(denied()),
         ExprKind::Duration(_) => Ok(()),
         ExprKind::SelfRef => Err(denied()),
         ExprKind::Member(base, _) if matches!(base.kind, ExprKind::SelfRef) => {
@@ -4628,6 +4628,8 @@ impl<'a> FnCx<'a> {
         Ok(match &e.kind {
             ExprKind::Await(_) => return Err(Diagnostic::new(pos, "E_SUSPEND",
                 "await is only valid inside a susp/suspends callable, as a statement-level operand")),
+            ExprKind::SuspLambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "a suspending lambda must be bound with val and only called directly under await")),
             ExprKind::Task { .. } | ExprKind::SpawnTask { .. } => return Err(Diagnostic::new(pos, "E_SUSPEND",
                 "task { } is only valid inside a susp/suspends callable, bound with val/let or started with do task")),
             ExprKind::Duration(_) => return Err(Diagnostic::new(pos, "E_TYPE",

@@ -84,7 +84,8 @@ impl Cx {
         }
         collect_bindings(&f.body, &mut env, &self.rets, 0)?;
         let mut counter = 0u32;
-        let body = std::mem::take(&mut f.body);
+        let mut body = std::mem::take(&mut f.body);
+        self.extract_susp_lambdas(&mut body, &f.name, &env)?;
         let body = self.extract_stmts(body, &f.name, &env, &mut counter, 0)?;
         f.body = self.hoist_block(body, 0)?;
         Ok(())
@@ -202,6 +203,80 @@ impl Cx {
             body,
         });
         e.kind = ExprKind::SpawnTask { func: name, args, detached };
+        Ok(())
+    }
+
+    // ---------- suspending lambdas ----------
+
+    /// `val f = susp |[T] p, ..| [: R] -> body` becomes a synthetic susp
+    /// callable `{parent}__susplambda{n}(p.., captures..)`; every direct call
+    /// `f(args)` is rewritten to pass the by-value captures. Any other use of
+    /// `f` would let the lambda escape and is rejected.
+    fn extract_susp_lambdas(&mut self, body: &mut Vec<Stmt>,
+        parent: &str, env: &BTreeMap<String, Option<Binding>>) -> R<()> {
+        let mut found: Vec<(String, Pos, Vec<(String, Option<Type>)>, Option<Type>, Vec<Stmt>, bool)> = Vec::new();
+        take_susp_lambda_binds(body, &mut found, 0)?;
+        for (index, (name, pos, params, ret, lambda_body, mutable)) in found.into_iter().enumerate() {
+            if mutable {
+                return Err(err(pos, "E_UNSUPPORTED", "bind a suspending lambda with val; it cannot be reassigned"));
+            }
+            let mut calls = Vec::new();
+            collect_calls(body, &name, &mut calls);
+            let first = calls.first().ok_or_else(|| err(pos, "E_UNUSED",
+                format!("suspending lambda '{name}' is never called")))?;
+            let mut typed = Vec::with_capacity(params.len());
+            for (i, (p, ty)) in params.iter().enumerate() {
+                let ty = match ty {
+                    Some(t) => *t,
+                    None => first.get(i).and_then(|a| infer(a, env, &self.rets)).ok_or_else(|| err(pos, "E_INFER",
+                        format!("annotate suspending lambda parameter '{p}' (its first call does not fix its type)")))?,
+                };
+                typed.push((p.clone(), ty));
+            }
+            if calls.iter().any(|args| args.len() != typed.len()) {
+                return Err(err(pos, "E_ARITY", format!("suspending lambda '{name}' expects {} arguments", typed.len())));
+            }
+            let mut lambda_env = env.clone();
+            for (p, t) in &typed {
+                lambda_env.insert(p.clone(), Some(Binding { ty: Some(*t), mutable: false }));
+            }
+            let ret = match ret {
+                Some(t) => t,
+                None => match lambda_body.as_slice() {
+                    [Stmt::Return(Some(e), _)] => infer(e, &lambda_env, &self.rets).unwrap_or(Type::Int),
+                    _ => if returns_value(&lambda_body) { Type::Int } else { Type::Void },
+                },
+            };
+            let (mut used, mut assigned, mut bound) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+            uses_in_stmts(&lambda_body, &mut used, &mut assigned, &mut bound);
+            let mut captures = Vec::new();
+            for c in used.iter().filter(|u| !bound.contains(*u) && !typed.iter().any(|(p, _)| p == *u)) {
+                let Some(binding) = env.get(c) else { continue };
+                let Some(Binding { ty: Some(ty), mutable: false }) = *binding else {
+                    return Err(err(pos, "E_TASK_CAPTURE", format!(
+                        "suspending lambda captures '{c}', which must be an immutable binding of known type")));
+                };
+                if assigned.contains(c) {
+                    return Err(err(pos, "E_TASK_CAPTURE", format!("suspending lambda cannot assign captured '{c}'")));
+                }
+                captures.push((c.clone(), ty));
+            }
+            let synthetic = format!("{parent}__susplambda{}", index + 1);
+            let mut fparams: Vec<Param> = typed.iter().map(|(n, t)| Param { name: n.clone(), ty: *t, mutable: false, pos }).collect();
+            fparams.extend(captures.iter().map(|(n, t)| Param { name: n.clone(), ty: *t, mutable: false, pos }));
+            self.generated.push(Func {
+                name: synthetic.clone(), pos, is_generator: false, is_suspending: true, is_pure: false,
+                declared_effects: None, params: fparams, ret, body: lambda_body,
+            });
+            self.rets.insert((synthetic.clone(), typed.len() + captures.len()), ret);
+            let extra: Vec<Expr> = captures.iter().map(|(n, _)| Expr { kind: ExprKind::Var(n.clone()), pos }).collect();
+            let mut escaped = None;
+            rewrite_lambda_uses(body, &name, &synthetic, &extra, &mut escaped);
+            if let Some(at) = escaped {
+                return Err(err(at, "E_UNSUPPORTED", format!(
+                    "suspending lambda '{name}' can only be called directly (await {name}(..)); it cannot escape as a value")));
+            }
+        }
         Ok(())
     }
 
@@ -372,6 +447,88 @@ impl Cx {
 
 // ---------- helpers ----------
 
+type SuspLambdaBind = (String, Pos, Vec<(String, Option<Type>)>, Option<Type>, Vec<Stmt>, bool);
+
+/// Remove `val f = susp |..| -> ..` bindings (any nesting), returning them.
+fn take_susp_lambda_binds(body: &mut Vec<Stmt>, out: &mut Vec<SuspLambdaBind>, depth: usize) -> R<()> {
+    if depth > MAX_DEPTH {
+        return Err(err(Pos { line: 1, col: 1 }, "E_NESTING", "suspending lambda nesting limit exceeded"));
+    }
+    let mut kept = Vec::with_capacity(body.len());
+    for mut s in std::mem::take(body) {
+        if let Stmt::Bind { kind, name, init: Expr { kind: ExprKind::SuspLambda { params, ret, body: lb }, .. }, pos, .. } = &mut s {
+            if out.iter().any(|(n, ..)| n == name) {
+                return Err(err(*pos, "E_DUPLICATE", format!("suspending lambda '{name}' is bound twice")));
+            }
+            out.push((name.clone(), *pos, std::mem::take(params), *ret, std::mem::take(lb), *kind == BindKind::Let));
+            continue;
+        }
+        for nested in nested_bodies_mut(&mut s) {
+            take_susp_lambda_binds(nested, out, depth + 1)?;
+        }
+        kept.push(s);
+    }
+    *body = kept;
+    Ok(())
+}
+
+fn nested_bodies_mut(s: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
+    match s {
+        Stmt::StateWrite { body, .. } | Stmt::While { body, .. } | Stmt::Loop { body, .. } |
+        Stmt::ForIn { body, .. } | Stmt::Block(body) | Stmt::Defer { body, .. } |
+        Stmt::Recover { body, .. } | Stmt::UsingTelemetry { body, .. } | Stmt::For { body, .. } => vec![body],
+        Stmt::Try { body, catch, finally, .. } => {
+            let mut v = vec![body];
+            if let Some((_, c)) = catch { v.push(c); }
+            if let Some(f) = finally { v.push(f); }
+            v
+        }
+        Stmt::If { arms, otherwise, .. } => {
+            let mut v: Vec<&mut Vec<Stmt>> = arms.iter_mut().map(|(_, b)| b).collect();
+            if let Some(o) = otherwise { v.push(o); }
+            v
+        }
+        Stmt::Match { arms, .. } => arms.iter_mut().map(|a| &mut a.body).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Deep mutable walk over every expression, entering task bodies.
+fn walk_exprs_mut(body: &mut [Stmt], f: &mut dyn FnMut(&mut Expr)) {
+    for s in body.iter_mut() {
+        map_stmt_exprs(s, &mut |e| walk_expr_mut(e, f));
+        for nested in nested_bodies_mut(s) {
+            walk_exprs_mut(nested, f);
+        }
+    }
+}
+
+fn walk_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+    f(e);
+    if let ExprKind::Task { body, .. } = &mut e.kind {
+        walk_exprs_mut(body, f);
+        return;
+    }
+    map_child_exprs(e, &mut |c| walk_expr_mut(c, f));
+}
+
+fn collect_calls(body: &mut [Stmt], name: &str, out: &mut Vec<Vec<Expr>>) {
+    walk_exprs_mut(body, &mut |e| if let ExprKind::Call(n, args) = &e.kind {
+        if n == name { out.push(args.clone()); }
+    });
+}
+
+fn rewrite_lambda_uses(body: &mut [Stmt], name: &str, synthetic: &str, extra: &[Expr], escaped: &mut Option<Pos>) {
+    walk_exprs_mut(body, &mut |e| match &mut e.kind {
+        ExprKind::Call(n, args) if n == name => {
+            *n = synthetic.to_string();
+            args.extend(extra.iter().cloned());
+        }
+        ExprKind::Var(n) if n == name => { escaped.get_or_insert(e.pos); }
+        _ => {}
+    });
+}
+
 fn returns_value(body: &[Stmt]) -> bool {
     let mut found = false;
     visit_stmts(body, &mut |s| if matches!(s, Stmt::Return(Some(_), _)) { found = true; });
@@ -501,7 +658,8 @@ fn for_child_exprs(e: &Expr, f: &mut dyn FnMut(&Expr)) {
         ExprKind::MethodCall(recv, _, args) => { f(recv); for a in args { f(a); } }
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) |
         ExprKind::Var(_) | ExprKind::SelfRef | ExprKind::StateRead(_) | ExprKind::Spawn(_) |
-        ExprKind::Lambda { .. } | ExprKind::Task { .. } | ExprKind::Duration(_) => {}
+        ExprKind::Lambda { .. } | ExprKind::Task { .. } | ExprKind::Duration(_) |
+        ExprKind::SuspLambda { .. } => {}
     }
 }
 
@@ -612,6 +770,7 @@ fn map_child_exprs(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
         ExprKind::MethodCall(recv, _, args) => { f(recv); for a in args { f(a); } }
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) |
         ExprKind::Var(_) | ExprKind::SelfRef | ExprKind::StateRead(_) | ExprKind::Spawn(_) |
-        ExprKind::Lambda { .. } | ExprKind::Task { .. } | ExprKind::Duration(_) => {}
+        ExprKind::Lambda { .. } | ExprKind::Task { .. } | ExprKind::Duration(_) |
+        ExprKind::SuspLambda { .. } => {}
     }
 }

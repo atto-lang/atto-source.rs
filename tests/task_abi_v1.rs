@@ -120,3 +120,13 @@ fn susp_main_may_spawn_and_mail_actors() {
         assert!(wasm.windows(needle.len()).any(|w| w == needle), "missing {}", String::from_utf8_lossy(needle));
     }
 }
+
+#[test]
+fn direct_call_suspending_lambdas_lower_to_susp_callables() {
+    // typed `suspends |int n| -> n + 1` with a captured task Future upstream
+    let got = run(include_str!("fixtures/task/suspends.atto"));
+    assert_eq!(got, r#"{"value":"42","stdout":"42\n","now":0}"#);
+    // untyped `susp |x| : int -> x + 1`, parameter type fixed by its call
+    let got = run(include_str!("fixtures/task/susp-shorthand.atto"));
+    assert_eq!(got, r#"{"value":"43","stdout":"","now":0}"#);
+}

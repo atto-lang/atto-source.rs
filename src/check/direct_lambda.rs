@@ -463,8 +463,8 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             Ok(())
         }
         ExprKind::Duration(_) => Ok(()),
-        ExprKind::Task { .. } => Err(error(e.pos, "E_UNSUPPORTED",
-            "task { } must be desugared before direct lambda conversion")),
+        ExprKind::Task { .. } | ExprKind::SuspLambda { .. } => Err(error(e.pos, "E_UNSUPPORTED",
+            "task { } and suspending lambdas must be desugared before direct lambda conversion")),
         ExprKind::Var(n) if *n == d.source =>
             Err(error(e.pos, "E_UNSUPPORTED",
                 "direct lambda cannot escape as a first-class value")),
@@ -546,7 +546,7 @@ fn calls_any_named(e: &Expr, names: &BTreeSet<String>, depth: usize) -> R<bool> 
             }
             return Ok(false);
         }
-        ExprKind::Task { .. } | ExprKind::Duration(_) => return Ok(false),
+        ExprKind::Task { .. } | ExprKind::SuspLambda { .. } | ExprKind::Duration(_) => return Ok(false),
         ExprKind::Call(name, args) => {
             if names.contains(name) { return Ok(true); }
             for arg in args {
@@ -691,8 +691,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
             for arg in args { free_names(arg, names, depth + 1)?; }
         }
         ExprKind::Duration(_) => {}
-        ExprKind::Task { .. } => return Err(error(e.pos, "E_UNSUPPORTED",
-            "a direct lambda cannot capture a task { } body")),
+        ExprKind::Task { .. } | ExprKind::SuspLambda { .. } => return Err(error(e.pos, "E_UNSUPPORTED",
+            "a direct lambda cannot capture a task { } body or suspending lambda")),
         ExprKind::Unary(_, a) => free_names(a, names, depth + 1)?,
         ExprKind::Binary(_, a, b) => {
             free_names(a, names, depth + 1)?;

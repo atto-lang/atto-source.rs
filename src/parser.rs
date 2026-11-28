@@ -4361,8 +4361,12 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if (s == "susp" || s == "suspends") && *self.peek_at(1) == Tok::Pipe => {
-                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                    "suspending lambdas are not lowered yet; declare a top-level susp fnc"));
+                if !self.in_suspending {
+                    return Err(Diagnostic::new(pos, "E_SUSPEND",
+                        "a suspending lambda is only valid inside a susp/suspends callable"));
+                }
+                self.advance();
+                return Ok(Expr { kind: self.parse_susp_lambda()?, pos });
             }
             // Inside a susp callable, await is a real suspension (atto.task.v1).
             Tok::Ident(s) if s == "await" && self.in_suspending => {
@@ -4698,6 +4702,38 @@ impl Parser {
         })();
         self.leave();
         result
+    }
+
+    /// `|[T] p, ..| [: R] -> expression | { block }` after `susp`/`suspends`.
+    fn parse_susp_lambda(&mut self) -> R<ExprKind> {
+        self.expect(Tok::Pipe, "'|' to start suspending lambda parameters")?;
+        let mut params: Vec<(String, Option<Type>)> = Vec::new();
+        if !self.eat(&Tok::Pipe) {
+            loop {
+                if params.len() >= MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
+                }
+                // Typed `T name` when two identifiers precede ',' or '|'.
+                let typed = matches!(self.peek_at(1), Tok::Ident(_));
+                let ty = if typed { Some(self.parse_type()?) } else { None };
+                let (name, pos) = self.ident("a lambda parameter")?;
+                if params.iter().any(|(n, _)| *n == name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
+                }
+                params.push((name, ty));
+                if self.eat(&Tok::Pipe) { break; }
+                self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
+            }
+        }
+        let ret = if self.eat(&Tok::Colon) { Some(self.parse_type()?) } else { None };
+        self.expect(Tok::Arrow, "'->' before the suspending lambda body")?;
+        let body = if *self.peek() == Tok::LBrace {
+            self.parse_block()?
+        } else {
+            let pos = self.pos();
+            vec![Stmt::Return(Some(self.parse_expr()?), pos)]
+        };
+        Ok(ExprKind::SuspLambda { params, ret, body })
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {

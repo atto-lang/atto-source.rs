@@ -569,6 +569,9 @@ pub enum ExprKind {
     /// Duration literal in milliseconds (`100ms`, `2s`); only `sleeper(..)`
     /// admits it in this profile.
     Duration(u64),
+    /// `susp |[T] p, ..| [: R] -> body`: a direct-call suspending lambda.
+    /// task_desugar lowers a `val` binding of it to a synthetic susp callable.
+    SuspLambda { params: Vec<(String, Option<Type>)>, ret: Option<Type>, body: Vec<Stmt> },
 }
 
 #[derive(Clone, Debug)]
