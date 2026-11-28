@@ -1,6 +1,14 @@
 //! Compiler-backed admission: Unicode controls must not disappear inside comments.
-//! This tests the Rust scalar frontend/object emitter only, not other backends.
-use oreslang_source_rs::{compile, frontend};
+//! This tests the actual Rust browser lexer and Wasm compiler, not Wasm module emission.
+use atto_compiler::{compile, lexer::lex};
+fn pos_at(source: &str, offset: usize) -> (u32,u32) {
+    let prefix = &source[..offset];
+    (1 + prefix.chars().filter(|&c| c == '\n').count() as u32,
+     1 + prefix.rsplit('\n').next().unwrap().chars().count() as u32)
+}
+fn expected_code(c: char) -> &'static str {
+    match c { '\0' => "E_NUL", '\u{001b}' | '\u{007f}' | '\u{0085}' | '\u{2028}' | '\u{2029}' => "E_SOURCE_CONTROL", _ => "E_SOURCE_BIDI" }
+}
 
 const GOOD: &str = "pub fnc main(): int { return 42; }";
 const FORBIDDEN: [char; 15] = [
@@ -20,11 +28,10 @@ fn forbidden_controls_are_rejected_before_both_comment_forms() {
         ];
         for source in cases {
             let position = source.find(character).expect("control exists");
-            let err = frontend::parse(&source).expect_err("source control was admitted");
-            assert_eq!(err.class, "source_unicode_control", "{source:?}");
-            assert_eq!(err.offset, position, "{source:?}");
-            assert!(err.message.contains("forbidden source Unicode control"));
-            assert!(compile(&source).is_err(), "native object compiled: {source:?}");
+            let err = lex(&source).expect_err("source control was admitted");
+            assert_eq!(err.code, expected_code(character), "{source:?}");
+            assert_eq!((err.pos.line, err.pos.col), pos_at(&source, position), "{source:?}");
+            assert!(compile(&source).is_err(), "Wasm module compiled: {source:?}");
         }
     }
 }
@@ -32,7 +39,7 @@ fn forbidden_controls_are_rejected_before_both_comment_forms() {
 #[test]
 fn ordinary_unicode_comments_still_compile() {
     let source = format!("/* café ☕ */ {GOOD}");
-    assert_eq!(frontend::parse(&source).unwrap().functions.len(), 1);
+    assert!(!lex(&source).unwrap().is_empty());
     assert!(!compile(&source).unwrap().is_empty());
 }
 
@@ -40,7 +47,7 @@ fn ordinary_unicode_comments_still_compile() {
 /// later raw byte that happened to be checked by a separate admission pass.
 #[test]
 fn earliest_control_precedes_later_different_control_class() {
-    for (source, expected_char, expected_class, expected_message) in [
+    for (source, expected_char, _expected_class, _expected_message) in [
         ("\u{202e}\0", '\u{202e}', "source_unicode_control", "U+202E"),
         ("\0\u{202e}", '\0', "source_admission", "NUL byte"),
         ("/* café */\u{2066}\u{001b}", '\u{2066}', "source_unicode_control", "U+2066"),
@@ -48,10 +55,9 @@ fn earliest_control_precedes_later_different_control_class() {
         ("// label\u{061c}\n\u{007f}", '\u{061c}', "source_unicode_control", "U+061C"),
         ("// label\u{007f}\n\u{061c}", '\u{007f}', "source_admission", "terminal control"),
     ] {
-        let err = frontend::parse(source).expect_err("control unexpectedly admitted");
-        assert_eq!(err.class, expected_class, "{source:?}: {err}");
-        assert_eq!(err.offset, source.find(expected_char).unwrap(), "{source:?}");
-        assert!(err.message.contains(expected_message), "{source:?}: {err}");
-        assert!(compile(source).is_err(), "native object published: {source:?}");
+        let err = lex(source).expect_err("control unexpectedly admitted");
+        assert_eq!(err.code, expected_code(expected_char), "{source:?}: {err}");
+        assert_eq!((err.pos.line, err.pos.col), pos_at(source, source.find(expected_char).unwrap()), "{source:?}");
+        assert!(compile(source).is_err(), "Wasm module published: {source:?}");
     }
 }
