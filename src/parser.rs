@@ -2829,6 +2829,24 @@ impl Parser {
             }
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
+            Some("set") if matches!(self.peek_at(1), Tok::Ident(_)) => {
+                self.advance();
+                let (name, _) = self.ident("an existing local binding")?;
+                let transfer = self.eat(&Tok::LeftArrow);
+                if !transfer {
+                    self.expect(Tok::Assign, "'=' or '<-' after set target")?;
+                }
+                let mut value = self.parse_expr()?;
+                if transfer {
+                    if matches!(&value.kind, ExprKind::Var(source) if source == &name) {
+                        return Err(Diagnostic::new(pos, "E_OWNERSHIP", "cannot move a binding into itself"));
+                    }
+                    value = Expr { pos: value.pos, kind: ExprKind::Ownership(
+                        OwnershipOp::BindingTransfer, false, Box::new(value)) };
+                }
+                self.terminator()?;
+                Ok(Stmt::Assign { name, value, pos })
+            }
             Some("val" | "const" | "let") => {
                 let s = self.parse_binding()?;
                 self.terminator()?;
@@ -3355,15 +3373,22 @@ impl Parser {
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
         }
-        if *self.peek() != Tok::Assign {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_UNINITIALIZED",
-                format!("binding '{name}' needs an initializer"),
-            ));
+        let transfer = kind == BindKind::Let && self.eat(&Tok::LeftArrow);
+        if !transfer {
+            if *self.peek() != Tok::Assign {
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_UNINITIALIZED",
+                    format!("binding '{name}' needs an initializer"),
+                ));
+            }
+            self.advance();
         }
-        self.advance();
-        let init = self.parse_expr()?;
+        let mut init = self.parse_expr()?;
+        if transfer {
+            init = Expr { pos: init.pos, kind: ExprKind::Ownership(
+                OwnershipOp::BindingTransfer, false, Box::new(init)) };
+        }
         if (kind == BindKind::Val || explicit_mut) && kind != BindKind::Const {
             if let Some(bindings) = self.struct_value_bindings.as_mut() {
                 bindings.push(pos);

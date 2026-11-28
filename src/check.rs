@@ -2818,12 +2818,25 @@ impl<'a> FnCx<'a> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        self.declare_local(name, ty, mutable, false, pos)
+    }
+
+    fn declare_local(&mut self, name: &str, ty: Type, mutable: bool, allow_scalar_let_shadow: bool, pos: Pos) -> R<u32> {
         if self.telemetry_aliases.iter().any(|alias| alias == name) {
             return Err(Diagnostic::new(pos, "E_TELEMETRY_ALIAS",
                 format!("opaque span alias '{name}' cannot be shadowed")));
         }
-        if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
-            return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+        if let Some(previous) = self.scopes.last().unwrap().iter().rev().find(|l| l.name == name) {
+            // Initial scalar-only shadow profile: a fresh let slot may hide
+            // a prior writable scalar let. Never reuse the prior slot, and
+            // defer mixed const/let and non-Copy lifetime cases.
+            if !(allow_scalar_let_shadow && previous.mutable && previous.mail.is_none()
+                && is_binding_transfer_scalar(previous.ty) && is_binding_transfer_scalar(ty)
+                && !self.borrowed_slots.contains(&previous.slot)
+                && !self.loans.contains_key(&previous.slot)
+                && !self.loans.values().any(|loan| loan.owner == previous.slot)) {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+            }
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
@@ -2996,7 +3009,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
-                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                let slot = self.declare_local(name, v.ty, *kind == BindKind::Let, *kind == BindKind::Let, *pos)?;
                 // A verified generated flat-class copier allocates a new root,
                 // just like direct construction. Check the actual lowered call
                 // index, not merely the spelling of a user-defined function.
@@ -4312,6 +4325,17 @@ impl<'a> FnCx<'a> {
                 // hint. Ordinary guest locals/handles cannot promise it yet.
                 Err(Diagnostic::new(pos, "E_PIN_UNSUPPORTED",
                     "pin! requires stable-address storage and verified cleanup; not lowered by this Wasm backend"))
+            }
+            OwnershipOp::BindingTransfer => {
+                // Phase 1 only: intrinsic by-value scalars have no owning
+                // storage to invalidate. Do not inherit legacy take! rules.
+                // Non-Copy replacement needs checked retirement and cleanup.
+                let value = self.value(inner)?;
+                if !is_binding_transfer_scalar(value.ty) {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        "binding transfer of non-Copy or unproved storage requires lifecycle qualification"));
+                }
+                Ok(value)
             }
             OwnershipOp::Take => {
                 let ExprKind::Var(name) = &inner.kind else {
@@ -5967,6 +5991,11 @@ fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
         TStmt::Defer { body, .. } | TStmt::Recover { body, .. } => stmt_exists(body, f),
         _ => false,
     })
+}
+
+/// Narrow binding-arrow profile; aggregate/ADT copy witnesses are deferred.
+fn is_binding_transfer_scalar(t: Type) -> bool {
+    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))
 }
 
 /// Identity-free admitted scalars: value copies, never ownership roots.

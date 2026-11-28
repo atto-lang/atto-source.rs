@@ -530,7 +530,11 @@ pub enum LambdaBody {
 
 /// Explicit Atto ownership operators, not pointer address syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, DeepCopy, Take, Share, Freeze, Weak, Pin, Drop }
+pub enum OwnershipOp {
+    Borrow, Copy, DeepCopy, Take, Share, Freeze, Weak, Pin, Drop,
+    /// Contextual `<-` in a let/set binding. Distinct until legacy take semantics converge.
+    BindingTransfer,
+}
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
