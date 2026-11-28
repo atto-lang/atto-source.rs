@@ -252,7 +252,7 @@ positives.push([
  42n,''
 ]);
 positives.push([
- 'pub fnc main(): int { val mut Record r=("foo":2); r.foo=42; return r["foo"]; }',
+ 'pub fnc main(): int { val mut DynRecord r=("foo":2); r.foo=42; return r["foo"]; }',
  42n,''
 ]);
 negatives.push([
@@ -404,14 +404,17 @@ negatives.push([
  'define actor W as receive(ActorMail<Record> mail): void {return;} end pub fnc main(): int {return 0;}',
  'E_UNSUPPORTED'
 ]);
-positives.push(['pub fnc main():int {let Record r=("content-type":42);return r["content-type"];}',42n,'']);
-positives.push(['pub fnc main():int {let Record r=("":40,"x-y":2);return r[""]+r["x-y"];}',42n,'']);
+positives.push(['pub fnc main():int {let DynRecord r=("content-type":42);return r["content-type"];}',42n,'']);
+positives.push(['pub fnc main():int {let DynRecord r=("":40,"x-y":2);return r[""]+r["x-y"];}',42n,'']);
 for(const literal of ['(x:1)','(x=1)','("x":1,y:2)', "('x':1)"])
  negatives.push(['pub fnc main():int {let r='+literal+';return 0;}','E_RECORD_LABEL']);
 negatives.push(['pub fnc main():int {let Record r={"x":1};return 0;}','E_TYPE']);
 positives.push(['pub fnc main():int {val r=("first name" = 40, "age": 2);return r["first name"]+r.age;}',42n,'']);
 negatives.push(['pub fnc main():int {let r=("x" = 1, "x": 2);return 0;}','E_DUPLICATE']);
 negatives.push(['pub fnc main():int {let r=("name" = 1, age = 2);return 0;}','E_RECORD_LABEL']);
+positives.push(['pub fnc main():int {val r={x:40};val d=("x"=2);return r.x+d.x;}',42n,'']);
+negatives.push(['pub fnc main():int {val Record r=("x"=1);return 0;}','E_TYPE']);
+negatives.push(['pub fnc main():int {val DynRecord r={x:1};return 0;}','E_TYPE']);
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
  let n=0;

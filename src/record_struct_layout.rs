@@ -24,6 +24,7 @@ pub type FieldType = (String, LiteralType);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ShapeKind {
     Record,
+    DynRecord,
     Struct { qualified_name: String },
 }
 
@@ -78,12 +79,12 @@ pub enum FieldDecision {
 
 pub fn decide_access(ty: &LiteralType, label: &str) -> FieldDecision {
     match ty {
-        LiteralType::Record(fields) => fields
+        LiteralType::Record(fields) | LiteralType::DynRecord(fields) => fields
             .iter()
             .position(|(field, _)| field == label)
             .map(FieldDecision::StaticSlot)
             .unwrap_or(FieldDecision::Missing),
-        LiteralType::OpenRecord => FieldDecision::CheckOpenShape,
+        LiteralType::OpenRecord | LiteralType::AnyDynRecord | LiteralType::AnyProduct => FieldDecision::CheckOpenShape,
         LiteralType::Map(_, _) => FieldDecision::RuntimeMapKey,
         _ => FieldDecision::NotFieldContainer,
     }
@@ -141,6 +142,14 @@ impl LayoutInterner {
     /// Intern a closed Record. Return a source-evaluation-order -> canonical
     /// layout-slot permutation; no initializer expression may be reordered.
     pub fn closed_record(&mut self, source_fields: &[FieldType]) -> Result<InternedLayout, Error> {
+        self.closed_product(ShapeKind::Record, source_fields)
+    }
+
+    pub fn closed_dynrecord(&mut self, source_fields: &[FieldType]) -> Result<InternedLayout, Error> {
+        self.closed_product(ShapeKind::DynRecord, source_fields)
+    }
+
+    fn closed_product(&mut self, kind: ShapeKind, source_fields: &[FieldType]) -> Result<InternedLayout, Error> {
         validate_fields(source_fields, false)?;
         let mut canonical = source_fields.to_vec();
         canonical.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -155,7 +164,7 @@ impl LayoutInterner {
             .iter()
             .map(|(name, _)| slots[name.as_str()])
             .collect();
-        let shape_id = self.intern(ShapeKind::Record, canonical)?;
+        let shape_id = self.intern(kind, canonical)?;
         Ok(InternedLayout {
             shape_id,
             source_to_slot,
@@ -262,10 +271,10 @@ fn validate_resolved_type(root: &LiteralType) -> Result<(), Error> {
         }
         remaining -= 1;
         match next {
-            LiteralType::Bottom | LiteralType::OpenRecord | LiteralType::AnyTuple => {
+            LiteralType::Bottom | LiteralType::OpenRecord | LiteralType::AnyDynRecord | LiteralType::AnyProduct | LiteralType::AnyTuple => {
                 return Err(Error::UnresolvedType)
             }
-            LiteralType::Record(fields) => {
+            LiteralType::Record(fields) | LiteralType::DynRecord(fields) => {
                 if fields.len() > MAX_STATIC_FIELDS {
                     return Err(Error::TooManyFields);
                 }

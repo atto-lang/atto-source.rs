@@ -438,6 +438,7 @@ pub enum ExprKind {
     Array(Vec<Expr>),
     /// Parsed record with unique named fields. Browser allocation is gated.
     Record(Vec<(String, Expr)>),
+    DynRecord(Vec<(String, Expr)>),
     /// Parsed map key/value pairs. Browser allocation is gated.
     Map(Vec<(Expr, Expr)>),
     /// Contextually typed record/map empty braces.

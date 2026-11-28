@@ -116,7 +116,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
     // Positions are distinct in the parsed source. This avoids confusing
     // aliases with the same local name in separate lexical scopes.
     for b in checked {
-        if let LiteralType::Record(_) = &b.value.ty {
+        if matches!(&b.value.ty, LiteralType::Record(_) | LiteralType::DynRecord(_)) {
             let p = (b.value.pos.line, b.value.pos.col, b.name.clone());
             if source_types.insert(p, b).is_some() {
                 return Err(diagnostic(
@@ -146,7 +146,8 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 body.push(statement);
                 continue;
             };
-            let ExprKind::Record(fields) = init.kind else {
+            let is_dyn = matches!(&init.kind, ExprKind::DynRecord(_));
+            let (ExprKind::Record(fields) | ExprKind::DynRecord(fields)) = init.kind else {
                 body.push(Stmt::Bind {
                     kind,
                     referent_mutable,
@@ -179,8 +180,9 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                     "missing compiler-derived closed Record type",
                 )
             })?;
-            let LiteralType::Record(canonical) = &binding.value.ty else {
-                return Err(diagnostic(init.pos, "E_SHAPE", "closed Record shape lost"));
+            let canonical = match (&binding.value.ty, is_dyn) {
+                (LiteralType::Record(fields), false) | (LiteralType::DynRecord(fields), true) => fields,
+                _ => return Err(diagnostic(init.pos, "E_SHAPE", "closed product kind lost")),
             };
             if binding.value.children.len() != fields.len()
                 || binding.value.source_to_record_slot.len() != fields.len()
@@ -196,7 +198,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 scalar_type(&child.ty, init.pos)?;
                 source_fields.push((field.clone(), child.ty.clone()));
             }
-            let planned = interner.closed_record(&source_fields).map_err(|e| {
+            let planned = (if is_dyn { interner.closed_dynrecord(&source_fields) } else { interner.closed_record(&source_fields) }).map_err(|e| {
                 Diagnostic::new(
                     init.pos,
                     "E_SHAPE",

@@ -27,7 +27,7 @@ fn dot_and_bracket_have_identical_field_types_and_work_in_an_expression() {
         r#"
         fnc double(value: int): int { return value + value; }
         pub fnc main(): int {
-            let Record headers = ("status_code": 21, "content-type": "application/json");
+            let DynRecord headers = ("status_code": 21, "content-type": "application/json");
             let int a = headers.status_code;
             let int b = headers["status_code"];
             let string content = headers["content-type"];
@@ -63,7 +63,7 @@ fn escaped_and_literal_names_are_the_same_structural_field() {
     admit(
         r#"
         pub fnc main(): int {
-            let Record headers = ("status_code": 21, "\u{63}ontent-type": 21);
+            let DynRecord headers = ("status_code": 21, "\u{63}ontent-type": 21);
             return headers.status_code + headers["content-type"];
         }
     "#,
@@ -71,7 +71,7 @@ fn escaped_and_literal_names_are_the_same_structural_field() {
     reject(
         r#"
         pub fnc main(): int {
-            let Record headers = ("content-type": 21, "\u{63}ontent-type": 21);
+            let DynRecord headers = ("content-type": 21, "\u{63}ontent-type": 21);
             return 0;
         }
     "#,
@@ -84,7 +84,7 @@ fn static_bracket_typing_checks_annotations_instead_of_erasing_types() {
     reject(
         r#"
         pub fnc main(): int {
-            let Record headers = ("content-type": "json", "status_code": 42);
+            let DynRecord headers = ("content-type": "json", "status_code": 42);
             let int invalid = headers["content-type"];
             return invalid;
         }
@@ -94,7 +94,7 @@ fn static_bracket_typing_checks_annotations_instead_of_erasing_types() {
     reject(
         r#"
         pub fnc main(): int {
-            let Record headers = ("content-type": "json", "status_code": 42);
+            let DynRecord headers = ("content-type": "json", "status_code": 42);
             let string invalid = headers.status_code;
             return 0;
         }
@@ -108,7 +108,7 @@ fn absent_record_fields_are_precise_across_both_access_forms() {
     reject(
         r#"
         pub fnc main(): int {
-            let Record headers = ("content-type": "json", "status_code": 42);
+            let DynRecord headers = ("content-type": "json", "status_code": 42);
             return headers.no_such_field;
         }
     "#,
@@ -117,7 +117,7 @@ fn absent_record_fields_are_precise_across_both_access_forms() {
     reject(
         r#"
         pub fnc main(): int {
-            let Record headers = ("content-type": "json", "status_code": 42);
+            let DynRecord headers = ("content-type": "json", "status_code": 42);
             return headers["no-such-field"];
         }
     "#,
@@ -130,7 +130,7 @@ fn dynamic_key_and_opaque_nested_record_layouts_are_not_unsafely_converted() {
     reject(
         r#"
         pub fnc main(): int {
-            let Record headers = ("content-type": 42);
+            let DynRecord headers = ("content-type": 42);
             let string key = "content-type";
             return headers[key];
         }
@@ -153,7 +153,7 @@ fn lexical_shadows_cannot_inherit_record_field_permissions() {
     reject(
         r#"
         pub fnc main(): int {
-            let Record headers = ("content-type": 42);
+            let DynRecord headers = ("content-type": 42);
             block {
                 let int headers = 7;
                 stdio.println(headers["content-type"]);
