@@ -125,8 +125,11 @@ pub(crate) fn lower_slot(tokens: Vec<Token>, source: &str) -> R<Vec<Token>> {
         c.word("let", PROFILE)?;
         let owner = c.ident()?;
         let name = Cursor::name_of(&owner).to_owned();
-        if owners.len() >= 16 || !owners.insert(name.clone()) {
-            return Err(failure(owner.pos, "E_POINTER_ALIAS", "duplicate owner or owner limit"));
+        if owners.len() >= 16 {
+            return Err(failure(owner.pos, PROFILE, "pointer slot owner limit"));
+        }
+        if !owners.insert(name.clone()) {
+            return Err(failure(owner.pos, "E_POINTER_ALIAS", "duplicate owner"));
         }
         values.insert(name);
         c.eat(Tok::Colon, PROFILE)?;
