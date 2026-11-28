@@ -3,17 +3,26 @@
 use atto_compiler::{compile, parser::is_reserved};
 
 fn rejected_source(source: &str) {
+    rejected_with(source, "E_UNSUPPORTED");
+}
+
+fn rejected_with(source: &str, expected: &str) {
     let d = compile(source).expect_err("task guest lowering must fail closed");
-    assert_eq!(d.code, "E_UNSUPPORTED", "{d}");
+    assert_eq!(d.code, expected, "{d}");
+    if expected == "E_UNSUPPORTED_TYPE" {
+        assert!(d.message.contains("sealed Future/TaskFuture/ActorFuture awaits"), "{d}");
+    }
 }
 
 #[test]
-fn sync_reserved_as_whole_word_task_context_only() {
+fn sync_and_task_reserved_as_whole_words() {
     assert!(is_reserved("sync"));
     assert!(!is_reserved("synchronous"));
     assert!(!is_reserved("sync_data"));
-    // 'task' remains contextual during migration.
-    assert!(!is_reserved("task"));
+    // Current compiler reserves task; longer identifiers remain ordinary names.
+    assert!(is_reserved("task"));
+    assert!(!is_reserved("task_data"));
+    assert!(compile("pub fnc main(): int { val task_data = 42; return task_data; }").is_ok());
 }
 
 #[test]
@@ -75,16 +84,18 @@ fn reserved_sync_cannot_be_local_variable() {
 fn cancellable_typed_task_must_not_emit_guest_until_scope_and_retirement_are_real() {
     // Future.cancel() cannot be treated as a normal method call while the
     // typed task itself lacks cancellation-safe continuation lowering.
-    rejected_source(
+    rejected_with(
         "pub susp fnc main(): int {          val Future<int> pending = task<int> { return 42; };          pending.cancel(); return 42; }",
+        "E_UNSUPPORTED_TYPE",
     );
     // Discarded tasks must not detach and evade lexical scope cancellation.
     rejected_source(
         "pub susp fnc main(): int {          do task<void> { return; }; return 42; }",
     );
     // Nested cancellation must not be implemented as a normal direct call.
-    rejected_source(
+    rejected_with(
         "pub susp fnc main(): int {          val Future<void> pending = task<void> {            do task<void> { return; }; return;          }; pending.cancel(); return 42; }",
+        "E_UNSUPPORTED_TYPE",
     );
 }
 
@@ -93,12 +104,13 @@ fn task_cancellation_lock_releasing_cannot_emit_unproven_guest() {
     // Task <-> Mutex ownership transfer requires runtime-owned lease ledgers,
     // cancellation winner fencing, unwind and physical quiescence evidence.
     // Until those are integrated, reject before producing guest executable bytes.
-    rejected_source(
+    rejected_with(
         "pub susp fnc main(): int { \
          val Future<int> worker = task<int> { \
            val lock = new Mutex<int>(41); \
            using await lock.lock_async() as guard { return guard.value; } \
          }; worker.cancel(); return 42; }",
+        "E_UNSUPPORTED_TYPE",
     );
     rejected_source(
         "pub susp fnc main(): int { \

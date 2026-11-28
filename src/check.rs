@@ -4477,6 +4477,18 @@ impl<'a> FnCx<'a> {
                     source: Box::new(value), tmp, success_tag
                 }, ty: Type::Int })
             }
+            // A nested field read must use the checked projection path.
+            // Evaluating its intermediate class field as an ordinary value
+            // wrongly rejects even a final scalar read; bypassing the final
+            // ownership guard would instead allow an escaping class handle.
+            ExprKind::Member(base, name) if matches!(base.kind, ExprKind::Member(_, _)) => {
+                let projected = self.member(base, name, e.pos)?;
+                if matches!(projected.ty, Type::Class(_)) {
+                    return Err(Diagnostic::new(e.pos, "E_BORROW",
+                        "nested leaf reference is projection-only; owned extraction requires a lifetime witness"));
+                }
+                Ok(projected)
+            }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
                 let obj = self.value(base)?;

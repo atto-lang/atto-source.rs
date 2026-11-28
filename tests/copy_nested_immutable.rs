@@ -12,6 +12,17 @@ fn nested_immutable_root_emits_deterministic_wasm() {
 }
 
 #[test]
+fn scalar_projection_through_named_root_does_not_grant_owned_extraction() {
+    let source = format!("{ROOT}pub fnc main(): int {{ let a = new Parcel(); let b = copy! a; val int n = b.child.n; return n + a.child.n + 2; }}");
+    let bytes = compile(&source).expect("scalar read through the immutable leaf");
+    assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
+    let invalid = format!("{ROOT}pub fnc main(): int {{ return new Parcel().child.n; }}");
+    assert_eq!(compile(&invalid).unwrap_err().code, "E_BORROW");
+    let invalid = format!("{ROOT}pub fnc main(): int {{ let a = new Parcel(); let b = copy! a; val escaped = b.child; return escaped.n; }}");
+    assert_eq!(compile(&invalid).unwrap_err().code, "E_BORROW");
+}
+
+#[test]
 fn nested_leaf_never_becomes_an_owned_projection() {
     for body in [
         "let a = new Parcel(); let b = copy! a; let escaped = b.child; return escaped.n;",

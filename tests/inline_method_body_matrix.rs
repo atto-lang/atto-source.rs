@@ -163,10 +163,22 @@ fn explicit_inline_actor_mtd_still_satisfies_nominal_method_contracts() {
         end
         pub fnc main(): int { return 0; }
     "#;
-    let program = Parser::new(lex(source).unwrap()).parse_program().unwrap();
+    // Raw Parser intentionally does not perform nominal interface
+    // normalization. Test the method AST independently of that pass, then
+    // compile the complete original interface-bearing source.
+    let parser_source = source
+        .replace("define interface IPing as ping(): int; end", "")
+        .replace("Worker implements IPing", "Worker");
+    let program = Parser::new(lex(&parser_source).unwrap()).parse_program().unwrap();
     assert_eq!(program.actors[0].methods[0].name, "ping");
-    assert!(atto_compiler::compile(source).is_ok(),
-        "mtd must lower exactly like an inline actor method, without skipping interface checks");
+    let bytes = atto_compiler::compile(source)
+        .expect("mtd must lower exactly like an inline actor method, without skipping interface checks");
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
+    assert!(bytes.windows(b"actor_receive".len()).any(|x| x == b"actor_receive"));
+    let invalid = source.replace("pub mtd ping(): int { return 42; }",
+        "pub mtd ping(): bool { return true; }");
+    let err = atto_compiler::compile(&invalid).expect_err("wrong contract return type");
+    assert_eq!(err.code, "E_IMPL_SIGNATURE", "{err}");
 }
 
 #[test]
