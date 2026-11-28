@@ -116,3 +116,37 @@ fn unknown_runtime_key_does_not_acquire_ambient_hash_authority() {
     assert_eq!(collection_types::analyze(&p).unwrap_err().code, "E_UNSUPPORTED");
     rejected(r#"let name="foo";let m={name=>5};"#, "E_UNSUPPORTED");
 }
+
+#[test]
+fn slim_and_fat_entry_arrows_share_ast_and_map_key_rules() {
+    let p = parse("let a=5->3;let b=(5)=>3;let c=(5)->3;let m={5->3,4=>3,};").unwrap();
+    for i in 0..3 {
+        assert!(matches!(init(&p,i), ExprKind::Entry(k,v)
+            if matches!(&k.kind, ExprKind::Int(5)) && matches!(&v.kind, ExprKind::Int(3))));
+    }
+    assert!(matches!(init(&p,3), ExprKind::Map(xs) if xs.len()==2));
+    assert_eq!(parse("let m={5->3,5=>4};").unwrap_err().code, "E_DUPLICATE");
+    for body in ["let x=1->2->3;", "let x=1->2=>3;", "let x=1=>2->3;",
+                 "let x={1->2=>3};", "let x={1=>2->3};"] {
+        assert_eq!(parse(body).unwrap_err().code, "E_LITERAL_KIND", "{body}");
+    }
+    let p = parse("let a=1->(2=>3);let b=(1->2)=>3;").unwrap();
+    assert!(matches!(init(&p,0), ExprKind::Entry(_,v) if matches!(&v.kind, ExprKind::Entry(..))));
+    assert!(matches!(init(&p,1), ExprKind::Entry(k,_) if matches!(&k.kind, ExprKind::Entry(..))));
+}
+
+#[test]
+fn mixed_map_arrows_reuse_existing_scalar_guest_lowering() {
+    admitted("pub fnc main():int { val m={5->40,4=>2}; return m[5]+m[4]; }");
+    admitted("pub fnc main():int { val m=Map.of(5->40,4=>2); return m[5]+m[4]; }");
+}
+
+#[test]
+fn slim_entry_arrow_does_not_steal_guard_or_lambda_arrow() {
+    admitted("pub fnc main():int { return match 5 over on 5 when true -> 42, default -> 0, end; }");
+    let p = parse("val f=|k,v| -> k -> v;").unwrap();
+    assert!(matches!(init(&p,0), ExprKind::Lambda { .. }));
+    for body in ["let x=(50).=>3;", "let x=(50).->3;"] {
+        assert!(parse(body).is_err(), "{body}");
+    }
+}
