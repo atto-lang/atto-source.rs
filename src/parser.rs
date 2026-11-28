@@ -3298,9 +3298,9 @@ impl Parser {
             let name = match self.peek().clone() {
                 Tok::Ident(name) if captured && !is_reserved(&name) => name,
                 Tok::Str(name) if !captured && self.toks[self.i].string_quote == Some('"') => {
-                    if name.is_empty() || name.chars().any(char::is_control) {
+                    if name.contains('\0') {
                         return Err(Diagnostic::new(at, "E_RECORD_LABEL",
-                            "empty or control-character key outside this profile"));
+                            "NUL Record key outside this profile"));
                     }
                     name
                 }
