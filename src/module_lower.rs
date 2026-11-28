@@ -31,7 +31,7 @@ fn word(tokens: &[Token], i: usize, expected: &str) -> bool {
 }
 fn ident(tokens: &[Token], i: usize, what: &str) -> R<String> {
     match tokens.get(i) {
-        Some(Token { tok: Tok::Ident(s), pos: _ }) if !s.is_empty() && s.len() <= MAX_NAME
+        Some(Token { tok: Tok::Ident(s), pos: _, .. }) if !s.is_empty() && s.len() <= MAX_NAME
             && !matches!(s.as_str(), "as" | "end" | "pub" | "fnc" | "define" | "module") =>
             Ok(s.clone()),
         Some(token) => Err(Diagnostic::new(token.pos, "E_SYNTAX",
@@ -194,7 +194,7 @@ pub fn lower(toks: Vec<Token>) -> R<Vec<Token>> {
                     return Err(Diagnostic::new(pos, "E_PRIVATE",
                         format!("private module member '{owner}.{member}' is not externally accessible")));
                 }
-                out.push(Token { tok: Tok::Ident(found.generated.clone()), pos });
+                out.push(Token { tok: Tok::Ident(found.generated.clone()), pos, string_quote: None });
                 i += 3;
                 continue;
             }

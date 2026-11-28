@@ -3282,7 +3282,7 @@ impl Parser {
         }
     }
 
-    /// Parenthesized identifier-named Record literal. This is the same
+    /// Parenthesized quoted-key Record literal. This is the same
     /// closed structural Record AST as {foo: 1}, never a tuple or a call.
     /// The source-order field inventory and static shape checks are shared.
     fn parse_named_record_parens(&mut self, pos: Pos) -> R<Expr> {
@@ -3296,12 +3296,19 @@ impl Parser {
             let captured = self.eat(&Tok::Colon);
             let at = self.pos();
             let name = match self.peek().clone() {
-                Tok::Ident(name) if !is_reserved(&name) => name,
-                _ => return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                    "parenthesized Record fields require identifier=expression, identifier:expression or :identifier")),
+                Tok::Ident(name) if captured && !is_reserved(&name) => name,
+                Tok::Str(name) if !captured && self.toks[self.i].string_quote == Some('"') => {
+                    if name.contains('\0') {
+                        return Err(Diagnostic::new(at, "E_RECORD_LABEL",
+                            "NUL Record key outside this profile"));
+                    }
+                    name
+                }
+                _ => return Err(Diagnostic::new(at, "E_RECORD_LABEL",
+                    "parenthesized Record requires double-quoted explicit keys")),
             };
             self.advance();
-            if !captured && !self.eat(&Tok::Assign) && !self.eat(&Tok::ColonAssign) { self.expect(Tok::Colon, "'=' or ':' after named Record field")?; }
+            if !captured { self.expect(Tok::Colon, "':' after quoted Record field")?; }
             if !seen.insert(name.clone()) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE",
                     format!("duplicate Record field '{name}'")));
@@ -3314,11 +3321,12 @@ impl Parser {
                 if self.eat(&Tok::RParen) {
                     break;
                 }
-                if *self.peek() != Tok::Colon && !(matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
-                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon | Tok::ColonAssign))
+                if *self.peek() != Tok::Colon &&
+                    !(matches!(self.peek(), Tok::Str(_) | Tok::Ident(_))
+                        && matches!(self.peek_at(1), Tok::Colon | Tok::Assign | Tok::ColonAssign))
                 {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "cannot mix named Record fields and positional Tuple items; expected field=value, field:value or :field"));
+                        "cannot mix quoted Record fields and positional Tuple items"));
                 }
                 continue;
             }
@@ -3341,8 +3349,9 @@ impl Parser {
                 if matches!(t, Tok::Colon) && matches!(next, Some(Tok::Ident(_))) {
                     return true;
                 }
-                if matches!(t, Tok::Ident(name) if !is_reserved(name))
-                    && matches!(next, Some(Tok::Assign | Tok::Colon)) {
+                if (matches!(t, Tok::Ident(name) if !is_reserved(name))
+                    && matches!(next, Some(Tok::Assign | Tok::Colon)))
+                    || (matches!(t, Tok::Str(_)) && matches!(next, Some(Tok::Colon | Tok::Assign | Tok::ColonAssign))) {
                     return true;
                 }
                 start = false;
@@ -3383,16 +3392,11 @@ impl Parser {
                 // Equality, Pair syntax and ordinary positional items do not.
                 if *self.peek() == Tok::Colon || (matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
                     && matches!(self.peek_at(1), Tok::Assign | Tok::Colon))
+                    || (matches!(self.peek(), Tok::Str(_)) && matches!(self.peek_at(1), Tok::Colon | Tok::Assign | Tok::ColonAssign))
                     || (matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
                         && *self.peek_at(1) == Tok::ColonAssign && self.pair_prefix_has_named_record_item())
                 {
                     return self.parse_named_record_parens(pos);
-                }
-                if matches!(self.peek(), Tok::Str(_))
-                    && *self.peek_at(1) == Tok::Assign
-                {
-                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "quoted Record field names require brace syntax: {\"label\": value}"));
                 }
                 let first = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
                 if self.eat(&Tok::Comma) {

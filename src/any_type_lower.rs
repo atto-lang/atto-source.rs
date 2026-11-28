@@ -117,7 +117,7 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
         if compatible && !selected {
             output.push(t[j].clone()); // on
             if typed {
-                output.push(Token { tok: Tok::Ident("_".into()), pos: t[j + 1].pos });
+                output.push(Token { tok: Tok::Ident("_".into()), pos: t[j + 1].pos, string_quote: None });
                 output.extend_from_slice(&t[j + 3..end]);
             } else {
                 output.extend_from_slice(&t[j + 1..end]);
@@ -249,7 +249,7 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
                     return Err(fail(t[i].pos,"E_SYNTAX","'is' requires the checked scalar operand"));
                 }
                 out.pop();
-                out.push(Token {tok:Tok::Ident(if *actual==test {"true"} else {"false"}.into()),pos:t[i-1].pos});
+                out.push(Token {tok:Tok::Ident(if *actual==test {"true"} else {"false"}.into()),pos:t[i-1].pos, string_quote: None });
                 i+=2;
                 continue;
             }

@@ -27,7 +27,7 @@ fn quoted_colon_and_arrow_are_maps_in_three_delimiters(){
         assert_eq!(collection_types::analyze(&p).unwrap()[0].value.ty,
             T::Map(Box::new(T::String),Box::new(T::Int)));
     }
-    let p=parse("let r={foo:5}; let s=(foo=5);").unwrap();
+    let p=parse("let r={foo:5}; let s=(\"foo\":5);").unwrap();
     for stmt in &p.funcs[0].body[..2]{
         assert!(matches!(stmt,Stmt::Bind{init,..} if matches!(&init.kind,ExprKind::Record(_))));
     }

@@ -260,6 +260,12 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
                         diag(value.pos, "E_UNSUPPORTED", "Record field needs a proven local scalar binding"))?;
                     TypedLiteral { pos: value.pos, ty, children: Vec::new(),
                         source_to_record_slot: Vec::new() }
+                } else if matches!(&value.kind, ExprKind::Array(_)) {
+                    // An inline bracket-valued Record field is an Array.
+                    // Do not change the separate untyped top-level List rule.
+                    // The common element rule joins differing Record shapes
+                    // into OpenRecord, keeping each child's concrete type.
+                    inferred(value, Some(&Array(Box::new(Bottom))), depth + 1, scalar_locals)?
                 } else {
                     inferred(value, None, depth + 1, scalar_locals)?
                 };
@@ -311,6 +317,10 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
             _ => return Err(diag(e.pos,"E_INFER",
                 "empty '{}' needs an unambiguous Record or Map<K,V> context")),
         },
+        // Contextual zero-slot syntax resolves only the literal, not
+        // a previously materialized Tuple value.
+        ExprKind::Tuple(items) if items.is_empty() && matches!(expected, Some(OpenRecord) | Some(Record(_))) =>
+            Record(Vec::new()),
         ExprKind::Tuple(items) => {
             let slots = match expected {
                 Some(Tuple(slots)) => {

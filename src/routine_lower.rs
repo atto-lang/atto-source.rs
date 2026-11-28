@@ -234,7 +234,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 return Err(fail(t[i].pos, "E_SOURCE_LIMIT", "too many distinct direct callback specializations"));
             }
             callbacks.insert(cb.clone());
-            out.push(Token { tok: Tok::Ident(generated(&tpl.func.name, cb)), pos: t[i].pos });
+            out.push(Token { tok: Tok::Ident(generated(&tpl.func.name, cb)), pos: t[i].pos, string_quote: None });
             out.push(t[i + 1].clone()); // (
             i += 4; // skip source callback value and separating comma
             continue;

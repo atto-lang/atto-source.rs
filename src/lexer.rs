@@ -61,6 +61,8 @@ pub enum Tok {
 pub struct Token {
     pub tok: Tok,
     pub pos: Pos,
+    /// Original literal delimiter, retained only for string key admission.
+    pub string_quote: Option<char>,
 }
 
 pub const MAX_TOKENS: usize = 32_768;
@@ -137,7 +139,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             } else {
                 Tok::Ident(s)
             };
-            out.push(Token { tok, pos });
+            out.push(Token { tok, pos, string_quote: None });
             continue;
         }
         if c.is_ascii_digit() {
@@ -204,7 +206,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     .map_err(|_| Diagnostic::new(pos, "E_FLOAT_LITERAL", "malformed float literal"))?;
                 out.push(Token {
                     tok: Tok::Float(v.to_bits()),
-                    pos,
+                    pos, string_quote: None,
                 });
                 continue;
             }
@@ -219,7 +221,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             let v = value.unwrap();
             out.push(Token {
                 tok: Tok::Int(if v == 1u64 << 63 { None } else { Some(v) }),
-                pos,
+                pos, string_quote: None,
             });
             continue;
         }
@@ -288,7 +290,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "string literal is too long"));
                 }
             }
-            out.push(Token { tok: Tok::Str(s), pos });
+            out.push(Token { tok: Tok::Str(s), pos, string_quote: Some(quote) });
             continue;
         }
         if c == '\x60' {
@@ -322,7 +324,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                         "string literal is too long"));
                 }
             }
-            out.push(Token { tok: Tok::Str(s), pos });
+            out.push(Token { tok: Tok::Str(s), pos, string_quote: Some('`') });
             continue;
         }
         let next = chars.get(i + 1).copied();
@@ -380,11 +382,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         for _ in 0..len {
             bump!();
         }
-        out.push(Token { tok, pos });
+        out.push(Token { tok, pos, string_quote: None });
     }
     out.push(Token {
         tok: Tok::Eof,
-        pos: Pos { line, col },
+        pos: Pos { line, col }, string_quote: None,
     });
     Ok(out)
 }

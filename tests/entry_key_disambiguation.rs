@@ -55,7 +55,7 @@ fn bare_brackets_are_sequence_literals_not_variable_key_markers() {
 fn record_field_vs_map_expression_key_are_distinct_even_for_identifiers() {
     assert!(matches!(parse_expr("{foo:5}"), ExprKind::Record(ref fields)
         if fields.len() == 1 && fields[0].0 == "foo"));
-    assert!(matches!(parse_expr("(foo=5)"), ExprKind::Record(ref fields)
+    assert!(matches!(parse_expr(r#"("foo":5)"#), ExprKind::Record(ref fields)
         if fields.len() == 1 && fields[0].0 == "foo"));
     assert!(matches!(parse_expr("{foo=>5}"), ExprKind::Map(ref items)
         if items.len() == 1 && matches!(&items[0].0.kind, ExprKind::Var(name) if name == "foo")));
@@ -63,7 +63,7 @@ fn record_field_vs_map_expression_key_are_distinct_even_for_identifiers() {
         if items.len() == 1 && matches!(&items[0].0.kind, ExprKind::Str(s) if s == "foo")));
 
     let a = collection_types::analyze(&program_with_binding("{foo:5}")).unwrap();
-    let b = collection_types::analyze(&program_with_binding("(foo=5)")).unwrap();
+    let b = collection_types::analyze(&program_with_binding(r#"("foo":5)"#)).unwrap();
     assert_eq!(a[0].value.ty, b[0].value.ty,
         "brace and parenthesized Record syntax must retain identical structure");
     assert!(matches!(&a[0].value.ty, LiteralType::Record(fields)
