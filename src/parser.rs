@@ -1037,7 +1037,7 @@ impl Parser {
             if mutable_receiver {
                 out.mutable_methods.push(out.methods.len());
             }
-            out.methods.push(Method { name, pos, public, is_static: false, params, ret, body });
+            out.methods.push(Method { name, pos, public, is_static: false, mutable_receiver: false, params, ret, body });
         } else {
             return Err(self.expected("an attached constructor or mtd"));
         }
@@ -1425,6 +1425,16 @@ impl Parser {
                         m.fields.push(f.field);
                     }
                 }
+                Some("mut") if !actor && self.word_at(1) == Some("mtd") => {
+                    if visibility == FieldVisibility::Package {
+                        return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
+                    }
+                    self.advance();
+                    self.expect_word("mtd")?;
+                    let mut method = self.parse_method(public, false)?;
+                    method.mutable_receiver = true;
+                    m.methods.push(method);
+                }
                 Some("mut") if !actor => {
                     self.advance();
                     let f = self.parse_type_first_field(visibility, FieldMode::Constructor, FieldBinding::Let, true)?;
@@ -1689,6 +1699,7 @@ impl Parser {
             pos,
             public,
             is_static,
+            mutable_receiver: false,
             params,
             ret,
             body,

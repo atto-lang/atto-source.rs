@@ -153,3 +153,21 @@ fn projected_exclusive_call_requires_unique_subtree_and_closed_effects() {
     assert_eq!(compile(include_str!("fixtures/fail/1036-copy-exclusive-nested-effect.atto")).unwrap_err().code, "E_COPY_UNPROVEN");
     assert_eq!(compile(include_str!("fixtures/fail/1037-copy-exclusive-unproved-callee.atto")).unwrap_err().code, "E_BORROW");
 }
+
+#[test]
+fn explicit_mutable_method_receiver_requires_unique_subtree() {
+    let defs = "define class Scores as pub let int n = 20; pub mut mtd adjust(int value): void { self.n = value; } end define class Person as pub let mut Scores scores = new Scores(); end";
+    let setup = "let mut Person a = new Person(); let mut Person b = copy! a; let mut Person c = copy! b; b.scores = new Scores();";
+    wasm(&format!("{defs} pub fnc main(): int {{ {setup} b.scores.adjust(22); return a.scores.n + b.scores.n + c.scores.n; }}"));
+    for root in ["a", "c"] {
+        let source = format!("{defs} pub fnc main(): int {{ {setup} {root}.scores.adjust(22); return b.scores.n; }}");
+        assert_eq!(compile(&source).unwrap_err().code, "E_COPY_READONLY");
+    }
+}
+#[test]
+fn mutable_method_rejects_unproved_effects_and_argument_evaluation() {
+    let bad = "define class Scores as pub let int n = 20; pub mut mtd adjust(int value): void { self.n = value; stdio.println(value); } end pub fnc main(): int { return 42; }";
+    assert_eq!(compile(bad).unwrap_err().code, "E_COPY_UNPROVEN");
+    let bad = "define class Scores as pub let int n = 20; pub mut mtd adjust(int value): void { self.n = value; } end fnc effect(): int { return 22; } pub fnc main(): int { let mut Scores a = new Scores(); a.adjust(effect()); return a.n; }";
+    assert_eq!(compile(bad).unwrap_err().code, "E_COPY_UNPROVEN");
+}

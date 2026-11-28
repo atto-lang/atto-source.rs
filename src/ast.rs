@@ -175,6 +175,8 @@ pub struct Method {
     pub pos: Pos,
     pub public: bool,
     pub is_static: bool,
+    /// Explicit mutable receiver; requires a checked effect and ownership witness.
+    pub mutable_receiver: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
