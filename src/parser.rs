@@ -2927,6 +2927,20 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
+        // The lexer retains single-character carets and questions for XOR
+        // and postfix propagation. Only a contiguous statement marker is
+        // coalesced here, including the six-character long spelling.
+        let short = *self.peek() == Tok::Caret && self.joined_at(0);
+        let long = self.is_word("return") && self.toks.get(self.i + 1)
+            .is_some_and(|next| next.pos.line == pos.line
+                && pos.col.checked_add(6) == Some(next.pos.col));
+        if (short || long) && *self.peek_at(1) == Tok::Question {
+            self.advance();
+            let explicit = *self.peek_at(1) == Tok::Assign && self.joined_at(0);
+            self.advance();
+            if explicit { self.advance(); }
+            return self.parse_conditional_return(pos, explicit);
+        }
         if *self.peek() == Tok::At {
             return Err(unsupported(pos, "annotations"));
         }
@@ -4017,6 +4031,65 @@ impl Parser {
         })();
         self.leave();
         result
+    }
+
+    /// First executable profile: a typed scalar or already admitted
+    /// Option/Result operand, and literal scalar approval selectors.
+    fn parse_conditional_return(&mut self, pos: Pos, explicit: bool) -> R<Stmt> {
+        if self.in_generator {
+            return Err(Diagnostic::new(pos, "E_RETURN",
+                "conditional value return is not allowed in a generator"));
+        }
+        let selectors = if explicit {
+            let list = self.eat(&Tok::LBracket);
+            let mut ints = Vec::new();
+            let mut bools = Vec::new();
+            loop {
+                let at = self.pos();
+                if ints.len() + bools.len() >= 64 {
+                    return Err(Diagnostic::new(at, "E_SOURCE_LIMIT", "conditional return selector limit"));
+                }
+                if self.is_word("true") || self.is_word("false") {
+                    let b = self.is_word("true");
+                    self.advance();
+                    if bools.contains(&b) {
+                        return Err(Diagnostic::new(at, "E_MATCH", "duplicate conditional return selector"));
+                    }
+                    bools.push(b);
+                } else {
+                    let negative = self.eat(&Tok::Minus);
+                    let value = match self.peek() {
+                        Tok::Int(Some(v)) if negative => -(*v as i64),
+                        Tok::Int(Some(v)) => *v as i64,
+                        Tok::Int(None) if negative => i64::MIN,
+                        Tok::Int(None) => return Err(Diagnostic::new(at, "E_INTEGER_RANGE", "conditional return selector out of range")),
+                        _ => return Err(Diagnostic::new(at, "E_SYNTAX", "expected int or bool conditional return selector")),
+                    };
+                    self.advance();
+                    if ints.contains(&value) {
+                        return Err(Diagnostic::new(at, "E_MATCH", "duplicate conditional return selector"));
+                    }
+                    ints.push(value);
+                }
+                if !list || self.eat(&Tok::RBracket) { break; }
+                self.expect(Tok::Comma, "',' between conditional return selectors")?;
+            }
+            Some((ints, bools))
+        } else { None };
+        if self.is_word("match") {
+            return Err(unsupported(pos, "conditional return of value match requires typed value-match lowering"));
+        }
+        let subject = self.parse_expr()?;
+        self.terminator()?;
+        let binding = format!("\0conditional_return_{}", self.i);
+        let value = Expr { kind: ExprKind::Var(binding.clone()), pos };
+        self.grow(2)?;
+        self.height -= 2;
+        Ok(Stmt::Match { subject, pos, arms: vec![
+            MatchArm { pattern: Pattern::Approval { binding, selectors },
+                guard: None, body: vec![Stmt::Return(Some(value), pos)], pos },
+            MatchArm { pattern: Pattern::Wild, guard: None, body: Vec::new(), pos },
+        ] })
     }
 
     fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
