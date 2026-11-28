@@ -295,7 +295,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         if aliases.len() >= 128 { return Err(p.err("E_UNIT_LIMIT", "too many quantity aliases")); }
         if matches!(&p.token().tok,Tok::Ident(n) if matches!(n.as_str(),"int"|"i64"|"i32")){return Err(p.err("E_REFINEMENT_DUPLICATE","reserved carrier"));}
         let name = identifier(p)?;
-        if aliases.contains_key(&name) || p.units.contains_key(&name) || p.dimensions.contains(&name) {
+        if aliases.contains_key(&name) || p.units.contains_key(&name) || p.dimensions.contains_key(&name) {
             return Err(p.err("E_UNIT_DUPLICATE", "duplicate quantity alias"));
         }
         p.expect(Tok::Assign)?;
@@ -329,7 +329,7 @@ pub(super) fn lower(p: &mut Parser<'_>) -> R<TProgram> {
         let name = identifier(p)?;
         if public&&name!="main"{return Err(p.err("E_REFINEMENT_EXPORT","private refinement helper required"));}
         if (name == "main") != public || signatures.contains_key(&name) ||
-            aliases.contains_key(&name) || p.units.contains_key(&name) || p.dimensions.contains(&name) {
+            aliases.contains_key(&name) || p.units.contains_key(&name) || p.dimensions.contains_key(&name) {
             return Err(p.err("E_UNIT_NAME", "duplicate name or non-main public quantity function"));
         }
         p.expect(Tok::LParen)?;
@@ -756,7 +756,7 @@ fn literal(p: &mut Parser<'_>, min: bool) -> R<Checked> {
     }
     if p.token().tok == Tok::Dot && !p.tokens.get(p.at+1).is_some_and(|t| t.tok == Tok::Lt) {
         p.at += 1;
-        if min || value.unit == Unit::scalar() {
+        if value.unit == Unit::scalar() {
             return Err(p.err("E_UNSUPPORTED", "conversion requires ordinary quantity literal"));
         }
         p.expect_word("to_unit")?;

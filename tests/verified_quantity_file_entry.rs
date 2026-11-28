@@ -24,3 +24,13 @@ fn typed_file_entry_rejects_unsupported_import_and_unit_erasure() {
         }).is_err());
     }
 }
+
+#[test]
+fn signed_minimum_quantity_conversion_is_exact_or_range_checked() {
+    let pre = "define dimension Length; define unit Meter: Length; define unit Kilometer: Length = Meter * 1000; type Positive = int where self > 0;";
+    let overflow = format!("{pre}pub fnc main() -> int {{ return -9223372036854775808<Kilometer>.to_unit<Meter>()/1<Meter>; }}");
+    let err = atto_compiler::compile(&overflow).expect_err("must not wrap or erase scale");
+    assert!(format!("{err:?}").contains("E_UNIT_RANGE"));
+    let exact = format!("{pre}pub fnc main() -> int {{ val a=-9223372036854775808<Meter>.to_unit<Meter>(); return a/1<Meter>-a/1<Meter>+42; }}");
+    assert!(atto_compiler::compile(&exact).is_ok());
+}
