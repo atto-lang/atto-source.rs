@@ -44,3 +44,32 @@ fn fixed_outer_slot_and_nested_writes_are_denied() {
     let source = format!("{ROOT}pub fnc main(): int {{ let a = new Parcel(); let b = copy! a; a.child.n = 22; return b.child.n; }}");
     assert_eq!(compile(&source).unwrap_err().code, "E_OWNERSHIP");
 }
+
+#[test]
+fn scalar_projection_does_not_make_reference_extraction_legal() {
+    let positive = format!("{ROOT}pub fnc main(): int {{ let a = new Parcel(); let b = copy! a; return a.child.n + b.child.n + 2; }}");
+    assert!(compile(&positive).is_ok());
+    for body in [
+        "let a = new Parcel(); let b = copy! a; let child = a.child; return child.n;",
+        "let a = new Parcel(); let b = copy! a; let child = b.child; return child.n;",
+        "let a = new Parcel(); let b = copy! a; let child = copy!! b.child; return child.n;",
+    ] {
+        let source = format!("{ROOT}pub fnc main(): int {{ {body} }}");
+        assert_eq!(compile(&source).unwrap_err().code, "E_BORROW", "{source}");
+    }
+}
+
+#[test]
+fn symmetric_nested_projection_executes_guest_and_preserves_scalar_value() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let source = format!("{ROOT}pub fnc main(): int {{ let a = new Parcel(); let b = copy! a; return a.child.n + b.child.n + 2; }}");
+    let bytes = compile(&source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    let mut child = Command::new("node")
+        .args(["-e", "const fs=require('node:fs');const assert=require('node:assert/strict');(async()=>{const bytes=fs.readFileSync(0);assert.ok(WebAssembly.validate(bytes));const {instance}=await WebAssembly.instantiate(bytes,{atto:{}});assert.equal(instance.exports.main(),42n);if(instance.exports.panic_code)assert.equal(instance.exports.panic_code.value,0);})().catch(e=>{console.error(e);process.exitCode=1;});"])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("Node required");
+    child.stdin.take().unwrap().write_all(&bytes).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stdout.is_empty());
+}
