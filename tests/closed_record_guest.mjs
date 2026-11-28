@@ -270,9 +270,7 @@ negatives.push(['pub fnc main(): int { let r={foo=1,"foo":2};return 0; }','E_LIT
 negatives.push([
  'pub fnc main(): int { let y=("foo":1,bar:2); return 0; }', 'E_RECORD_LABEL'
 ]);
-negatives.push([
- 'pub fnc main(): int { let y=("foo"=1); return 0; }', 'E_SYNTAX'
-]);
+positives.push(['pub fnc main(): int { let y=("foo"=42); return y.foo; }',42n,'']);
 negatives.push([
  'pub fnc main(): int { let y=("foo":1,,"bar":2); return 0; }', 'E_LITERAL_KIND'
 ]);
@@ -411,6 +409,9 @@ positives.push(['pub fnc main():int {let Record r=("":40,"x-y":2);return r[""]+r
 for(const literal of ['(x:1)','(x=1)','("x":1,y:2)', "('x':1)"])
  negatives.push(['pub fnc main():int {let r='+literal+';return 0;}','E_RECORD_LABEL']);
 negatives.push(['pub fnc main():int {let Record r={"x":1};return 0;}','E_TYPE']);
+positives.push(['pub fnc main():int {val r=("first name" = 40, "age": 2);return r["first name"]+r.age;}',42n,'']);
+negatives.push(['pub fnc main():int {let r=("x" = 1, "x": 2);return 0;}','E_DUPLICATE']);
+negatives.push(['pub fnc main():int {let r=("name" = 1, age = 2);return 0;}','E_RECORD_LABEL']);
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
  let n=0;
@@ -419,7 +420,7 @@ try{
   await writeFile(file,source);
   const raw=spawnSync(native,[file],{encoding:null,maxBuffer:4*1024*1024});
   assert.equal(raw.error,undefined);
-  assert.equal(raw.status,0,String(raw.stderr));
+  assert.equal(raw.status,0,source+'\n'+String(raw.stderr));
   const compiled=browser(source);
   assert.equal(compiled.ok,true,compiled.error);
   assert.deepEqual(raw.stdout,Buffer.from(compiled.bytes));
@@ -431,7 +432,7 @@ try{
   await writeFile(file,source);
   const raw=spawnSync(native,[file],{encoding:null,maxBuffer:4*1024*1024});
   assert.equal(raw.error,undefined);
-  assert.equal(raw.status,1,String(raw.stderr));
+  assert.equal(raw.status,1,source+'\n'+String(raw.stderr));
   assert.equal(raw.stdout.length,0);
   assert.ok(String(raw.stderr).includes(code),String(raw.stderr));
   const compiled=browser(source);

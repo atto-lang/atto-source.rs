@@ -136,3 +136,9 @@ fn braced_and_expression_forms_preserve_body_kinds() {
         assert_eq!(actual, expected, "{source}");
     }
 }
+
+#[test]
+fn conservative_lambda_stack_profile_admits_shallow_and_rejects_deep() {
+    assert!(parsed(&format!("{}1", "|x| -> ".repeat(8))).is_ok());
+    assert_eq!(parsed(&format!("{}1", "|x| -> ".repeat(64))).unwrap_err().code, "E_NESTING");
+}
