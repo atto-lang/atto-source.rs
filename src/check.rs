@@ -4594,6 +4594,12 @@ impl<'a> FnCx<'a> {
                 } else { self.value(base)? };
                 self.member_on(obj, name, e.pos)
             }
+            // Projected method receivers must enter the same authority gate
+            // as named receivers before ordinary value() rejects handle escape.
+            // Keep the general escape check for every unsupported projection.
+            ExprKind::MethodCall(base, name, args) if matches!(base.kind, ExprKind::Member(..)) => {
+                self.method_call(base, name, args, e.pos)
+            }
             ExprKind::MethodCall(base, name, args) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
                 let recv = self.value(base)?;
                 self.method_on(recv, name, args, e.pos)
