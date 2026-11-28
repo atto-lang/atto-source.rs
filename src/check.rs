@@ -4617,6 +4617,17 @@ impl<'a> FnCx<'a> {
                     source: Box::new(value), tmp, success_tag
                 }, ty: Type::Int })
             }
+            // A named root's nested field is a projection, not an owned
+            // intermediate value. Reuse member's checked projection path.
+            ExprKind::Member(base, name) if matches!(&base.kind,
+                ExprKind::Member(root, _) if matches!(&root.kind, ExprKind::Var(_))) => {
+                let projected = self.member(base, name, e.pos)?;
+                if matches!(projected.ty, Type::Class(_)) {
+                    return Err(Diagnostic::new(e.pos, "E_BORROW",
+                        "nested leaf reference is projection-only; owned extraction requires a lifetime witness"));
+                }
+                Ok(projected)
+            }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
                 let obj = self.value(base)?;
