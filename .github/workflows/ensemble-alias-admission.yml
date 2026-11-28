@@ -1,0 +1,32 @@
+name: Ensemble alias source admission (Rust compiler)
+on:
+  pull_request:
+    paths:
+      - src/lib.rs
+      - tests/ensemble_alias_admission.rs
+      - tests/fixtures/atto-ensemble-v1/**
+      - .github/workflows/ensemble-alias-admission.yml
+permissions:
+  contents: read
+jobs:
+  compiler-admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact PR head and shared fixture
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git hash-object tests/fixtures/atto-ensemble-v1/canonical-unlowered-try-publish.atto)" = c562ad380bb283da9ffa26160653c1186ab63462
+      - name: Compiler negative and positive control tests
+        run: |
+          rustc --version
+          cargo --version
+          cargo test --locked --test ensemble_alias_admission
+      - name: Evidence scope
+        run: echo 'COMPILER_ADMISSION_ONLY; typed Ensemble publication and guest parity NOT_EXECUTED'
