@@ -1,0 +1,5 @@
+// expect-exit: 42
+define class Parcel as end
+
+fnc echo(int Parcel): int { return Parcel; }
+pub fnc main(): int { return echo(42); }

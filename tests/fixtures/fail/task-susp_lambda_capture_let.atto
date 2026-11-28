@@ -1,0 +1,2 @@
+// expect-error: E_TASK_CAPTURE
+pub susp fnc main(): int { let k = 1; val f = susp |int n| -> n + k; return await f(1); }

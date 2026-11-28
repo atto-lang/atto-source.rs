@@ -1,0 +1,32 @@
+// Core ownership/loan + std protocol integration, Rust/Wasm backend-owned .atto.
+// All borrow / take checks are enforced by the compiler checker, not a library shim.
+// No raw pointers, GPU buffers, stream handles or host capabilities are constructed.
+use namespace stdlib_borrow_core;
+import module websocket from "+stdlib/std/websocket.atto";
+import module quic from "+stdlib/std/quic.atto";
+import module compute from "+stdlib/std/compute.atto";
+
+define class BoundedBuffer as
+  pub let int capacity = 10;
+  pub let int consumed = 0;
+end
+
+pub fnc main(): int {
+  let buffer = new BoundedBuffer();
+  block {
+    val reader = borrow! buffer;
+    val second_reader = borrow! buffer;
+    if !compute.compute_buffer_range_fits(2, 3, reader.capacity) then return 1; fi
+    if !quic.quic_stream_range_fits(2, 3, second_reader.capacity) then return 2; fi
+    if !websocket.websocket_backpressure_admit(reader.consumed, 3, second_reader.capacity) then return 3; fi
+  }
+  block {
+    val writer = borrow! mut buffer;
+    writer.consumed = 3;
+    if writer.consumed != 3 then return 4; fi
+  }
+  val transferred = take! buffer;
+  if !compute.compute_upload_admit(2, 3, transferred.capacity, true, true) then return 5; fi
+  if transferred.consumed != 3 then return 6; fi
+  return 0;
+}

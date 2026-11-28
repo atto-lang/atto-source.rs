@@ -1,0 +1,8 @@
+// expect-exit: 42
+pub fnc main(): int {
+  let a: int = 42;
+  let mut RawPointer<int> p = RawPointer.empty<int>();
+  ref! p to a;
+  unref! p;
+  return a;
+}

@@ -85,6 +85,8 @@ try {
     'E_UNSUPPORTED');
   rejected(main, 'x'.repeat(65537), 'E_IMPORT'); // native loader rejects oversized source
   rejected('import const status_valid from "std.http"; pub fnc main(): int {return 0;}',
+    provider, 'E_IMPORT: invalid bounded import path');
+  rejected('import const status_valid from "../escape.atto"; pub fnc main(): int {return 0;}',
     provider, 'E_IMPORT_PATH');
 
   // Parent selectors are not globally banned: an in-project parent is valid.

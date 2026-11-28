@@ -89,7 +89,10 @@ fn duplicate_inline_and_external_implementation_is_rejected() {
 fn external_direct_actorref_method_call_is_still_illegal() {
     let source = r#"
         define interface IPing as ping(): int; end
-        define actor A implements IPing as pub ping(): int { return 42; } end
+        define actor A implements IPing as
+            pub ping(): int { return 42; }
+            receive(ActorMail<int> mail): void { stdio.println(mail.value); }
+        end
         pub fnc main(): int {
             val worker_ref = spawn A();
             return worker_ref.ping();

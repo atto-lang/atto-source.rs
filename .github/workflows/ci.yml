@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   real-compiler:
     runs-on: ubuntu-24.04
@@ -27,8 +28,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git hash-object src/copy_graph_v1.rs)" = "3008a139cfba41131839de3567a263163152cf00"
-          echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=3008a139cfba41131839de3567a263163152cf00"
+          test "$(git hash-object src/copy_graph_v1.rs)" = "c167fe483abed0d38d5c8a25777e529d705ba48c"
+          echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=c167fe483abed0d38d5c8a25777e529d705ba48c"
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
@@ -65,6 +66,12 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/parentheses_guest.mjs
+      - name: Execute integer membership match guests and reject invalid lists
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node --check tests/int_membership_guest.mjs
+          node tests/int_membership_guest.mjs
       - name: Execute immediate await receiver guests and fail-closed diagnostics
         env:
           ATTOC: target/release/attoc
@@ -87,10 +94,28 @@ jobs:
         run: node tests/bitwise_browser_compiler.mjs
       - name: Reject adversarial mailbox histories before compiled guest tests
         run: node --test tests/actor-trace-refinement.test.mjs
+      - name: Verify source-free guest receipt producer adversarial tests
+        run: node --test tests/guest-evidence.test.mjs
+      - name: Bind the exact GitHub Actions job ID and per-attempt challenge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          jobs="$(gh api --hostname github.com -X GET "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100")"
+          job_id="$(printf '%s' "$jobs" | jq -er --arg job "$GITHUB_JOB" --argjson attempt "$GITHUB_RUN_ATTEMPT" '[.jobs[] | select(.name == $job and .run_attempt == $attempt)] | if length == 1 then .[0].id else error("ambiguous run attempt/job") end')"
+          [[ "$job_id" =~ ^[1-9][0-9]*$ ]]
+          echo "ATTO_GUEST_JOB_ID=$job_id" >> "$GITHUB_ENV"
+          echo "ATTO_GUEST_NONCE=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
       - name: Conformance - wasm32 compiler, guest execution, native-vs-wasm byte parity
         env:
           ATTOC: target/release/attoc
+          ATTO_EVIDENCE_DIR: dist/guest-evidence
+          ATTO_EVIDENCE_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node tests/conformance.mjs
+      - name: Independently recompile and execute guest evidence witness
+        env:
+          ATTO_EVIDENCE_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node tests/verify-guest-evidence.mjs dist/guest-evidence target/wasm32-unknown-unknown/release/atto_compiler.wasm
 
       - name: Shared scalar-v1 native vs wasm32 byte parity with guest execution
         env:
@@ -114,6 +139,7 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: |
+          node --test tests/copy_guest_receipt.test.mjs
           node --check tests/copy_doublebang_guest.mjs
           node tests/copy_doublebang_guest.mjs
       - name: Execute defer/recover/try/raise unwind guests against spec trace oracles
@@ -163,6 +189,13 @@ jobs:
           fs.writeFileSync('dist/receipt.json',JSON.stringify(receipt,null,2)+'\n');
           console.log(receipt);
           JS
+      - name: Upload source-free guest execution CLAIM (NOT_CERTIFIED)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: atto-guest-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dist/guest-evidence/
+          if-no-files-found: error
+          retention-days: 14
       - name: Publish verified compiler plus provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

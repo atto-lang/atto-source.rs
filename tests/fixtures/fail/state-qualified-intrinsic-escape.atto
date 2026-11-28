@@ -1,0 +1,9 @@
+// expect-error: E_STATE_ACCESS
+define state container Counter as
+  state { let int count: 0; }
+  pub broken(): int {
+    val escaped = self.handle_state;
+    return 0;
+  }
+end
+pub fnc main(): int { return 0; }

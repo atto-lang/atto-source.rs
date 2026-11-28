@@ -1,11 +1,12 @@
-// Compiles real .atto copy!! programs using native attoc and executes guest
-// WebAssembly. This is a BOUNDED flat-class test, not a recursive graph proof.
+// Compiles real .atto copy! and copy!! programs using native attoc and executes guest
+// WebAssembly. Bounded scalar, flat-class and immutable leaf cases; not a mutable graph proof.
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validRejection } from './copy_guest_receipt.mjs';
 
 const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc', import.meta.url));
 const positives = [
@@ -16,12 +17,15 @@ const positives = [
   '995-copy-doublebang-flat-class-mixed-fields.atto',
   '996-copy-doublebang-constructor-state.atto',
   '997-copy-doublebang-private-state.atto',
+  '998-copy-shallow-flat-class.atto',
+  'copy-immutable-nested-root.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
   '992-copy-doublebang-mut-invalid.atto',
   '996-copy-doublebang-exclusive-loan.atto',
   '997-copy-doublebang-nested-array-no-runtime.atto',
+  '153-copy-noncopy-class.atto',
 ];
 const imports = {
   atto: {
@@ -41,6 +45,7 @@ function run(source, output) {
   });
 }
 
+assert.equal(new Set([...positives, ...negatives]).size, positives.length + negatives.length, 'duplicate copy fixture');
 const dir = await mkdtemp(join(tmpdir(), 'atto-copy-doublebang-'));
 try {
   for (const filename of positives) {
@@ -72,9 +77,10 @@ try {
     const output = join(dir, filename + '.wasm');
     const result = run(source, output);
     assert.equal(result.error, undefined, filename + ': compiler process failed');
-    assert.notEqual(result.status, 0, filename + ': unsupported copy accepted');
-    assert.ok(result.stderr.includes(expected), filename + ': expected ' + expected + ', got: ' + result.stderr);
+    assert.equal(result.signal, null, filename + ': compiler terminated by signal');
+    assert.equal(result.status, 1, filename + ': expected compiler diagnostic exit');
     await assert.rejects(stat(output), { code: 'ENOENT' }, filename + ': rejected compiler produced output');
+    assert.ok(validRejection(source, expected, result, false), filename + ': expected exact diagnostic ' + expected + ', got: ' + result.stderr);
     console.log('PASS rejected guest', filename, expected);
   }
   console.log('COPY_DEEP_GUEST_RESULT pass=' + positives.length + ' reject=' + negatives.length);

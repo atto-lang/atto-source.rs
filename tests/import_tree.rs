@@ -117,3 +117,32 @@ fn contextual_binding_checks_budget_before_resolution() {
     assert_eq!(bind_contextual(&mut scope,&oversized,None,&view).unwrap_err().code,"E_SOURCE_LIMIT");
     assert_eq!(scope.resolve("f0").unwrap_err().code,"E_UNBOUND");
 }
+
+#[test]
+fn parent_prefix_is_equivalent_to_super_and_cannot_escape() {
+    for (path, expected) in [
+        ("parent.config", "network.config"),
+        ("parent.parent.common", "common"),
+        ("parent.super.common", "common"),
+        ("super.parent.common", "common"),
+    ] {
+        assert_eq!(contextual_path(path, Some("network.http")).unwrap(), expected);
+        assert_eq!(leaves(&format!("import {path};"))[0].path, path);
+    }
+    for (path, current) in [
+        ("parent.config", None),
+        ("parent.parent.parent.config", Some("network.http")),
+        ("self.parent.config", Some("network.http")),
+        ("parent.super", Some("network.http")),
+        ("parent.config", Some("network.parent")),
+    ] {
+        assert_eq!(contextual_path(path, current).unwrap_err().code, "E_IMPORT_PATH");
+    }
+    use atto_compiler::import_tree::bind_contextual;
+    let (mut scope, view) = graph();
+    bind_contextual(&mut scope, &leaves("import parent.tcp as t;"), Some("net.http"), &view).unwrap();
+    assert_eq!(scope.resolve_export("t.connect", &view).unwrap().declaration, "net.tcp.connect");
+    let denied = leaves("import parent.http.{get as fresh, secret};");
+    assert_eq!(bind_contextual(&mut scope, &denied, Some("net.tcp"), &view).unwrap_err().code, "E_PRIVATE");
+    assert_eq!(scope.resolve("fresh").unwrap_err().code, "E_UNBOUND");
+}

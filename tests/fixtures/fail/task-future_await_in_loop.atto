@@ -1,0 +1,2 @@
+// expect-error: E_MOVED
+pub susp fnc main(): int { val t = task { return 1; }; let s = 0; let i = 0; while i < 2 do s = s + await t; i = i + 1; done return s; }

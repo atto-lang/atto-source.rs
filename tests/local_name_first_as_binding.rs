@@ -51,3 +51,10 @@ fn repeated_scalar_let_uses_previous_initializer_then_fresh_slot() {
         assert!(compile(&source(declaration)).is_err(), "{declaration}");
     }
 }
+
+#[test]
+fn repeated_bool_let_matches_distinct_lexical_slots() {
+    let shadow = "define fnc int • main() { let bool x = false; let x as bool = true; return 42; }";
+    let renamed = "define fnc int • main() { let bool a = false; let b as bool = true; return 42; }";
+    assert_eq!(compile(shadow).unwrap(), compile(renamed).unwrap());
+}

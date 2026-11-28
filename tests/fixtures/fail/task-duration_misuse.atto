@@ -1,0 +1,2 @@
+// expect-error: E_TYPE
+pub susp fnc main(): int { val d = 100ms; return 0; }

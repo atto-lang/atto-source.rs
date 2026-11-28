@@ -21,13 +21,20 @@
 //!   then `actor_receive` per message in
 //!   FIFO order. Actor state lives in that instance's globals.
 //!
+//! * with a `susp fnc main`, the task ABI `atto.task.v1` replaces `main`:
+//!   exports `atto_task_main/resume/request/result/close` and a custom
+//!   section `atto.task.v1`; panic code 7 = invalid task handle/state
+//!   (docs/TASK_ABI_V1.md)
+//!
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::{ActorKind, BinOp, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
+mod task_runtime;
+pub use task_runtime::PANIC_TASK;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
@@ -44,6 +51,8 @@ pub const PANIC_STACK: i32 = 6;
 pub const PANIC_REFINEMENT: i32 = 7;
 /// Checked shift distance outside 0..63; terminal guest panic, not a masked shift.
 pub const PANIC_SHIFT_DISTANCE: i32 = 8;
+/// Terminal ADT expectation failure; distinct from refinement and shift panics.
+pub const PANIC_EXPECT: i32 = 9;
 /// Live recursive guest frames per receive invocation (or `main`). Same
 /// default quota as the Java backend, so a program overflows at the same
 /// source depth in every browser instead of at each engine's native limit.
@@ -55,7 +64,7 @@ const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
 const F64: u8 = 0x7C;
 
-fn uleb(out: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn uleb(out: &mut Vec<u8>, mut v: u64) {
     loop {
         let b = (v & 0x7F) as u8;
         v >>= 7;
@@ -67,7 +76,7 @@ fn uleb(out: &mut Vec<u8>, mut v: u64) {
     }
 }
 
-fn sleb(out: &mut Vec<u8>, mut v: i64) {
+pub(crate) fn sleb(out: &mut Vec<u8>, mut v: i64) {
     loop {
         let b = (v & 0x7F) as u8;
         v >>= 7;
@@ -79,12 +88,12 @@ fn sleb(out: &mut Vec<u8>, mut v: i64) {
     }
 }
 
-fn name(out: &mut Vec<u8>, s: &str) {
+pub(crate) fn name(out: &mut Vec<u8>, s: &str) {
     uleb(out, s.len() as u64);
     out.extend_from_slice(s.as_bytes());
 }
 
-fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
+pub(crate) fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
     out.push(id);
     uleb(out, body.len() as u64);
     out.extend(body);
@@ -98,13 +107,13 @@ fn vt(t: Type) -> Option<u8> {
         Type::Float => Some(F64),
         Type::Str => Some(I64),
         Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::ResultIntInt | Type::OptionResultIntStr => Some(I32),
-        Type::GeneratorInt => Some(I64),
+        Type::GeneratorInt | Type::FutureInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct Sig(Vec<u8>, Vec<u8>);
+pub(crate) struct Sig(pub(crate) Vec<u8>, pub(crate) Vec<u8>);
 
 struct Types(Vec<Sig>);
 impl Types {
@@ -154,6 +163,10 @@ struct Layout {
     catch_depth: Option<u32>,
     /// Module-private escalated-failure tag (index 1) exists.
     raise_tag: bool,
+    /// (current frame i32, wake value i64, frame free list i32) globals.
+    task_globals: Option<(u32, u32, u32)>,
+    /// Function index (in source-func space) of the first task runtime op.
+    task_first_func: u32,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -200,6 +213,8 @@ enum Frame {
     FinallyExit,
     /// Terminal `c.next()` target: the next older recovery callback.
     RecoverNext,
+    /// Resume-PC dispatch loop of a task state machine.
+    Task,
 }
 
 struct Emit<'a> {
@@ -512,6 +527,7 @@ impl Emit<'_> {
 
     fn stmt(&mut self, s: &TStmt) {
         match s {
+            TStmt::Suspend { .. } => unreachable!("task planner splits suspensions into steps"),
             TStmt::Set(slot, v) => {
                 self.expr(v);
                 self.op(0x21);
@@ -974,6 +990,19 @@ impl Emit<'_> {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, 8, false);
             },
+            TExpr::AdtExpect { source, tmp, success_tag } => {
+                self.expr(source);
+                self.set(*tmp);
+                self.get(*tmp);
+                field_op(&mut self.code, Type::Bool, 0, false);
+                self.i32c(*success_tag as i32);
+                self.op(0x47);
+                self.open(0x04, 0x40, Frame::Other);
+                panic(&mut self.code, PANIC_EXPECT);
+                self.close();
+                self.get(*tmp);
+                field_op(&mut self.code, v.ty, 8, false);
+            }
             TExpr::AdtPropagate { source, tmp, success_tag } => {
                 // Source (and all of its effects) is evaluated exactly once.
                 self.expr(source);
@@ -1214,7 +1243,7 @@ fn panic(c: &mut Vec<u8>, code: i32) {
     c.extend_from_slice(&[0x24, 0x00, 0x00]);
 }
 
-fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
+pub(crate) fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     // (signature, extra locals as (count,type) pairs encoded, code)
     let bin = Sig(vec![I64, I64], vec![I64]);
     let r_local = vec![1u8, 1, I64]; // 1 group: 1 x i64 (local 2)
@@ -1566,7 +1595,16 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())
         ),
         raise_tag: p.raise_tag,
+        task_globals: (!p.tasks.is_empty()).then(|| {
+            let base = 1 + u32::from(p.heap) + p.globals.len() as u32
+                + u32::from(!p.generators.is_empty()) + u32::from(p.catch_depth);
+            (base, base + 1, base + 2)
+        }),
+        task_first_func: p.funcs.len() as u32
+            + if p.generators.is_empty() { 0 } else { 4 }
+            + if p.actors.is_empty() { 0 } else { 2 },
     };
+    let has_tasks = !p.tasks.is_empty();
     let mut types = Types(Vec::new());
 
     let mut import_sec = Vec::new();
@@ -1612,13 +1650,53 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
     let main_void = p.funcs[p.main as usize].ret == Type::Void;
     let mut fn_meta: Vec<FnMeta> = Vec::with_capacity(p.funcs.len());
     for (i, f) in p.funcs.iter().enumerate() {
+        let task = p.tasks.iter().find(|t| t.function == i as u32);
+        let is_void_main = i as u32 == p.main && main_void && !p.task_main;
+        let state_hooks = p.imports.contains(&Import::StateEnter);
+        if let Some(task) = task {
+            // resume_k() -> i32: params and locals all live in frame slots.
+            func_types.push(types.idx(Sig(vec![], vec![I32])));
+            let mut slots = f.params.clone();
+            slots.extend(f.locals.iter().copied());
+            let mut locals = slots.clone();
+            if state_hooks { locals.push(Type::Int); }
+            let base = locals.len() as u32;
+            locals.extend([Type::Bool, Type::Bool, Type::Bool, Type::Bool]);
+            let mut e = Emit {
+                l: &layout,
+                code: locals_decl(&locals),
+                frames: Vec::new(),
+                void_main: false,
+                active_iterators: Vec::new(),
+                state_ticket_slot: state_hooks.then_some(slots.len() as u32),
+                shift_slot: locals.len() as u32,
+                shift_used: false,
+                state_write_depth: 0,
+                uw: None,
+                in_recover: false,
+                calls: Vec::new(),
+                landings: Vec::new(),
+            };
+            task_runtime::resume_body(&mut e, p, task, &slots,
+                task_runtime::ResumeLocals { fp: base, pc: base + 1, fuel: base + 2, child: base + 3 });
+            e.op(0x0B);
+            e.finish_shift_local(&mut locals);
+            fn_meta.push(FnMeta {
+                body: bodies.len(),
+                decl_len: locals_decl(&locals).len(),
+                locals: locals.clone(),
+                params: 0,
+                calls: std::mem::take(&mut e.calls),
+                landings: std::mem::take(&mut e.landings),
+            });
+            bodies.push(e.code);
+            continue;
+        }
         let params: Vec<u8> = f.params.iter().map(|t| vt(*t).unwrap()).collect();
-        let is_void_main = i as u32 == p.main && main_void;
         let results: Vec<u8> = if is_void_main { vec![I64] } else { vt(f.ret).into_iter().collect() };
         func_types.push(types.idx(Sig(params, results)));
         // Reserve one host-ticket local only in state-enabled modules.
         // The ticket never reaches user source or escapes into other methods.
-        let state_hooks = p.imports.contains(&Import::StateEnter);
         let mut locals = f.locals.clone();
         if state_hooks { locals.push(Type::Int); }
         let mut e = Emit {
@@ -1674,7 +1752,8 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
     // can grow the stack without a static bound, so only those are counted.
     // Programs without recursion keep byte-identical output.
     let depth_global = 1 + u32::from(p.heap) + p.globals.len() as u32
-        + u32::from(!p.generators.is_empty()) + u32::from(p.catch_depth);
+        + u32::from(!p.generators.is_empty()) + u32::from(p.catch_depth)
+        + if has_tasks { 3 } else { 0 };
     let depth_used = bound_recursive_calls(&mut bodies, &fn_meta, depth_global);
 
     // Runtime ops after source functions preserve every existing index.
@@ -1733,13 +1812,39 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             if let Some(r) = a.receive {
                 c.extend_from_slice(&[0x20, 0, 0x41]);
                 sleb(&mut c, ai as i64);
-                c.extend_from_slice(&[0x46, 0x04, 0x40, 0x20, 1, 0x20, 2, 0x10]);
+                c.extend_from_slice(&[0x46, 0x04, 0x40]); // actor type match
+
+                // ActorMail.sequence is a nonnegative FIFO admission index.
+                // Even a foreign host must not forge a negative sequence.
+                // local.get 2; i64.const 0; i64.lt_s; if; unreachable; end.
+                c.extend_from_slice(&[0x20, 2, 0x42, 0, 0x53, 0x04, 0x40, 0x00, 0x0B]);
+
+                // The i64 mail transport is untagged. Only canonical 0/1
+                // encodes bool; treating any nonzero number as true would
+                // admit forged, ill-typed host messages.
+                if a.payload == Type::Bool {
+                    // (value == 0 || value == 1) else unreachable.
+                    c.extend_from_slice(&[
+                        0x20, 1, 0x42, 0, 0x51,
+                        0x20, 1, 0x42, 1, 0x51,
+                        0x72, 0x45, 0x04, 0x40, 0x00, 0x0B,
+                    ]);
+                }
+
+                c.extend_from_slice(&[0x20, 1, 0x20, 2, 0x10]);
                 uleb(&mut c, layout.func(r) as u64);
                 c.extend_from_slice(&[0x0F, 0x0B]);
             }
         }
-        c.extend_from_slice(&[0x00, 0x0B]); // no receive handler for this type
+        c.extend_from_slice(&[0x00, 0x0B]); // unknown actor type
         bodies.push(c);
+    }
+    // Task runtime ops come last, so every pre-existing index is unchanged.
+    if has_tasks {
+        for (sig, code) in task_runtime::bodies(p, &layout) {
+            func_types.push(types.idx(sig));
+            bodies.push(code);
+        }
     }
 
     // The tag has no JS import/export. Each instance gets its own identity,
@@ -1798,11 +1903,12 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
     uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
         + u64::from(!p.generators.is_empty())
         + u64::from(p.catch_depth)
+        + if has_tasks { 3 } else { 0 }
         + u64::from(depth_used));
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
         let heap_start = ((p.data.len() as i64 + 7) & !7)
-            .max(if p.generators.is_empty() { 0 } else { 8 });
+            .max(if p.generators.is_empty() && !has_tasks { 0 } else { 8 });
         gsec.extend_from_slice(&[I32, 0x01, 0x41]);
         sleb(&mut gsec, heap_start);
         gsec.push(0x0B);
@@ -1817,16 +1923,30 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
     if p.catch_depth {
         gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // active catch/trap depth
     }
+    if has_tasks {
+        gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // current task frame
+        gsec.extend_from_slice(&[I64, 0x01, 0x42, 0, 0x0B]); // host wake value
+        gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // task frame freelist
+    }
     if depth_used {
         gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // live recursive call depth
     }
     section(&mut out, 6, gsec);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 });
-    name(&mut exp, "main");
-    exp.push(0x00);
-    uleb(&mut exp, layout.func(p.main) as u64);
+    uleb(&mut exp, if p.task_main { 6 } else { 2 } + u64::from(has_memory) + if has_actors { 2 } else { 0 });
+    if p.task_main {
+        for which in [task_runtime::RT_MAIN, task_runtime::RT_RESUME, task_runtime::RT_REQUEST,
+            task_runtime::RT_RESULT, task_runtime::RT_CLOSE] {
+            name(&mut exp, task_runtime::RUNTIME_NAMES[which as usize]);
+            exp.push(0x00);
+            uleb(&mut exp, layout.func(layout.task_first_func + which) as u64);
+        }
+    } else {
+        name(&mut exp, "main");
+        exp.push(0x00);
+        uleb(&mut exp, layout.func(p.main) as u64);
+    }
     name(&mut exp, "panic_code");
     exp.push(0x03);
     uleb(&mut exp, 0);
@@ -1895,6 +2015,9 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
         all.push("atto.actor_init".into());
         all.push("atto.actor_receive".into());
     }
+    if has_tasks {
+        all.extend(task_runtime::RUNTIME_NAMES.iter().map(|n| n.to_string()));
+    }
     let mut sub = Vec::new();
     uleb(&mut sub, all.len() as u64);
     for (i, n) in all.iter().enumerate() {
@@ -1916,6 +2039,28 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             name(&mut a, &actor.name);
         }
         section(&mut out, 0, a);
+
+        // Runtime-visible actor kind table, one byte per actor in atto.actors
+        // order. 0 = default, 1 = serial. Unimplemented isolation modes were
+        // rejected by the checker rather than silently downgraded.
+        let mut modes = Vec::new();
+        name(&mut modes, "atto.actor_modes");
+        uleb(&mut modes, p.actors.len() as u64);
+        for actor in &p.actors {
+            modes.push(match actor.kind {
+                ActorKind::Default => 0,
+                ActorKind::Serial => 1,
+                _ => unreachable!("unsupported actor kind rejected by checker"),
+            });
+        }
+        section(&mut out, 0, modes);
+    }
+    if p.task_main {
+        // custom "atto.task.v1": one version byte; opts into the task ABI.
+        let mut t = Vec::new();
+        name(&mut t, "atto.task.v1");
+        t.push(1);
+        section(&mut out, 0, t);
     }
     out
 }
@@ -1954,3 +2099,6 @@ mod allocator_safety_tests {
         assert!(!admitted(256, u32::MAX - 255)); // wrapped p + size
     }
 }
+
+// Explicit isolated continuation ABI; ordinary emission remains unchanged.
+pub(crate) mod owned_unwind_v1;

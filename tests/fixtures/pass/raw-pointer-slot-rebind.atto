@@ -1,0 +1,13 @@
+// expect-exit: 42
+pub fnc main(): int {
+  let a: int = 40;
+  let b: int = 2;
+  let mut RawPointer<int> p = RawPointer.empty<int>();
+  ref! p to a;
+  val first = deref! p;
+  unref! p;
+  ref! p to b;
+  val second = deref! p;
+  unref! p;
+  return first + second;
+}

@@ -246,8 +246,8 @@ export function assess(manifest, receipts = []) {
   ensure(manifest.schema === 'atto-borrow-conformance-v1' && manifest.version === 1,
     'E_CONTRACT_VERSION');
   ensure(JSON.stringify(manifest.backends) === JSON.stringify(BACKENDS), 'E_BACKEND_SET');
-  ensure(manifest.cases.length === 22, 'E_CASE_COUNT');
-  ensure(new Set(manifest.cases.map(c => c.id)).size === 22, 'E_CASE_ID_REUSE');
+  ensure(manifest.cases.length === 24, 'E_CASE_COUNT');
+  ensure(new Set(manifest.cases.map(c => c.id)).size === 24, 'E_CASE_ID_REUSE');
   ensure(JSON.stringify(manifest.evidencePolicy?.allowedStatuses) ===
     JSON.stringify([...accepted]), 'E_STATUS_CONTRACT');
   ensure(JSON.stringify(manifest.evidencePolicy?.certifiedRequires) ===
@@ -281,7 +281,7 @@ export function assess(manifest, receipts = []) {
     sourceFreeModel: true, reasons};
 }
 
-test('all nine toolchains and all 22 expected cases have closed, deterministic metadata', () => {
+test('all nine toolchains and all 24 expected cases have closed, deterministic metadata', () => {
   const result = assess(manifest);
   assert.equal(result.verified, false);
   assert.equal(result.semanticParityCertified, false);
@@ -410,4 +410,18 @@ test('prototype property names never become recognized ownership operations', ()
       sampleInit(), {op: name}, {op: 'Return'}
     ])), /E_MIR_UNSUPPORTED_EFFECT/, name);
   }
+});
+
+
+test('protocol helpers preserve core two-reader, exclusive-writer and post-loan move ordering', () => {
+  const accept = manifest.cases.find(c => c.id === 'C23');
+  const reject = manifest.cases.find(c => c.id === 'C24');
+  assert.ok(accept && reject, 'both protocol ownership cases must exist');
+  assert.equal(accept.category, 'protocol-loan-lifecycle');
+  assert.equal(accept.expected, 'accept');
+  assert.equal(reject.category, 'protocol-loan-lifecycle');
+  assert.equal(reject.expected, 'reject');
+  assert.equal(reject.diagnostic, 'E_BORROW_CONFLICT');
+  assert.equal(semantics(accept.graph), 'accept');
+  assert.throws(() => semantics(reject.graph), /E_BORROW_CONFLICT/);
 });

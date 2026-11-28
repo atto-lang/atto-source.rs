@@ -50,6 +50,10 @@ pub fn resolve_exports_with_modules(
     for export in exports {
         let class_count = parsed.classes.iter()
             .filter(|c| c.name == export.name && !c.state_container).count();
+        if parsed.funcs.iter().any(|f| f.name == export.name && f.params.iter().any(|p| p.omittable)) {
+            return Err(error(export.pos, "E_UNSUPPORTED",
+                "omittable functions require a versioned export ABI; direct-only profile"));
+        }
         let fnc_count = parsed.funcs.iter()
             .filter(|f| f.name == export.name).count();
         let module_count = modules.iter().filter(|m| m.name == export.name).count();

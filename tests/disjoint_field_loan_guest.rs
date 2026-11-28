@@ -50,3 +50,18 @@ fn overlapping_or_unauthenticated_field_operations_fail_closed() {
         rejected(name, src, diagnostic);
     }
 }
+
+#[test]
+fn long_gap_before_last_use_keeps_loan_live_without_repeated_suffix_scans() {
+    let mut source = String::from(
+        "define class Person as pub let string name = \"Alice\"; pub let int age = 42; end\n\
+         pub fnc main(): int { let person = new Person(); val name_view = borrow! person.name; let int n = 0;\n",
+    );
+    for _ in 0..220 {
+        source.push_str("n = n + 1;\n");
+    }
+    let positive = format!("{source}stdio.println(name_view); person.name = \"Bob\"; return person.age; }}");
+    accepted("long_gap_last_use", &positive);
+    let negative = format!("{source}person.name = \"Bob\"; stdio.println(name_view); return person.age; }}");
+    rejected("long_gap_still_live", &negative, "E_BORROW");
+}

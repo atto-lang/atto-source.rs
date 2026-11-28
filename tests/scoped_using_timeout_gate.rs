@@ -1,6 +1,6 @@
 //! Exact syntax fixture for /play's resource scope preview.
-//! This tests named import header grammar and fail-closed compilation.
-//! It does NOT claim that using/timeout/await are executable.
+//! This tests the same scoped resource source as the playground preview.
+//! Executed guest lifecycle evidence is checked separately in Chromium.
 use atto_compiler::lexer::lex;
 use atto_compiler::target_syntax::parse_target_declarations;
 
@@ -32,15 +32,8 @@ fn named_imports_of_scoped_resource_example_are_supported_by_target_headers() {
 }
 
 #[test]
-fn actual_scoped_resource_demo_is_not_a_false_positive_wasm_guest() {
-    let error = atto_compiler::compile(PREVIEW)
-        .expect_err("using + timeout + await require a real compiler and runtime");
-    assert!(!error.code.is_empty());
-}
-
-#[test]
-#[ignore = "Enable only with real package linking, suspend-safe using cleanup, timeout and await guest execution"]
-fn future_positive_compiler_gate_for_exact_scoped_resource_demo() {
-    let guest = atto_compiler::compile(PREVIEW).expect("real executable guest required");
-    assert!(guest.starts_with(b"\0asm"), "must emit WebAssembly bytes");
+fn exact_scoped_resource_demo_emits_real_wasm_guest() {
+    let guest = atto_compiler::compile(PREVIEW)
+        .expect("scoped span demo must compile into real guest Wasm");
+    assert!(guest.starts_with(b"\0asm\x01\0\0\0"), "must emit Wasm header");
 }

@@ -27,10 +27,10 @@ impl Cursor<'_> {
     fn word(&mut self,s:&str)->bool { self.take(&Tok::Ident(s.into())) }
     fn name(&mut self, root:bool)->R<String> {
         match self.tok() {
-            Tok::Ident(s) if (root && matches!(s.as_str(),"pkg"|"self"|"super")) ||
+            Tok::Ident(s) if (root && matches!(s.as_str(),"pkg"|"self"|"parent"|"super")) ||
                 (!s.is_empty() && s.len()<=64 && !s.starts_with("__atto_")
                 && !crate::parser::is_reserved(s)
-                && !matches!(s.as_str(),"pkg"|"self"|"super"|"enum"|"use"|"declare"|"mtd"|"as"|"from")) => {
+                && !matches!(s.as_str(),"pkg"|"self"|"parent"|"super"|"enum"|"use"|"declare"|"mtd"|"as"|"from")) => {
                 let s=s.clone(); self.i+=1; Ok(s)
             }
             _=>Err(self.err("E_SYNTAX","expected static import identifier")),
@@ -64,8 +64,8 @@ impl Cursor<'_> {
                     }
                     return Ok(())
                 }
-                let repeated_super=parts.iter().all(|p|p=="super") && matches!(self.tok(),Tok::Ident(s) if s=="super");
-                parts.push(self.name(repeated_super)?);
+                let repeated_parent=parts.iter().all(|p|is_parent(p)) && matches!(self.tok(),Tok::Ident(s) if is_parent(s));
+                parts.push(self.name(repeated_parent)?);
                 if parts.len()>DEPTH {return Err(self.err("E_SOURCE_LIMIT","import path exceeds eight components"));}
             }
         }
@@ -114,24 +114,27 @@ pub fn bind(scope:&mut Scope, leaves:&[Leaf], views:&[&ExportView])->R<()> {
     *scope=staged;Ok(())
 }
 /// Resolve contextual roots into the current package's canonical namespace
-/// path, without touching the filesystem. A headerless self/super is invalid.
+/// path, without touching the filesystem. This bounded named-scope API does not
+/// yet provide a tagged file/folder parent anchor.
+fn is_parent(p: &str) -> bool { matches!(p, "parent" | "super") }
+
 pub fn contextual_path(path:&str,current:Option<&str>)->R<String>{
     let invalid = || Diagnostic::new(Pos::default(),"E_IMPORT_PATH","invalid contextual namespace path");
-    let component = |p: &str| !matches!(p,"pkg"|"self"|"super") && crate::static_import_graph::valid_component(p);
+    let component = |p: &str| !matches!(p,"pkg"|"self"|"parent"|"super") && crate::static_import_graph::valid_component(p);
     // Validate the source namespace before parent traversal can erase bad components.
     if path.len() > DEPTH * 65 { return Err(invalid()); }
     let mut parts=path.split('.');
     let root=parts.next().unwrap_or("");
     let mut base:Vec<&str>=match root{
         "pkg"=>Vec::new(),
-        "self"|"super"=>current.filter(|s|!s.is_empty() && s.len()<=DEPTH*65).ok_or_else(||Diagnostic::new(Pos::default(),"E_IMPORT_PATH","contextual root requires a source namespace"))?.split('.').collect(),
+        "self"|"parent"|"super"=>current.filter(|s|!s.is_empty() && s.len()<=DEPTH*65).ok_or_else(||Diagnostic::new(Pos::default(),"E_IMPORT_PATH","contextual root requires a source namespace"))?.split('.').collect(),
         _=>return Err(Diagnostic::new(Pos::default(),"E_IMPORT_PATH","not a contextual import root")),
     };
     if base.len()>DEPTH || base.iter().any(|p| !component(p)) { return Err(invalid()); }
     let mut tail:Vec<_>=parts.take(DEPTH).collect();
     if tail.is_empty() || tail.len()>=DEPTH { return Err(invalid()); }
-    if root=="super" {
-        let count=1+tail.iter().take_while(|p|**p=="super").count();
+    if is_parent(root) {
+        let count=1+tail.iter().take_while(|p|is_parent(p)).count();
         if count>base.len(){return Err(Diagnostic::new(Pos::default(),"E_IMPORT_PATH","import escapes package root"));}
         base.truncate(base.len()-count);tail.drain(..count-1);
         if tail.is_empty() { return Err(invalid()); }

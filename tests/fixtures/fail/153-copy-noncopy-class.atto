@@ -1,7 +1,8 @@
-// expect-error: E_COPY
+// expect-error: E_COPY_OVERRIDE
 // java: rejects
 define class Parcel as
  pub let int value = 42;
+ copy(): int { return 1; }
 end
 pub fnc main(): int {
  val parcel = new Parcel();

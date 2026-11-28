@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>Rust compiled owned pending recovery</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+const result=document.getElementById('result');
+const worker=new Worker('./fixtures/owned-unwind-browser-worker.mjs',{type:'module'});
+const frames=[];let wake;
+worker.onmessage=e=>{frames.push(e.data);wake?.();};
+async function next(kind){
+ for(let i=0;i<20;i++){
+  const err=frames.find(f=>f.kind==='error');if(err)throw Error(err.message);
+  const frame=frames.find(f=>f.kind===kind);if(frame)return frame;
+  await new Promise((ok,fail)=>{const t=setTimeout(()=>{wake=null;fail(Error('timeout '+kind));},1000);wake=()=>{clearTimeout(t);wake=null;ok();};});
+ }throw Error('worker wait bound');
+}
+try{
+ await next('body');worker.postMessage('fail');await next('cleanup');
+ worker.postMessage('clean');await next('recover');worker.postMessage('fallback');
+ const done=await next('done');if(done.value!=='42'||!done.sameError)throw Error('wrong result');
+ worker.postMessage('retire');await next('retired');
+ if(frames.map(f=>f.kind).join(',')!=='body,cleanup,recover,done,retired')throw Error('invalid ordering');
+ result.textContent='PASS_RUST_OWNED_UNWIND_WORKER';
+}catch(e){result.textContent='FAIL_RUST_OWNED_UNWIND_WORKER: '+String(e);}
+finally{worker.terminate();}
+</script>
