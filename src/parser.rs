@@ -3864,19 +3864,24 @@ impl Parser {
                 // A second top-level arrow belongs to an ambiguous Entry
                 // chain, not the Map value. Nested groups/lambdas retain
                 // their independent expression grammar.
-                let saved_cond = self.cond;
-                self.cond = 0;
-                self.enter()?;
-                let value = self.parse_ternary();
-                self.leave();
-                self.cond = saved_cond;
-                let value = value?;
-                if matches!(self.peek(), Tok::FatArrow | Tok::Arrow) {
-                    return Err(Diagnostic::new(
-                        self.pos(), "E_LITERAL_KIND",
-                        "group nested Entries in Map values explicitly",
-                    ));
-                }
+                let value = if quoted_map_key {
+                    self.parse_expr()?
+                } else {
+                    self.enter()?;
+                    let saved_cond = self.cond;
+                    self.cond = 0;
+                    let value = self.parse_ternary();
+                    self.leave();
+                    self.cond = saved_cond;
+                    let value = value?;
+                    if matches!(self.peek(), Tok::FatArrow | Tok::Arrow) {
+                        return Err(Diagnostic::new(
+                            self.pos(), "E_LITERAL_KIND",
+                            "group nested Entries in Map values explicitly",
+                        ));
+                    }
+                    value
+                };
                 // Constant duplicate keys are definite mistakes. Dynamically
                 // computed keys need checked equality/hash rules at runtime.
                 if let Some(fingerprint) = constant_map_key(&key) {
