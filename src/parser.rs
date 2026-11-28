@@ -1899,8 +1899,13 @@ impl Parser {
     fn parse_named_callable_header(
         &mut self, what: &'static str,
     ) -> R<CallableHeader> {
-        let return_first = self.is_return_first_header();
-        let prefixed_type = if return_first {
+        let angle_type = self.eat(&Tok::Lt);
+        let return_first = !angle_type && self.is_return_first_header();
+        let prefixed_type = if angle_type {
+            let ty = self.parse_type()?;
+            self.expect(Tok::Gt, "'>' after prefix return type")?;
+            Some((ty, false))
+        } else if return_first {
             let annotation = if self.eat_word("infer") {
                 (Type::Void, true)
             } else {
@@ -1923,12 +1928,12 @@ impl Parser {
         if what == "a method name" && *self.peek() == Tok::LParen {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
-        let arrow_type = !return_first && *self.peek() == Tok::Arrow;
-        let colon_type = !return_first && *self.peek() == Tok::Colon;
+        let arrow_type = prefixed_type.is_none() && *self.peek() == Tok::Arrow;
+        let colon_type = prefixed_type.is_none() && *self.peek() == Tok::Colon;
         let (ret, infer) = if let Some(annotation) = prefixed_type {
             if matches!(self.peek(), Tok::Colon | Tok::Arrow) {
                 return Err(Diagnostic::new(self.pos(), "E_RETURN_ANNOTATION",
-                    "a return-first callable cannot declare a second return type"));
+                    "a callable with a prefix return type cannot declare a second return type"));
             }
             annotation
         } else {

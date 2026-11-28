@@ -385,8 +385,13 @@ impl Cursor<'_> {
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
         let method_start = self.i;
-        let return_first = self.return_first_header();
-        let prefix_type = if return_first {
+        let angle_type = self.take(&Tok::Lt);
+        let return_first = !angle_type && self.return_first_header();
+        let prefix_type = if angle_type {
+            let t = self.type_name()?;
+            self.expect(&Tok::Gt, "expected '>' after prefix return type")?;
+            Some(t)
+        } else if return_first {
             let t = self.type_name()?;
             self.expect(&Tok::LeftArrow, "expected '<-' after return type")?;
             Some(t)
@@ -394,8 +399,8 @@ impl Cursor<'_> {
         let name = self.ident()?;
         let params = self.params()?;
         let arity = params.len();
-        let arrow_type = !return_first && *self.tok() == Tok::Arrow;
-        let colon_type = !return_first && *self.tok() == Tok::Colon;
+        let arrow_type = prefix_type.is_none() && *self.tok() == Tok::Arrow;
+        let colon_type = prefix_type.is_none() && *self.tok() == Tok::Colon;
         let return_type = if let Some(t) = prefix_type {
             if matches!(self.tok(), Tok::Colon | Tok::Arrow) {
                 return Err(self.err("E_RETURN_ANNOTATION", "return type declared twice"));
@@ -468,16 +473,20 @@ impl Cursor<'_> {
         Ok(decl)
     }
     fn function(&mut self) -> R<(String, usize, usize)> {
-        let return_first = self.return_first_header();
-        if return_first {
+        let angle_type = self.take(&Tok::Lt);
+        let return_first = !angle_type && self.return_first_header();
+        if angle_type {
+            self.type_name()?;
+            self.expect(&Tok::Gt, "expected '>' after prefix return type")?;
+        } else if return_first {
             self.type_name()?;
             self.expect(&Tok::LeftArrow, "expected '<-' after return type")?;
         }
         let name = self.ident()?;
         self.params()?;
-        let arrow_type = !return_first && *self.tok() == Tok::Arrow;
-        let colon_type = !return_first && *self.tok() == Tok::Colon;
-        if !return_first {
+        let arrow_type = !angle_type && !return_first && *self.tok() == Tok::Arrow;
+        let colon_type = !angle_type && !return_first && *self.tok() == Tok::Colon;
+        if !angle_type && !return_first {
             if !(self.take(&Tok::Colon) || self.take(&Tok::Arrow)) {
                 return Err(self.err("E_RETURN_ANNOTATION",
                     "named function requires -> T, -> void, -> infer or T <- name"));
