@@ -5162,6 +5162,7 @@ impl Parser {
                 if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                     return Err(unsupported(self.pos(), "named arguments"));
                 }
+                // Adjacent spread is one Ellipsis token; lone dot is malformed.
                 if *self.peek() == Tok::Ellipsis {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
