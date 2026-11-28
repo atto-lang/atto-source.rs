@@ -868,22 +868,6 @@ impl Parser {
         }
     }
 
-    fn binary_chain(&mut self, next: fn(&mut Self) -> R<Expr>, tok: Tok, op: BinOp) -> R<Expr> {
-        let mut left = next(self)?;
-        let mut links = 0;
-        while *self.peek() == tok {
-            let pos = self.pos();
-            self.advance();
-            links += 1;
-            if links > 256 {
-                return Err(Diagnostic::new(pos, "E_NESTING", "operator chain is too long"));
-            }
-            let right = next(self)?;
-            left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
-        }
-        Ok(left)
-    }
-
     fn parse_or(&mut self) -> R<Expr> {
         self.parse_xor() // former || is not an admitted mainline token
     }
@@ -1103,11 +1087,8 @@ impl Parser {
         let save = (self.i, self.depth);
         self.advance();
         let mut args = Vec::new();
-        loop {
-            match self.parse_type() {
-                Ok(t) => args.push(t),
-                Err(_) => break,
-            }
+        while let Ok(t) = self.parse_type() {
+            args.push(t);
             if self.eat(&Tok::Comma) {
                 continue;
             }
