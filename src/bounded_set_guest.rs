@@ -132,3 +132,121 @@ pub(crate) fn lower(p: &mut Program) {
     init.kind = ExprKind::New(CLASS.into(), std::mem::take(args));
     p.classes.push(storage(count, pos));
 }
+
+// Bounded local Map<int,int> profile. Only statically distinct signed i64
+// keys are admitted until dynamic duplicate-key rejection is lowered.
+// Values and lookup operands remain real runtime expressions.
+const MAP_CLASS: &str = "__atto_local_map_v1";
+const MAX_MAP_ENTRIES: usize = 8;
+
+fn static_key(e: &Expr) -> Option<i64> {
+    match &e.kind {
+        ExprKind::Int(Some(n)) => i64::try_from(*n).ok(),
+        ExprKind::Unary(UnOp::Neg, inner) => match &inner.kind {
+            ExprKind::Int(Some(n)) => i64::try_from(*n).ok()?.checked_neg(),
+            ExprKind::Int(None) => Some(i64::MIN),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn map_args(args: &[Expr], locals: &BTreeSet<String>) -> Option<Vec<Expr>> {
+    if !(1..=MAX_MAP_ENTRIES).contains(&args.len()) { return None; }
+    let mut keys = BTreeSet::new();
+    let mut flat = Vec::new();
+    for entry in args {
+        let ExprKind::MethodCall(base, method, pair) = &entry.kind else { return None; };
+        if method != "of" || !matches!(&base.kind, ExprKind::Var(n) if n == "Entry")
+            || pair.len() != 2 || !keys.insert(static_key(&pair[0])?)
+            || !scalar(&pair[1], locals, None, &mut false) { return None; }
+        flat.extend(pair.iter().cloned());
+    }
+    Some(flat)
+}
+
+fn map_scalar(e: &Expr, locals: &BTreeSet<String>, owner: Option<&str>, queried: &mut bool) -> bool {
+    match &e.kind {
+        ExprKind::Unary(_, a) => map_scalar(a, locals, owner, queried),
+        ExprKind::Binary(_, a, b) => map_scalar(a, locals, owner, queried)
+            && map_scalar(b, locals, owner, queried),
+        ExprKind::Ternary(c, a, b) => map_scalar(c, locals, owner, queried)
+            && map_scalar(a, locals, owner, queried) && map_scalar(b, locals, owner, queried),
+        ExprKind::MethodCall(base, name, args)
+            if matches!(&base.kind, ExprKind::Var(n) if Some(n.as_str()) == owner) =>
+        {
+            let valid = match name.as_str() {
+                "len" => args.is_empty(),
+                "contains_key" => args.len() == 1,
+                "get_or" => args.len() == 2,
+                _ => false,
+            } && args.iter().all(|a| scalar(a, locals, None, queried));
+            if valid { *queried = true; }
+            valid
+        }
+        _ => scalar(e, locals, None, queried),
+    }
+}
+
+fn map_storage(n: usize, pos: Pos) -> ClassDecl {
+    let mut c = storage(n * 2, pos);
+    c.name = MAP_CLASS.into();
+    let mut contains = expr(ExprKind::Bool(false), pos);
+    let mut lookup = var("fallback", pos);
+    for i in 0..n {
+        let test = binary(BinOp::Eq, slot(2*i, pos), var("needle", pos), pos);
+        contains = choose(test.clone(), expr(ExprKind::Bool(true), pos), contains, pos);
+        lookup = choose(test, slot(2*i+1, pos), lookup, pos);
+    }
+    c.methods = vec![
+        Method { name: "len".into(), pos, public: true, is_static: false,
+            params: vec![], ret: Type::Int, body: vec![Stmt::Return(Some(int(n as u64, pos)), pos)] },
+        Method { name: "contains_key".into(), pos, public: true, is_static: false,
+            params: vec![param("needle".into(), pos)], ret: Type::Bool,
+            body: vec![Stmt::Return(Some(contains), pos)] },
+        Method { name: "get_or".into(), pos, public: true, is_static: false,
+            params: vec![param("needle".into(), pos), param("fallback".into(), pos)], ret: Type::Int,
+            body: vec![Stmt::Return(Some(lookup), pos)] },
+    ];
+    c
+}
+
+/// Same closed-program restrictions as the Set profile. Never rewrite a
+/// shadowed factory or permit collection escape, mutation or actor transport.
+pub(crate) fn lower_map(p: &mut Program) {
+    if !p.classes.is_empty() || !p.enums.is_empty() || !p.actors.is_empty()
+        || p.actor_interface.is_some() || !p.type_names.is_empty()
+        || !p.array_types.is_empty() || p.funcs.len() != 1 { return; }
+    let f = &mut p.funcs[0];
+    if f.name != "main" || !f.params.is_empty() || f.ret != Type::Int
+        || f.is_generator || f.is_pure || f.declared_effects.is_some() { return; }
+    let Some((last, prefix)) = f.body.split_last() else { return; };
+    let Stmt::Return(Some(result), _) = last else { return; };
+    let mut locals = BTreeSet::new();
+    let mut factory: Option<(usize, &str, Vec<Expr>, Pos)> = None;
+    let mut queried = false;
+    for (index, s) in prefix.iter().enumerate() {
+        let Stmt::Bind { kind, name, ty, init, pos } = s else { return; };
+        if matches!(name.as_str(), "Map" | "Entry" | MAP_CLASS | CLASS)
+            || locals.contains(name)
+            || factory.as_ref().is_some_and(|(_, owner, _, _)| *owner == name) { return; }
+        if let ExprKind::MethodCall(base, method, args) = &init.kind {
+            if factory.is_none() && method == "of" && matches!(&base.kind, ExprKind::Var(n) if n == "Map")
+                && *kind != BindKind::Const && ty.is_none()
+            {
+                let Some(flat) = map_args(args, &locals) else { return; };
+                factory = Some((index, name.as_str(), flat, *pos));
+                continue;
+            }
+        }
+        if ty.is_some_and(|t| t != Type::Int && t != Type::Bool)
+            || !map_scalar(init, &locals, factory.as_ref().map(|(_, owner, _, _)| *owner), &mut queried) { return; }
+        locals.insert(name.clone());
+    }
+    let Some((index, owner, args, pos)) = factory else { return; };
+    if !map_scalar(result, &locals, Some(owner), &mut queried) || !queried { return; }
+    let n = args.len()/2;
+    let Stmt::Bind { init, .. } = &mut f.body[index] else { return; };
+    init.kind = ExprKind::New(MAP_CLASS.into(), args);
+    p.classes.push(map_storage(n, pos));
+}
