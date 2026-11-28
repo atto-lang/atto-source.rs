@@ -443,6 +443,10 @@ pub enum Stmt {
 
 #[derive(Clone, Debug)]
 pub enum Pattern {
+    /// Compiler-only success gate in a conditional-return match. The parser
+    /// never admits this as a user pattern; checking expands it into a typed
+    /// exhaustive match with an ordinary return on the approved branch.
+    Approval { binding: String, selectors: Option<(Vec<i64>, Vec<bool>)> },
     /// `_`, or `else` in the legacy form
     Wild,
     Int(i64),

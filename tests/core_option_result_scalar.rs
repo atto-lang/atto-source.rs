@@ -8,30 +8,36 @@ use std::process::{Command, Stdio};
 const WASM_HEADER: &[u8] = b"\0asm\x01\0\0\0";
 
 fn execute_guest(bytes: &[u8], expected: i64) {
+    execute_guest_with_trace(bytes, expected, "");
+}
+
+fn execute_guest_with_trace(bytes: &[u8], expected: i64, trace: &str) {
     assert!(bytes.starts_with(WASM_HEADER), "compiler did not emit Wasm");
     // Only WebAssembly executes the returned guest instructions. No JS
-    // simulation of Option/Result is permitted. Any guest stdio import fails.
+    // simulation of Option/Result is permitted. Only the exact expected integer output is allowed.
     let script = r#"
       const fs = require('node:fs');
       (async () => {
         const wasm = fs.readFileSync(0);
         const noHost = () => { throw Error('unexpected host import'); };
+        let trace = '';
         const { instance } = await WebAssembly.instantiate(wasm, {
           atto: {
-            print_i64: noHost, print_bool: noHost, print_str: noHost,
-            print_newline: noHost, actor_spawn: noHost, actor_send: noHost
+            print_i64: n => { trace += String(n); }, print_bool: noHost, print_str: noHost,
+            print_newline: () => { trace += '\n'; }, actor_spawn: noHost, actor_send: noHost
           }
         });
         if (typeof instance.exports.main !== 'function') throw Error('missing guest main');
         const actual = instance.exports.main();
         const expected = BigInt(process.argv[1]);
         if (actual !== expected) throw Error('guest main mismatch: ' + actual + ' vs ' + expected);
+        if (trace !== process.argv[2]) throw Error('unexpected guest trace: ' + JSON.stringify(trace));
         if (instance.exports.panic_code && instance.exports.panic_code.value !== 0)
           throw Error('guest panic code: ' + instance.exports.panic_code.value);
       })().catch(error => { console.error(error); process.exitCode = 1; });
     "#;
     let mut child = Command::new("node")
-        .arg("-e").arg(script).arg(expected.to_string())
+        .arg("-e").arg(script).arg("--").arg(expected.to_string()).arg(trace)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn().expect("Node.js is required for real WebAssembly guest execution");
     child.stdin.take().expect("piped guest stdin")
@@ -114,4 +120,121 @@ fn borrowed_concrete_adt_temporary_and_mutable_loan_are_denied() {
         assert_eq!(error.code, "E_BORROW", "{error}");
         assert!(error.pos.line > 0 && error.pos.col > 0, "{error}");
     }
+}
+
+#[test]
+fn conditional_return_executes_real_guest() {
+    let cases = [
+        ("pub fnc main(): int { ^? 0; ^? -42; return 1; }", -42),
+        ("pub fnc main(): int { return? 0; return? 40 + 2; return 1; }", 42),
+        ("pub fnc main(): int { ^?=0 42; ^?=0 0; return 1; }", 0),
+        ("pub fnc main(): int { ^?=[1,42] 7; return?=[1,42] 42; return 1; }", 42),
+        ("pub fnc main(): int { ^?=[-9223372036854775808,42] -9223372036854775808; return 1; }", i64::MIN),
+        ("fnc choose(bool x): bool { ^? x; return false; } pub fnc main(): int { if choose(true) then return 42; fi return 1; }", 42),
+        ("fnc choose(bool x): bool { ^? x; return true; } pub fnc main(): int { if choose(false) then return 42; fi return 1; }", 42),
+        ("fnc choose(bool x): bool { ^?=false x; return true; } pub fnc main(): int { if choose(false) then return 1; fi return 42; }", 42),
+        ("fnc get(): Option<int> { return Some(0); } pub fnc main(): int { ^? get(); return 42; }", 0),
+        ("fnc get(): Option<int> { return None; } pub fnc main(): int { ^? get(); return 42; }", 42),
+        ("fnc get(): Result<int,string> { return Ok(0); } pub fnc main(): int { ^? get(); return 42; }", 0),
+        ("fnc get(): Result<int,string> { return Err(\"no\"); } pub fnc main(): int { ^? get(); return 42; }", 42),
+    ];
+    for (source, expected) in cases {
+        let bytes = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+        assert_eq!(bytes, compile(source).unwrap());
+        execute_guest(&bytes, expected);
+    }
+}
+
+#[test]
+fn conditional_return_checks_operand_once_and_only_selected_return_runs() {
+    let source = "fnc attempt(int n): int { stdio.println(n); return n; } pub fnc main(): int { ^?=[1,42] attempt(7); ^?=[1,42] attempt(42); ^? attempt(9); return 1; }";
+    let bytes = compile(source).unwrap();
+    execute_guest_with_trace(&bytes, 42, "7\n42\n");
+}
+
+#[test]
+fn conditional_return_rejects_invalid_programs_without_emitting_guest() {
+    let cases = [
+        "pub fnc main(): int { ^? true; return 42; }",
+        "pub fnc main(): int { ^? 0; }",
+        "pub fnc main(): int { ^? \"yes\"; return 42; }",
+        "pub fnc main(): int { ^?=[true] 42; return 1; }",
+        "pub fnc main(): int { ^?=[true,42] 42; return 1; }",
+        "pub fnc main(): int { ^?=[] 42; return 1; }",
+        "pub fnc main(): int { ^?=[42,] 42; return 1; }",
+        "pub fnc main(): int { ^?=[42,42] 42; return 1; }",
+        "pub fnc main(): int { ^ ? 42; return 1; }",
+        "pub fnc main(): int { return ? 42; return 1; }",
+        "pub fnc main(): int { ^? =42 42; return 1; }",
+        "pub fnc main(): int { val x = ^? 42; return x; }",
+        "pub fnc main(): int { ^?; return 42; }",
+        "pub fnc main(): int { ^? match true over on true -> 42, on false -> 0 end; return 1; }",
+    ];
+    for source in cases {
+        let error = compile(source).expect_err(source);
+        assert!(error.pos.line > 0 && error.pos.col > 0, "{source}: {error}");
+    }
+}
+
+#[test]
+fn conditional_marker_and_ternary_are_lexically_distinct() {
+    for (body, expected) in [
+        ("return true ? 42 : 7;", 42),
+        ("return? true ? 42 : 0; return 7;", 42),
+        ("^? false ? 99 : 0; return 42;", 42),
+        ("return?=[42,99] true ? 42 : 0; return 7;", 42),
+        ("^?=0 false ? 42 : 0; return 7;", 0),
+        ("^? true?42:0; return 7;", 42),
+        ("^?/* comment */ true ? 42 : 0; return 7;", 42),
+        ("return? false ? 9 : true ? 42 : 0; return 7;", 42),
+        ("val int x = 9223372036854775807; ^? false ? x + 1 : 42; return 7;", 42),
+        ("val int x = 9223372036854775807; return? true ? 0 : x + 1; return 42;", 42),
+        ("return?=[1,42] false ? 42 : 7; return 42;", 42),
+        ("return true ? 0 : 42;", 0),
+    ] {
+        let source = format!("pub fnc main(): int {{ {body} }}");
+        let bytes = compile(&source).unwrap_or_else(|e| panic!("{source}: {e}"));
+        execute_guest(&bytes, expected);
+    }
+}
+
+#[test]
+fn gaps_do_not_construct_a_conditional_marker() {
+    for body in [
+        "return /* gap */ ? true ? 42 : 0; return 1;",
+        "^/* gap */? true ? 42 : 0; return 1;",
+        "return\n? true ? 42 : 0; return 1;",
+        "^\t? true ? 42 : 0; return 1;",
+        "return? /* gap */ =42 42; return 1;",
+        "^?/* gap */=42 42; return 1;",
+        "^? true ? 42; return 1;",
+        "return? true ? 42 : false; return 1;",
+        "val x = return? 42; return x;",
+        "^?= [1,true] true ? 42 : 0; return 1;",
+    ] {
+        let source = format!("pub fnc main(): int {{ {body} }}");
+        let err = compile(&source).expect_err(&source);
+        assert!(err.pos.line > 0 && err.pos.col > 0, "{source}: {err}");
+    }
+}
+
+#[test]
+fn postfix_failure_and_prefix_success_are_independent() {
+    let source = "fnc read(bool x): Option<int> { if x then return Some(42); fi return None; } fnc next(bool x): Option<int> { val n: int = read(x)?; return Some(n); } pub fnc main(): int { ^? next(false); return? next(true); return 1; }";
+    let bytes = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    execute_guest(&bytes, 42);
+}
+
+#[test]
+fn conditional_ternary_only_evaluates_selected_branch_once() {
+    let source = "fnc attempt(int n): int { stdio.println(n); return n; } pub fnc main(): int { ^? false ? attempt(99) : attempt(0); return? true ? attempt(42) : attempt(98); return 1; }";
+    let bytes = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    execute_guest_with_trace(&bytes, 42, "0\n42\n");
+}
+
+#[test]
+fn conditional_return_does_not_bypass_static_division_admission() {
+    let source = "pub fnc main(): int { ^? false ? 1 / 0 : 42; return 7; }";
+    let error = compile(source).expect_err("both branches remain statically checked");
+    assert_eq!(error.code, "E_UNSUPPORTED", "{error}");
 }
