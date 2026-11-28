@@ -1,0 +1,8 @@
+// expect-error: E_TYPE
+// java: target-only
+pub fnc main(): int {
+    return loop (val i = 0) {
+        if i eq 1 { break i; }
+        recur(true);
+    };
+}

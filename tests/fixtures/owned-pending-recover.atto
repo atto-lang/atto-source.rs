@@ -1,0 +1,7 @@
+pub suspends fnc run(take! Future<int> input, take! Future<int> cleanup, take! Future<int> fallback): int {
+    defer await cleanup;
+    recover |err, cursor| -> {
+        return await fallback;
+    };
+    return await input;
+}

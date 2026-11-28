@@ -33,6 +33,7 @@ pub const CLASS_BYTES: [u16; 24] = [
 ];
 const CLASSES: usize = CLASS_BYTES.len();
 const BITMAP_BITS: usize = (HEADER_BYTES - 16) * 8; // same capacity as the C++ header
+const HANDLE_LIVE: u32 = 1 << 31; // internal entry flag; never part of a handle word
 const NONE: u32 = 0; // page links and free lists are index + 1
 /// Largest span a ref32 word can address: (2^32 - 1) quanta of 8 bytes.
 const MAX_SPAN: u64 = (u32::MAX as u64) * 8;
@@ -64,7 +65,7 @@ impl Ref32 {
         self.0.get()
     }
     fn from_offset(offset: usize) -> Option<Self> {
-        if !offset.is_multiple_of(8) {
+        if offset & 7 != 0 {
             return None;
         }
         let index = (offset / 8) as u64;
@@ -172,7 +173,7 @@ fn blocks_in_page(size: usize) -> u16 {
 fn class_for(bytes: usize, align: usize) -> Option<u8> {
     CLASS_BYTES
         .iter()
-        .position(|&c| c as usize >= bytes && (c as usize).is_multiple_of(align))
+        .position(|&c| c as usize >= bytes && (c as usize).checked_rem(align) == Some(0))
         .map(|c| c as u8)
 }
 
@@ -504,7 +505,7 @@ impl ActorSlabHeap {
         match page.kind {
             Kind::Small => {
                 let size = CLASS_BYTES[page.cls as usize] as usize;
-                if !(within - HEADER_BYTES).is_multiple_of(size) {
+                if (within - HEADER_BYTES).checked_rem(size) != Some(0) {
                     return Err(SlabError::InvalidRef);
                 }
                 let block = (within - HEADER_BYTES) / size;
@@ -607,7 +608,7 @@ impl ActorSlabHeap {
         if next == NONE {
             self.free_slot_tail = NONE;
         }
-        self.write_entry(slot, obj.word(), gen);
+        self.write_entry(slot, obj.word(), gen | HANDLE_LIVE);
         Ok(Handle32((gen << self.slot_bits) | (slot + 1)))
     }
 
@@ -620,7 +621,7 @@ impl ActorSlabHeap {
             return Err(SlabError::InvalidRef);
         }
         let (word, gen) = self.entry(slot1 - 1);
-        if gen == 0 || (h.0 >> self.slot_bits) != gen {
+        if gen & HANDLE_LIVE == 0 || (h.0 >> self.slot_bits) != (gen & !HANDLE_LIVE) {
             return Err(SlabError::StaleHandle);
         }
         Ref32::from_word(word).ok_or(SlabError::StaleHandle)
@@ -631,6 +632,7 @@ impl ActorSlabHeap {
         self.free(r)?;
         let slot = (h.0 & ((1u32 << self.slot_bits) - 1)) - 1;
         let (_, gen) = self.entry(slot);
+        let gen = gen & !HANDLE_LIVE;
         if gen == self.max_gen {
             self.write_entry(slot, NONE, 0); // quarantine: never wrap, never reuse
             self.quarantined += 1;
@@ -664,6 +666,22 @@ mod tests {
 
     fn heap(reserve: usize, budget: usize) -> ActorSlabHeap {
         ActorSlabHeap::new(Config::new(reserve, budget)).expect("config")
+    }
+
+    #[test]
+    fn slab_alignment_admission_is_fail_closed() {
+        assert!(Ref32::from_offset(0).is_some());
+        assert!(Ref32::from_offset(8).is_some());
+        for offset in [1, 7, 9, usize::MAX] {
+            assert!(Ref32::from_offset(offset).is_none());
+        }
+        assert_eq!(class_for(8, 0), None);
+        for align in [8usize, 16, 32, 64] {
+            let class = class_for(17, align).expect("aligned class");
+            let bytes = CLASS_BYTES[class as usize] as usize;
+            assert!(bytes >= 17);
+            assert_eq!(bytes.checked_rem(align), Some(0));
+        }
     }
 
     #[test]
@@ -779,6 +797,34 @@ mod tests {
         }
         assert_eq!((n, small.stats().quarantined_handles), (6, 2));
         assert!(small.allocate(16, 8).is_ok());
+    }
+
+    #[test]
+    fn handle_table_requires_live_entry() {
+        let mut config = Config::new(1 << 20, 1 << 20);
+        config.handle_capacity = 3;
+        config.handle_generation_bits = 12;
+        let mut heap = ActorSlabHeap::new(config).unwrap();
+        let bits = heap.handle_slot_bits();
+        for generation in 1..=4095u32 {
+            for slot in 1..=3u32 {
+                let candidate = Handle32((generation << bits) | slot);
+                let before = heap.stats();
+                assert_eq!(heap.resolve_handle(candidate), Err(SlabError::StaleHandle));
+                assert_eq!(heap.free_handle(candidate), Err(SlabError::StaleHandle));
+                assert_eq!(heap.stats(), before);
+                let issued = heap.allocate_handle(32, 8).unwrap();
+                assert_eq!(issued, candidate);
+                let r = heap.resolve_handle(issued).unwrap();
+                assert!(heap.bytes(r, 32).unwrap().iter().all(|b| *b == 0));
+                heap.bytes_mut(r, 32).unwrap().fill(0x5a);
+                heap.free_handle(issued).unwrap();
+                assert_eq!(heap.resolve_handle(issued), Err(SlabError::StaleHandle));
+            }
+        }
+        assert_eq!(heap.stats().quarantined_handles, 3);
+        assert_eq!(heap.stats().live_objects, 0);
+        assert_eq!(heap.allocate_handle(32, 8), Err(SlabError::HandleTableFull));
     }
 
     #[test]

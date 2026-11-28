@@ -32,18 +32,28 @@ pub fn present(t: &[Token]) -> bool {
 }
 fn plain(t: &[Token], owner: &str, aliases: &BTreeMap<String,String>, anchor: &Token, context: bool) -> Result<(), Diagnostic> {
     if context && t.is_empty() { return Err(err(anchor, "exactly one context expression is required")); }
-    let mut depth = 0usize;
+    // Track delimiter kind as well as depth before splicing context tokens
+    // into a different argument list. A mismatched close cannot hide a comma.
+    let mut delimiters = Vec::new();
     for x in t {
         if word(x).is_some_and(|s| s == owner || aliases.contains_key(s)) ||
             matches!(x.tok, Tok::ColonColon | Tok::LBrace | Tok::RBrace | Tok::Pipe | Tok::FatArrow | Tok::Semi) {
             return Err(err(x, "nested contextual binding/call or capture is outside scalar profile"));
         }
         match x.tok {
-            Tok::LParen | Tok::LBracket => depth += 1,
-            Tok::RParen | Tok::RBracket => depth = depth.saturating_sub(1),
-            Tok::Comma | Tok::Assign if context && depth == 0 => return Err(err(x, "one positional context expression required")),
+            Tok::LParen => delimiters.push(Tok::RParen),
+            Tok::LBracket => delimiters.push(Tok::RBracket),
+            Tok::RParen | Tok::RBracket => {
+                if delimiters.pop().as_ref() != Some(&x.tok) {
+                    return Err(err(x, "mismatched contextual expression delimiter"));
+                }
+            }
+            Tok::Comma | Tok::Assign if context && delimiters.is_empty() => return Err(err(x, "one positional context expression required")),
             _ => {}
         }
+    }
+    if !delimiters.is_empty() {
+        return Err(err(anchor, "unclosed contextual expression delimiter"));
     }
     Ok(())
 }
@@ -203,6 +213,7 @@ mod tests {
             ("let n = 3; const x = Scale::(n); n = 9; const a = x.apply(4); const b = x.apply(5); return a + b + Scale::(2).apply(7);", "41"),
             ("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);", "20"),
             ("return Scale::(6).apply(7);", "42"),
+            ("let n = 3; const x = Scale::(n + 1); n = 9; return x.apply(n) + Scale::(n - 7).apply(3);", "42"),
         ] {
             let wasm = crate::compile(&program(body)).expect("compile guest");
             let mut child = Command::new("node").args(["-e",
@@ -213,6 +224,24 @@ mod tests {
             assert!(result.status.success(), "guest failed: {body}");
             assert_eq!(String::from_utf8(result.stdout).unwrap(), expected);
         }
+    }
+    #[test] fn reject_mismatched_context_delimiters_before_rewrite() {
+        for body in [
+            "return Scale::([2).apply(3);",
+            "return Scale::(2]).apply(3);",
+            "return Scale::(2).apply([3);",
+            "const x = Scale::(2]); return x.apply(3);",
+        ] {
+            let tokens = crate::lexer::lex(&program(body)).expect("lexical tokens");
+            assert!(lower(tokens).is_err(), "{body}");
+        }
+    }
+    #[test] fn contextual_capture_count_is_bounded() {
+        let body: String = (0..64).map(|i| format!("const cap{i} = Scale::(2); ")).collect();
+        let accepted = program(&format!("{body}return cap63.apply(3);"));
+        assert!(lower(crate::lexer::lex(&accepted).unwrap()).is_ok());
+        let denied = program(&format!("{body}const extra = Scale::(2); return extra.apply(3);"));
+        assert!(lower(crate::lexer::lex(&denied).unwrap()).is_err());
     }
     #[test] fn separate_bindings_compile() {
         assert!(crate::compile(&program("const x = Scale::(2); const y = Scale::(3); return x.apply(4) + y.apply(4);")).is_ok());

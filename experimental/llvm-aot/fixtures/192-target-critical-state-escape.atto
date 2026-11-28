@@ -1,0 +1,11 @@
+// expect-reject: E_ESCAPE
+use namespace counters;
+declare actor Counter;
+define actor Counter as
+    let int count = 0;
+    receive(ActorMail<int> mail): void { return; }
+end
+mtd (self: Counter) get_count(): int {
+    return self.handle_state(critical-read |s| -> s);
+}
+pub fnc main(): int { return 0; }

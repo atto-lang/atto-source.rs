@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED
+define isoactor Worker as
+    receive(msg: int): void { return; }
+end
+pub fnc main(): int { return 0; }

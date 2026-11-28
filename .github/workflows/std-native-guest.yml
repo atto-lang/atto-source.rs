@@ -1,0 +1,42 @@
+name: Native Atto std WebSocket QUIC compute guest
+on:
+  pull_request:
+    paths:
+      - 'stdlib/std/websocket.atto'
+      - 'stdlib/std/quic.atto'
+      - 'stdlib/std/compute.atto'
+      - 'tests/stdlib/**'
+      - 'tests/stdlib_native_guest.rs'
+      - 'tests/stdlib_native_guest_wasm.test.mjs'
+      - 'examples/stdlib_native_guest.rs'
+      - '.github/workflows/std-native-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compiled-atto-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Prove exact source head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          echo "ATTO_STD_GUEST_HEAD=$EXPECTED"
+          git rev-parse 'HEAD^{tree}'
+      - name: Check 42 source exports and mutate guest references
+        run: node --test tests/stdlib/source_contract.test.mjs
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal
+      - name: Compile linked Atto units and test negative imports
+        run: cargo +1.85.1 test --locked --test stdlib_native_guest -- --nocapture
+      - name: Compile four genuine .atto source-linked guests (including core ownership)
+        run: cargo +1.85.1 run --locked --quiet --example stdlib_native_guest -- "$RUNNER_TEMP/atto-stdlib.wasm" "$RUNNER_TEMP/atto-stdlib-mutation.wasm" "$RUNNER_TEMP/atto-stdlib-boundaries.wasm" "$RUNNER_TEMP/atto-stdlib-borrow-core.wasm"
+      - name: Execute 37 smoke, 109 boundary and core borrow checks inside real Wasm
+        run: node tests/stdlib_native_guest_wasm.test.mjs "$RUNNER_TEMP/atto-stdlib.wasm" "$RUNNER_TEMP/atto-stdlib-mutation.wasm" "$RUNNER_TEMP/atto-stdlib-boundaries.wasm" "$RUNNER_TEMP/atto-stdlib-borrow-core.wasm"

@@ -211,13 +211,28 @@ pub struct EnumDecl {
     pub variants: Vec<(String, Pos)>,
 }
 
-/// `receive(ActorMail<T> mail): void { ... }`.
+/// One sealed actor ingress. Direct typed payloads and ActorMail<T> are
+/// semantically distinct: only the latter exposes envelope metadata.
 #[derive(Clone, Debug)]
 pub struct Receive {
     pub pos: Pos,
     pub mail: String,
     pub payload: Type,
+    /// True for receive(ActorMail<T> mail), false for receive(msg: T).
+    pub envelope: bool,
     pub body: Vec<Stmt>,
+}
+
+/// Declared actor scheduling/isolation mode. Untrusted and shared modes
+/// remain fail-closed in the browser Wasm guest until real TenantVM fencing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActorKind {
+    #[default]
+    Default,
+    Serial,
+    Isolated,
+    Shared,
+    Untrusted,
 }
 
 /// Actor persistence is nominal and cannot be inferred from user code.
@@ -245,6 +260,7 @@ pub struct ActorPersistenceHook {
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    pub kind: ActorKind,
     pub persistence: ActorPersistenceMode,
     pub persistence_hooks: Vec<ActorPersistenceHook>,
     pub fields: Vec<Field>,
@@ -280,7 +296,17 @@ pub struct Func {
 }
 
 #[derive(Clone, Debug)]
+pub enum DefaultLiteral {
+    Int(i64),
+    None,
+}
+
+#[derive(Clone, Debug)]
 pub struct Param {
+    /// Independent name-position omission marker; never an Option type tag.
+    pub omittable: bool,
+    pub none_default: Option<DefaultLiteral>,
+    pub omission_default: Option<DefaultLiteral>,
     pub name: String,
     pub ty: Type,
     pub mutable: bool,
@@ -413,6 +439,12 @@ pub enum Pattern {
     /// `_`, or `else` in the legacy form
     Wild,
     Int(i64),
+    /// Bounded constant integer membership, not an array-valued pattern.
+    InInts(Vec<i64>),
+    /// Statically known scalar type tests; no runtime tag fabrication.
+    StaticTypes(Vec<Type>),
+    /// Compile-time-only scalar pattern disjunction; erased by checking.
+    ConstSet { ints: Vec<i64>, bools: Vec<bool>, types: Vec<Type> },
     Bool(bool),
     /// lower-case name: binds the subject
     Bind(String),

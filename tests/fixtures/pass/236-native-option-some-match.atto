@@ -1,0 +1,9 @@
+// expect-exit: 42
+// Closed heapless Option<int> is a native by-value two-i64 tagged value.
+fnc checked(): Option<int> { return Some(42); }
+pub fnc main(): int {
+  return match checked() over
+    on Some(n) -> n,
+    on None -> 0
+  end;
+}

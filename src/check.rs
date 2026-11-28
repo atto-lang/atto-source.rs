@@ -18,6 +18,7 @@ use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
 mod loan_liveness;
+pub mod typed_cfg_census;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
@@ -177,6 +178,8 @@ pub enum TExpr {
     AdtIs { obj: Box<TE>, tag: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
+    /// Terminal expectation failure, not an ordinary guest throw.
+    AdtExpect { source: Box<TE>, tmp: u32, success_tag: u32 },
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
@@ -346,6 +349,9 @@ pub struct TGenerator {
 #[derive(Clone, Debug)]
 pub struct TActor {
     pub name: String,
+    pub kind: ActorKind,
+    /// Verified ingress wire type, never inferred from host-supplied payload.
+    pub payload: Type,
     /// `(state global, initializer)` in declaration order.
     pub inits: Vec<(u32, TE)>,
     /// Function index of `receive(value: i64, sequence: i64)`.
@@ -409,12 +415,15 @@ struct ClassInfo {
     name: String,
     /// Distinct protected-state nominal declaration (single Worker-local profile).
     state_container: bool,
+    // Constructor-free, permanently immutable scalar storage only.
+    immutable_copy_leaf: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
     /// AOT-generated, private per-concrete-class copier, present only after
-    /// proving every stored field is a by-value/immutable scalar.
+    /// proving every slot is scalar or a permanently immutable leaf.
     deep_copy_idx: Option<u32>,
+    shallow_copy_idx: Option<u32>,
     ctor_idx: Option<u32>,
     ctor_params: Vec<Type>,
 }
@@ -428,8 +437,24 @@ struct ActorInfo {
 }
 
 /// Program-wide declaration tables shared by every body check.
+fn constant_default(value: &DefaultLiteral, ty: Type, tmp: u32, pos: Pos) -> R<TE> {
+    match (value, ty) {
+        (DefaultLiteral::Int(n), Type::Int) => Ok(TE { ty, e: TExpr::I64(*n) }),
+        (DefaultLiteral::Int(n), Type::OptionInt) => Ok(TE { ty, e: TExpr::AdtNew {
+            tag: 1, payload: Some(Box::new(TE { ty: Type::Int, e: TExpr::I64(*n) })), tmp,
+        }}),
+        (DefaultLiteral::None, Type::OptionInt) => Ok(TE { ty, e: TExpr::AdtNew {
+            tag: 0, payload: None, tmp,
+        }}),
+        _ => Err(type_err(pos, "default literal does not match formal type")),
+    }
+}
+
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    overloads: BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>>,
+    presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>>,
+    omission_defaults: Vec<Vec<Option<DefaultLiteral>>>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -779,9 +804,9 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 /// AOT descriptor checker, vendored byte-identically from the independently
 /// tested atto-borrow-checker.rs copy_graph_v1 module. No user annotations or
 /// method names can mint a witness, and this does not admit actor sends.
-fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()> {
+fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: crate::copy_graph_v1::CopyMode) -> R<()> {
     use crate::copy_graph_v1::{
-        admit_copy, CopyMode, CopyRequest, Field as CopyField,
+        admit_copy, CopyRequest, Field as CopyField,
         FieldKind as CopyFieldKind, TypeDescriptor,
     };
 
@@ -792,6 +817,8 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
             kind: match f.ty {
                 Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) =>
                     CopyFieldKind::Scalar,
+                Type::Class(child) if !f.referent_mutable && classes[child as usize].immutable_copy_leaf =>
+                    CopyFieldKind::ImmutableShared,
                 Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
                 _ => CopyFieldKind::Unresolved,
             },
@@ -801,7 +828,7 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
             parent: None, // the browser compiler does not admit inheritance
             fields,
             deep_copy_witness: class.deep_copy_idx.is_some() && !class.state_container,
-            shallow_copy_witness: false, // a deep witness does not grant copy!
+            shallow_copy_witness: class.shallow_copy_idx.is_some() && !class.state_container,
             sendable: false, // actor Sendable is a separate, unimplemented proof
         });
     }
@@ -810,13 +837,13 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
     let plan = admit_copy(&layouts, CopyRequest {
         concrete_type: requested,
         static_type: requested,
-        mode: CopyMode::Deep,
+        mode,
         actor_send: false,
     }).map_err(|err| Diagnostic::new(pos, err.0,
-        "class lacks a complete, concrete, closed-world compiler-generated deep copy witness"))?;
-    // The current AOT backend generates flat-object copies only. Do not
-    // broaden witness admission to transitive graphs until the generated
-    // copier has an identity memo and a rollback-safe graph allocation plan.
+        "class lacks a complete, concrete, closed-world compiler-generated mode-specific copy witness"))?;
+    // Only the fresh root is allocated. Proven permanently immutable leaves
+    // retain identity in both modes; mutable graph copies still require a
+    // separate identity memo and rollback-safe graph allocation plan.
     if plan.copied_type_ids != vec![requested] {
         return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
             "nested mutable class graph requires a memoized AOT copy runtime"));
@@ -980,7 +1007,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let res = |t: Type| resolve(t, tn, &class_names, &p.enums, &actor_names);
 
     // ---- top-level signatures keep indices 0..funcs.len()
-    let mut sigs = BTreeMap::new();
+    let mut sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)> = BTreeMap::new();
+    let mut overloads: BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>> = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None")
@@ -992,20 +1020,63 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             ));
         }
         let key = (f.name.clone(), f.params.len());
-        if sigs.contains_key(&key) {
-            return Err(Diagnostic::new(
-                f.pos,
-                "E_DUPLICATE",
-                format!(
-                    "function '{}' already has arity {}; overload identity is name + arity",
-                    f.name,
-                    f.params.len()
-                ),
-            ));
-        }
         let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
-        sigs.insert(key, (i as u32, params, res(f.ret)?));
-        names.entry(f.name.clone()).or_default().push(f.params.len());
+        let ret = res(f.ret)?;
+        if let Some(first) = sigs.get(&key) {
+            // This bounded profile only admits exact, concrete Copy-like
+            // caller types. Never select a generator or nominal owner by guess.
+            let admitted = |t: Type| matches!(t, Type::Int | Type::Bool | Type::Float
+                | Type::Str | Type::OptionInt | Type::OptionResultIntStr);
+            let family = overloads.entry(key.clone()).or_insert_with(|| vec![first.clone()]);
+            if f.name == "main" || f.is_generator || family.iter().any(|s| p.funcs[s.0 as usize].is_generator)
+                || !params.iter().copied().all(admitted)
+                || family.iter().any(|s| !s.1.iter().copied().all(admitted) || s.1 == params) {
+                return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
+                    format!("function '{}' has duplicate or unsupported typed overload", f.name)));
+            }
+            family.push((i as u32, params, ret));
+        } else {
+            sigs.insert(key, (i as u32, params, ret));
+            names.entry(f.name.clone()).or_default().push(f.params.len());
+        }
+    }
+
+    // The full family is kept for any name with an omittable formal.
+    // Do not let the legacy name/arity table bypass provenance lowering.
+    if p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some())) || c.methods.iter().any(|m| m.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some())))
+        || p.actors.iter().any(|a| a.methods.iter().any(|m| m.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some()))) {
+        return Err(Diagnostic::new(Pos::default(), "E_UNSUPPORTED", "omittable method and constructor ABI is not implemented"));
+    }
+    let omission_defaults = p.funcs.iter().map(|f| f.params.iter().map(|q| q.omission_default.clone()).collect()).collect();
+    let mut presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>> = BTreeMap::new();
+    for f in &p.funcs {
+        for q in &f.params {
+            if (q.none_default.is_some() && (q.ty != Type::OptionInt || q.mutable))
+                || (q.omission_default.is_some() && (!q.omittable || q.mutable))
+                || (q.omittable && !matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr) && q.omission_default.is_none()) {
+                return Err(type_err(q.pos, "invalid default metadata"));
+            }
+            if let Some(value) = &q.omission_default { constant_default(value, q.ty, 0, q.pos)?; }
+        }
+        if f.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some()) {
+            if f.name == "main" || f.is_generator || f.params.len() + f.params.iter().filter(|q| q.omittable).count() > crate::parser::MAX_PARAMS {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "entrypoints, generators and over-budget hidden parameter frames cannot have omittable parameters in this slice"));
+            }
+            presence_families.entry(f.name.clone()).or_default();
+        }
+    }
+    for (i, f) in p.funcs.iter().enumerate() {
+        if let Some(family) = presence_families.get_mut(&f.name) {
+            if f.is_generator || f.params.iter().any(|q| !matches!(q.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::OptionInt | Type::OptionResultIntStr)) || f.params.iter().any(|q| q.omittable &&
+                (q.mutable || (!matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr) && !(q.ty == Type::Int && q.omission_default.is_some())))) {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "unsupported omittable overload family"));
+            }
+            let formals = f.params.iter().map(|q| Ok(crate::call_presence_v2::Formal {
+                ty: res(q.ty)?, omittable: q.omittable,
+                none_default: q.none_default.is_some(), omission_default: q.omission_default.is_some(),
+            })).collect::<R<Vec<_>>>()?;
+            family.push((i as u32, formals, res(f.ret)?));
+        }
     }
 
     // ---- member function indices follow the top-level functions
@@ -1035,6 +1106,18 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         Ok(out)
     };
+    // Admit only permanently immutable leaf layouts; a fixed reference slot
+    // alone is never proof of immutability. No constructor or method can
+    // inject aliases or mutate this leaf. The source declaration, including
+    // private fields, supplies the entire closed-world witness.
+    let immutable_copy_leaves: Vec<bool> = p.classes.iter().map(|c| {
+        !c.state_container && !c.name.starts_with("__atto_tuple_private_") &&
+            c.ctor.is_none() && c.methods.is_empty() && c.fields.iter().all(|f|
+                !f.referent_mutable && !f.binding.rebindable() &&
+                f.mode == FieldMode::Final && f.init.as_ref().is_some_and(const_init) &&
+                res(f.ty).is_ok_and(|t| matches!(t,
+                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))))
+    }).collect();
     let fields_of = |owner: &str, fs: &[Field], actor: bool, global_base: u32| -> R<Vec<FieldInfo>> {
         let mut out: Vec<FieldInfo> = Vec::new();
         for (i, f) in fs.iter().enumerate() {
@@ -1070,6 +1153,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             let ok = match ty {
                 Type::Int | Type::Bool => true,
                 Type::Float | Type::Str | Type::Enum(_) => !actor,
+                Type::Class(child) => !actor && !f.referent_mutable && f.binding != FieldBinding::Const &&
+                    f.mode != FieldMode::ActorState && immutable_copy_leaves[child as usize] &&
+                    matches!(f.init.as_ref().map(|e| &e.kind), Some(ExprKind::New(name, args))
+                        if name == &class_names[child as usize] && args.is_empty()),
                 _ => false,
             };
             if !ok {
@@ -1100,23 +1187,33 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     };
 
     let mut classes = Vec::new();
-    for c in &p.classes {
+    for (ci, c) in p.classes.iter().enumerate() {
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
+        if fields.iter().any(|f| matches!(f.ty, Type::Class(_))) &&
+            (c.state_container || c.ctor.is_some() || !c.methods.is_empty() ||
+             c.name.starts_with("__atto_tuple_private_")) {
+            return Err(Diagnostic::new(c.pos, "E_COPY_UNPROVEN",
+                "nested immutable copy layout requires a constructor-free ordinary root without methods"));
+        }
         let mut methods = methods_of(&c.name, &c.methods, &c.fields)?;
         let new_idx = take();
         let ctor_idx = c.ctor.as_ref().map(|_| take());
         for m in &mut methods {
             m.idx = take();
         }
-        // This first AOT profile may copy only a flat class of verified
-        // identity-free slots. Class/actor/ADT handles require a graph memo,
+        // This bounded AOT profile permits scalar slots and proven immutable
+        // leaves only. Mutable class/actor/ADT handles require further proof,
         // and protected actor-state objects cannot bypass their sealed leases.
         // Custom copy_deep overrides need separate proof/hook chaining.
-        let can_generate_deep_copy = !c.state_container
-            && !c.methods.iter().any(|m| m.name == "copy_deep")
-            && fields.iter().all(|f| matches!(f.ty,
-                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
+        let flat = !c.state_container && fields.iter().all(|f| match f.ty {
+            Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
+            Type::Class(child) => !f.referent_mutable && immutable_copy_leaves[child as usize],
+            _ => false,
+        });
+        let can_generate_deep_copy = flat && !c.methods.iter().any(|m| m.name == "copy_deep");
+        let can_generate_shallow_copy = flat && !c.methods.iter().any(|m| m.name == "copy");
         let deep_copy_idx = if can_generate_deep_copy { Some(take()) } else { None };
+        let shallow_copy_idx = if can_generate_shallow_copy { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
@@ -1124,10 +1221,12 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         classes.push(ClassInfo {
             name: c.name.clone(),
             state_container: c.state_container,
+            immutable_copy_leaf: immutable_copy_leaves[ci],
             fields,
             methods,
             new_idx,
             deep_copy_idx,
+            shallow_copy_idx,
             ctor_idx,
             ctor_params,
         });
@@ -1135,6 +1234,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut actors = Vec::new();
     let mut globals = Vec::new();
     for a in &p.actors {
+        match a.kind {
+            ActorKind::Default | ActorKind::Serial => {}
+            ActorKind::Isolated | ActorKind::Shared | ActorKind::Untrusted =>
+                return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED",
+                    "isolated/shared/untrusted scheduling and TenantVM confinement are not yet proven")),
+        }
+        if a.receive.is_none() {
+            return Err(Diagnostic::new(a.pos, "E_TYPE",
+                format!("actor '{}' requires exactly one typed receive(msg: T) or receive(ActorMail<T> mail) entrypoint", a.name)));
+        }
         let fields = fields_of(&a.name, &a.fields, true, globals.len() as u32)?;
         globals.extend(fields.iter().map(|f| f.ty));
         let mut methods = methods_of(&a.name, &a.methods, &a.fields)?;
@@ -1142,7 +1251,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             return Err(Diagnostic::new(
                 m.pos,
                 "E_TYPE",
-                format!("actor mailbox handler '{}.receive' parameter must be ActorMail<T>", a.name),
+                format!("actor mailbox handler '{}.receive' must use the sealed typed receive entrypoint", a.name),
             ));
         }
         let receive_idx = a.receive.as_ref().map(|_| take());
@@ -1162,6 +1271,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                         ),
                     ));
                 }
+                if !r.envelope && t != Type::Int {
+                    return Err(Diagnostic::new(r.pos, "E_UNSUPPORTED_TYPE",
+                        "direct receive(msg: T) currently lowers only int; use ActorMail<bool> for bool"));
+                }
                 t
             }
             None => Type::Void,
@@ -1178,6 +1291,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     let g = Globals {
         sigs,
+        overloads,
+        presence_families,
+        omission_defaults,
         names,
         classes,
         enums: &p.enums,
@@ -1218,7 +1334,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // ---- top-level functions
     let mut generators = Vec::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
+        let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
+        let ret = res(f.ret)?;
         if f.is_generator {
             if let Some(mut plan) = generator_lower::lower(f)? {
                 plan.function = i as u32;
@@ -1257,13 +1374,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             });
             continue;
         }
-        let named: Vec<(&str, Type, bool)> = f
+        let mut named: Vec<(&str, Type, bool)> = f
             .params
             .iter()
             .zip(&params)
             .map(|(q, t)| (q.name.as_str(), *t, q.mutable))
             .collect();
-        let body = body_check(
+        let hidden_names = f.params.iter().enumerate().filter(|(_, q)| q.omittable)
+            .map(|(i, _)| format!("\0omitted:{i}")).collect::<Vec<_>>();
+        named.extend(hidden_names.iter().map(|n| (n.as_str(), Type::Bool, false)));
+        let mut body = body_check(
             &g,
             BodyCheckInput {
                 owner: Owner::TopLevel, named: &named, mail: None,
@@ -1271,9 +1391,39 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             },
             &mut imports, &mut data,
         )?;
+        // Apply the supplied-None default in the callee, before user code.
+        // Omitted inputs already carry their omission default and never cascade.
+        let mut prelude = Vec::new();
+        let mut flag = f.params.len() as u32;
+        for (j, q) in f.params.iter().enumerate() {
+            let omitted_slot = if q.omittable { let s = flag; flag += 1; Some(s) } else { None };
+            if let Some(default) = &q.none_default {
+                if q.ty != Type::OptionInt || q.mutable {
+                    return Err(type_err(q.pos, "unsupported None default formal"));
+                }
+                if body.1.len() >= MAX_LOCALS {
+                    return Err(Diagnostic::new(q.pos, "E_SOURCE_LIMIT", "default temporary exceeds local limit"));
+                }
+                let tmp = named.len() as u32 + body.1.len() as u32;
+                body.1.push(q.ty);
+                let value = constant_default(default, q.ty, tmp, q.pos)?;
+                let is_none = TE { ty: Type::Bool, e: TExpr::AdtIs {
+                    obj: Box::new(TE { ty: q.ty, e: TExpr::Local(j as u32) }), tag: 0,
+                }};
+                let branch = TStmt::If(vec![(is_none, vec![TStmt::Set(j as u32, value)])], None);
+                prelude.push(if let Some(s) = omitted_slot {
+                    let supplied = TE { ty: Type::Bool, e: TExpr::Not(Box::new(TE {
+                        ty: Type::Bool, e: TExpr::Local(s),
+                    })) };
+                    TStmt::If(vec![(supplied, vec![branch])], None)
+                } else { branch });
+            }
+        }
+        prelude.append(&mut body.0);
+        body.0 = prelude;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
-            params,
+            params: named.iter().map(|n| n.1).collect(),
             ret,
             locals: body.1,
             body: body.0,
@@ -1370,12 +1520,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             body,
         });
         // Generated source-independent whole-concrete-type copy plan. The
-        // checker has proved that each slot can be copied by value; emitting
+        // checker has proved each slot is scalar or permanently immutable; emitting
         // an allocation plus typed field loads/stores creates a fresh object
         // without invoking any initializer or user constructor a second time.
         // The copy function is private and has no reflective field access.
-        if let Some(copy_idx) = info.deep_copy_idx {
-            authenticate_flat_copy_aot(&g.classes, ci as u32, c.pos)?;
+        for (copy_idx, mode, method_name) in [
+            (info.deep_copy_idx, crate::copy_graph_v1::CopyMode::Deep, "copy_deep"),
+            (info.shallow_copy_idx, crate::copy_graph_v1::CopyMode::Shallow, "copy"),
+        ] {
+            let Some(copy_idx) = copy_idx else { continue; };
+            authenticate_flat_copy_aot(&g.classes, ci as u32, c.pos, mode)?;
             let source = TE { e: TExpr::Local(0), ty: me };
             let cloned = TE { e: TExpr::Local(1), ty: me };
             let mut body = vec![TStmt::Set(1, TE {
@@ -1394,7 +1548,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
             body.push(TStmt::Return(Some(cloned)));
             funcs[copy_idx as usize] = Some(TFunc {
-                name: format!("{}.copy_deep$generated", c.name),
+                name: format!("{}.{method_name}$generated", c.name),
                 params: vec![me], ret: me, locals: vec![me], body,
             });
         }
@@ -1440,11 +1594,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         if let (Some(r), Some(ridx)) = (&a.receive, info.receive_idx) {
             let label = format!("{}.receive", a.name);
-            let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
+            let named = if r.envelope {
+                [("$value", Type::Int, false), ("$sequence", Type::Int, false)]
+            } else {
+                [(r.mail.as_str(), Type::Int, false), ("$sequence", Type::Int, false)]
+            };
             let body = body_check(
                 &g,
                 BodyCheckInput {
-                    owner, named: &named, mail: Some((r.mail.as_str(), info.payload)),
+                    owner, named: &named,
+                    mail: if r.envelope { Some((r.mail.as_str(), info.payload)) } else { None },
                     ret: Type::Void, body: &r.body, label: &label, pos: r.pos,
                 },
                 &mut imports, &mut data,
@@ -1460,6 +1619,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for (m, mi) in a.methods.iter().zip(&info.methods) {
             for (q, t) in m.params.iter().zip(&mi.params).map(|(q, t)| (q, *t)).chain(std::iter::once((
                 &Param {
+                    omittable: false, none_default: None, omission_default: None,
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
@@ -1494,6 +1654,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         tactors.push(TActor {
             name: a.name.clone(),
+            kind: a.kind,
+            payload: info.payload,
             inits,
             receive: info.receive_idx,
         });
@@ -1524,8 +1686,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     audit_cleanup_call_effects(&funcs, &p.funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
-    let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+    // Even uncalled match-only functions emit tag and payload loads.
+    // The module's memory must not depend on a call constructing an ADT.
+    let adt_memory_access = funcs.iter().any(|f| any_in_stmts(&f.body,
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::AdtIs { .. }
+            | TExpr::AdtPayload(_) | TExpr::AdtPropagate { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
@@ -1535,7 +1700,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
+        heap: !p.classes.is_empty() || concat || adt_memory_access || !generators.is_empty(),
         generators,
         globals,
         actors: tactors,
@@ -1581,7 +1746,7 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         TExpr::RefinementCheck(v, _, _, _) | TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
-        | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
+        | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. } | TExpr::AdtExpect { source: v, .. }
         | TExpr::FieldGet { obj: v, .. }
         | TExpr::CollectionLoad { array: v, .. }
         | TExpr::StateFieldRead { obj: v, .. }
@@ -1801,6 +1966,14 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
         // assignment. No synthetic initializer or implicit default is emitted.
         return Ok(None);
     };
+    if let Type::Class(child) = ty {
+        let leaf = &g.classes[child as usize];
+        if !actor && !f.referent_mutable && leaf.immutable_copy_leaf &&
+            matches!(&init.kind, ExprKind::New(name, args) if name == &leaf.name && args.is_empty()) {
+            return Ok(Some(TE { e: TExpr::Call(leaf.new_idx, vec![]), ty }));
+        }
+        return Err(Diagnostic::new(init.pos, "E_COPY_UNPROVEN", "nested initializer lacks a verified immutable leaf witness"));
+    }
     if !const_init(init) {
         return Err(Diagnostic::new(
             init.pos,
@@ -2351,7 +2524,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-        TExpr::AdtPropagate { .. } |
+        TExpr::AdtPropagate { .. } | TExpr::AdtExpect { .. } |
         TExpr::TraceSpanBegin { .. } | TExpr::TraceSpanEnd { .. } => false,
     }
 }
@@ -2421,7 +2594,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
-        TExpr::AdtPropagate { source, .. } => any_in(source, f),
+        TExpr::AdtPropagate { source, .. } | TExpr::AdtExpect { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
@@ -2736,6 +2909,9 @@ impl<'a> FnCx<'a> {
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         let mut checked = Vec::with_capacity(body.len());
+        // A syntactic future-use witness is stable within this immutable body.
+        // Slots (not names) distinguish shadowed or newly introduced loans.
+        let mut next_use = BTreeMap::new();
         for (i, stmt) in body.iter().enumerate() {
             checked.push(self.stmt(stmt)?);
             // Never retire an outer-scope loan inside a child scope.
@@ -2745,12 +2921,13 @@ impl<'a> FnCx<'a> {
             let fuel = &mut self.nll_fuel;
             let ended: Vec<u32> = self.scopes.last().unwrap().iter()
                 .filter(|local| loans.contains_key(&local.slot) &&
-                    !body[i + 1..].iter().any(|next|
-                        loan_liveness::stmt_mentions(next, &local.name, fuel)))
+                    !loan_liveness::has_future_use(body, i, local.slot, &local.name,
+                        fuel, &mut next_use))
                 .map(|local| local.slot)
                 .collect();
             if let Some(tr) = self.trace.as_mut() { tr.scope_ended(&ended, Pos::default()); }
             for alias in ended {
+                next_use.remove(&alias);
                 self.loans.remove(&alias);
                 // borrowed_slots is intentionally permanent through this
                 // scope: an expired class alias is NEVER an owner.
@@ -2820,7 +2997,24 @@ impl<'a> FnCx<'a> {
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
-                if matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_)) {
+                // A verified generated flat-class copier allocates a new root,
+                // just like direct construction. Check the actual lowered call
+                // index, not merely the spelling of a user-defined function.
+                let fresh_copy = match (&init.kind, &v.e, v.ty) {
+                    (ExprKind::Ownership(op @ (OwnershipOp::Copy | OwnershipOp::DeepCopy), false, _),
+                        TExpr::Call(index, _), Type::Class(ci)) => {
+                        let class = &self.g.classes[ci as usize];
+                        !class.state_container && !class.name.starts_with("__atto_tuple_private_") &&
+                            class.fields.iter().all(|f| match f.ty {
+                                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) => true,
+                                Type::Class(child) => !f.referent_mutable && self.g.classes[child as usize].immutable_copy_leaf,
+                                _ => false,
+                            }) &&
+                            (if *op == OwnershipOp::Copy { class.shallow_copy_idx } else { class.deep_copy_idx }) == Some(*index)
+                    }
+                    _ => false,
+                };
+                if fresh_copy || (matches!(init.kind, ExprKind::New(..)) && matches!(v.ty, Type::Class(_))) {
                     self.fresh_class_roots.insert(slot);
                 }
                 if let Some(tr) = self.trace.as_mut() {
@@ -3233,7 +3427,7 @@ impl<'a> FnCx<'a> {
                 ));
             }
             // (pattern test, literal key for reachability, binding name)
-            let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match &arm.pattern {
+            let (test, keys, bind): (Option<TE>, Option<Vec<i64>>, Option<&str>) = match &arm.pattern {
                 Pattern::Wild => (None, None, None),
                 Pattern::Bind(n) => (None, None, Some(n.as_str())),
                 Pattern::Int(v) => {
@@ -3249,9 +3443,65 @@ impl<'a> FnCx<'a> {
                             e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)),
                             ty: Type::Bool,
                         }),
-                        Some(*v),
+                        Some(vec![*v]),
                         None,
                     )
+                }
+                Pattern::ConstSet { ints, bools, types } => {
+                    if types.contains(&sty) {
+                        (None, None, None)
+                    } else {
+                        let literals: Vec<TE> = match sty {
+                            Type::Int => ints.iter().map(|v| TE { e: TExpr::I64(*v), ty: sty }).collect(),
+                            Type::Bool => bools.iter().map(|v| TE { e: TExpr::Bool(*v), ty: sty }).collect(),
+                            _ => Vec::new(),
+                        };
+                        if literals.is_empty() {
+                            return Err(Diagnostic::new(arm.pos, "E_MATCH", "stored pattern set has no alternative for subject"));
+                        }
+                        let keys = if sty == Type::Int { ints.clone() } else { bools.iter().map(|b| i64::from(*b)).collect() };
+                        let mut test = TE { e: TExpr::Bool(false), ty: Type::Bool };
+                        for lit in literals.into_iter().rev() {
+                            let eq = TE { e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)), ty: Type::Bool };
+                            test = TE { e: TExpr::Ternary(Box::new(eq),
+                                Box::new(TE { e: TExpr::Bool(true), ty: Type::Bool }), Box::new(test)), ty: Type::Bool };
+                        }
+                        (Some(test), Some(keys), None)
+                    }
+                }
+                Pattern::StaticTypes(types) => {
+                    if !types.contains(&sty) {
+                        return Err(Diagnostic::new(arm.pos, "E_MATCH",
+                            "unreachable type arm: subject has no listed static scalar type"));
+                    }
+                    // A proven static type test covers the whole subject domain,
+                    // but a guard may still fail. No value conversion occurs.
+                    (None, None, None)
+                }
+                Pattern::InInts(values) => {
+                    if sty != Type::Int {
+                        return Err(type_err(arm.pos, "int membership requires an int subject"));
+                    }
+                    if values.is_empty() || values.len() > 64 {
+                        return Err(Diagnostic::new(arm.pos, "E_MATCH", "invalid membership list size"));
+                    }
+                    // Reuse the once-evaluated scrutinee and existing lazy
+                    // conditional IR; emit one body, no temporary guest array.
+                    let mut test = TE { e: TExpr::Bool(false), ty: Type::Bool };
+                    for v in values.iter().rev() {
+                        let eq = TE {
+                            e: TExpr::Bin(BinOp::Eq, Box::new(get()),
+                                Box::new(TE { e: TExpr::I64(*v), ty: Type::Int })),
+                            ty: Type::Bool,
+                        };
+                        test = TE {
+                            e: TExpr::Ternary(Box::new(eq),
+                                Box::new(TE { e: TExpr::Bool(true), ty: Type::Bool }),
+                                Box::new(test)),
+                            ty: Type::Bool,
+                        };
+                    }
+                    (Some(test), Some(values.clone()), None)
                 }
                 Pattern::Bool(b) => {
                     if sty != Type::Bool {
@@ -3266,7 +3516,7 @@ impl<'a> FnCx<'a> {
                             e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)),
                             ty: Type::Bool,
                         }),
-                        Some(*b as i64),
+                        Some(vec![*b as i64]),
                         None,
                     )
                 }
@@ -3293,13 +3543,13 @@ impl<'a> FnCx<'a> {
                             e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(ev)),
                             ty: Type::Bool,
                         }),
-                        Some(ord),
+                        Some(vec![ord]),
                         None,
                     )
                 }
             };
-            if let Some(k) = key {
-                if seen.contains(&k) {
+            if let Some(keys) = &keys {
+                if keys.iter().all(|k| seen.contains(k)) {
                     return Err(Diagnostic::new(
                         arm.pos,
                         "E_MATCH",
@@ -3360,9 +3610,9 @@ impl<'a> FnCx<'a> {
             self.pop_scope();
             let (cond, body) = r?;
             if arm.guard.is_none() {
-                match key {
-                    Some(k) => {
-                        seen.insert(k);
+                match keys {
+                    Some(keys) => {
+                        seen.extend(keys);
                         if seen.len() == variants {
                             covered = true;
                         }
@@ -3603,9 +3853,17 @@ impl<'a> FnCx<'a> {
                         "cannot reassign val/final/const field"));
                 }
                 let (offset, fty) = (f.slot, f.ty);
-                if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                let fresh_immutable = match fty {
+                    Type::Class(child) => {
+                        let leaf = &self.g.classes[child as usize];
+                        !f.referent_mutable && leaf.immutable_copy_leaf &&
+                            matches!(&value.kind, ExprKind::New(name, args) if name == &leaf.name && args.is_empty())
+                    }
+                    _ => false,
+                };
+                if !fresh_immutable && !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                     return Err(Diagnostic::new(pos, "E_BORROW",
-                        "reference-valued class field assignment requires checked ownership transfer"));
+                        "reference-valued class field assignment requires a fresh verified immutable leaf"));
                 }
                 if self.loans.values().any(|loan| loan.owner == slot &&
                     (loan.field.is_none() || loan.field == Some(offset))) {
@@ -3969,33 +4227,51 @@ impl<'a> FnCx<'a> {
             OwnershipOp::Copy | OwnershipOp::DeepCopy | OwnershipOp::Share => {
                 // Identity-free admitted scalars have no mutable descendants:
                 // shallow and deep copies are the same guest value operation.
-                // Copy!! can also use a *compiler-emitted* AOT copier for an
+                // Both copy modes can use a mode-specific *compiler-emitted* AOT copier for an
                 // ordinary flat class whose full stored field layout was
                 // independently checked before this expression was lowered.
                 let value = self.value(inner)?;
-                if action == OwnershipOp::DeepCopy {
+                if matches!(action, OwnershipOp::Copy | OwnershipOp::DeepCopy) {
                     if let Type::Class(ci) = value.ty {
+                        let shallow = action == OwnershipOp::Copy;
+                        if self.g.classes[ci as usize].fields.iter().any(|f| matches!(f.ty, Type::Class(_))) {
+                            if let Some(tr) = self.trace.as_mut() {
+                                tr.unavailable("nested immutable copy witness not represented in L3");
+                            }
+                        }
+                        // Existing L3 wire format has no distinct shallow-class event.
+                        // Do not mislabel it as DeepCopy or export a partial proof.
+                        if shallow {
+                            if let Some(tr) = self.trace.as_mut() {
+                                tr.unavailable("mode-specific shallow class copy witness not in L3 wire profile");
+                            }
+                        }
                         if let ExprKind::Var(name) = &inner.kind {
                             if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
-                                if let Some(tr) = self.trace.as_mut() { tr.deep_copied(owner_slot, pos); }
+                                if !shallow {
+                                    if let Some(tr) = self.trace.as_mut() { tr.deep_copied(owner_slot, pos); }
+                                }
                                 if self.loans.contains_key(&owner_slot)
                                     || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
                                 {
                                     return Err(Diagnostic::new(pos, "E_BORROW",
-                                        "copy!! cannot read a mutable/exclusive borrowed class owner"));
+                                        "copy cannot read a mutable/exclusive borrowed class owner"));
                                 }
                             }
                         }
                         let class = &self.g.classes[ci as usize];
-                        if class.methods.iter().any(|m| m.name == "copy_deep") {
+                        let method = if shallow { "copy" } else { "copy_deep" };
+                        if class.methods.iter().any(|m| m.name == method) {
                             return Err(Diagnostic::new(pos, "E_COPY_OVERRIDE",
-                                "custom copy_deep overrides need verified complete-plan/hook support"));
+                                "custom copy overrides need verified complete-plan/hook support"));
                         }
-                        let Some(copy_idx) = class.deep_copy_idx else {
-                            return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
-                                "copy!! class graph contains unproved mutable/reference slots or protected actor state"));
+                        let index = if shallow { class.shallow_copy_idx } else { class.deep_copy_idx };
+                        let Some(copy_idx) = index else {
+                            return Err(Diagnostic::new(pos, if shallow { "E_COPY_SHALLOW_ALIAS" } else { "E_COPY_DEEP_UNSUPPORTED" },
+                                "class graph contains unproved mutable/reference slots or protected actor state"));
                         };
-                        authenticate_flat_copy_aot(&self.g.classes, ci, pos)?;
+                        let mode = if shallow { crate::copy_graph_v1::CopyMode::Shallow } else { crate::copy_graph_v1::CopyMode::Deep };
+                        authenticate_flat_copy_aot(&self.g.classes, ci, pos, mode)?;
                         return Ok(TE { e: TExpr::Call(copy_idx, vec![value]), ty: Type::Class(ci) });
                     }
                 }
@@ -4593,7 +4869,7 @@ impl<'a> FnCx<'a> {
                 None if self.g.class(name).is_some() || self.g.enum_(name).is_some() || self.g.actor(name).is_some() => {
                     return Err(Diagnostic::new(
                         pos,
-                        "E_UNSUPPORTED",
+                        "E_TYPE_NOT_VALUE",
                         format!("the type name '{name}' is not a value"),
                     ))
                 }
@@ -4661,7 +4937,14 @@ impl<'a> FnCx<'a> {
                     ty: Type::ActorRef(a),
                 }
             }
-            ExprKind::Member(base, name) => self.member(base, name, pos)?,
+            ExprKind::Member(base, name) => {
+                let projected = self.member(base, name, pos)?;
+                if matches!(projected.ty, Type::Class(_)) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "nested leaf reference is projection-only; owned extraction requires a lifetime witness"));
+                }
+                projected
+            },
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "array literals are parsed but not yet lowered to browser Wasm")),
@@ -4722,6 +5005,11 @@ impl<'a> FnCx<'a> {
             ));
         }
         let (idx, params) = (info.new_idx, info.ctor_params.clone());
+        if info.fields.iter().any(|f| matches!(f.ty, Type::Class(_))) {
+            if let Some(tr) = self.trace.as_mut() {
+                tr.unavailable("nested immutable allocation layout not represented in L3");
+            }
+        }
         let targs = self.args(&format!("{class} constructor"), args, &params)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
@@ -4861,7 +5149,24 @@ impl<'a> FnCx<'a> {
                 _ => return Err(Diagnostic::new(base.pos, "E_UNBOUND", "unknown name 'self'")),
             }
         }
-        let obj = self.value(base)?;
+        // A class-valued field is not an owned expression. Only a scalar
+        // projection through a named root can read this shared immutable
+        // leaf; the ordinary expression arm rejects extraction.
+        let obj = if let ExprKind::Member(root, field) = &base.kind {
+            if !matches!(&root.kind, ExprKind::Var(_)) {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "nested projection requires a named root"));
+            }
+            let projected = self.member(root, field, base.pos)?;
+            if matches!(projected.ty, Type::Class(_)) {
+                if let Some(tr) = self.trace.as_mut() {
+                    tr.unavailable("nested immutable field projection not represented in L3");
+                }
+            }
+            projected
+        } else {
+            self.value(base)?
+        };
         self.member_on(obj, name, pos)
     }
 
@@ -5056,6 +5361,35 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn method_on(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        let predicate = match (recv.ty, name) {
+            (Type::OptionInt | Type::OptionResultIntStr, "is_none") => Some(0),
+            (Type::OptionInt | Type::OptionResultIntStr, "is_some") => Some(1),
+            (Type::ResultIntStr | Type::ResultIntInt, "is_ok") => Some(0),
+            (Type::ResultIntStr | Type::ResultIntInt, "is_err") => Some(1),
+            _ => None,
+        };
+        if let Some(tag) = predicate {
+            self.arity(name, 0, args.len(), pos)?;
+            return Ok(TE { e: TExpr::AdtIs { obj: Box::new(recv), tag }, ty: Type::Bool });
+        }
+        if name == "expect" {
+            let carrier = match recv.ty {
+                Type::OptionInt => Some((1, Type::Int)),
+                Type::OptionResultIntStr => Some((1, Type::ResultIntStr)),
+                Type::ResultIntStr | Type::ResultIntInt => Some((0, Type::Int)),
+                _ => None,
+            };
+            if let Some((success_tag, ty)) = carrier {
+                self.arity("Option/Result.expect", 1, args.len(), pos)?;
+                // Restricted profile: dynamic messages would require a new runtime
+                // panic-message ABI. Preserve the terminal-vs-ordinary distinction.
+                if !matches!(&args[0].kind, ExprKind::Str(_)) {
+                    return Err(type_err(args[0].pos, "expect requires a literal String message in this profile"));
+                }
+                let tmp = self.temp(recv.ty, pos)?;
+                return Ok(TE { e: TExpr::AdtExpect { source: Box::new(recv), tmp, success_tag }, ty });
+            }
+        }
         if recv.ty == Type::Str {
             return self.string_method(recv, name, args, pos);
         }
@@ -5089,7 +5423,7 @@ impl<'a> FnCx<'a> {
                     return Err(type_err(
                         pos,
                         format!(
-                            "actor '{}' has no receive(ActorMail<T>) handler, so it cannot accept send",
+                            "actor '{}' has no typed receive handler, so it cannot accept send",
                             actor.name
                         ),
                     ));
@@ -5101,7 +5435,7 @@ impl<'a> FnCx<'a> {
                     return Err(type_err(
                         args[0].pos,
                         format!(
-                            "ActorRef.send mailbox value has type {} but '{actor_name}' receives ActorMail<{}>",
+                            "ActorRef.send mailbox value has type {} but '{actor_name}' receives {}",
                             self.tn(v.ty),
                             self.tn(payload)
                         ),
@@ -5169,7 +5503,50 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// Read only syntactically stable argument types before selecting a
+    /// target. No speculative consumption, effect execution or AST rewriting.
+    /// More complex expressions need an explicitly typed local in this slice.
+    fn overload_item(&self, arg: &Expr) -> R<crate::call_presence_v2::Item> {
+        use crate::call_presence_v2::Item;
+        let ty = match &arg.kind {
+            ExprKind::Int(_) => Type::Int,
+            ExprKind::Bool(_) => Type::Bool,
+            ExprKind::Float(_) => Type::Float,
+            ExprKind::Str(_) => Type::Str,
+            ExprKind::Var(name) if name == "None" => return Ok(Item::UntypedNone),
+            ExprKind::Var(name) => self.lookup(name)
+                .filter(|l| l.mail.is_none())
+                .map(|l| l.ty)
+                .ok_or_else(|| Diagnostic::new(arg.pos, "E_UNBOUND",
+                    format!("unknown or unsupported overload argument '{name}'")))?,
+            ExprKind::Call(name, args) if name == "Some" && args.len() == 1 => {
+                match self.overload_item(&args[0])? {
+                    Item::Typed(Type::Int) => Type::OptionInt,
+                    Item::Typed(Type::ResultIntStr) => Type::OptionResultIntStr,
+                    _ => return Err(type_err(arg.pos, "unsupported Some payload for typed overload")),
+                }
+            }
+            _ => return Err(Diagnostic::new(arg.pos, "E_UNSUPPORTED",
+                "typed overload argument needs a literal, typed binding, or supported Some payload")),
+        };
+        Ok(Item::Typed(ty))
+    }
+
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if name == "\0is_omitted" {
+            if self.owner != Owner::TopLevel || args.len() != 1 {
+                return Err(Diagnostic::new(pos, "E_OMISSION_PROVENANCE", "is omitted requires an omittable formal"));
+            }
+            if let ExprKind::Var(n) = &args[0].kind {
+                if let Some(local) = self.lookup(n) {
+                    let hidden = format!("\0omitted:{}", local.slot);
+                    if let Some(bit) = self.lookup(&hidden) {
+                        return Ok(TE { e: TExpr::Local(bit.slot), ty: Type::Bool });
+                    }
+                }
+            }
+            return Err(Diagnostic::new(pos, "E_OMISSION_PROVENANCE", "is omitted requires an original omittable formal binding"));
+        }
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
         }
@@ -5322,7 +5699,73 @@ impl<'a> FnCx<'a> {
                 return Err(isolation(pos, me, "file/module callable", name));
             }
         }
-        let (idx, params, ret) = match self.g.sigs.get(&(name.to_string(), args.len())) {
+        if let Some(family) = self.g.presence_families.get(name) {
+            use crate::call_presence_v2::{self, Item, Origin, Error};
+            let items = args.iter().map(|a| {
+                if matches!(&a.kind, ExprKind::Var(n) if (n == "omit" || n == "_") && self.lookup(n).is_none()) {
+                    Ok(Item::Hole)
+                } else {
+                    self.overload_item(a)
+                }
+            }).collect::<R<Vec<_>>>()?;
+            let candidates = family.iter().map(|s| s.1.clone()).collect::<Vec<_>>();
+            let plan = call_presence_v2::select(&candidates, &items).map_err(|err| {
+                Diagnostic::new(pos, match err {
+                    Error::Ambiguous => "E_AMBIGUOUS",
+                    Error::NoMatch => "E_ARITY",
+                    _ => "E_DUPLICATE",
+                }, format!("omittable overload selection for '{name}' failed: {err:?}"))
+            })?;
+            let (idx, formals, ret) = family[plan.candidate].clone();
+            let mut typed = Vec::new();
+            let mut provenance = Vec::new();
+            for (j, (formal, slot)) in formals.iter().zip(&plan.slots).enumerate() {
+                let supplied = match slot.origin {
+                    Origin::Supplied(i) => {
+                        let value = self.consume_expected(&args[i], formal.ty)?;
+                        if value.ty != formal.ty { return Err(type_err(pos, "selected argument type differs")); }
+                        typed.push(value);
+                        true
+                    }
+                    Origin::ExplicitHole(_) | Origin::Absent => {
+                        if let Some(default) = self.g.omission_defaults[idx as usize][j].clone() {
+                            let tmp = if formal.ty == Type::Int { 0 } else { self.temp(formal.ty, pos)? };
+                            typed.push(constant_default(&default, formal.ty, tmp, pos)?);
+                        } else {
+                            let none = Expr { kind: ExprKind::Var("None".into()), pos };
+                            typed.push(self.consume_expected(&none, formal.ty)?);
+                        }
+                        false
+                    }
+                };
+                if formal.omittable {
+                    provenance.push(TE { e: TExpr::Bool(!supplied), ty: Type::Bool });
+                }
+            }
+            typed.extend(provenance);
+            return Ok(TE { e: TExpr::Call(idx, typed), ty: ret });
+        }
+        let key = (name.to_string(), args.len());
+        if let Some(family) = self.g.overloads.get(&key) {
+            use crate::call_presence_v2::{self, Formal, Error};
+            let items = args.iter().map(|a| self.overload_item(a)).collect::<R<Vec<_>>>()?;
+            let candidates = family.iter().map(|s| s.1.iter().map(|&ty| Formal {
+                ty, omittable: false, none_default: false, omission_default: false,
+            }).collect::<Vec<_>>()).collect::<Vec<_>>();
+            let plan = call_presence_v2::select(&candidates, &items).map_err(|err| {
+                Diagnostic::new(pos, match err {
+                    Error::Ambiguous => "E_AMBIGUOUS",
+                    Error::NoMatch => "E_TYPE",
+                    _ => "E_DUPLICATE",
+                }, format!("typed overload selection for '{name}' failed: {err:?}"))
+            })?;
+            let (idx, params, ret) = family[plan.candidate].clone();
+            // The ordinary ownership/type checker still verifies every operand
+            // against the selected signature, in source order, exactly once.
+            let targs = self.args(name, args, &params)?;
+            return Ok(TE { e: TExpr::Call(idx, targs), ty: ret });
+        }
+        let (idx, params, ret) = match self.g.sigs.get(&key) {
             Some(s) => s.clone(),
             None => {
                 return Err(match self.g.names.get(name) {

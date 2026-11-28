@@ -1,0 +1,16 @@
+// Legacy ActorMail<T> is still supported for the serial actor.
+// expect-exit: 0
+// expect-stdout: 0
+// expect-stdout: 1
+serial actor Counter
+    receive(ActorMail<bool> mail): void {
+        stdio.println(mail.sequence);
+        return;
+    }
+end
+pub fnc main(): int {
+    val actor_ref = spawn Counter();
+    actor_ref.send(true);
+    actor_ref.send(false);
+    return 0;
+}

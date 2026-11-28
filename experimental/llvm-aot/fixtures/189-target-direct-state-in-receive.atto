@@ -1,0 +1,16 @@
+// expect-reject: E_SEALED
+use namespace counters;
+declare actor Counter;
+define actor Counter as
+  let int count = 0;
+  receive(ActorMail<int> mail): void {
+    self.count = mail.value;
+    return;
+  }
+end
+mtd (mut self: Counter) update(int value): int { return value; }
+pub fnc main(): int {
+    val worker = spawn Counter();
+    worker.send(3);
+    return 0;
+}

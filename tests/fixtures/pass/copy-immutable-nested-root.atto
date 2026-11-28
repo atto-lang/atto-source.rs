@@ -1,0 +1,19 @@
+// expect-exit: 42
+// java: rejects
+define class FixedLeaf as
+    pub val int n = 20;
+end
+define class Parcel as
+    pub let FixedLeaf child = new FixedLeaf();
+    pub let int extra = 0;
+end
+pub fnc main(): int {
+    let a = new Parcel();
+    let b = copy! a;
+    let c = copy!! b;
+    b.child = new FixedLeaf();
+    a.extra = 1;
+    b.extra = 2;
+    c.extra = 3;
+    return a.child.n + c.child.n + b.extra;
+}

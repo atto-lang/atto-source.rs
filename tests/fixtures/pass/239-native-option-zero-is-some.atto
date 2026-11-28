@@ -1,0 +1,9 @@
+// expect-exit: 42
+// Some(0) is not None: the discriminant, not payload truthiness, decides.
+fnc maybe_zero(): Option<int> { return Some(0); }
+pub fnc main(): int {
+  return match maybe_zero() over
+    on Some(n) -> n + 42,
+    on None -> 0
+  end;
+}

@@ -7,6 +7,8 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Candidate HTTP async request/resume ABI; no guest imports until verified lowering.
+pub mod browser_http_abi_v1;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Bounded 32-bit actor slab heap (Offset32/Handle32), C++/wasm32 parity.
@@ -24,7 +26,8 @@ pub mod collection_layout_guest;
 /// Shared canonical generic binding for production and guest collection parsers.
 pub mod collection_layout_type;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
-/// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
+/// Upstream candidate commit 8b4d90f6b31b6c11483b9025a5055d91079ce220.
+/// Source Git blob c167fe483abed0d38d5c8a25777e529d705ba48c.
 // The canonical verifier is imported byte-identically from the independent
 // checker. Do not edit its SHA-pinned body for Clippy-only style changes.
 #[allow(clippy::needless_return)]
@@ -33,7 +36,10 @@ pub mod borrow_export;
 /// Fail-closed compiler-core preflight for sealed Future-family ownership.
 pub mod core_future_ownership;
 pub mod check;
+/// Staged typed V2 call planning; not yet connected to executable lowering.
+pub mod call_presence_v2;
 pub mod diag;
+pub mod lsp_diagnostics;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
@@ -42,6 +48,7 @@ pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+mod raw_pointer_slot;
 mod struct_value_guest;
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
@@ -107,6 +114,8 @@ pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
 pub mod tuple_ownership_ir;
 pub mod target_typed;
+/// Isolated coroutine codegen; only the narrow scoped-resource profile is gated in.
+pub mod v2;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;
@@ -116,6 +125,11 @@ pub use diag::{Diagnostic, Pos};
 pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Compile the opt-in owned Future cleanup/recovery continuation profile.
+pub fn compile_owned_unwind_v1(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    wasm::owned_unwind_v1::compile(source)
+}
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
@@ -128,6 +142,29 @@ pub fn compile_js(source: &str) -> Result<String, Diagnostic> {
     let source = library::expand(source)?;
     let bytes = compile_inner_target(&source, None, true)?;
     String::from_utf8(bytes).map_err(|_| js_scalar::unsupported())
+}
+
+/// Explicit single-file namespace-v2 entrypoint. File/default/omitted
+/// are identical; named/folder membership remains a package-linker concern.
+/// Uses the existing checked compiler, never a second guest emitter.
+pub fn compile_namespace_file_v2(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    let prepared = namespace::prepare_file_v2(source)?;
+    let tokens = lexer::lex(&prepared)?;
+    if let Some(completed) = target_syntax::complete_file_classes_v2(&tokens)? {
+        return compile_prelexed_target(completed, None, false);
+    }
+    compile(&prepared)
+}
+
+/// Same single-file profile for the existing checked JavaScript emitter.
+pub fn compile_js_namespace_file_v2(source: &str) -> Result<String, Diagnostic> {
+    let prepared = namespace::prepare_file_v2(source)?;
+    let tokens = lexer::lex(&prepared)?;
+    if let Some(completed) = target_syntax::complete_file_classes_v2(&tokens)? {
+        return String::from_utf8(compile_prelexed_target(completed, None, true)?)
+            .map_err(|_| js_scalar::unsupported());
+    }
+    compile_js(&prepared)
 }
 
 /// Opt-in verified scalar profile. The ordinary compiler and linked-source
@@ -167,9 +204,24 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, mut load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
-    if allocation_guarantees::present(&lexer::lex(source)?) {
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            format!("source exceeds {SOURCE_CAP} UTF-8 bytes")));
+    }
+    let lexical = lexer::lex(source)?;
+    if raw_pointer_slot::present(&lexical) {
+        return compile_inner(source, Some(logical_path));
+    }
+    if allocation_guarantees::present(&lexical) {
         return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
             "annotated linked-source compilation requires a verified cross-file effect contract"));
+    }
+    // The CLI uses this entry even for files with no imports. Preserve the
+    // same closed typed lane as the ordinary browser entry. Its complete
+    // source grammar rejects imports before any loader can be invoked.
+    // Do not restore the retired closed-expression evaluator.
+    if verified_quantities::scalar_contract_header(&lexical) || typed_quantity_header(&lexical) {
+        return compile_inner(source, Some(logical_path));
     }
     let mut checked_load = |path: &std::path::Path| -> std::io::Result<String> {
         let loaded = load(path)?;
@@ -232,6 +284,11 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
         ));
     }
     let tokens = lexer::lex(source)?;
+    if raw_pointer_slot::present(&tokens) {
+        if javascript { return Err(js_scalar::unsupported()); }
+        let lowered = raw_pointer_slot::lower_slot(tokens, source)?;
+        return compile_prelexed_target(lowered, logical_path, false);
+    }
     if allocation_guarantees::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
@@ -259,6 +316,35 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
     compile_prelexed_target(tokens, logical_path, javascript)
 }
 
+/// Never use the recovered v2 backend as a fallback for arbitrary errors.
+/// Only a source explicitly requesting a suspending, imported using/timeout
+/// profile is eligible. All modern preflight and lowering gates still run.
+fn is_scoped_span_guest(tokens: &[lexer::Token]) -> bool {
+    use lexer::Tok;
+    let word = |t: &lexer::Token, name: &str| matches!(&t.tok, Tok::Ident(s) if s == name);
+    let has_main = tokens.windows(4).any(|w|
+        word(&w[0], "pub") && word(&w[1], "suspends")
+        && word(&w[2], "fnc") && word(&w[3], "main"));
+    let has_package = tokens.windows(2).any(|w| word(&w[0], "from") && word(&w[1], "pkg"));
+    let has_timeout = tokens.windows(2).any(|w| word(&w[0], "with") && word(&w[1], "timeout"));
+    const BANNED: &[&str] = &[
+        "task", "spawn", "actor", "supervisor", "channel", "rx", "Observable",
+        "Future", "AsyncGenerator", "ActorRef", "define", "declare", "class",
+        "struct", "interface", "trait", "module", "namespace", "new", "yield",
+        "try", "catch", "throw", "raise", "panic", "trap", "defer", "recover",
+        "select", "readch", "writech", "nb", "cb", "critical", "pipe",
+        "export", "external", "internal", "protected",
+    ];
+    has_main && has_package && has_timeout
+        && tokens.iter().any(|t| word(t, "using"))
+        && tokens.iter().any(|t| word(t, "await"))
+        && tokens.iter().filter(|t| word(t, "fnc")).count() == 1
+        && !tokens.iter().any(|t| match &t.tok {
+            Tok::Ident(s) => BANNED.contains(&s.as_str()),
+            _ => false,
+        })
+}
+
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     compile_prelexed_target(tokens, logical_path, false)
@@ -266,6 +352,9 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
 
 fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>, javascript: bool)
     -> Result<Vec<u8>, Diagnostic> {
+    if raw_pointer_slot::present(&tokens) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_POINTER_SLOT_PROFILE", "reusable slots require the original closed source"));
+    }
     if allocation_guarantees::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
@@ -488,29 +577,54 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
         return Err(Diagnostic::new(io.pos, "E_UNSUPPORTED",
             "I/O direction shorthand recognized, but this capability is not supported by the browser compiler; only standalone stdio.out writes are executable"));
     }
+    // Forward-port admission: the public compiler's current lexer, safety
+    // checks, nominal and collection lowerings have already run. Do not
+    // reinterpret unrelated legacy errors as executable async code.
+    if is_scoped_span_guest(&toks) {
+        let bytes = v2::compile(toks)?;
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
+    }
     // Detect target declarations at any file-scope position, not only at
     // source byte zero. Ignore comments/strings (the lexer already tokenizes
     // them) and ignore nested brace bodies so a string or local expression
     // cannot accidentally switch the compiler into the target grammar.
     let mut braces = 0usize;
     let mut target = false;
+    let mut explicit_target = false;
     for i in 0..toks.len() {
         match &toks[i].tok {
             lexer::Tok::LBrace => braces = braces.saturating_add(1),
             lexer::Tok::RBrace => braces = braces.saturating_sub(1),
             lexer::Tok::Ident(word) if braces == 0 => {
                 let next = toks.get(i + 1).map(|token| &token.tok);
-                if word == "declare" || word == "mtd" ||
+                if word == "declare" ||
                     (word == "use" && matches!(next,
                         Some(lexer::Tok::Ident(name)) if name == "namespace")) {
+                    explicit_target = true;
                     target = true;
                     break;
+                }
+                // Inline mtd name(...) is not an external receiver. A bare
+                // callable named mtd() can still be ambiguous to this scan.
+                if word == "mtd" && matches!(next, Some(lexer::Tok::LParen)) {
+                    target = true;
                 }
             }
             _ => {}
         }
     }
-    let program = if target {
+    // Only ambiguous mtd tokens may use the ordinary parser first.
+    // Explicit target declarations retain every existing admission gate.
+    let ordinary = if target && !explicit_target {
+        parser::Parser::new(toks.clone()).parse_program().ok()
+    } else { None };
+    let program = if let Some(program) = ordinary {
+        program
+    } else if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the

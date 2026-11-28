@@ -87,3 +87,99 @@ fn compiler_without_path_rejects_derived_header_before_emission() {
         .expect("derived namespace is file identity only");
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
+
+#[test]
+fn v2_file_named_and_folder_modes_are_distinct() {
+    use namespace::{resolve_mode_v2, NamespaceModeV2::*};
+    let path = Some(Path::new("src/network/http/client.atto"));
+    let mode = |src: &str, path| resolve_mode_v2(&lex(src).unwrap(), path).unwrap();
+    for src in ["", "use default namespace;", "use file namespace;"] {
+        assert_eq!(mode(src, path), File);
+        assert_eq!(mode(src, None), File);
+    }
+    assert_eq!(mode("use folder namespace;", path),
+        Folder(vec!["src".into(), "network".into(), "http".into()]));
+    assert_eq!(mode("use folder namespace;", Some(Path::new("main.atto"))), Folder(vec![]));
+    assert_eq!(mode("use default namespace(1);", path), mode("use namespace http;", path));
+    assert_eq!(mode("use default namespace(2);", path), mode("use namespace network.http;", path));
+    assert_eq!(mode("use default namespace(3);", path), mode("use namespace src.network.http;", path));
+    assert_ne!(mode("use folder namespace;", path), mode("use default namespace(3);", path));
+    assert_ne!(mode("use folder namespace;", path), mode("use folder namespace;", Some(Path::new("src/db/http/client.atto"))));
+}
+
+#[test]
+fn v2_rejects_ambiguous_paths_mixed_headers_and_depth_errors() {
+    use namespace::resolve_mode_v2;
+    for path in ["../http/main.atto", "/src/http/main.atto", "src/./http/main.atto",
+                 "src//http/main.atto", "src/http/main.txt", "src/http/.atto",
+                 "src\\http\\main.atto"] {
+        assert_eq!(resolve_mode_v2(&lex("use folder namespace;").unwrap(), Some(Path::new(path)))
+            .unwrap_err().code, "E_NAMESPACE_PATH", "{path}");
+    }
+    assert_eq!(resolve_mode_v2(&lex("use folder namespace;").unwrap(), None)
+        .unwrap_err().code, "E_NAMESPACE_PATH");
+    let path = Some(Path::new("src/http/main.atto"));
+    for src in ["use default namespace(0);", "use default namespace(33);",
+                "use default namespace(3);", "use default namespace(-1);"] {
+        assert_eq!(resolve_mode_v2(&lex(src).unwrap(), path).unwrap_err().code, "E_NAMESPACE_DEPTH");
+    }
+    for src in ["use file namespace; use folder namespace;",
+                "use namespace x; use file namespace;", "use default namespace; use default namespace(1);"] {
+        assert_eq!(resolve_mode_v2(&lex(src).unwrap(), path).unwrap_err().code, "E_DUPLICATE");
+    }
+    for src in ["use file namespace", "use folder namespace(1);", "import module m from \"./m.atto\"; use file namespace;"] {
+        assert_eq!(resolve_mode_v2(&lex(src).unwrap(), path).unwrap_err().code, "E_SYNTAX");
+    }
+}
+
+#[test]
+fn opt_in_file_v2_compiles_all_three_spellings_through_real_emitters() {
+    use atto_compiler::{compile_namespace_file_v2, compile_js_namespace_file_v2};
+    let body = "pub fnc main(): int { return 42; }";
+    let baseline = format!("\n\n{body}");
+    let wasm = compile_namespace_file_v2(&baseline).unwrap();
+    let js = compile_js_namespace_file_v2(&baseline).unwrap();
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+    for header in ["use default namespace;", "use file namespace;", "use /* é */\n file namespace;"] {
+        let source = if header.contains('\n') { format!("{header}\n{body}") }
+            else { format!("{header}\n\n{body}") };
+        assert_eq!(compile_namespace_file_v2(&source).unwrap(), wasm);
+        assert_eq!(compile_js_namespace_file_v2(&source).unwrap(), js);
+    }
+}
+
+#[test]
+fn opt_in_file_v2_never_falls_back_to_a_shared_namespace_or_erases_errors() {
+    use atto_compiler::compile_namespace_file_v2;
+    for (source, code) in [
+        ("use namespace x; pub fnc main(): int { return 42; }", "E_UNSUPPORTED"),
+        ("use folder namespace; pub fnc main(): int { return 42; }", "E_NAMESPACE_PATH"),
+        ("use default namespace(1); pub fnc main(): int { return 42; }", "E_NAMESPACE_PATH"),
+        ("use file namespace; use default namespace; pub fnc main(): int { return 42; }", "E_DUPLICATE"),
+        ("use file namespace pub fnc main(): int { return 42; }", "E_SYNTAX"),
+    ] { assert_eq!(compile_namespace_file_v2(source).unwrap_err().code, code); }
+    assert!(compile_namespace_file_v2("use file namespace; pub fnc main(): int { return true; }").is_err());
+    assert!(compile_namespace_file_v2("use file namespace; declare class Foo; pub fnc main(): int { return 42; }").is_err());
+}
+
+#[test]
+fn scope_key_requires_exact_package_and_source_membership() {
+    use atto_compiler::static_import_graph::PackageId;
+    use namespace::resolve_scope_key_v2;
+    let p = PackageId::new("@org/project/package", "1.0.0", &"a".repeat(64)).unwrap();
+    let q = PackageId::new("@org/project/package", "1.0.0", &"b".repeat(64)).unwrap();
+    let key = |src: &str, path: &str, pkg: &PackageId|
+        resolve_scope_key_v2(&lex(src).unwrap(), Path::new(path), pkg).unwrap();
+    let a = "src/network/http/a.atto";
+    let b = "src/network/http/b.atto";
+    assert_eq!(key("", a, &p), key("use file namespace;", a, &p));
+    assert_eq!(key("", a, &p), key("use default namespace;", a, &p));
+    assert_ne!(key("", a, &p), key("", b, &p));
+    assert_ne!(key("", a, &p), key("", a, &q));
+    assert_eq!(key("use folder namespace;", a, &p), key("use folder namespace;", b, &p));
+    assert_ne!(key("use folder namespace;", a, &p), key("use namespace src.network.http;", b, &p));
+    assert_eq!(key("use default namespace(2);", a, &p), key("use namespace network.http;", b, &p));
+    assert_ne!(key("use namespace network.http;", a, &p), key("use namespace network.http;", b, &q));
+    assert!(resolve_scope_key_v2(&lex("").unwrap(), Path::new("src/../a.atto"), &p).is_err());
+    assert!(resolve_scope_key_v2(&lex("use namespace parent;").unwrap(), Path::new(a), &p).is_err());
+}
