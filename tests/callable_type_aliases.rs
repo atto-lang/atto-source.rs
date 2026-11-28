@@ -222,3 +222,15 @@ fn wrapped_typed_header_never_falls_back_to_entry_or_untyped_lambda() {
         let _ = bad_parse(source);
     }
 }
+
+#[test]
+fn value_identifiers_cannot_be_reused_as_wrapped_parameter_types() {
+    for expression in ["(|m v|) -> 3", "(|v: m|) -> 3"] {
+        let source = format!(
+            "type F = (int). -> int;
+             pub fnc main(): int {{ const m = 5; const F f = {expression}; return 0; }}"
+        );
+        let d = atto_compiler::compile(&source).expect_err("value name is not a type");
+        assert_eq!(d.code, "E_UNSUPPORTED_TYPE", "{source}: {d}");
+    }
+}
