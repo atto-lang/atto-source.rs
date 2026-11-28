@@ -41,6 +41,7 @@ fn actor_valid_inline_receiver_is_actor_local_guest_compiled() {
         define interface IPing as ping(): int; end
         define actor A implements IPing as
             pub ping(): int { return 42; }
+            receive(ActorMail<int> mail): void { stdio.println(self.ping()); }
         end
         pub fnc main(): int { return 0; }
     "#;
@@ -51,7 +52,9 @@ fn actor_out_of_line_mtd_compiles_but_struct_value_abi_stays_fail_closed() {
     let src = r#"
         define interface IPing as ping(): int; end
         declare actor Item implements IPing;
-        define actor Item implements IPing as end
+        define actor Item implements IPing as
+            receive(ActorMail<int> mail): void { stdio.println(self.ping()); }
+        end
         pub mtd (Item self) ping(): int { return 42; }
         pub fnc main(): int { return 0; }
     "#;
