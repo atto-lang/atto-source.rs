@@ -48,6 +48,7 @@ pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+mod raw_pointer_slot;
 mod struct_value_guest;
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
@@ -208,6 +209,9 @@ where F: FnMut(&std::path::Path) -> std::io::Result<String> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes")));
     }
     let lexical = lexer::lex(source)?;
+    if raw_pointer_slot::present(&lexical) {
+        return compile_inner(source, Some(logical_path));
+    }
     if allocation_guarantees::present(&lexical) {
         return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
             "annotated linked-source compilation requires a verified cross-file effect contract"));
@@ -280,6 +284,11 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
         ));
     }
     let tokens = lexer::lex(source)?;
+    if raw_pointer_slot::present(&tokens) {
+        if javascript { return Err(js_scalar::unsupported()); }
+        let lowered = raw_pointer_slot::lower_slot(tokens, source)?;
+        return compile_prelexed_target(lowered, logical_path, false);
+    }
     if allocation_guarantees::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
@@ -343,6 +352,9 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
 
 fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>, javascript: bool)
     -> Result<Vec<u8>, Diagnostic> {
+    if raw_pointer_slot::present(&tokens) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_POINTER_SLOT_PROFILE", "reusable slots require the original closed source"));
+    }
     if allocation_guarantees::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
