@@ -180,7 +180,7 @@ pub fn check(prog: &Program, prelude: &Program) -> R<Module> {
     c.run()
 }
 
-impl<'a> Checker<'a> {
+impl Checker<'_> {
     // ------------------------------------------------------------- driver
 
     fn run(&mut self) -> R<Module> {
@@ -1715,7 +1715,7 @@ impl<'a> Checker<'a> {
     fn invoke(&mut self, callee: &str, id: u32, first: Option<Ir>, args: &[Arg], pos: Pos, awaited: bool) -> R<(Ir, Ty, bool)> {
         let sig = self.sigs[id as usize].clone();
         let exprs = self.plain_args(callee, args, sig.params.len(), pos)?;
-        let pairs: Vec<(&Expr, Option<Ty>)> = exprs.iter().map(|e| *e).zip(sig.params.iter().cloned().map(Some)).collect();
+        let pairs: Vec<(&Expr, Option<Ty>)> = exprs.iter().copied().zip(sig.params.iter().cloned().map(Some)).collect();
         let vals = self.operands(&pairs)?;
         let mut irs: Vec<Ir> = first.into_iter().collect();
         for (((ir, ty), want), e) in vals.into_iter().zip(&sig.params).zip(&exprs) {
@@ -1752,7 +1752,7 @@ impl<'a> Checker<'a> {
                 return Err(type_err(pos, format!("'{name}' is a {}, not a function", self.tn(&v.ty))));
             };
             let exprs = self.plain_args(name, args, params.len(), pos)?;
-            let pairs: Vec<(&Expr, Option<Ty>)> = exprs.iter().map(|e| *e).zip(params.iter().cloned().map(Some)).collect();
+            let pairs: Vec<(&Expr, Option<Ty>)> = exprs.iter().copied().zip(params.iter().cloned().map(Some)).collect();
             let vals = self.operands(&pairs)?;
             let mut irs = Vec::new();
             for (((ir, ty), w), e) in vals.into_iter().zip(&params).zip(&exprs) {
@@ -1983,7 +1983,7 @@ impl<'a> Checker<'a> {
             "__call0" | "__call1" => {
                 let clo = next();
                 let clo = self.spill(clo);
-                let rest: Vec<Ir> = v.drain(..).collect();
+                let rest = std::mem::take(&mut v);
                 (Ir::CallClosure(Box::new(clo), rest), Ty::Raw, false)
             }
             "__suspend" => {
