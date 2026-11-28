@@ -1,7 +1,7 @@
 // Dedicated actual browser compiler and native-host CLI guest test.
 // This does not replace the full corpus; its separate result isolates this profile.
 import assert from 'node:assert/strict';
-import { readFile, readdir, mkdtemp, rm, access } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, access } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -73,7 +73,7 @@ try {
     assert.ifError(native.error);
     assert.equal(native.signal, null);
     assert.ok(Number.isInteger(native.status) && native.status !== 0);
-    assert.match(native.stderr, /(?:^|\\s)E_POINTER_SLOT_PROFILE:/m, name);
+    assert.match(native.stderr, /(?:^|\s)E_POINTER_SLOT_PROFILE:/m, name);
     await absent(output);
     console.log('RAW_SLOT_REJECTION_PASS ' + name);
     passed++;
