@@ -261,6 +261,9 @@ pub struct Parser {
     lambda_nesting: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    // Closed file-prefix scalar denotations, no nominal or generic erasure.
+    scalar_denotations: std::collections::BTreeMap<String, (Type, Pos)>,
+    denotation_targets: std::collections::BTreeMap<String, (String, Pos)>,
     /// Canonically interned nominal Array<T, layout=...> type parameters.
     array_types: Vec<ArrayType>,
     /// Scope of an explicit generator function body.
@@ -407,6 +410,8 @@ impl Parser {
             ascription_colon: true,
             lambda_nesting: 0,
             type_names: Vec::new(),
+            scalar_denotations: std::collections::BTreeMap::new(),
+            denotation_targets: std::collections::BTreeMap::new(),
             array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
@@ -538,7 +543,7 @@ impl Parser {
         matches!(
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
-        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || UNLOWERED_OWNERSHIP_TYPES.contains(&w))
+        ) || self.word_at(n).is_some_and(|w| self.scalar_denotations.contains_key(w) || UNSUPPORTED_TYPES.contains(&w) || UNLOWERED_OWNERSHIP_TYPES.contains(&w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -678,6 +683,7 @@ impl Parser {
                     "ActorMail<T> is only the parameter type of an actor receive handler",
                 ))
             }
+            n if self.scalar_denotations.contains_key(n) => self.scalar_denotations[n].0,
             n if is_reserved(n) => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
@@ -746,6 +752,7 @@ impl Parser {
                 self.parse_pattern_type_alias()?;
             } else { break; }
         }
+        let mut denotation_prefix = true;
         while *self.peek() != Tok::Eof {
             if decls >= MAX_FUNCS {
                 return Err(Diagnostic::new(
@@ -755,6 +762,18 @@ impl Parser {
                 ));
             }
             decls += 1;
+            if self.is_word("denote") && self.word_at(1).is_some_and(|w| matches!(w, "type" | "pub" | "private")) {
+                if !denotation_prefix {
+                    return Err(unsupported(self.pos(), "denotations after other file declarations"));
+                }
+                if !self.pattern_constants.is_empty() || !self.pattern_type_aliases.is_empty() {
+                    return Err(unsupported(self.pos(), "denotations combined with compile-time Pattern declarations"));
+                }
+                self.parse_scalar_denotation()?;
+                continue;
+            }
+            if denotation_prefix { self.resolve_scalar_denotations()?; }
+            denotation_prefix = false;
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
@@ -884,6 +903,17 @@ impl Parser {
                 _ => prog.funcs.push(self.parse_func()?),
             }
         }
+        if denotation_prefix { self.resolve_scalar_denotations()?; }
+        // The checker uses distinct nominal references: never let a scalar
+        // alias silently shadow a later class, actor, or enum declaration.
+        for name in prog.classes.iter().map(|d| &d.name)
+            .chain(prog.actors.iter().map(|d| &d.name))
+            .chain(prog.enums.iter().map(|d| &d.name)) {
+            if let Some((_, pos)) = self.scalar_denotations.get(name) {
+                return Err(Diagnostic::new(*pos, "E_DUPLICATE",
+                    format!("denotation '{name}' collides with a nominal type")));
+            }
+        }
         // Builtin spellings are not permission to erase nominal identity.
         for name in prog.classes.iter().map(|d| &d.name)
             .chain(prog.enums.iter().map(|d| &d.name))
@@ -914,6 +944,75 @@ impl Parser {
         prog.type_names = std::mem::take(&mut self.type_names);
         prog.array_types = std::mem::take(&mut self.array_types);
         Ok(prog)
+    }
+
+    /// Collect bounded scalar alias targets at the file prefix; resolution
+    /// precedes every callable or nominal declaration. No union erasure.
+    fn parse_scalar_denotation(&mut self) -> R<()> {
+        self.advance(); // contextual denote
+        if self.is_word("pub") || self.is_word("private") {
+            return Err(unsupported(self.pos(), "denotation visibility"));
+        }
+        if !self.eat_word("type") { return Err(self.expected("'type' after denote")); }
+        let (name, pos) = self.ident("a denoted type name")?;
+        // Restrict the first profile to user type names beginning uppercase;
+        // protect every known core spelling (including unsupported intrinsics).
+        if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+            || matches!(name.as_str(), "String" | "Object" | "Actor" | "ActorRef" | "ActorMail"
+                | "Generator" | "Error" | "Newable" | "Sendable" | "Serializable"
+                | "Copyable" | "DeepCopyable" | "Any" | "Never" | "Record" | "Entry" | "Pair"
+                | "Channel" | "Future" | "Task" | "Duration" | "UUID")
+            || UNSUPPORTED_TYPES.contains(&name.as_str())
+            || UNLOWERED_OWNERSHIP_TYPES.contains(&name.as_str())
+            || self.denotation_targets.contains_key(&name) {
+            return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                "denotation name must be a fresh, non-core uppercase type identifier"));
+        }
+        if self.denotation_targets.len() >= 512 {
+            return Err(Diagnostic::new(pos, "E_DENOTE_LIMIT", "denotation count limit"));
+        }
+        self.expect(Tok::Assign, "'=' after denoted type name")?;
+        let rhs_pos = self.pos();
+        let rhs = match self.peek() {
+            Tok::Ident(w) => w.clone(),
+            _ => return Err(unsupported(rhs_pos, "non-scalar denotation RHS")),
+        };
+        self.advance();
+        self.expect(Tok::Semi, "';' after scalar denotation")?;
+        self.denotation_targets.insert(name, (rhs, pos));
+        Ok(())
+    }
+
+    fn resolve_scalar_denotations(&mut self) -> R<()> {
+        // Iterative, memoized resolution of every declaration, including
+        // unused aliases. No recursion or implicit nominal type creation.
+        for name in self.denotation_targets.keys() {
+            if self.scalar_denotations.contains_key(name) { continue; }
+            let mut current = name.clone();
+            let mut path = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            let ty = loop {
+                match current.as_str() {
+                    "int" => break Type::Int,
+                    "bool" | "boolean" => break Type::Bool,
+                    "float" | "f64" => break Type::Float,
+                    "string" | "String" => break Type::Str,
+                    _ => {}
+                }
+                if let Some((ty, _)) = self.scalar_denotations.get(&current) { break *ty; }
+                if !seen.insert(current.clone()) {
+                    return Err(Diagnostic::new(self.denotation_targets[name].1, "E_DENOTE_CYCLE",
+                        format!("cyclic type denotation '{current}'")));
+                }
+                let (target, pos) = self.denotation_targets.get(&current).ok_or_else(||
+                    Diagnostic::new(self.denotation_targets[name].1, "E_DENOTE_UNKNOWN",
+                        format!("unresolved denotation target '{current}'")))?;
+                path.push((current, *pos));
+                current = target.clone();
+            };
+            for (alias, pos) in path { self.scalar_denotations.insert(alias, (ty, pos)); }
+        }
+        Ok(())
     }
 
     /// Parse a bounded scalar struct declaration and its grouped/chained
