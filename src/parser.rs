@@ -4812,9 +4812,35 @@ impl Parser {
         Ok(left)
     }
 
+    // Parenthesized expressions erase grouping nodes. Track the actual
+    // binary spine across precedence boundaries, not only local parser
+    // counters (which are restored when a subexpression returns).
+    fn binary_height(expr: &Expr) -> u32 {
+        let mut pending = vec![(expr, 0u32)];
+        let mut height = 0;
+        while let Some((node, depth)) = pending.pop() {
+            height = height.max(depth);
+            if let ExprKind::Binary(_, left, right) = &node.kind {
+                pending.push((left, depth + 1));
+                pending.push((right, depth + 1));
+            }
+        }
+        height
+    }
+
+    fn extend_binary_height(&self, left: u32, right: &Expr, pos: Pos) -> R<u32> {
+        let height = 1 + left.max(Self::binary_height(right));
+        if height > MAX_TREE_HEIGHT {
+            return Err(Diagnostic::new(pos, "E_NESTING",
+                "composed binary expression exceeds tree height budget"));
+        }
+        Ok(height)
+    }
+
     fn parse_additive(&mut self) -> R<Expr> {
         let mut links = 0;
         let mut left = self.parse_multiplicative()?;
+        let mut binary_height = Self::binary_height(&left);
         loop {
             let pos = self.pos();
             let op = match self.peek() {
@@ -4826,6 +4852,7 @@ impl Parser {
             self.grow(1)?;
             links += 1;
             let right = self.parse_multiplicative()?;
+            binary_height = self.extend_binary_height(binary_height, &right, pos)?;
             left = Expr {
                 kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
                 pos,
@@ -4838,6 +4865,7 @@ impl Parser {
     fn parse_multiplicative(&mut self) -> R<Expr> {
         let mut links = 0;
         let mut left = self.parse_unary()?;
+        let mut binary_height = Self::binary_height(&left);
         loop {
             let pos = self.pos();
             let op = match self.peek() {
@@ -4849,6 +4877,7 @@ impl Parser {
             self.grow(1)?;
             links += 1;
             let right = self.parse_unary()?;
+            binary_height = self.extend_binary_height(binary_height, &right, pos)?;
             left = Expr {
                 kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
                 pos,
