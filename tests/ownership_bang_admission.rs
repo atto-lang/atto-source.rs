@@ -30,8 +30,13 @@ fn scalar_copy_and_ordinary_comments_compile() {
 
 #[test]
 fn spaced_punctuation_is_not_a_contextual_ownership_alias() {
-    assert!(compile("pub fnc main(): int { val item = 42; return copy !item; }").is_err());
-    assert!(compile("pub fnc main(): int { val item = 42; return borrow !item; }").is_err());
+    for verb in ["copy", "borrow", "take", "move", "share", "freeze", "weak", "pin", "drop"] {
+        for gap in [" ", "\n", "/* gap */"] {
+            let source = format!("pub fnc main(): int {{ val item = 42; return {verb}{gap}!item; }}");
+            let error = compile(&source).expect_err(&source);
+            assert_eq!(error.code, "E_BANG_KEYWORD_WHITESPACE", "{source}: {error}");
+        }
+    }
 }
 
 #[test]
