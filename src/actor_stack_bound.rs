@@ -193,10 +193,11 @@ mod tests {
     fn program(bodies: Vec<Vec<TStmt>>, root: u32) -> TProgram {
         TProgram {
             funcs: bodies.into_iter().map(function).collect(),
+            readonly_method_receivers: vec![],
             generators: vec![], main: 0, imports: vec![], data: vec![],
             heap: false, globals: vec![], strings: false, guest_eh: false,
             raise_tag: false, catch_depth: false,
-            actors: vec![TActor { name: "Worker".into(), inits: vec![],
+            actors: vec![TActor { name: "Worker".into(), kind: crate::ast::ActorKind::Default, payload: Type::Int, inits: vec![],
                                  receive: Some(root) }],
         }
     }
