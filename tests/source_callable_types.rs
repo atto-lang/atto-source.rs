@@ -220,3 +220,34 @@ fn nominal_call_method_remains_ordinary_dispatch() {
     let src = "define class Calculator as int bias: 1; end pub mtd (self: Calculator) call(int n) -> int :: self.bias+n end pub fnc main():int { val c = new Calculator(); val f: fnc(int)->int = |n| : int -> n; val v = f.call(41); return c.call(v); }";
     atto_compiler::compile(src).unwrap_or_else(|err| panic!("{src}: {err}"));
 }
+
+#[test]
+fn immediate_record_apply_binds_retained_formals_not_source_position() {
+    for binding in ["val", "const"] {
+        let prefix = format!("pub fnc main():int {{ {binding} f: fnc(int,int)->int = |x,y| : int -> x*10+y; return ");
+        let expected = atto_compiler::compile(&format!("{prefix}f(4,2); }}")).unwrap();
+        for call in ["f.apply({x:4,y:2})", "f.apply({y:2,x:4})", "f.apply({y=2,x:4,})"] {
+            let source = format!("{prefix}{call}; }}");
+            assert_eq!(atto_compiler::compile(&source).unwrap_or_else(|e| panic!("{source}: {e}")), expected, "{source}");
+        }
+    }
+    let source = "pub fnc main():int { val f: fnc()->int = || : int -> 42; return f.apply({}); }";
+    assert!(atto_compiler::compile(source).is_ok());
+}
+
+#[test]
+fn immediate_record_apply_rejects_bad_shape_and_unproved_evaluation() {
+    let prefix = "pub fnc main():int { val f: fnc(int,int)->int = |x,y| : int -> x*10+y; return ";
+    for (call, code) in [
+        ("f.apply({x:4})", "E_ARITY"),
+        ("f.apply({x:4,z:2})", "E_NAMED_ARG"),
+        ("f.apply({x:4,x:2})", "E_DUPLICATE"),
+        ("f.apply({x:4,y:true})", "E_TYPE"),
+        ("f.apply({y:1+1,x:4})", "E_UNSUPPORTED"),
+    ] {
+        let source = format!("{prefix}{call}; }}");
+        assert_eq!(err(&source).code, code, "{source}");
+    }
+    let source = "pub fnc main():int { val f: fnc(int)->int = |_| : int -> 42; return f.apply({x:4}); }";
+    assert!(atto_compiler::compile(source).is_err());
+}
