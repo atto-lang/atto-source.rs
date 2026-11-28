@@ -3101,7 +3101,7 @@ impl Parser {
         result
     }
 
-    fn parse_lambda(&mut self) -> R<ExprKind> {
+    fn parse_lambda_parameters(&mut self) -> R<(Vec<String>, Vec<Option<String>>)> {
         if self.depth >= MAX_CALLABLE_RECURSION {
             return Err(Diagnostic::new(self.pos(), "E_NESTING",
                 "nested lambdas exceed parser stack budget"));
@@ -3137,6 +3137,48 @@ impl Parser {
                 self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
             }
         }
+        Ok((params, param_types))
+    }
+
+    fn parse_lambda(&mut self) -> R<ExprKind> {
+        let (params, param_types) = self.parse_lambda_parameters()?;
+        self.parse_lambda_tail(params, param_types)
+    }
+
+    // This scalar callable slice has no tuple AST. Recognize a wrapped
+    // header only by the existing typed parameter grammar and the complete
+    // closing delimiter/slim-arrow sequence. Untyped wrapped bars are never
+    // silently interpreted as lambda parameters.
+    fn try_wrapped_typed_lambda(&mut self) -> R<Option<ExprKind>> {
+        if *self.peek() != Tok::Pipe {
+            return Ok(None);
+        }
+        let checkpoint = (self.i, self.depth, self.height);
+        let result = self.parse_lambda_parameters();
+        match result {
+            Ok((params, param_types))
+                if param_types.iter().any(Option::is_some)
+                    && *self.peek() == Tok::RParen
+                    && *self.peek_at(1) == Tok::Arrow =>
+            {
+                self.advance(); // ')' wrapping the typed header
+                self.parse_lambda_tail(params, param_types).map(Some)
+            }
+            other => {
+                (self.i, self.depth, self.height) = checkpoint;
+                if let Err(err) = other {
+                    if err.code == "E_NESTING" || err.code == "E_SOURCE_LIMIT" {
+                        return Err(err);
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    fn parse_lambda_tail(
+        &mut self, params: Vec<String>, param_types: Vec<Option<String>>,
+    ) -> R<ExprKind> {
         let mut return_type = if self.eat(&Tok::Colon) {
             Some(self.parse_lambda_type()?)
         } else { None };
@@ -3234,6 +3276,9 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
+                if let Some(kind) = self.try_wrapped_typed_lambda()? {
+                    return Ok(Expr { kind, pos });
+                }
                 let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
                 if *self.peek() == Tok::Comma {
                     return Err(unsupported(self.pos(), "tuples"));
