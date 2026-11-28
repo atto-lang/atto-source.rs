@@ -1087,11 +1087,8 @@ impl Parser {
         let save = (self.i, self.depth);
         self.advance();
         let mut args = Vec::new();
-        loop {
-            match self.parse_type() {
-                Ok(t) => args.push(t),
-                Err(_) => break,
-            }
+        while let Ok(t) = self.parse_type() {
+            args.push(t);
             if self.eat(&Tok::Comma) {
                 continue;
             }
