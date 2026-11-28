@@ -1,0 +1,12 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+define class Parcel as
+    pub let int padding = 99;
+    pub let int value = 42;
+    pub get(): int { return self.value; }
+end
+fnc inspect(Parcel p): int { return p.get(); }
+pub fnc main(): int {
+    let parcel = new Parcel();
+    return inspect(parcel);
+}
