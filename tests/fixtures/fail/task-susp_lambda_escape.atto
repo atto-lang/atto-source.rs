@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+susp fnc use(int v): int { return v; }
+pub susp fnc main(): int { val f = susp |int n| -> n + 1; val g = f; return await f(1); }

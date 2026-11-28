@@ -151,10 +151,16 @@ fn class_methods_are_recorded_as_unavailable() {
 
 #[test]
 fn non_ownership_rejects_do_not_export_a_partial_graph() {
-    // freeze! of a class has no deep-immutability witness on this backend.
-    let r = main_record("pub fnc main(): int { val c = new C(); val d = freeze! c; return 1; }");
-    assert_eq!(code(&r), Some("E_FREEZE_PROOF"));
+    let r = main_record("pub fnc main(): int { val c = new C(); val int d = c; return 1; }");
+    assert_eq!(code(&r), Some("E_TYPE"));
     assert!(matches!(&r.mir, Err(why) if why.contains("non-ownership")));
+}
+
+#[test]
+fn admitted_flat_shallow_copy_has_no_l3_wire_proof() {
+    let r = main_record("pub fnc main(): int { val c = new C(); val d = copy! c; return 1; }");
+    assert_eq!(code(&r), None);
+    assert!(matches!(&r.mir, Err(why) if why.contains("mode-specific shallow class copy")));
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,3 @@
+// expect-error: E_OWNERSHIP
+susp fnc f(Future<int> t): int { return await t; }
+pub susp fnc main(): int { return 0; }

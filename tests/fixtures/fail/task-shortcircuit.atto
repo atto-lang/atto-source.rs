@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+susp fnc f(): bool { return true; }
+pub susp fnc main(): int { val b = false && await f(); return 0; }

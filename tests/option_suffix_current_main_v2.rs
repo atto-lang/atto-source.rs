@@ -20,10 +20,10 @@ fn supported_option_guest_compiles() {
     }
 }
 #[test]
-fn unsupported_omission_and_nested_suffix_stay_closed() {
+fn unsupported_scalar_omission_and_nested_suffix_stay_closed() {
     for source in [
-        "fnc f(int? x?): int { return 42; } pub fnc main(): int { return f(); }",
-        "fnc f(x?: int?): int { return 42; } pub fnc main(): int { return f(); }",
+        "fnc f(int x?): int { return 42; } pub fnc main(): int { return f(); }",
+        "fnc f(x?: int): int { return 42; } pub fnc main(): int { return f(); }",
         "fnc f(int?? x): int { return 42; } pub fnc main(): int { return 42; }",
         "fnc f(string? x): int { return 42; } pub fnc main(): int { return 42; }",
         "fnc f(int? x): int { return 42; } pub fnc main(): int { return f(); }",

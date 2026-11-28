@@ -48,7 +48,9 @@ pub mod library;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+mod raw_pointer_slot;
 mod struct_value_guest;
+mod bounded_set_guest;
 /// Immutable profile-aware canonical names visible without explicit imports.
 pub mod prelude;
 /// Source-local scalar generic specialization before typed browser lowering.
@@ -208,6 +210,9 @@ where F: FnMut(&std::path::Path) -> std::io::Result<String> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes")));
     }
     let lexical = lexer::lex(source)?;
+    if raw_pointer_slot::present(&lexical) {
+        return compile_inner(source, Some(logical_path));
+    }
     if allocation_guarantees::present(&lexical) {
         return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ANNOTATION_LINK_UNVERIFIED",
             "annotated linked-source compilation requires a verified cross-file effect contract"));
@@ -280,6 +285,11 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
         ));
     }
     let tokens = lexer::lex(source)?;
+    if raw_pointer_slot::present(&tokens) {
+        if javascript { return Err(js_scalar::unsupported()); }
+        let lowered = raw_pointer_slot::lower_slot(tokens, source)?;
+        return compile_prelexed_target(lowered, logical_path, false);
+    }
     if allocation_guarantees::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
@@ -343,6 +353,9 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
 
 fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>, javascript: bool)
     -> Result<Vec<u8>, Diagnostic> {
+    if raw_pointer_slot::present(&tokens) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_POINTER_SLOT_PROFILE", "reusable slots require the original closed source"));
+    }
     if allocation_guarantees::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         return allocation_guarantees::compile(tokens);
@@ -610,7 +623,7 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     let ordinary = if target && !explicit_target {
         parser::Parser::new(toks.clone()).parse_program().ok()
     } else { None };
-    let program = if let Some(program) = ordinary {
+    let mut program = if let Some(program) = ordinary {
         program
     } else if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
@@ -658,6 +671,9 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
+    if visibility.exports.is_empty() {
+        bounded_set_guest::lower(&mut program);
+    }
     let typed = check::check(&program)?;
     actor_stack_bound::verify(&typed)?;
     if javascript {

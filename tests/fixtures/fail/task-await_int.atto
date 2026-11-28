@@ -1,0 +1,2 @@
+// expect-error: E_TYPE
+pub susp fnc main(): int { val x = 3; return await x; }

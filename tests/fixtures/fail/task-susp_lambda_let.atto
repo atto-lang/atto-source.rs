@@ -1,0 +1,2 @@
+// expect-error: E_UNSUPPORTED
+pub susp fnc main(): int { let f = susp |int n| -> n + 1; return await f(1); }

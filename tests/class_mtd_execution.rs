@@ -48,7 +48,7 @@ fn immutable_class_mtd_rejects_mutation_alias_escape_and_inline_mutators() {
             "E_OWNERSHIP"
         ),
         (
-            "define class C as int value: 1; method unsafe_call(): int { return 2; } end mtd (self: C) query() -> int :: self.unsafe_call() end pub fnc main(): int { return 0; }",
+            "define class C as int value: 1; mtd unsafe_call(): int { return 2; } end mtd (self: C) query() -> int :: self.unsafe_call() end pub fnc main(): int { return 0; }",
             "E_UNSUPPORTED"
         )
     ] {

@@ -1,49 +1,51 @@
-//! Exact frontend admission tests for ownership punctuation not yet lowered.
-use oreslang_source_rs::frontend::parse;
+//! Production compiler ownership punctuation admission and negative guest gates.
+use atto_compiler::{compile, lexer::lex};
 
 #[test]
-fn ownership_bangs_fail_closed_before_native_ir() {
+fn unresolved_ownership_operands_fail_closed() {
     for expression in [
-        "copy!42", "take!42", "borrow! item", "borrow!item",
+        "copy!item", "take!item", "borrow! item", "borrow!item",
         "borrow! mut item", "borrow!mut item", "mut borrow! item",
         "mut borrow!item", "share!item",
         "borrow!\nmut item", "borrow!/* checked loan */mut item",
         "mut borrow!\nitem",
     ] {
         let source = format!("pub fnc main(): int {{ return {expression}; }}");
-        let error = parse(&source).expect_err(&source);
-        assert_eq!(error.class, "ownership_bang_unsupported", "{source}: {error}");
-        assert!(error.message.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"));
+        assert!(compile(&source).is_err(), "unbound ownership operand emitted guest: {source}");
     }
 }
 
 #[test]
-fn comments_and_ordinary_scalar_compilation_remain_unaffected() {
+fn scalar_copy_and_ordinary_comments_compile() {
     for source in [
+        "pub fnc main(): int { return copy!42; }",
         "pub fnc main(): int { /* borrow! mut item */ return 42; }",
         "pub fnc main(): int { // borrow! mut item\n return 42; }",
+        "pub fnc main(): int { /* outer /* borrow! mut item */ tail */ return 42; }",
     ] {
-        assert!(parse(source).is_ok(), "{source}");
+        let guest = compile(source).expect(source);
+        assert!(guest.starts_with(&[0, 97, 115, 109, 1, 0, 0, 0]), "{source}");
     }
 }
 
 #[test]
 fn spaced_punctuation_is_not_a_contextual_ownership_alias() {
-    let error = parse("pub fnc main(): int { return borrow !item; }").unwrap_err();
-    assert_ne!(error.class, "ownership_bang_unsupported");
+    for verb in ["copy", "borrow", "take", "move", "share", "freeze", "weak", "pin", "drop"] {
+        for gap in [" ", "\n", "/* gap */"] {
+            let source = format!("pub fnc main(): int {{ val item = 42; return {verb}{gap}!item; }}");
+            let error = compile(&source).expect_err(&source);
+            assert_eq!(error.code, "E_BANG_KEYWORD_WHITESPACE", "{source}: {error}");
+        }
+    }
 }
 
 #[test]
 fn nested_comments_obey_the_explicit_depth_budget() {
-    let nested = "pub fnc main(): int { /* outer /* borrow! mut item */ tail */ return 42; }";
-    assert!(parse(nested).is_ok());
-
-    let too_deep = format!(
-        "pub fnc main(): int {{ {}{} return 42; }}",
-        "/*".repeat(65),
-        "*/".repeat(65)
-    );
-    let error = parse(&too_deep).expect_err("nesting above 64 must be rejected");
-    assert_eq!(error.class, "resource_limit");
+    let at_limit = format!("pub fnc main(): int {{ {}{} return 42; }}", "/*".repeat(64), "*/".repeat(64));
+    assert!(lex(&at_limit).is_ok());
+    let too_deep = format!("pub fnc main(): int {{ {}{} return 42; }}", "/*".repeat(65), "*/".repeat(65));
+    let error = lex(&too_deep).expect_err("nesting above 64 must be rejected");
+    assert_eq!(error.code, "E_SOURCE_LIMIT");
     assert!(error.message.contains("block comment nesting exceeds 64"));
+    assert!(compile(&too_deep).is_err());
 }

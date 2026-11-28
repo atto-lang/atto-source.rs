@@ -240,7 +240,7 @@ end"#
 }
 
 #[test]
-fn suspension_aliases_preserve_persistence_gate_and_reject_unlowered_functions() {
+fn suspension_aliases_preserve_persistence_gate_and_lower_susp_main() {
     for spelling in ["suspends", "susp", "⧖", "∂"] {
         let source = format!(r#"
 define persistent actor Cart as
@@ -255,7 +255,12 @@ pub fnc main(): int {{ return 0; }}
         let p = parse(&source).unwrap();
         assert_eq!(p.actors[0].persistence_hooks.len(), 2);
         assert_eq!(atto_compiler::check::check(&p).unwrap_err().code, "E_PERSIST_RUNTIME_UNAVAILABLE");
-        let unsupported = format!("{spelling} fnc main(): int {{ return 42; }}");
-        assert!(compile(&unsupported).is_err(), "{spelling}");
+        // Every suspension spelling lowers a top-level susp main to the same
+        // atto.task.v1 guest (docs/TASK_ABI_V1.md); persistence hooks above
+        // remain gated by E_PERSIST_RUNTIME_UNAVAILABLE.
+        let lowered = format!("{spelling} fnc main(): int {{ return 42; }}");
+        let wasm = compile(&lowered).unwrap_or_else(|d| panic!("{spelling}: {d}"));
+        assert!(wasm.windows(12).any(|w| w == b"atto.task.v1"), "{spelling}");
+        assert_eq!(wasm, compile("suspends fnc main(): int { return 42; }").unwrap(), "{spelling}");
     }
 }

@@ -134,6 +134,10 @@ fn expr_mentions(expr: &Expr, target: &str, fuel: &mut usize) -> bool {
     *fuel -= 1;
     match &expr.kind {
         ExprKind::Var(name) => name == target,
+        ExprKind::Await(e) => expr_mentions(e, target, fuel),
+        ExprKind::SpawnTask { args, .. } => args.iter().any(|a| expr_mentions(a, target, fuel)),
+        // A task body is a separate callable; captures are by-value copies.
+        ExprKind::Task { .. } | ExprKind::SuspLambda { .. } | ExprKind::Duration(_) => false,
         ExprKind::Unary(_, e)
         | ExprKind::Trap(e)
         | ExprKind::Ownership(_, _, e)

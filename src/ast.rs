@@ -43,6 +43,9 @@ pub enum Type {
     OptionResultIntStr,
     /// Bounded, owned guest-Wasm generator handle for the admitted subset.
     GeneratorInt,
+    /// `Future<int>`: an opaque host-issued task token (atto.task.v1). It is
+    /// only produced by `task { }` and only consumed by `await`.
+    FutureInt,
 }
 
 impl Type {
@@ -60,6 +63,7 @@ impl Type {
             Type::ResultIntInt => "Result<int,int>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
+            Type::FutureInt => "Future<int>",
             Type::Callable(_) => "fnc(...)->...",
             Type::Array(_) => "Array<T,layout=...>",
             _ => "object",
@@ -286,6 +290,9 @@ pub struct Func {
     pub pos: Pos,
     /// Explicit `fnc *gen` modifier; not inferred from `yield`.
     pub is_generator: bool,
+    /// Explicit `susp` / `suspends` effect: lowered to a resumable task
+    /// state machine (atto.task.v1); only such callables may `await`.
+    pub is_suspending: bool,
     /// Explicit effect contract: no externally observable effects or impure calls.
     pub is_pure: bool,
     /// Present when the caller declares one or more exceptional channels.
@@ -296,7 +303,17 @@ pub struct Func {
 }
 
 #[derive(Clone, Debug)]
+pub enum DefaultLiteral {
+    Int(i64),
+    None,
+}
+
+#[derive(Clone, Debug)]
 pub struct Param {
+    /// Independent name-position omission marker; never an Option type tag.
+    pub omittable: bool,
+    pub none_default: Option<DefaultLiteral>,
+    pub omission_default: Option<DefaultLiteral>,
     pub name: String,
     pub ty: Type,
     pub mutable: bool,
@@ -573,6 +590,20 @@ pub enum ExprKind {
         return_type: Option<String>,
         body: LambdaBody,
     },
+    /// `await operand`: legal only inside a suspending callable.
+    Await(Box<Expr>),
+    /// `task { body }` (a Future<int>) or `do task { body }` (detached).
+    /// Desugared by task_lower into a synthetic suspending callable.
+    Task { body: Vec<Stmt>, detached: bool },
+    /// Desugared `task { }`: start the synthetic suspending callable `func`
+    /// with by-value captures `args`.
+    SpawnTask { func: String, args: Vec<Expr>, detached: bool },
+    /// Duration literal in milliseconds (`100ms`, `2s`); only `sleeper(..)`
+    /// admits it in this profile.
+    Duration(u64),
+    /// `susp |[T] p, ..| [: R] -> body`: a direct-call suspending lambda.
+    /// task_desugar lowers a `val` binding of it to a synthetic susp callable.
+    SuspLambda { params: Vec<(String, Option<Type>)>, ret: Option<Type>, body: Vec<Stmt> },
 }
 
 #[derive(Clone, Debug)]

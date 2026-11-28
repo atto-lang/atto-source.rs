@@ -137,6 +137,7 @@ mod tests {
             name: "test_generator".into(),
             pos: Pos { line: 1, col: 1 },
             is_generator: true,
+            is_suspending: false,
             is_pure: false,
             declared_effects: None,
             params: vec![],

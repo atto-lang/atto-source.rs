@@ -21,6 +21,9 @@ mod loan_liveness;
 pub mod typed_cfg_census;
 pub mod lambda_types;
 mod direct_lambda;
+mod task_desugar;
+mod task_plan;
+pub use task_plan::MAX_TASK_SLOTS;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
@@ -302,6 +305,46 @@ pub enum TStmt {
     Block(Vec<TStmt>),
     /// a path the checker proved impossible (after an exhaustive match)
     Unreachable,
+    /// Suspension point inside a `susp` callable (atto.task.v1). Only the
+    /// task planner consumes it; `dest` receives the resumed value.
+    Suspend { op: TSuspend, dest: Option<u32> },
+}
+
+/// What a suspension asks the host OresScheduler to do.
+#[derive(Clone, Debug)]
+pub enum TSuspend {
+    /// `await f(args)` of a suspending callable: run it, resume with its result.
+    Call { function: u32, args: Vec<TE> },
+    /// `await future`: park until the Future<int> token settles.
+    Await(TE),
+    /// `task { }` / `do task { }`: start a synthetic suspending callable.
+    Spawn { function: u32, args: Vec<TE>, detached: bool },
+    /// `await sleeper(ms)`: park on a host reactor timer.
+    Sleep(TE),
+}
+
+/// One step of a planned task state machine; addressed by its resume PC.
+#[derive(Clone, Debug)]
+pub enum TTaskStep {
+    /// Straight-line typed statements with no suspension, return or escaping
+    /// branch: emitted by the ordinary statement emitter, then PC+1.
+    Run(Vec<TStmt>),
+    Guard { condition: TE, on_false: u32 },
+    /// `back` edges spend the per-turn fuel and may cooperate.
+    Jump { to: u32, back: bool },
+    /// Persist locals, publish the request, return the step status.
+    Suspend(TSuspend),
+    /// First step after a suspension: store the host-delivered wake value.
+    Receive { dest: u32, ty: Type },
+    Return(Option<TE>),
+    Unreachable,
+}
+
+/// A suspending callable lowered to a resumable state machine.
+#[derive(Clone, Debug)]
+pub struct TTask {
+    pub function: u32,
+    pub steps: Vec<TTaskStep>,
 }
 
 #[derive(Clone, Debug)]
@@ -362,6 +405,10 @@ pub struct TActor {
 pub struct TProgram {
     pub funcs: Vec<TFunc>,
     pub generators: Vec<TGenerator>,
+    /// Planned suspending callables (atto.task.v1); task type = index.
+    pub tasks: Vec<TTask>,
+    /// main is suspending: export the task ABI instead of `main`.
+    pub task_main: bool,
     pub main: u32,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
@@ -437,8 +484,28 @@ struct ActorInfo {
 }
 
 /// Program-wide declaration tables shared by every body check.
+fn constant_default(value: &DefaultLiteral, ty: Type, tmp: u32, pos: Pos) -> R<TE> {
+    match (value, ty) {
+        (DefaultLiteral::Int(n), Type::Int) => Ok(TE { ty, e: TExpr::I64(*n) }),
+        (DefaultLiteral::Int(n), Type::OptionInt) => Ok(TE { ty, e: TExpr::AdtNew {
+            tag: 1, payload: Some(Box::new(TE { ty: Type::Int, e: TExpr::I64(*n) })), tmp,
+        }}),
+        (DefaultLiteral::None, Type::OptionInt) => Ok(TE { ty, e: TExpr::AdtNew {
+            tag: 0, payload: None, tmp,
+        }}),
+        _ => Err(type_err(pos, "default literal does not match formal type")),
+    }
+}
+
+type OverloadTable = BTreeMap<(String, usize), Vec<(u32, Vec<Type>, Type)>>;
+
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    /// (name, arity) of top-level `susp`/`suspends` callables.
+    suspending: BTreeSet<(String, usize)>,
+    overloads: OverloadTable,
+    presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>>,
+    omission_defaults: Vec<Vec<Option<DefaultLiteral>>>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -516,6 +583,10 @@ struct FnCx<'a> {
     recover_error: Option<String>,
     /// Opt-in L3 ownership-event export (`borrow_export`); `None` normally.
     trace: Option<crate::borrow_export::FnTrace>,
+    /// Checking the body of a top-level `susp` callable: await is legal.
+    suspending: bool,
+    /// Resolving the operand of `await`: the only admitted use of a Future.
+    consuming_future: bool,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -836,7 +907,8 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos, mode: cr
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
-    let lowered = direct_lambda::lower(p)?;
+    let desugared = task_desugar::desugar(p)?;
+    let lowered = direct_lambda::lower(&desugared)?;
     check_lowered(&lowered)
 }
 
@@ -991,7 +1063,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let res = |t: Type| resolve(t, tn, &class_names, &p.enums, &actor_names);
 
     // ---- top-level signatures keep indices 0..funcs.len()
-    let mut sigs = BTreeMap::new();
+    let mut sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)> = BTreeMap::new();
+    let mut overloads: OverloadTable = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None")
@@ -1003,20 +1076,63 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             ));
         }
         let key = (f.name.clone(), f.params.len());
-        if sigs.contains_key(&key) {
-            return Err(Diagnostic::new(
-                f.pos,
-                "E_DUPLICATE",
-                format!(
-                    "function '{}' already has arity {}; overload identity is name + arity",
-                    f.name,
-                    f.params.len()
-                ),
-            ));
-        }
         let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
-        sigs.insert(key, (i as u32, params, res(f.ret)?));
-        names.entry(f.name.clone()).or_default().push(f.params.len());
+        let ret = res(f.ret)?;
+        if let Some(first) = sigs.get(&key) {
+            // This bounded profile only admits exact, concrete Copy-like
+            // caller types. Never select a generator or nominal owner by guess.
+            let admitted = |t: Type| matches!(t, Type::Int | Type::Bool | Type::Float
+                | Type::Str | Type::OptionInt | Type::OptionResultIntStr);
+            let family = overloads.entry(key.clone()).or_insert_with(|| vec![first.clone()]);
+            if f.name == "main" || f.is_generator || family.iter().any(|s| p.funcs[s.0 as usize].is_generator)
+                || !params.iter().copied().all(admitted)
+                || family.iter().any(|s| !s.1.iter().copied().all(admitted) || s.1 == params) {
+                return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
+                    format!("function '{}' has duplicate or unsupported typed overload", f.name)));
+            }
+            family.push((i as u32, params, ret));
+        } else {
+            sigs.insert(key, (i as u32, params, ret));
+            names.entry(f.name.clone()).or_default().push(f.params.len());
+        }
+    }
+
+    // The full family is kept for any name with an omittable formal.
+    // Do not let the legacy name/arity table bypass provenance lowering.
+    if p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k| k.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some())) || c.methods.iter().any(|m| m.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some())))
+        || p.actors.iter().any(|a| a.methods.iter().any(|m| m.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some()))) {
+        return Err(Diagnostic::new(Pos::default(), "E_UNSUPPORTED", "omittable method and constructor ABI is not implemented"));
+    }
+    let omission_defaults = p.funcs.iter().map(|f| f.params.iter().map(|q| q.omission_default.clone()).collect()).collect();
+    let mut presence_families: BTreeMap<String, Vec<(u32, Vec<crate::call_presence_v2::Formal>, Type)>> = BTreeMap::new();
+    for f in &p.funcs {
+        for q in &f.params {
+            if (q.none_default.is_some() && (q.ty != Type::OptionInt || q.mutable))
+                || (q.omission_default.is_some() && (!q.omittable || q.mutable))
+                || (q.omittable && !matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr) && q.omission_default.is_none()) {
+                return Err(type_err(q.pos, "invalid default metadata"));
+            }
+            if let Some(value) = &q.omission_default { constant_default(value, q.ty, 0, q.pos)?; }
+        }
+        if f.params.iter().any(|q| q.omittable || q.none_default.is_some() || q.omission_default.is_some()) {
+            if f.name == "main" || f.is_generator || f.params.len() + f.params.iter().filter(|q| q.omittable).count() > crate::parser::MAX_PARAMS {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "entrypoints, generators and over-budget hidden parameter frames cannot have omittable parameters in this slice"));
+            }
+            presence_families.entry(f.name.clone()).or_default();
+        }
+    }
+    for (i, f) in p.funcs.iter().enumerate() {
+        if let Some(family) = presence_families.get_mut(&f.name) {
+            if f.is_generator || f.params.iter().any(|q| !matches!(q.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::OptionInt | Type::OptionResultIntStr)) || f.params.iter().any(|q| q.omittable &&
+                (q.mutable || !(matches!(q.ty, Type::OptionInt | Type::OptionResultIntStr) || (q.ty == Type::Int && q.omission_default.is_some())))) {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED", "unsupported omittable overload family"));
+            }
+            let formals = f.params.iter().map(|q| Ok(crate::call_presence_v2::Formal {
+                ty: res(q.ty)?, omittable: q.omittable,
+                none_default: q.none_default.is_some(), omission_default: q.omission_default.is_some(),
+            })).collect::<R<Vec<_>>>()?;
+            family.push((i as u32, formals, res(f.ret)?));
+        }
     }
 
     // ---- member function indices follow the top-level functions
@@ -1231,11 +1347,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     let g = Globals {
         sigs,
+        overloads,
+        presence_families,
+        omission_defaults,
         names,
         classes,
         enums: &p.enums,
         actors,
         type_names: tn,
+        suspending: p.funcs.iter().filter(|f| f.is_suspending)
+            .map(|f| (f.name.clone(), f.params.len())).collect(),
     };
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
@@ -1270,8 +1391,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // ---- top-level functions
     let mut generators = Vec::new();
+    let mut tasks: Vec<TTask> = Vec::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
+        let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
+        let ret = res(f.ret)?;
         if f.is_generator {
             if let Some(mut plan) = generator_lower::lower(f)? {
                 plan.function = i as u32;
@@ -1310,13 +1433,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             });
             continue;
         }
-        let named: Vec<(&str, Type, bool)> = f
+        let mut named: Vec<(&str, Type, bool)> = f
             .params
             .iter()
             .zip(&params)
             .map(|(q, t)| (q.name.as_str(), *t, q.mutable))
             .collect();
-        let body = body_check(
+        let hidden_names = f.params.iter().enumerate().filter(|(_, q)| q.omittable)
+            .map(|(i, _)| format!("\0omitted:{i}")).collect::<Vec<_>>();
+        named.extend(hidden_names.iter().map(|n| (n.as_str(), Type::Bool, false)));
+        let mut body = body_check(
             &g,
             BodyCheckInput {
                 owner: Owner::TopLevel, named: &named, mail: None,
@@ -1324,13 +1450,56 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             },
             &mut imports, &mut data,
         )?;
-        funcs[i] = Some(TFunc {
+        // Apply the supplied-None default in the callee, before user code.
+        // Omitted inputs already carry their omission default and never cascade.
+        let mut prelude = Vec::new();
+        let mut flag = f.params.len() as u32;
+        for (j, q) in f.params.iter().enumerate() {
+            let omitted_slot = if q.omittable { let s = flag; flag += 1; Some(s) } else { None };
+            if let Some(default) = &q.none_default {
+                if q.ty != Type::OptionInt || q.mutable {
+                    return Err(type_err(q.pos, "unsupported None default formal"));
+                }
+                if body.1.len() >= MAX_LOCALS {
+                    return Err(Diagnostic::new(q.pos, "E_SOURCE_LIMIT", "default temporary exceeds local limit"));
+                }
+                let tmp = named.len() as u32 + body.1.len() as u32;
+                body.1.push(q.ty);
+                let value = constant_default(default, q.ty, tmp, q.pos)?;
+                let is_none = TE { ty: Type::Bool, e: TExpr::AdtIs {
+                    obj: Box::new(TE { ty: q.ty, e: TExpr::Local(j as u32) }), tag: 0,
+                }};
+                let branch = TStmt::If(vec![(is_none, vec![TStmt::Set(j as u32, value)])], None);
+                prelude.push(if let Some(s) = omitted_slot {
+                    let supplied = TE { ty: Type::Bool, e: TExpr::Not(Box::new(TE {
+                        ty: Type::Bool, e: TExpr::Local(s),
+                    })) };
+                    TStmt::If(vec![(supplied, vec![branch])], None)
+                } else { branch });
+            }
+        }
+        prelude.append(&mut body.0);
+        body.0 = prelude;
+        let tfunc = TFunc {
             name: f.name.clone(),
-            params,
+            params: named.iter().map(|n| n.1).collect(),
             ret,
             locals: body.1,
             body: body.0,
-        });
+        };
+        if f.is_suspending {
+            if !matches!(ret, Type::Int | Type::Void | Type::Bool) {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                    "susp callables currently return int, bool or void"));
+            }
+            tasks.push(task_plan::plan(&tfunc, i as u32, f.pos)?);
+        }
+        funcs[i] = Some(tfunc);
+    }
+    let task_main = p.funcs[main as usize].is_suspending;
+    if !tasks.is_empty() && !task_main {
+        return Err(Diagnostic::new(p.funcs[main as usize].pos, "E_SUSPEND",
+            "susp callables run on the task scheduler: declare 'pub susp fnc main()'"));
     }
 
     // ---- classes: P.new, P.constructor, methods
@@ -1522,6 +1691,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for (m, mi) in a.methods.iter().zip(&info.methods) {
             for (q, t) in m.params.iter().zip(&mi.params).map(|(q, t)| (q, *t)).chain(std::iter::once((
                 &Param {
+                    omittable: false, none_default: None, omission_default: None,
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
@@ -1588,8 +1758,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     audit_cleanup_call_effects(&funcs, &p.funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
-    let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+    // Even uncalled match-only functions emit tag and payload loads.
+    // The module's memory must not depend on a call constructing an ADT.
+    let adt_memory_access = funcs.iter().any(|f| any_in_stmts(&f.body,
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::AdtIs { .. }
+            | TExpr::AdtPayload(_) | TExpr::AdtPropagate { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
@@ -1599,8 +1772,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
+        heap: !p.classes.is_empty() || concat || adt_memory_access || !generators.is_empty() || !tasks.is_empty(),
         generators,
+        tasks,
+        task_main,
         globals,
         actors: tactors,
         strings,
@@ -1689,6 +1864,8 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
             TStmt::Return(None) | TStmt::UnwindFrame { .. }
             | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
             | TStmt::Unreachable => EscapeEffects::default(),
+            TStmt::Suspend { op, .. } => suspend_operands(op).into_iter()
+                .fold(EscapeEffects::default(), |acc, v| acc.union(expr_escape_effects(v, effects))),
             TStmt::Throw(value) => expr_escape_effects(value, effects)
                 .union(EscapeEffects { throws: true, raises: false }),
             TStmt::Raise(value) => expr_escape_effects(value, effects)
@@ -1913,6 +2090,9 @@ struct ConstructorInitFlow {
 
 fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) -> R<()> {
     match &e.kind {
+        ExprKind::Await(_) | ExprKind::Task { .. } | ExprKind::SpawnTask { .. } | ExprKind::SuspLambda { .. } =>
+            Err(Diagnostic::new(e.pos, "E_SUSPEND", "constructors cannot suspend or start tasks")),
+        ExprKind::Duration(_) => Ok(()),
         ExprKind::Member(base, name) if matches!(base.kind, ExprKind::SelfRef) => {
             if fields.iter().any(|f| f.deferred_final && f.name == *name)
                 && !flow.definite.contains(name) {
@@ -2149,6 +2329,8 @@ fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
     let denied = || Diagnostic::new(e.pos, "E_OWNERSHIP",
         "under-construction self cannot escape, be captured or dispatch methods");
     match &e.kind {
+        ExprKind::Await(_) | ExprKind::Task { .. } | ExprKind::SpawnTask { .. } | ExprKind::SuspLambda { .. } => Err(denied()),
+        ExprKind::Duration(_) => Ok(()),
         ExprKind::SelfRef => Err(denied()),
         ExprKind::Member(base, _) if matches!(base.kind, ExprKind::SelfRef) => {
             if captured { Err(denied()) } else { Ok(()) }
@@ -2290,6 +2472,8 @@ fn body_check(
     }
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.nparams = named.len() as u32;
+    cx.suspending = matches!(owner, Owner::TopLevel)
+        && g.suspending.contains(&(label.to_string(), named.len()));
     if let Some((mail_name, payload)) = mail {
         cx.scopes[0].push(Local {
             name: mail_name.to_string(),
@@ -2449,12 +2633,22 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
         TStmt::Raise(_) | TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
         TStmt::Defer { .. } | TStmt::Recover { .. } | TStmt::RecoverNext => false,
+        TStmt::Suspend { .. } => false,
     })
+}
+
+/// Typed operands evaluated by a suspension, in evaluation order.
+pub(crate) fn suspend_operands(op: &TSuspend) -> Vec<&TE> {
+    match op {
+        TSuspend::Call { args, .. } | TSuspend::Spawn { args, .. } => args.iter().collect(),
+        TSuspend::Await(v) | TSuspend::Sleep(v) => vec![v],
+    }
 }
 
 /// Whether any expression node in `body` satisfies `f`.
 pub(crate) fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
+        TStmt::Suspend { op, .. } => suspend_operands(op).into_iter().any(|e| any_in(e, f)),
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
@@ -2565,6 +2759,8 @@ impl<'a> FnCx<'a> {
             recover_cursor: None,
             recover_error: None,
             trace: None,
+            suspending: false,
+            consuming_future: false,
         }
     }
 
@@ -2872,6 +3068,9 @@ impl<'a> FnCx<'a> {
             if let Some(reason) = outside {
                 tr.unavailable(reason);
             }
+        }
+        if let Some(t) = self.suspension_stmt(s)? {
+            return Ok(t);
         }
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
@@ -4744,6 +4943,14 @@ impl<'a> FnCx<'a> {
             }
         }
         Ok(match &e.kind {
+            ExprKind::Await(_) => return Err(Diagnostic::new(pos, "E_SUSPEND",
+                "await is only valid inside a susp/suspends callable, as a statement-level operand")),
+            ExprKind::SuspLambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "a suspending lambda must be bound with val and only called directly under await")),
+            ExprKind::Task { .. } | ExprKind::SpawnTask { .. } => return Err(Diagnostic::new(pos, "E_SUSPEND",
+                "task { } is only valid inside a susp/suspends callable, bound with val/let or started with do task")),
+            ExprKind::Duration(_) => return Err(Diagnostic::new(pos, "E_TYPE",
+                "duration literals are only admitted as the sleeper(..) argument")),
             ExprKind::Int(Some(v)) => TE {
                 e: TExpr::I64(*v as i64),
                 ty: Type::Int,
@@ -4792,7 +4999,15 @@ impl<'a> FnCx<'a> {
                     let Some(l) = self.lookup(name) else { unreachable!("local '{name}' vanished") };
                     debug_assert!(l.slot == slot && l.ty == ty);
                     if self.moved.contains(&l.slot) {
+                        if l.ty == Type::FutureInt {
+                            return Err(Diagnostic::new(pos, "E_MOVED", format!(
+                                "Future '{name}' is affine and was already awaited")));
+                        }
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
+                    }
+                    if l.ty == Type::FutureInt && !self.consuming_future {
+                        return Err(Diagnostic::new(pos, "E_OWNERSHIP", format!(
+                            "Future '{name}' is affine: its only use is 'await {name}'")));
                     }
                     if self.loans.values().any(|loan| loan.owner == l.slot && loan.mutable) {
                         return Err(Diagnostic::new(pos, "E_BORROW", format!("owner '{name}' is exclusively mutably borrowed")));
@@ -4889,8 +5104,22 @@ impl<'a> FnCx<'a> {
                 projected
             },
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
-            ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "array literals are parsed but not yet lowered to browser Wasm")),
+            ExprKind::Array(elements) => {
+                // Diagnose direct unshadowed nominal type names using ordinary
+                // value lookup precedence. No array evaluation or allocation.
+                for element in elements {
+                    if let ExprKind::Var(name) = &element.kind {
+                        if self.lookup(name).is_none() && !self.g.names.contains_key(name)
+                            && (self.g.class(name).is_some() || self.g.enum_(name).is_some()
+                                || self.g.actor(name).is_some()) {
+                            return Err(Diagnostic::new(element.pos, "E_TYPE_NOT_VALUE",
+                                format!("the type name '{name}' is not a value")));
+                        }
+                    }
+                }
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "array literals are parsed but not yet lowered to browser Wasm"));
+            },
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
         })
@@ -4961,6 +5190,126 @@ impl<'a> FnCx<'a> {
     }
 
     /// Check arguments against parameter types; object arguments move.
+    /// Statement-level `await` / task start forms (after task_desugar).
+    fn suspension_stmt(&mut self, s: &Stmt) -> R<Option<TStmt>> {
+        let is_suspension = |e: &Expr| matches!(e.kind, ExprKind::Await(_) | ExprKind::SpawnTask { .. });
+        match s {
+            Stmt::Bind { kind, name, ty, init, pos } if is_suspension(init) => {
+                if *kind == BindKind::Const {
+                    return Err(Diagnostic::new(*pos, "E_CONST", "const cannot bind a suspension result"));
+                }
+                let (op, got) = self.suspend_op(init)?;
+                if got == Type::Void {
+                    return Err(type_err(init.pos, format!("'{name}' cannot bind a void suspension")));
+                }
+                if let Some(t) = ty {
+                    let want = self.resolve(*t, *pos)?;
+                    if want != got {
+                        return Err(type_err(init.pos, format!(
+                            "binding '{name}' has type {} but its initializer has type {}",
+                            self.tn(want), self.tn(got))));
+                    }
+                }
+                let slot = self.declare(name, got, *kind == BindKind::Let, *pos)?;
+                Ok(Some(TStmt::Suspend { op, dest: Some(slot) }))
+            }
+            Stmt::Assign { name, value, pos } if is_suspension(value) => {
+                let (op, got) = self.suspend_op(value)?;
+                let local = self.lookup(name).ok_or_else(|| Diagnostic::new(*pos, "E_UNBOUND",
+                    format!("assignment to unknown '{name}'")))?;
+                let (slot, ty, mutable) = (local.slot, local.ty, local.mutable);
+                if !mutable {
+                    return Err(Diagnostic::new(*pos, "E_IMMUTABLE", format!("'{name}' cannot be reassigned")));
+                }
+                if ty != got {
+                    return Err(type_err(value.pos, format!(
+                        "cannot assign {} to '{name}' of type {}", self.tn(got), self.tn(ty))));
+                }
+                Ok(Some(TStmt::Suspend { op, dest: Some(slot) }))
+            }
+            Stmt::Expr(e) if is_suspension(e) => {
+                let (op, _) = self.suspend_op(e)?;
+                Ok(Some(TStmt::Suspend { op, dest: None }))
+            }
+            Stmt::Return(Some(e), pos) if is_suspension(e) => {
+                let (op, got) = self.suspend_op(e)?;
+                if got != self.ret {
+                    return Err(type_err(e.pos, format!(
+                        "return of {} from a callable returning {}", self.tn(got), self.tn(self.ret))));
+                }
+                if got == Type::Void {
+                    return Ok(Some(TStmt::Block(vec![TStmt::Suspend { op, dest: None }, TStmt::Return(None)])));
+                }
+                let tmp = self.temp(got, *pos)?;
+                Ok(Some(TStmt::Block(vec![
+                    TStmt::Suspend { op, dest: Some(tmp) },
+                    TStmt::Return(Some(TE { e: TExpr::Local(tmp), ty: got })),
+                ])))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn suspend_op(&mut self, e: &Expr) -> R<(TSuspend, Type)> {
+        if !self.suspending || self.cleanup_depth > 0 || self.state_write_scope || self.state_read_scope {
+            return Err(Diagnostic::new(e.pos, "E_SUSPEND",
+                "await and task { } are only valid in a susp/suspends callable, outside cleanup and critical scopes"));
+        }
+        match &e.kind {
+            ExprKind::Await(op) => match &op.kind {
+                ExprKind::Call(name, args) if name == "sleeper"
+                    && !self.g.sigs.contains_key(&(name.clone(), args.len())) => {
+                    if args.len() != 1 {
+                        return Err(Diagnostic::new(op.pos, "E_ARITY", "sleeper expects one duration"));
+                    }
+                    let ms = match &args[0].kind {
+                        ExprKind::Duration(ms) => TE { e: TExpr::I64(*ms as i64), ty: Type::Int },
+                        _ => {
+                            let v = self.value(&args[0])?;
+                            if v.ty != Type::Int {
+                                return Err(type_err(args[0].pos, "sleeper expects a duration such as 100ms"));
+                            }
+                            v
+                        }
+                    };
+                    Ok((TSuspend::Sleep(ms), Type::Void))
+                }
+                ExprKind::Call(name, args) if self.g.suspending.contains(&(name.clone(), args.len())) => {
+                    let (idx, params, ret) = self.g.sigs[&(name.clone(), args.len())].clone();
+                    let targs = self.args(name, args, &params)?;
+                    Ok((TSuspend::Call { function: idx, args: targs }, ret))
+                }
+                _ => {
+                    self.consuming_future = matches!(op.kind, ExprKind::Var(_));
+                    let v = self.value(op);
+                    self.consuming_future = false;
+                    let v = v?;
+                    if v.ty != Type::FutureInt {
+                        return Err(type_err(op.pos, format!(
+                            "await needs a Future<int>, a susp call or sleeper(..), not {}", self.tn(v.ty))));
+                    }
+                    // Affine receipt (core_future_ownership): consumed exactly once.
+                    if let TExpr::Local(slot) = v.e {
+                        if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
+                            return Err(Diagnostic::new(op.pos, "E_MOVED",
+                                "a Future declared outside a loop cannot be awaited inside it (it could be awaited twice)"));
+                        }
+                        self.moved.insert(slot);
+                    }
+                    Ok((TSuspend::Await(v), Type::Int))
+                }
+            },
+            ExprKind::SpawnTask { func, args, detached } => {
+                let (idx, params, _) = self.g.sigs.get(&(func.clone(), args.len())).cloned()
+                    .ok_or_else(|| Diagnostic::new(e.pos, "E_UNBOUND", "unknown task body"))?;
+                let targs = self.args(func, args, &params)?;
+                let ty = if *detached { Type::Void } else { Type::FutureInt };
+                Ok((TSuspend::Spawn { function: idx, args: targs, detached: *detached }, ty))
+            }
+            _ => unreachable!("caller checked the suspension form"),
+        }
+    }
+
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
@@ -5245,6 +5594,24 @@ impl<'a> FnCx<'a> {
                 if self.g.enum_(n).is_some() || self.g.actor(n).is_some() {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED", format!("'{n}' has no callable members")));
                 }
+                // Local and nominal resolution takes precedence over the
+                // compiler-owned factory. Validate int operands with the
+                // ordinary expression checker; never grant guest allocation.
+                if n == "Set" && name == "of" {
+                    if args.is_empty() {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "empty Set.of requires contextual element type inference"));
+                    }
+                    for arg in args {
+                        let checked = self.expr(arg)?;
+                        if checked.ty != Type::Int {
+                            return Err(Diagnostic::new(arg.pos, "E_UNSUPPORTED",
+                                "checked Set.of admission currently supports only int operands"));
+                        }
+                    }
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "typed Set<int>.of requires checked guest storage and ownership lowering"));
+                }
             }
         }
         // self.method(args)
@@ -5446,9 +5813,60 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// Read only syntactically stable argument types before selecting a
+    /// target. No speculative consumption, effect execution or AST rewriting.
+    /// More complex expressions need an explicitly typed local in this slice.
+    fn overload_item(&self, arg: &Expr) -> R<crate::call_presence_v2::Item> {
+        use crate::call_presence_v2::Item;
+        let ty = match &arg.kind {
+            ExprKind::Int(_) => Type::Int,
+            ExprKind::Bool(_) => Type::Bool,
+            ExprKind::Float(_) => Type::Float,
+            ExprKind::Str(_) => Type::Str,
+            ExprKind::Var(name) if name == "None" => return Ok(Item::UntypedNone),
+            ExprKind::Var(name) => self.lookup(name)
+                .filter(|l| l.mail.is_none())
+                .map(|l| l.ty)
+                .ok_or_else(|| Diagnostic::new(arg.pos, "E_UNBOUND",
+                    format!("unknown or unsupported overload argument '{name}'")))?,
+            ExprKind::Call(name, args) if name == "Some" && args.len() == 1 => {
+                match self.overload_item(&args[0])? {
+                    Item::Typed(Type::Int) => Type::OptionInt,
+                    Item::Typed(Type::ResultIntStr) => Type::OptionResultIntStr,
+                    _ => return Err(type_err(arg.pos, "unsupported Some payload for typed overload")),
+                }
+            }
+            _ => return Err(Diagnostic::new(arg.pos, "E_UNSUPPORTED",
+                "typed overload argument needs a literal, typed binding, or supported Some payload")),
+        };
+        Ok(Item::Typed(ty))
+    }
+
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if name == "\0is_omitted" {
+            if self.owner != Owner::TopLevel || args.len() != 1 {
+                return Err(Diagnostic::new(pos, "E_OMISSION_PROVENANCE", "is omitted requires an omittable formal"));
+            }
+            if let ExprKind::Var(n) = &args[0].kind {
+                if let Some(local) = self.lookup(n) {
+                    let hidden = format!("\0omitted:{}", local.slot);
+                    if let Some(bit) = self.lookup(&hidden) {
+                        return Ok(TE { e: TExpr::Local(bit.slot), ty: Type::Bool });
+                    }
+                }
+            }
+            return Err(Diagnostic::new(pos, "E_OMISSION_PROVENANCE", "is omitted requires an original omittable formal binding"));
+        }
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+        }
+        if self.g.suspending.contains(&(name.to_string(), args.len())) {
+            return Err(Diagnostic::new(pos, "E_SUSPEND", format!(
+                "'{name}' is a susp callable: call it with await inside a susp callable")));
+        }
+        if name == "sleeper" && !self.g.sigs.contains_key(&(name.to_string(), args.len())) {
+            return Err(Diagnostic::new(pos, "E_SUSPEND",
+                "sleeper(..) suspends: use 'await sleeper(..)' inside a susp callable"));
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
@@ -5599,7 +6017,73 @@ impl<'a> FnCx<'a> {
                 return Err(isolation(pos, me, "file/module callable", name));
             }
         }
-        let (idx, params, ret) = match self.g.sigs.get(&(name.to_string(), args.len())) {
+        if let Some(family) = self.g.presence_families.get(name) {
+            use crate::call_presence_v2::{self, Item, Origin, Error};
+            let items = args.iter().map(|a| {
+                if matches!(&a.kind, ExprKind::Var(n) if (n == "omit" || n == "_") && self.lookup(n).is_none()) {
+                    Ok(Item::Hole)
+                } else {
+                    self.overload_item(a)
+                }
+            }).collect::<R<Vec<_>>>()?;
+            let candidates = family.iter().map(|s| s.1.clone()).collect::<Vec<_>>();
+            let plan = call_presence_v2::select(&candidates, &items).map_err(|err| {
+                Diagnostic::new(pos, match err {
+                    Error::Ambiguous => "E_AMBIGUOUS",
+                    Error::NoMatch => "E_ARITY",
+                    _ => "E_DUPLICATE",
+                }, format!("omittable overload selection for '{name}' failed: {err:?}"))
+            })?;
+            let (idx, formals, ret) = family[plan.candidate].clone();
+            let mut typed = Vec::new();
+            let mut provenance = Vec::new();
+            for (j, (formal, slot)) in formals.iter().zip(&plan.slots).enumerate() {
+                let supplied = match slot.origin {
+                    Origin::Supplied(i) => {
+                        let value = self.consume_expected(&args[i], formal.ty)?;
+                        if value.ty != formal.ty { return Err(type_err(pos, "selected argument type differs")); }
+                        typed.push(value);
+                        true
+                    }
+                    Origin::ExplicitHole(_) | Origin::Absent => {
+                        if let Some(default) = self.g.omission_defaults[idx as usize][j].clone() {
+                            let tmp = if formal.ty == Type::Int { 0 } else { self.temp(formal.ty, pos)? };
+                            typed.push(constant_default(&default, formal.ty, tmp, pos)?);
+                        } else {
+                            let none = Expr { kind: ExprKind::Var("None".into()), pos };
+                            typed.push(self.consume_expected(&none, formal.ty)?);
+                        }
+                        false
+                    }
+                };
+                if formal.omittable {
+                    provenance.push(TE { e: TExpr::Bool(!supplied), ty: Type::Bool });
+                }
+            }
+            typed.extend(provenance);
+            return Ok(TE { e: TExpr::Call(idx, typed), ty: ret });
+        }
+        let key = (name.to_string(), args.len());
+        if let Some(family) = self.g.overloads.get(&key) {
+            use crate::call_presence_v2::{self, Formal, Error};
+            let items = args.iter().map(|a| self.overload_item(a)).collect::<R<Vec<_>>>()?;
+            let candidates = family.iter().map(|s| s.1.iter().map(|&ty| Formal {
+                ty, omittable: false, none_default: false, omission_default: false,
+            }).collect::<Vec<_>>()).collect::<Vec<_>>();
+            let plan = call_presence_v2::select(&candidates, &items).map_err(|err| {
+                Diagnostic::new(pos, match err {
+                    Error::Ambiguous => "E_AMBIGUOUS",
+                    Error::NoMatch => "E_TYPE",
+                    _ => "E_DUPLICATE",
+                }, format!("typed overload selection for '{name}' failed: {err:?}"))
+            })?;
+            let (idx, params, ret) = family[plan.candidate].clone();
+            // The ordinary ownership/type checker still verifies every operand
+            // against the selected signature, in source order, exactly once.
+            let targs = self.args(name, args, &params)?;
+            return Ok(TE { e: TExpr::Call(idx, targs), ty: ret });
+        }
+        let (idx, params, ret) = match self.g.sigs.get(&key) {
             Some(s) => s.clone(),
             None => {
                 return Err(match self.g.names.get(name) {
