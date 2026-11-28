@@ -34,7 +34,13 @@ fn typed_quantity_errors_fail_closed_without_changing_unrelated_admission() {
         let source=format!("{PRE}\npub fnc main() -> int {{ return {expr}; }}");
         assert_eq!(compile(&source).unwrap_err().code,code, "{expr}");
     }
-    assert!(compile("define dimension Time; define unit Second: Time; pub fnc main() -> int { return 42; }").is_err());
+    // #846 admits standalone alias-free quantity sources via checked IR.
+    let alias_free = "define dimension Time; define unit Second: Time; pub fnc main() -> int { return 42; }";
+    let guest = compile(alias_free).expect("alias-free checked IR");
+    assert!(guest.starts_with(b"\0asm"));
+    assert_eq!(atto_compiler::compile_verified_strict(alias_free).unwrap_err().code, "E_VERIFY_UNSUPPORTED");
+    assert_eq!(compile("define dimension Time; define unit Second: Time; pub fnc main() -> int { return 42<Second>; }").unwrap_err().code, "E_UNIT_ERASURE");
+    assert!(compile("define dimension Time; define unit Second: Time; pub fnc main() -> int { return 42; } trailing").is_err());
     assert!(compile("pub fnc main() -> int { return 42; }").is_ok());
     let malformed=format!("{PRE}\npub fnc main() -> int {{ return 42; }} trailing");
     assert!(compile(&malformed).is_err());
