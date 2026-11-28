@@ -14,7 +14,7 @@ pub enum Item<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    UnknownName, Duplicate, Missing, PositionalAfterNamed,
+    UnknownName, Duplicate, Missing, Arity, PositionalAfterNamed,
     Unsupported, Limit, InvalidSignature,
 }
 
@@ -71,7 +71,7 @@ pub fn plan(items: &[Item<'_>], formals: &[&str], defaults: &[bool])
                 *names.get(name).ok_or((operand, Error::UnknownName))?
             } else {
                 if named { return Err((operand, Error::PositionalAfterNamed)); }
-                if next >= formals.len() { return Err((operand, Error::Limit)); }
+                if next >= formals.len() { return Err((operand, Error::Arity)); }
                 let slot = next;
                 next += 1;
                 slot
@@ -127,6 +127,36 @@ mod tests {
             (vec![Item::Unsupported],Error::Unsupported),
             (vec![Item::Tuple(usize::MAX)],Error::Limit),
         ] { assert_eq!(plan(&items,f,d).unwrap_err().1,error); }
+    }
+    #[test]
+    fn tuple_and_record_permutations_are_distinct() {
+        for names in [["a", "b", "c"], ["a", "c", "b"], ["b", "a", "c"],
+                      ["b", "c", "a"], ["c", "a", "b"], ["c", "b", "a"]] {
+            for n in 0..=names.len() {
+                let p = plan(&[Item::Tuple(n)], &names[..n], &vec![false; n]).unwrap();
+                for (i, slot) in p.iter().enumerate() {
+                    assert_eq!(*slot, Slot { operand: 0, projection: Some(i), parameter: i });
+                }
+            }
+            for fields in [["a", "b", "c"], ["a", "c", "b"], ["b", "a", "c"],
+                           ["b", "c", "a"], ["c", "a", "b"], ["c", "b", "a"]] {
+                let p = plan(&[Item::Record(&fields)], &names, &[false; 3]).unwrap();
+                for (i, slot) in p.iter().enumerate() {
+                    assert_eq!(slot.projection, Some(i));
+                    assert_eq!(names[slot.parameter], fields[i]);
+                }
+            }
+        }
+    }
+    #[test]
+    fn distinguish_arity_from_resource_limit_and_validate_signatures() {
+        assert_eq!(plan(&[Item::Tuple(2)], &["x"], &[false]), Err((0, Error::Arity)));
+        assert_eq!(plan(&[Item::Tuple(MAX_SLOTS + 1)], &["x"], &[false]), Err((0, Error::Limit)));
+        assert_eq!(plan(&[], &["x", "x"], &[true; 2]), Err((0, Error::InvalidSignature)));
+        assert_eq!(plan(&[], &["x"], &[]), Err((0, Error::InvalidSignature)));
+        let p = plan(&[Item::Tuple(MAX_SLOTS)], &vec!["_"; MAX_SLOTS], &vec![false; MAX_SLOTS]).unwrap();
+        assert_eq!(p.len(), MAX_SLOTS);
+        assert_eq!(p[MAX_SLOTS - 1].parameter, MAX_SLOTS - 1);
     }
     #[test]
     fn private_ignored_slots_do_not_become_named_parameters() {
