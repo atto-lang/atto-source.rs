@@ -32,6 +32,8 @@ pub enum Tok {
     Arrow,
     /// Exact contiguous return-first callable delimiter `<-`.
     LeftArrow,
+    /// Return-first callable separator; never an ownership arrow.
+    SignatureBullet,
     FatArrow,
     Dot,
     /// Exact contiguous `...` token. Interpretation is restricted to pattern context.
@@ -408,7 +410,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('<', Some('=')) if i >= 2 && chars[i - 1] == '<' && chars[i - 2] == '<' =>
                 (Tok::Lt, 1),
             ('<', Some('-')) => (Tok::LeftArrow, 2),
-            ('•', _) => (Tok::LeftArrow, 1),
+            ('•', _) => (Tok::SignatureBullet, 1),
             ('<', Some('|')) => (Tok::PipeLt, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
@@ -479,5 +481,25 @@ mod suspension_alias_lex_tests {
         }
         assert_eq!(tokens[3].tok, Tok::Str("⧖ ∂ susp".into()));
         assert_eq!(tokens[4].tok, Tok::Eof);
+    }
+}
+
+#[cfg(test)]
+mod ownership_arrow_lex_tests {
+    use super::*;
+
+    #[test]
+    fn bullet_and_contiguous_arrow_are_distinct() {
+        let tokens = lex("<- • < - -> <=").unwrap();
+        let actual: Vec<_> = tokens.into_iter().map(|t| t.tok).collect();
+        assert_eq!(actual, vec![Tok::LeftArrow, Tok::SignatureBullet, Tok::Lt, Tok::Minus, Tok::Arrow, Tok::Le, Tok::Eof]);
+    }
+
+    #[test]
+    fn strings_and_comments_do_not_produce_arrows() {
+        let tokens = lex("\"<- •\" // <- •\n42").unwrap();
+        assert_eq!(tokens[0].tok, Tok::Str("<- •".into()));
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[2].tok, Tok::Eof);
     }
 }
