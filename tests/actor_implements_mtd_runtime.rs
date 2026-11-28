@@ -89,12 +89,19 @@ fn duplicate_inline_and_external_implementation_is_rejected() {
 fn external_direct_actorref_method_call_is_still_illegal() {
     let source = r#"
         define interface IPing as ping(): int; end
-        define actor A implements IPing as pub ping(): int { return 42; } end
+        define actor A implements IPing as
+            pub ping(): int { return 42; }
+            receive(ActorMail<int> mail): void { stdio.println(self.ping()); }
+        end
         pub fnc main(): int {
             val worker_ref = spawn A();
             return worker_ref.ping();
         }
     "#;
+    // A matched actor definition must be admitted independently, or the
+    // negative test could pass for an unrelated malformed actor declaration.
+    let control = source.replace("return worker_ref.ping();", "return 0;");
+    assert!(compile(&control).unwrap().starts_with(b"\0asm\x01\0\0\0"));
     let d = compile(source).expect_err("external actorref call must not be executable");
     assert_eq!(d.code, "E_UNSUPPORTED", "{d}");
 }
