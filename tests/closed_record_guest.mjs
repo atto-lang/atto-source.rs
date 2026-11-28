@@ -66,14 +66,14 @@ const positives=[
 ];
 positives.push(
  ['pub fnc main():int {let r={foo := 40\nbar := 2};return r.foo+r.bar;}',42n,''],
- ['pub fnc main():int {let r=(foo := 40,bar=2);return r.foo+r.bar;}',42n,''],
- ['pub fnc main():int {let foo=7;let r=(foo:40,bar := 2);return r.foo+r.bar+foo-7;}',42n,''],
+ ['pub fnc main():int {let r=("foo":40,"bar":2);return r.foo+r.bar;}',42n,''],
+ ['pub fnc main():int {let foo=7;let r=("foo":40,"bar":2);return r.foo+r.bar+foo-7;}',42n,''],
  ['pub fnc main():int {let r={foo := 40\nbar = 2,};return r.foo+r.bar;}',42n,'']
 );
 const negatives=[
  ['pub fnc main():int {let r={foo := 1,foo:2};return 0;}','E_DUPLICATE'],
- ['pub fnc main():int {let r=(foo := 1,foo=2);return 0;}','E_DUPLICATE'],
- ['pub fnc main():int {let r=(foo:1,foo := 2);return 0;}','E_DUPLICATE'],
+ ['pub fnc main():int {let r=("foo":1,"foo":2);return 0;}','E_DUPLICATE'],
+ ['pub fnc main():int {let r=("foo":1,"foo":2);return 0;}','E_DUPLICATE'],
 
  ['pub fnc main(): int {const age=42; val z=(:age,age=5); return 0;}','E_DUPLICATE'],
  ['pub fnc main(): int {const age=42; val z=(:age,5); return 0;}','E_LITERAL_KIND'],
