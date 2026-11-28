@@ -1,0 +1,7 @@
+// expect-exit: 42
+define class Parcel as
+ pub let int pad = 99;
+ pub let int value = 42;
+ pub get(): int { return self.value; }
+end
+pub fnc main(): int { let p = new Parcel(); return p.get(); }
