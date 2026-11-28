@@ -156,6 +156,7 @@ struct Layout {
     catch_depth: Option<u32>,
     /// Module-private escalated-failure tag (index 1) exists.
     raise_tag: bool,
+    readonly_method_getters: Vec<Option<(Type, Type, u32)>>,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -873,12 +874,17 @@ impl Emit<'_> {
                 self.close();
             }
             TExpr::Call(f, args) => {
-                for a in args {
-                    self.expr(a);
+                if let Some((field_ty, offset)) = verified_method_getter_call(v, *f, args, &self.l.readonly_method_getters) {
+                    // Stable local receiver evaluated once; no call/receiver slot.
+                    // A proved leaf cannot participate in a recursive call cycle.
+                    self.expr(&args[0]);
+                    field_op(&mut self.code, field_ty, offset, false);
+                } else {
+                    for a in args { self.expr(a); }
+                    let at = self.code.len();
+                    self.call(self.l.func(*f));
+                    self.calls.push((at, self.code.len(), *f));
                 }
-                let at = self.code.len();
-                self.call(self.l.func(*f));
-                self.calls.push((at, self.code.len(), *f));
             }
             TExpr::Builtin(b, x, y) => {
                 self.expr(x);
@@ -1562,6 +1568,37 @@ fn refinement_check_body() -> (Sig, Vec<u8>, Vec<u8>) {
     c.extend_from_slice(&[0x0b,0x20,0,0x0b]);
     (Sig(vec![I64,I64,I64,I32],vec![I64]),vec![0],c)
 }
+/// Mainline receiver-only BAE: do not change legacy argument ownership.
+/// Candidate identity comes from the checker, never from a method name.
+fn verified_method_getter(p: &TProgram, i: usize) -> Option<(Type, Type, u32)> {
+    if !p.actors.is_empty() || !p.generators.is_empty()
+        || p.imports.contains(&Import::StateEnter)
+        || p.readonly_method_receivers.get(i) != Some(&true) {
+        return None;
+    }
+    let f = p.funcs.get(i)?;
+    let [Type::Class(class)] = f.params.as_slice() else { return None; };
+    let owner = Type::Class(*class);
+    if !f.locals.is_empty() { return None; }
+    let [TStmt::Return(Some(TE { e: TExpr::FieldGet { obj, offset }, ty }))] =
+        f.body.as_slice() else { return None; };
+    if obj.ty != owner || !matches!(&obj.e, TExpr::Local(0))
+        || f.ret != *ty || !matches!(*ty, Type::Int | Type::Bool | Type::Float) {
+        return None;
+    }
+    Some((owner, *ty, *offset))
+}
+
+fn verified_method_getter_call(value: &TE, function: u32, args: &[TE],
+    proofs: &[Option<(Type, Type, u32)>]) -> Option<(Type, u32)> {
+    let [arg] = args else { return None; };
+    let (owner, result, offset) = *proofs.get(function as usize)?.as_ref()?;
+    if arg.ty != owner || value.ty != result || !matches!(&arg.e, TExpr::Local(_)) {
+        return None;
+    }
+    Some((result, offset))
+}
+
 fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
@@ -1581,6 +1618,7 @@ fn emit_inner(p: &TProgram, quantity_division: bool) -> Vec<u8> {
             1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())
         ),
         raise_tag: p.raise_tag,
+        readonly_method_getters: (0..p.funcs.len()).map(|i| verified_method_getter(p, i)).collect(),
     };
     let mut types = Types(Vec::new());
 
