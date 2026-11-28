@@ -20,8 +20,10 @@ try {
     writeFileSync(input, src);
     for (const mode of ['wasm', 'js']) {
       const output = join(dir, i + (mode === 'wasm' ? '.wasm' : '.mjs'));
-      const args = mode === 'wasm' ? [input, '-o', output] : ['--emit', 'js', input, '-o', output];
+      const args = mode === 'wasm' ? [input, '-o', output] : ['--emit=js', input, '-o', output];
       const run = spawnSync(compiler, args, { encoding: 'utf8' });
+      assert.ifError(run.error);
+      assert.equal(run.signal, null);
       assert.equal(run.status, 0, run.stderr);
       const guest = mode === 'wasm'
         ? (await WebAssembly.instantiate(readFileSync(output), {})).instance
