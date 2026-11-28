@@ -5188,8 +5188,20 @@ impl Parser {
                             "too many immediate apply Record fields"));
                     }
                     let (label, label_pos) = self.ident("a static Record field name")?;
-                    if !self.eat(&Tok::Colon) && !self.eat(&Tok::Assign) {
-                        return Err(self.expected("':' or '=' after Record field"));
+                    // In a closed Record field only, accept the canonical
+                    // contiguous Pair spelling without changing ordinary
+                    // argument labels or enabling Pair extraction in tuples.
+                    let separator = self.pos();
+                    if self.eat(&Tok::Colon) {
+                        if *self.peek() == Tok::Assign {
+                            let equals = self.pos();
+                            if equals.line != separator.line || equals.col != separator.col + 1 {
+                                return Err(self.expected("contiguous ':=' Record field separator"));
+                            }
+                            self.advance();
+                        }
+                    } else if !self.eat(&Tok::Assign) {
+                        return Err(self.expected("':', '=' or ':=' after Record field"));
                     }
                     let value = self.parse_expr()?;
                     fields.push(Expr { kind: ExprKind::Str(label), pos: label_pos });
