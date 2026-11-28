@@ -122,7 +122,7 @@ fn slim_and_fat_entry_arrows_share_ast_and_map_key_rules() {
     let p = parse("let a=5->3;let b=(5)=>3;let c=(5)->3;let m={5->3,4=>3,};").unwrap();
     for i in 0..3 {
         assert!(matches!(init(&p,i), ExprKind::Entry(k,v)
-            if matches!(&k.kind, ExprKind::Int(5)) && matches!(&v.kind, ExprKind::Int(3))));
+            if matches!(&k.kind, ExprKind::Int(Some(5))) && matches!(&v.kind, ExprKind::Int(Some(3)))));
     }
     assert!(matches!(init(&p,3), ExprKind::Map(xs) if xs.len()==2));
     assert_eq!(parse("let m={5->3,5=>4};").unwrap_err().code, "E_DUPLICATE");
