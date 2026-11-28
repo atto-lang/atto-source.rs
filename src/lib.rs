@@ -150,6 +150,7 @@ pub fn compile_js(source: &str) -> Result<String, Diagnostic> {
 pub fn compile_namespace_file_v2(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let prepared = namespace::prepare_file_v2(source)?;
     let tokens = lexer::lex(&prepared)?;
+    reject_unlowered_ensemble_publication(&tokens)?;
     if let Some(completed) = target_syntax::complete_file_classes_v2(&tokens)? {
         return compile_prelexed_target(completed, None, false);
     }
@@ -160,6 +161,7 @@ pub fn compile_namespace_file_v2(source: &str) -> Result<Vec<u8>, Diagnostic> {
 pub fn compile_js_namespace_file_v2(source: &str) -> Result<String, Diagnostic> {
     let prepared = namespace::prepare_file_v2(source)?;
     let tokens = lexer::lex(&prepared)?;
+    reject_unlowered_ensemble_publication(&tokens)?;
     if let Some(completed) = target_syntax::complete_file_classes_v2(&tokens)? {
         return String::from_utf8(compile_prelexed_target(completed, None, true)?)
             .map_err(|_| js_scalar::unsupported());
@@ -175,6 +177,7 @@ pub fn compile_verified_strict(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "source exceeds strict input cap"));
     }
     let tokens = lexer::lex(source)?;
+    reject_unlowered_ensemble_publication(&tokens)?;
     if allocation_guarantees::present(&tokens) {
         return Err(Diagnostic::new(pos, "E_VERIFY_UNSUPPORTED", "allocation guarantees use the ordinary checked AOT profile"));
     }
@@ -209,6 +212,7 @@ where F: FnMut(&std::path::Path) -> std::io::Result<String> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes")));
     }
     let lexical = lexer::lex(source)?;
+    reject_unlowered_ensemble_publication(&lexical)?;
     if raw_pointer_slot::present(&lexical) {
         return compile_inner(source, Some(logical_path));
     }
@@ -269,6 +273,29 @@ fn typed_quantity_header(tokens: &[lexer::Token]) -> bool {
         word(i + 4, "where")
 }
 
+// The canonical Ensemble publication fixture is not yet a lowered typed Topic
+// call in this compiler. Match real lexer tokens (not comments or strings).
+// Do not reserve the ordinary method name try_publish: this narrow candidate
+// gate is limited to the share-bang publication shape.
+fn reject_unlowered_ensemble_publication(tokens: &[lexer::Token]) -> Result<(), Diagnostic> {
+    use lexer::Tok;
+    for w in tokens.windows(5) {
+        if w[0].tok == Tok::Dot
+            && matches!(&w[1].tok, Tok::Ident(name) if name == "try_publish")
+            && w[2].tok == Tok::LParen
+            && matches!(&w[3].tok, Tok::Ident(name) if name == "share")
+            && w[4].tok == Tok::Bang
+        {
+            return Err(Diagnostic::new(
+                w[1].pos,
+                "E_ACTOR_PUBSUB_UNSUPPORTED",
+                "typed Ensemble Topic.try_publish(share! ...) requires verified guest lowering",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     compile_inner_target(source, logical_path, false)
@@ -284,6 +311,7 @@ fn compile_inner_target(source: &str, logical_path: Option<&std::path::Path>, ja
         ));
     }
     let tokens = lexer::lex(source)?;
+    reject_unlowered_ensemble_publication(&tokens)?;
     if raw_pointer_slot::present(&tokens) {
         if javascript { return Err(js_scalar::unsupported()); }
         let lowered = raw_pointer_slot::lower_slot(tokens, source)?;
@@ -352,6 +380,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
 
 fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>, javascript: bool)
     -> Result<Vec<u8>, Diagnostic> {
+    reject_unlowered_ensemble_publication(&tokens)?;
     if raw_pointer_slot::present(&tokens) {
         return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_POINTER_SLOT_PROFILE", "reusable slots require the original closed source"));
     }
