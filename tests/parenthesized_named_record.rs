@@ -82,7 +82,7 @@ fn inferred_named_record_and_explicit_record_type_are_identical() {
 }
 
 #[test]
-fn empty_tuple_is_never_a_record_and_bare_braces_need_context() {
+fn untyped_empty_tuple_and_contextual_empty_record_are_distinct() {
     let p = binding("let t=(); let r: Record={}; let m: Map<string,int>={};");
     let typed = collection_types::analyze(&p).unwrap();
     assert_eq!(typed.len(),3);
@@ -93,7 +93,7 @@ fn empty_tuple_is_never_a_record_and_bare_braces_need_context() {
     let p = binding("let x={};");
     assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_INFER");
     let p = binding("let x: Record=();");
-    assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_TYPE");
+    assert_eq!(collection_types::analyze(&p).unwrap()[0].value.ty, LiteralType::Record(vec![]));
     let p = binding("let x: Tuple={};");
     assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_INFER");
 }
@@ -399,4 +399,19 @@ fn quoted_key_domains_and_recursive_array_parser() {
     }
     rejected(r#"pub fnc main():int {let r=("x":1,"\u{78}":2);return 0;}"#,"E_DUPLICATE");
     guest(r#"pub fnc main():int {let r=("content-type":42);return r["content-type"];}"#);
+}
+
+#[test]
+fn record_bracket_fields_preserve_array_kind_and_heterogeneous_child_shapes() {
+    let p = binding(r#"const Record a={x:[1,2,3]}; const Record b=("x":[{a:1},("b":2),{c:3}]);"#);
+    let typed = collection_types::analyze(&p).unwrap();
+    assert_eq!(typed[0].value.ty,LiteralType::Record(vec![("x".into(),LiteralType::Array(Box::new(LiteralType::Int)))]));
+    assert_eq!(typed[1].value.ty,LiteralType::Record(vec![("x".into(),LiteralType::Array(Box::new(LiteralType::OpenRecord)))]));
+    let items = &typed[1].value.children[0].children;
+    assert_eq!(items.len(),3);
+    for (item,key) in items.iter().zip(["a","b","c"]) {
+        assert_eq!(item.ty,LiteralType::Record(vec![(key.into(),LiteralType::Int)]));
+    }
+    let p = binding("const Record a={x:[1,true]};");
+    assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_TYPE");
 }
