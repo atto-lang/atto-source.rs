@@ -615,6 +615,12 @@ fn isolation(pos: Pos, actor: &str, what: &str, name: &str) -> Diagnostic {
 
 /// Field initializers run while the object is under construction: the Java
 /// reference forbids calls there, and this compiler admits only constants.
+fn fresh_nested_init(e: &Expr, expected: &str) -> bool {
+    matches!(&e.kind, ExprKind::New(name, args) if name == expected &&
+        (args.is_empty() || (expected == crate::array_slot_guest::INTERNAL
+            && args.iter().all(crate::array_slot_guest::literal_int))))
+}
+
 fn const_init(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
@@ -1122,8 +1128,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 Ok(Type::Class(child)) if (f.referent_mutable || f.binding == FieldBinding::Val)
                     && f.binding != FieldBinding::Const && prior[child as usize] != 0 => {
                     size = size.saturating_add(prior[child as usize]);
-                    f.init.as_ref().is_some_and(|e| matches!(&e.kind,
-                        ExprKind::New(name, args) if name == &class_names[child as usize] && args.is_empty()))
+                    f.init.as_ref().is_some_and(|e| fresh_nested_init(e, &class_names[child as usize]))
                 }
                 _ => false,
             });
@@ -1177,8 +1182,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     && f.binding != FieldBinding::Const
                     && ((!f.referent_mutable && immutable_leaves[ci as usize])
                         || ((f.referent_mutable || f.binding == FieldBinding::Val) && closed_copy_trees[ci as usize]))
-                    && f.init.as_ref().is_some_and(|e| matches!(&e.kind,
-                        ExprKind::New(name, args) if name == &class_names[ci as usize] && args.is_empty())),
+                    && f.init.as_ref().is_some_and(|e| fresh_nested_init(e, &class_names[ci as usize])),
                 _ => false,
             };
             if !ok {
@@ -1239,6 +1243,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let shallow_copy_idx = if flat && !c.methods.iter().any(|m| m.name == "copy") { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
+            None if c.name == crate::array_slot_guest::INTERNAL =>
+                vec![Type::Int; c.fields.len()],
             None => Vec::new(),
         };
         classes.push(ClassInfo {
@@ -1512,7 +1518,12 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ty: me,
             },
         )];
-        for (offset, ty, v) in field_inits {
+        for (i, (offset, ty, v)) in field_inits.into_iter().enumerate() {
+            // Fixed scalar Array storage is initialized directly from its
+            // checked factory parameters, not from a shared static descriptor.
+            let v = if c.name == crate::array_slot_guest::INTERNAL {
+                TE { e: TExpr::Local(i as u32), ty: Type::Int }
+            } else { v };
             body.push(TStmt::FieldSet {
                 obj: obj.clone(),
                 offset,
@@ -1988,9 +1999,17 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
         let info = &g.classes[ci as usize];
         if !actor && ((info.immutable_leaf && !f.referent_mutable)
             || (info.closed_copy_tree && (f.referent_mutable || f.binding == FieldBinding::Val)))
-            && matches!(&init.kind, ExprKind::New(name, args) if name == &info.name && args.is_empty())
+            && fresh_nested_init(init, &info.name)
         {
-            return Ok(Some(TE { e: TExpr::Call(info.new_idx, Vec::new()), ty }));
+            let ExprKind::New(_, args) = &init.kind else { unreachable!() };
+            let idx = info.new_idx;
+            let params = info.ctor_params.clone();
+            if args.len() != params.len() {
+                return Err(Diagnostic::new(init.pos, "E_COPY_UNPROVEN", "fresh field factory arity mismatch"));
+            }
+            let mut cx = FnCx::new(g, Owner::FieldInit { actor }, Type::Void, imports, data);
+            let values = cx.args(&info.name, args, &params)?;
+            return Ok(Some(TE { e: TExpr::Call(idx, values), ty }));
         }
         return Err(Diagnostic::new(init.pos, "E_COPY_UNPROVEN", "nested field requires a fresh immutable leaf"));
     }
@@ -3925,7 +3944,7 @@ impl<'a> FnCx<'a> {
                         let leaf = &self.g.classes[ci as usize];
                         ((leaf.immutable_leaf && !f.referent_mutable) ||
                             (self.nested_linear && self.owner == Owner::TopLevel && leaf.closed_copy_tree && f.referent_mutable)) &&
-                            matches!(&value.kind, ExprKind::New(n, args) if n == &leaf.name && args.is_empty())
+                            fresh_nested_init(value, &leaf.name)
                     }
                     _ => false,
                 };

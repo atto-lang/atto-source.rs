@@ -171,3 +171,19 @@ fn mutable_method_rejects_unproved_effects_and_argument_evaluation() {
     let bad = "define class Scores as pub let int n = 20; pub mut mtd adjust(int value): void { self.n = value; } end fnc effect(): int { return 22; } pub fnc main(): int { let mut Scores a = new Scores(); a.adjust(effect()); return a.n; }";
     assert_eq!(compile(bad).unwrap_err().code, "E_COPY_UNPROVEN");
 }
+
+#[test]
+fn fixed_array_field_candidate_requires_unique_indexed_receiver() {
+    let defs = "define class Person as pub let mut Array<int> scores = Array.of(20, 3, 4); end";
+    let setup = "let mut Person a = new Person(); let mut Person b = copy! a; let mut Person c = copy! b; b.scores = Array.of(10, 8, 9);";
+    wasm(&format!("{defs} pub fnc main(): int {{ {setup} b.scores[0] = 22; return a.scores[0] + b.scores[0] + c.scores[0]; }}"));
+    wasm(&format!("{defs} pub fnc main(): int {{ {setup} b.scores[-1] = 22; return b.scores[2]; }}"));
+    for root in ["a", "c"] {
+        let source = format!("{defs} pub fnc main(): int {{ {setup} {root}.scores[0] = 22; return b.scores[0]; }}");
+        assert_eq!(compile(&source).unwrap_err().code, "E_COPY_READONLY");
+    }
+    let source = format!("{defs} pub fnc main(): int {{ {setup} return b.scores[3]; }}");
+    assert_eq!(compile(&source).unwrap_err().code, "E_ARRAY_BOUNDS");
+    let source = format!("{defs} pub fnc main(): int {{ {setup} b.scores = Array.of(1); return 0; }}");
+    assert_eq!(compile(&source).unwrap_err().code, "E_COPY_UNPROVEN");
+}

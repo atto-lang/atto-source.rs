@@ -21,6 +21,7 @@ pub mod collection_layout_plan;
 pub mod collection_layout_storage;
 /// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
 pub mod collection_layout_guest;
+mod array_slot_guest;
 /// Shared canonical generic binding for production and guest collection parsers.
 pub mod collection_layout_type;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
@@ -386,6 +387,19 @@ fn compile_prelexed_target(tokens: Vec<lexer::Token>, logical_path: Option<&std:
         // tuple-element type, not a misleading generic E_SYNTAX.
         let _ = tuple_binding_admission::inspect(&source_tokens)?;
         let mut parser = parser::Parser::new(source_tokens.clone());
+        if array_slot_guest::selected(&source_tokens) {
+            parser.enable_fixed_array_slots();
+            let parsed = array_slot_guest::lower(parser.parse_program()?)?;
+            if javascript { return Err(js_scalar::unsupported()); }
+            let typed = check::check(&parsed)?;
+            actor_stack_bound::verify(&typed)?;
+            let bytes = wasm::emit(&typed);
+            if bytes.len() > wasm::MAX_OUTPUT {
+                return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                    "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+            }
+            return Ok(bytes);
+        }
         let parsed = parser.parse_program()?;
         if parsed.array_types.is_empty() {
             return Err(Diagnostic::new(Pos { line: 1, col: 1 },
