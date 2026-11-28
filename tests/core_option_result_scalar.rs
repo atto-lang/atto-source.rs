@@ -175,3 +175,52 @@ fn conditional_return_rejects_invalid_programs_without_emitting_guest() {
         assert!(error.pos.line > 0 && error.pos.col > 0, "{source}: {error}");
     }
 }
+
+#[test]
+fn conditional_marker_and_ternary_are_lexically_distinct() {
+    for (body, expected) in [
+        ("return true ? 42 : 7;", 42),
+        ("return? true ? 42 : 0; return 7;", 42),
+        ("^? false ? 99 : 0; return 42;", 42),
+        ("return?=[42,99] true ? 42 : 0; return 7;", 42),
+        ("^?=0 false ? 42 : 0; return 7;", 0),
+        ("^? true?42:0; return 7;", 42),
+        ("^?/* comment */ true ? 42 : 0; return 7;", 42),
+        ("return? false ? 9 : true ? 42 : 0; return 7;", 42),
+        ("^? false ? 1 / 0 : 42; return 7;", 42),
+        ("return? true ? 0 : 1 / 0; return 42;", 42),
+        ("return?=[1,42] false ? 42 : 7; return 42;", 42),
+        ("return true ? 0 : 42;", 0),
+    ] {
+        let source = format!("pub fnc main(): int {{ {body} }}");
+        let bytes = compile(&source).unwrap_or_else(|e| panic!("{source}: {e}"));
+        execute_guest(&bytes, expected);
+    }
+}
+
+#[test]
+fn gaps_do_not_construct_a_conditional_marker() {
+    for body in [
+        "return /* gap */ ? true ? 42 : 0; return 1;",
+        "^/* gap */? true ? 42 : 0; return 1;",
+        "return\n? true ? 42 : 0; return 1;",
+        "^\t? true ? 42 : 0; return 1;",
+        "return? /* gap */ =42 42; return 1;",
+        "^?/* gap */=42 42; return 1;",
+        "^? true ? 42; return 1;",
+        "return? true ? 42 : false; return 1;",
+        "val x = return? 42; return x;",
+        "^?= [1,true] true ? 42 : 0; return 1;",
+    ] {
+        let source = format!("pub fnc main(): int {{ {body} }}");
+        let err = compile(&source).expect_err(&source);
+        assert!(err.pos.line > 0 && err.pos.col > 0, "{source}: {err}");
+    }
+}
+
+#[test]
+fn postfix_failure_and_prefix_success_are_independent() {
+    let source = "fnc read(bool x): Option<int> { if x then return Some(42); fi return None; } fnc next(bool x): Option<int> { val n: int = read(x)?; return Some(n); } pub fnc main(): int { ^? next(false); return? next(true); return 1; }";
+    let bytes = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    execute_guest(&bytes, 42);
+}
