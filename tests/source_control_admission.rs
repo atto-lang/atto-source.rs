@@ -1,52 +1,44 @@
-//! Raw terminal control rejection before comment preprocessing.
-use oreslang_source_rs::frontend;
+//! Raw source admission in the browser compiler, before lexical preprocessing.
+use atto_compiler::{compile, lexer::lex, diag::Pos};
 
 #[test]
-fn terminal_controls_are_rejected_in_comments_and_other_source_regions() {
-    for control in ['\u{001b}', '\u{007f}'] {
+fn terminal_controls_are_rejected_before_comments_and_literals() {
+    for control in ['\u{001b}', '\u{007f}', '\0'] {
+        let code = if control == '\0' { "E_NUL" } else { "E_SOURCE_CONTROL" };
         for source in [
-            format!("fnc main():int{{/*{control}*/return 42;}}"),
-            format!("fnc main():int{{return 42;}}//{control}"),
-            format!("fnc main():int{{return 42;}}/* {control} */"),
+            format!("pub fnc main(): int {{ /*{control}*/return 42; }}"),
+            format!("pub fnc main(): int {{ return 42; }}//{control}"),
+            format!("pub fnc main(): int {{ val s = \"{control}\"; return 42; }}"),
             format!("/* café 😀 */{control}"),
         ] {
-            let expected = source.find(control).expect("injected control");
-            let error = frontend::parse(&source).expect_err("terminal control must be rejected");
-            assert_eq!(error.class, "source_admission");
-            assert_eq!(error.offset, expected);
-            assert_eq!(error.message, "source contains terminal control");
+            let error = lex(&source).expect_err("raw control must be rejected");
+            assert_eq!(error.code, code);
+            assert_eq!(error.pos, Pos { line: 1, col: source.chars().position(|c| c == control).unwrap() as u32 + 1 });
+            assert_eq!(compile(&source).unwrap_err().code, code);
         }
     }
 }
-
 #[test]
-fn ordinary_whitespace_and_unicode_comments_remain_valid() {
-    frontend::parse("/* café 😀 */ pub fnc main(): int {\r\n\treturn 42;\r\n}")
-        .expect("valid UTF-8 comment and whitespace");
+fn valid_unicode_comments_and_whitespace_remain_admitted() {
+    let source = "/* café 😀 */ pub fnc main(): int {\r\n\treturn 42;\r\n}";
+    assert!(compile(source).is_ok());
 }
-
 #[test]
-fn first_forbidden_byte_wins_and_offset_is_utf8_byte_based() {
-    for (source, expected_message, expected_offset) in [
-        ("\u{001b}\0", "source contains terminal control", 0),
-        ("\0\u{007f}", "source contains NUL byte", 0),
-        ("x\r\n\u{007f}\0", "source contains terminal control", 3),
-        ("/* café 😀 */\u{001b}", "source contains terminal control", 16),
+fn first_raw_control_wins_and_columns_are_character_based() {
+    for (source, code, line, col) in [
+        ("\u{001b}\0", "E_SOURCE_CONTROL", 1, 1),
+        ("\0\u{007f}", "E_NUL", 1, 1),
+        ("x\r\n\u{007f}\0", "E_SOURCE_CONTROL", 2, 1),
+        ("/* café 😀 */\u{001b}", "E_SOURCE_CONTROL", 1, 13),
     ] {
-        let error = frontend::parse(source).expect_err("invalid raw byte admitted");
-        assert_eq!(error.class, "source_admission");
-        assert_eq!(error.message, expected_message);
-        assert_eq!(error.offset, expected_offset);
+        let error = lex(source).unwrap_err();
+        assert_eq!(error.code, code);
+        assert_eq!(error.pos, Pos { line, col });
     }
 }
-
 #[test]
-fn block_comment_depth_is_bounded_before_lexer_processing() {
-    let input = format!(
-        "pub fnc main(): int {{ {}{} return 42; }}",
-        "/*".repeat(65),
-        "*/".repeat(65)
-    );
-    let error = frontend::parse(&input).expect_err("too much comment nesting must be denied");
-    assert_eq!(error.class, "resource_limit");
+fn nested_comment_budget_is_enforced() {
+    let source = format!("pub fnc main(): int {{ {}{} return 42; }}",
+        "/*".repeat(65), "*/".repeat(65));
+    assert_eq!(lex(&source).unwrap_err().code, "E_SOURCE_LIMIT");
 }
