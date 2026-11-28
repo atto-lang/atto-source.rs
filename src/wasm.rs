@@ -143,6 +143,7 @@ struct Layout {
     /// A verified, trivial readonly class accessor may load directly from
     /// the caller's existing guest handle. Never manufacture a borrow slot.
     borrow_getters: Vec<Option<(Type, Type, u32)>>,
+    borrow_int_pairs: Vec<Option<(Type, BinOp, u32, u32)>>,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -780,6 +781,23 @@ impl Emit<'_> {
                     // ordinary scalar field load, with no call or wrapper.
                     self.expr(&args[0]);
                     field_op(&mut self.code, value_ty, offset, false);
+                } else if let Some((op, left, right)) =
+                    verified_borrow_int_pair_call(v, *f, args, &self.l.borrow_int_pairs)
+                {
+                    // The argument is a proved stable local, not a computed
+                    // expression. Repeated local.get is not repeated evaluation
+                    // of source effects. Preserve left-to-right reads and
+                    // use exactly the normal checked arithmetic helper.
+                    self.expr(&args[0]);
+                    field_op(&mut self.code, Type::Int, left, false);
+                    self.expr(&args[0]);
+                    field_op(&mut self.code, Type::Int, right, false);
+                    self.call(self.l.helper(match op {
+                        BinOp::Add => H_ADD,
+                        BinOp::Sub => H_SUB,
+                        BinOp::Mul => H_MUL,
+                        _ => unreachable!("verified checked integer pair"),
+                    }));
                 } else {
                     // Fail closed when the callee proof and this exact call
                     // site disagree. Preserve original evaluation order/ABI.
@@ -1341,6 +1359,46 @@ fn verified_borrow_getter_call(
     Some((value_ty, offset))
 }
 
+/// Admit only a single checked integer operation on two ordinary fields
+/// of the same readonly borrowed formal. No constants, calls, state leases,
+/// cleanup, short circuiting, mutable formals or other expressions.
+fn verified_borrow_int_pair(f: &TFunc) -> Option<(Type, BinOp, u32, u32)> {
+    let [Type::Class(class)] = f.params.as_slice() else { return None };
+    let owner = Type::Class(*class);
+    if !matches!(f.param_ownership.as_slice(), [ParamOwnership::BorrowRead])
+        || !f.locals.is_empty() || f.ret != Type::Int {
+        return None;
+    }
+    let [TStmt::Return(Some(TE {
+        e: TExpr::Bin(op, left, right), ty: Type::Int,
+    }))] = f.body.as_slice() else { return None };
+    if !matches!(*op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+        return None;
+    }
+    fn offset(value: &TE, owner: Type) -> Option<u32> {
+        let TExpr::FieldGet { obj, offset } = &value.e else { return None };
+        if value.ty != Type::Int || obj.ty != owner
+            || !matches!(&obj.e, TExpr::Local(0)) {
+            return None;
+        }
+        Some(*offset)
+    }
+    Some((owner, *op, offset(left, owner)?, offset(right, owner)?))
+}
+
+fn verified_borrow_int_pair_call(
+    result: &TE, function: u32, args: &[TE],
+    plans: &[Option<(Type, BinOp, u32, u32)>],
+) -> Option<(BinOp, u32, u32)> {
+    let [arg] = args else { return None };
+    let (owner, op, left, right) = *plans.get(function as usize)?.as_ref()?;
+    if result.ty != Type::Int || arg.ty != owner
+        || !matches!(&arg.e, TExpr::Local(_)) {
+        return None;
+    }
+    Some((op, left, right))
+}
+
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
@@ -1358,6 +1416,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         ),
         raise_tag: p.raise_tag,
         borrow_getters: p.funcs.iter().map(verified_borrow_getter).collect(),
+        borrow_int_pairs: p.funcs.iter().map(verified_borrow_int_pair).collect(),
     };
     let mut types = Types(Vec::new());
 
@@ -1772,5 +1831,67 @@ mod borrow_getter_elision_proof_tests {
             e: TExpr::Call(0, vec![]), ty: Type::Class(0)
         };
         assert_eq!(verified_borrow_getter_call(&result, 0, &[computed], &plans), None);
+    }
+}
+
+#[cfg(test)]
+mod borrow_int_pair_proof_tests {
+    use super::*;
+
+    fn pair() -> TFunc {
+        fn field(offset: u32) -> Box<TE> {
+            Box::new(TE {
+                ty: Type::Int,
+                e: TExpr::FieldGet {
+                    obj: Box::new(TE { ty: Type::Class(0), e: TExpr::Local(0) }),
+                    offset,
+                },
+            })
+        }
+        TFunc {
+            name: "pair".into(),
+            params: vec![Type::Class(0)],
+            param_ownership: vec![ParamOwnership::BorrowRead],
+            ret: Type::Int,
+            locals: vec![],
+            body: vec![TStmt::Return(Some(TE {
+                ty: Type::Int,
+                e: TExpr::Bin(BinOp::Sub, field(8), field(16)),
+            }))],
+        }
+    }
+
+    #[test]
+    fn pair_proof_preserves_operand_order_and_rejects_other_authority() {
+        let good = pair();
+        let proof = verified_borrow_int_pair(&good);
+        assert_eq!(proof, Some((Type::Class(0), BinOp::Sub, 8, 16)));
+        let result = TE { ty: Type::Int, e: TExpr::I64(0) };
+        let local = TE { ty: Type::Class(0), e: TExpr::Local(2) };
+        assert_eq!(verified_borrow_int_pair_call(&result, 0, &[local.clone()], &[proof]),
+            Some((BinOp::Sub, 8, 16)));
+        let mut wrong = local.clone();
+        wrong.ty = Type::Class(1);
+        assert_eq!(verified_borrow_int_pair_call(&result, 0, &[wrong], &[proof]), None);
+        let computed = TE { ty: Type::Class(0), e: TExpr::Call(0, vec![]) };
+        assert_eq!(verified_borrow_int_pair_call(&result, 0, &[computed], &[proof]), None);
+        assert_eq!(verified_borrow_int_pair_call(&result, 0, &[local.clone(), local], &[proof]), None);
+        for mode in [ParamOwnership::BorrowWrite, ParamOwnership::Take, ParamOwnership::Legacy] {
+            let mut bad = good.clone();
+            bad.param_ownership[0] = mode;
+            assert_eq!(verified_borrow_int_pair(&bad), None);
+        }
+        let mut bad = good.clone();
+        if let TStmt::Return(Some(TE { e: TExpr::Bin(_, _, rhs), .. })) = &mut bad.body[0] {
+            rhs.e = TExpr::I64(1);
+        }
+        assert_eq!(verified_borrow_int_pair(&bad), None);
+        let mut bad = good.clone();
+        if let TStmt::Return(Some(TE { e: TExpr::Bin(_, _, rhs), .. })) = &mut bad.body[0] {
+            if let TExpr::FieldGet { obj, offset } = &rhs.e {
+                rhs.e = TExpr::StateFieldRead { obj: obj.clone(), offset: *offset };
+            }
+        }
+        assert_eq!(verified_borrow_int_pair(&bad), None);
     }
 }

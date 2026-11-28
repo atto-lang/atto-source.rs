@@ -1,0 +1,11 @@
+// atto-ownership: borrow-default-v1
+// expect-panic: 1
+define class Parcel as
+    pub let int left = 9223372036854775807;
+    pub let int right = 1;
+end
+fnc sum(Parcel p): int { return p.left + p.right; }
+pub fnc main(): int {
+    let parcel = new Parcel();
+    return sum(parcel);
+}
