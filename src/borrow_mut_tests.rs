@@ -348,3 +348,59 @@ fn bae_transitive_effectful_terminal_preserves_call() {
     assert_ne!(crate::compile(&source).expect("effectful chain"),
         crate::compile(&direct).expect("direct fields"));
 }
+
+
+#[test]
+fn bae_method_getter_carries_proved_receiver_mode_and_elides_forwarding() {
+    let source = include_str!("../tests/fixtures/pass/borrow-method-getter-v1.atto");
+    let program = typed(source);
+    let getter = program.funcs.iter().find(|f| f.name == "Parcel.get").unwrap();
+    assert_eq!(getter.param_ownership, [ParamOwnership::BorrowRead]);
+    let direct = source.replace("return inspect(parcel);", "return parcel.value;");
+    assert_eq!(crate::compile(source).expect("readonly getter"),
+        crate::compile(&direct).expect("direct field"));
+}
+
+#[test]
+fn bae_method_getter_does_not_admit_effectful_or_computed_receiver() {
+    let source = include_str!("../tests/fixtures/pass/borrow-method-getter-v1.atto");
+    let effect = source.replace("return self.value;", "stdio.print(1); return self.value;");
+    let program = typed(&effect);
+    let getter = program.funcs.iter().find(|f| f.name == "Parcel.get").unwrap();
+    assert_eq!(getter.param_ownership, [ParamOwnership::Legacy]);
+    let direct = effect.replace("return inspect(parcel);", "return parcel.value;");
+    assert_ne!(crate::compile(&effect).expect("effectful method"),
+        crate::compile(&direct).expect("direct field"));
+    let computed = source.replace("return inspect(parcel);", "return new Parcel().get();");
+    let computed_direct = computed.replace("new Parcel().get()", "parcel.value");
+    assert_ne!(crate::compile(&computed).expect("computed receiver"),
+        crate::compile(&computed_direct).expect("local receiver"));
+}
+
+
+#[test]
+fn bae_many_borrowed_parameters_match_ordered_direct_reads() {
+    let source = include_str!("../tests/fixtures/pass/borrow-many-args-v1.atto");
+    let direct = source.replace("combine(p, borrow! q, p)", "(p.value + q.value) - p.value + p.value");
+    assert_eq!(crate::compile(source).expect("three borrowed arguments"),
+        crate::compile(&direct).expect("ordered direct reads"));
+    let effect = source.replace("return (c.value", "stdio.print(1); return (c.value");
+    let effect_direct = effect.replace("combine(p, borrow! q, p)", "(p.value + q.value) - p.value + p.value");
+    assert_ne!(crate::compile(&effect).expect("effectful call"),
+        crate::compile(&effect_direct).expect("direct reads"));
+}
+
+#[test]
+fn bae_many_borrowed_parameters_enforce_arity_and_expression_budget() {
+    for n in [3usize, 8, 9] {
+        let names: Vec<_> = (0..n).map(|i| format!("p{i}")).collect();
+        let params = names.iter().map(|p| format!("Parcel {p}")).collect::<Vec<_>>().join(", ");
+        let sum = names.iter().map(|p| format!("{p}.value")).collect::<Vec<_>>().join(" + ");
+        let actual = vec!["p"; n].join(", ");
+        let direct = vec!["p.value"; n].join(" + ");
+        let source = format!("// atto-ownership: borrow-default-v1\ndefine class Parcel as pub let int value = 1; end\nfnc sum({params}): int {{ return {sum}; }}\npub fnc main(): int {{ let p = new Parcel(); return CALL; }}");
+        let bytes = crate::compile(&source.replace("CALL", &format!("sum({actual})"))).expect("checked source");
+        let baseline = crate::compile(&source.replace("CALL", &direct)).expect("direct reads");
+        assert_eq!(bytes == baseline, n <= 8, "arity {n}");
+    }
+}

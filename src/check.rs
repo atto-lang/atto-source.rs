@@ -1294,10 +1294,27 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             named.extend(m.params.iter().zip(&mi.params).map(|(q, t)| (q.name.as_str(), *t, q.mutable)));
             let label = format!("{}.{}", c.name, m.name);
             let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            // A zero-argument, ordinary-class getter can carry readonly
+            // receiver evidence into typed IR. This is a proved effect of
+            // the entire checked body, not an inference from the method
+            // name or from the receiver's nominal type alone. Do not
+            // broaden general method-call or receiver ownership admission.
+            let readonly_getter = g.borrow_default_v1
+                && !m.is_static && m.params.is_empty() && !info.state_container
+                && body.1.is_empty()
+                && matches!(body.0.as_slice(), [TStmt::Return(Some(TE {
+                    e: TExpr::FieldGet { obj, .. }, ty,
+                }))] if matches!(&obj.e, TExpr::Local(0)) && obj.ty == me
+                    && *ty == mi.ret && matches!(*ty, Type::Int | Type::Bool | Type::Float));
+            let receiver_mode = if readonly_getter {
+                ParamOwnership::BorrowRead
+            } else {
+                ParamOwnership::Legacy
+            };
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: named.iter().map(|x| x.1).collect(),
-                param_ownership: std::iter::once(ParamOwnership::Legacy)
+                param_ownership: std::iter::once(receiver_mode)
                     .take(usize::from(!m.is_static))
                     .chain(m.params.iter().map(|p| p.ownership)).collect(),
                 ret: mi.ret,
