@@ -1,4 +1,4 @@
-//! L3 borrow-conformance exporter (`borrow_export`, profile straight-line-v1).
+//! L3 borrow-conformance exporter (`borrow_export`, profile structured-cfg-v1).
 //!
 //! These golden tests pin the exact canonical ownership events the checker
 //! records, so that a change in the checker's ownership decisions or in the
@@ -129,15 +129,15 @@ fn parameters_are_initialized_owners() {
 #[test]
 fn shapes_outside_the_profile_fail_closed_with_a_reason() {
     for (body, reason) in [
-        ("pub fnc main(): int { val int x = 1; if x > 0 then return 1; fi return 2; }", "branching"),
+        ("pub fnc main(): int { val int x = 1; match x over on 1 -> { return 1; } on _ -> { return 2; } end }", "match"),
         ("pub fnc main(): int { val c = new C(); return c.get(); }", "method call"),
         ("pub fnc main(): int { let int x = 1; x = 2; return x; }", "reassignment"),
-        ("pub fnc main(): int { let int i = 0; while i < 3 { i = i + 1; } return i; }", "loops"),
+        ("pub fnc main(): int { let int i = 0; while i < 3 { i = i + 1; } return i; }", "reassignment"),
     ] {
         let r = main_record(body);
         match &r.mir {
             Err(why) => assert!(why.contains(reason), "{body}: {why}"),
-            Ok(_) => panic!("{body}: exported a graph outside straight-line-v1"),
+            Ok(_) => panic!("{body}: exported a graph outside structured-cfg-v1"),
         }
     }
 }
@@ -269,4 +269,143 @@ fn projected_loan_is_not_exported_as_a_whole_owner_proof() {
     let r = main_record("pub fnc main(): int { let c = new C(); val x = borrow! c.x; return x; }");
     assert_eq!(code(&r), None);
     assert!(matches!(&r.mir, Err(why) if why.contains("field projection")));
+}
+
+// ---------------------------------------------------------------------------
+// structured-cfg-v1: real CFG blocks for if / while / loop / for
+// ---------------------------------------------------------------------------
+
+/// Blocks as `id:[events]->[successors]` for compact golden assertions.
+fn cfg(record: &Record) -> Vec<String> {
+    let graph = record.mir.as_ref().unwrap_or_else(|why| panic!("mirUnavailable: {why}"));
+    graph
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(id, b)| {
+            let events: Vec<String> = b.events.iter().map(|(e, _)| e.short()).collect();
+            let succ: Vec<String> = b.successors.iter().map(|s| s.to_string()).collect();
+            format!("{id}:[{}]->[{}]", events.join(" "), succ.join(","))
+        })
+        .collect()
+}
+
+#[test]
+fn if_else_exports_test_arm_false_and_join_blocks() {
+    let r = main_record(
+        "pub fnc main(): int { val int x = 1; val c = new C(); if x > 0 then val d = take! c; fi return 2; }",
+    );
+    assert_eq!(code(&r), None);
+    assert_eq!(
+        cfg(&r),
+        [
+            "0:[Init(1,copy) Init(2) Read(1)]->[1,2]",
+            "1:[Read(2) Move(2->3)]->[3]",
+            "2:[]->[3]",
+            "3:[Return]->[]",
+        ]
+    );
+}
+
+#[test]
+fn may_moved_owner_after_a_branch_is_rejected_by_both_sides() {
+    let r = main_record(
+        "pub fnc main(): int { val int x = 1; val c = new C(); if x > 0 then val d = take! c; fi return c.x; }",
+    );
+    assert_eq!(code(&r), Some("E_MOVED"));
+    assert!(r.prefix_at_error);
+    // The read after the join is the failing op, in the join block.
+    assert_eq!(cfg(&r).last().unwrap(), "3:[Read(2) Return]->[]");
+}
+
+#[test]
+fn arms_that_return_do_not_reach_the_join() {
+    let r = main_record(
+        "pub fnc main(): int { val int x = 1; if x > 0 then return 1; else return 2; fi }",
+    );
+    assert_eq!(code(&r), None);
+    assert_eq!(
+        cfg(&r),
+        ["0:[Init(1,copy) Read(1)]->[1,2]", "1:[Return]->[]", "2:[Return]->[]"]
+    );
+}
+
+#[test]
+fn while_loop_has_header_body_back_edge_and_exit() {
+    let r = main_record(
+        "pub fnc main(): int { val int n = 3; val c = new C(); while n > 0 { val v = borrow! c; val y = v.x; } return c.x; }",
+    );
+    assert_eq!(code(&r), None);
+    assert_eq!(
+        cfg(&r),
+        [
+            "0:[Init(1,copy) Init(2)]->[1]",
+            // header: condition; true -> body, false -> exit
+            "1:[Read(1)]->[2,3]",
+            // body: loan ends at its NLL last use, loop-local owner released, back-edge
+            "2:[Borrow(2,3,shared) Read(2) Init(4,copy) EndBorrow(3) Drop(4)]->[1]",
+            "3:[Read(2) Return]->[]",
+        ]
+    );
+}
+
+#[test]
+fn break_and_continue_release_loop_locals_on_their_edges() {
+    let r = main_record(
+        "pub fnc main(): int { val int n = 3; loop { val int k = n; if k > 1 then break; fi continue; } return n; }",
+    );
+    assert_eq!(code(&r), None);
+    let blocks = cfg(&r);
+    // break edge releases `k` before leaving to the exit block.
+    assert!(blocks.iter().any(|b| b.contains("Drop(2)]->[") && b.ends_with("->[]") == false), "{blocks:?}");
+    assert!(blocks.last().unwrap().ends_with("[Read(1) Return]->[]"), "{blocks:?}");
+}
+
+#[test]
+fn loop_without_break_has_no_exit_block() {
+    let r = main_record("pub fnc main(): int { val int n = 3; loop { val int k = n; } }");
+    let blocks = cfg(&r);
+    assert!(blocks.iter().all(|b| !b.contains("Return")), "{blocks:?}");
+}
+
+#[test]
+fn conditionally_moved_loop_local_owner_fails_closed() {
+    let r = main_record(
+        "pub fnc main(): int { val int n = 3; while n > 0 { val c = new C(); if n > 1 then val d = take! c; fi } return n; }",
+    );
+    assert!(matches!(&r.mir, Err(why) if why.contains("drop-if-owned")), "{:?}", r.mir);
+}
+
+#[test]
+fn call_argument_temporaries_are_released_inside_loops() {
+    let r = main_record(
+        "fnc f(C p): int { return p.x; } pub fnc main(): int { val int n = 2; while n > 0 { val c = new C(); val a = f(c); } return n; }",
+    );
+    assert_eq!(code(&r), None);
+    let body = cfg(&r)[2].clone();
+    assert!(body.contains("Move(2->1000001) Drop(1000001)"), "{body}");
+    // `c` is consumed on every path, so only `a` needs a per-iteration release.
+    assert!(body.ends_with("Init(3,copy) Drop(3)]->[1]"), "{body}");
+}
+
+#[test]
+fn rejection_in_a_loop_header_exports_the_repetition() {
+    // The compiler rejects moving a pre-existing owner in a repeated loop
+    // condition. The prefix keeps the repetition: the header re-runs or
+    // exits, so canonical sees the second-iteration use after move.
+    let r = main_record(
+        "pub fnc main(): int { val amount = new C(); let count = 0; while take! amount > 0 { count = count + 1; } return count; }",
+    );
+    assert_eq!(code(&r), Some("E_MOVED"));
+    let blocks = cfg(&r);
+    assert!(blocks.iter().any(|b| b.starts_with("1:") && b.ends_with("->[1,2]")), "{blocks:?}");
+}
+
+#[test]
+fn rejection_deep_in_a_loop_body_fails_closed() {
+    let r = main_record(
+        "pub fnc main(): int { val c = new C(); val int n = 1; while n > 0 { val d = take! c; } return 1; }",
+    );
+    assert_eq!(code(&r), Some("E_MOVED"));
+    assert!(matches!(&r.mir, Err(why) if why.contains("loop body")), "{:?}", r.mir);
 }

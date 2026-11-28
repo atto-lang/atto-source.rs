@@ -2522,7 +2522,7 @@ fn body_check(
     crate::borrow_export::record(
         label,
         cx.trace.take(),
-        "class, actor and constructor bodies are outside straight-line-v1",
+        "class, actor and constructor bodies are outside structured-cfg-v1",
         checked.as_ref().err(),
         pos,
     );
@@ -2961,9 +2961,15 @@ impl<'a> FnCx<'a> {
 
     fn pop_scope(&mut self) {
         if let Some(ended) = self.scopes.pop() {
-            if let Some(tr) = self.trace.as_mut() {
-                let slots: Vec<u32> = ended.iter().map(|l| l.slot).collect();
-                tr.scope_ended(&slots, Pos::default());
+            if self.trace.is_some() {
+                // (slot, possibly moved): loop-local owners are released per
+                // iteration, and a MAY-moved one cannot be released exactly.
+                let locals: Vec<(u32, bool)> = ended.iter()
+                    .map(|l| (l.slot, self.moved.contains(&l.slot)))
+                    .collect();
+                if let Some(tr) = self.trace.as_mut() {
+                    tr.scope_ended(&locals, Pos::default());
+                }
             }
             for l in ended {
                 self.loans.remove(&l.slot);
@@ -3020,7 +3026,7 @@ impl<'a> FnCx<'a> {
                         fuel, &mut next_use))
                 .map(|local| local.slot)
                 .collect();
-            if let Some(tr) = self.trace.as_mut() { tr.scope_ended(&ended, Pos::default()); }
+            if let Some(tr) = self.trace.as_mut() { tr.loans_expired(&ended, Pos::default()); }
             for alias in ended {
                 next_use.remove(&alias);
                 self.loans.remove(&alias);
@@ -3046,11 +3052,13 @@ impl<'a> FnCx<'a> {
         if let Some(tr) = self.trace.as_mut() {
             let outside = match s {
                 Stmt::Bind { .. } | Stmt::Expr(_) | Stmt::Return(..) | Stmt::Block(_) => None,
+                // Structured control flow is exported as CFG blocks (structured-cfg-v1).
+                Stmt::If { .. } | Stmt::While { .. } | Stmt::Loop { .. } | Stmt::For { .. }
+                | Stmt::Break(_) | Stmt::Continue(_) => None,
                 Stmt::Assign { .. } => Some("reassignment (no canonical re-initialization op)"),
                 Stmt::FieldAssign { .. } => Some("field assignment"),
-                Stmt::If { .. } | Stmt::Match { .. } => Some("branching control flow (needs canonical joins)"),
-                Stmt::While { .. } | Stmt::Loop { .. } | Stmt::For { .. } | Stmt::ForIn { .. }
-                | Stmt::Break(_) | Stmt::Continue(_) => Some("loops (needs canonical fixed-point analysis)"),
+                Stmt::Match { .. } => Some("match statement (pattern arms not exported yet)"),
+                Stmt::ForIn { .. } => Some("generator for-in loop (generator protocol not exported)"),
                 Stmt::Try { .. } | Stmt::Defer { .. } | Stmt::Recover { .. }
                 | Stmt::UsingTelemetry { .. }
                 | Stmt::Throw(..) | Stmt::Raise(..) => Some("unwind, cleanup or failure statement"),
@@ -3342,10 +3350,15 @@ impl<'a> FnCx<'a> {
                 // fall through; arms that always return do not contribute.
                 let mut out = Vec::new();
                 let mut after: BTreeSet<u32> = BTreeSet::new();
+                // L3 export: each condition runs in a test block; arms and the
+                // false path rejoin in a join block (see borrow_export).
+                let mut branch = self.trace.as_mut().map(|t| t.branch_begin());
                 for (c, b) in arms {
                     let c = self.cond(c, "if")?;
+                    if let (Some(t), Some(f)) = (self.trace.as_mut(), branch.as_mut()) { t.arm_begin(f); }
                     let at_cond = self.moved.clone();
                     let body = self.scoped(b)?;
+                    if let (Some(t), Some(f)) = (self.trace.as_mut(), branch.as_mut()) { t.arm_end(f); }
                     if !returns(&body) {
                         after.extend(self.moved.iter().copied());
                     }
@@ -3365,12 +3378,17 @@ impl<'a> FnCx<'a> {
                         None
                     }
                 };
+                if let (Some(t), Some(f)) = (self.trace.as_mut(), branch.take()) { t.branch_end(f); }
                 self.moved = after;
                 TStmt::If(out, other)
             }
             Stmt::While { cond, body, .. } => {
+                let depth = self.scopes.len();
+                if let Some(t) = self.trace.as_mut() { t.loop_begin(depth); }
                 let c = self.repeated_cond(cond, "while")?;
+                if let Some(t) = self.trace.as_mut() { t.loop_body_begin(true); }
                 let body = self.looped(body)?;
+                if let Some(t) = self.trace.as_mut() { t.loop_end(); }
                 TStmt::Loop {
                     cond: Some(c),
                     body,
@@ -3378,7 +3396,13 @@ impl<'a> FnCx<'a> {
                 }
             }
             Stmt::Loop { body, .. } => {
+                let depth = self.scopes.len();
+                if let Some(t) = self.trace.as_mut() {
+                    t.loop_begin(depth);
+                    t.loop_body_begin(false);
+                }
                 let body = self.looped(body)?;
+                if let Some(t) = self.trace.as_mut() { t.loop_end(); }
                 TStmt::Loop {
                     cond: None,
                     body,
@@ -3399,11 +3423,18 @@ impl<'a> FnCx<'a> {
                     // including after continue; they must not transfer
                     // locals allocated before the loop's repeated region.
                     let repeated_floor = self.nparams + self.locals.len() as u32;
+                    let depth = self.scopes.len();
+                    if let Some(t) = self.trace.as_mut() { t.loop_begin(depth); }
                     let c = match cond {
                         Some(c) => Some(self.repeated_cond(c, "for")?),
                         None => None,
                     };
+                    if let Some(t) = self.trace.as_mut() { t.loop_body_begin(c.is_some()); }
                     let b = self.looped(body)?;
+                    if let Some(t) = self.trace.as_mut() {
+                        // Back-edges run through the update block (also after continue).
+                        t.loop_update_begin();
+                    }
                     self.loop_floors.push(repeated_floor);
                     let update_result = match update {
                         Some(u) => self.stmt(u).map(|u| vec![u]),
@@ -3411,6 +3442,7 @@ impl<'a> FnCx<'a> {
                     };
                     self.loop_floors.pop();
                     let u = update_result?;
+                    if let Some(t) = self.trace.as_mut() { t.loop_end(); }
                     out.push(TStmt::Loop {
                         cond: c,
                         body: b,
@@ -3429,6 +3461,18 @@ impl<'a> FnCx<'a> {
                         "E_LOOP",
                         format!("'{w}' may only appear inside loop, while or for"),
                     ));
+                }
+                if let Some(depth) = self.trace.as_ref().and_then(|t| t.loop_body_depth()) {
+                    // Locals of the loop body still open at the jump are
+                    // released on this edge, innermost last.
+                    let locals: Vec<(u32, bool)> = self.scopes[depth.min(self.scopes.len())..]
+                        .iter()
+                        .flatten()
+                        .map(|l| (l.slot, self.moved.contains(&l.slot)))
+                        .collect();
+                    if let Some(t) = self.trace.as_mut() {
+                        t.loop_jump(matches!(s, Stmt::Break(_)), &locals, *pos);
+                    }
                 }
                 if matches!(s, Stmt::Break(_)) {
                     TStmt::Break
@@ -4504,7 +4548,7 @@ impl<'a> FnCx<'a> {
             }
         }
         if let Some(tr) = self.trace.as_mut() {
-            // straight-line-v1 allowlist: every other expression form has
+            // structured-cfg-v1 allowlist: every other expression form has
             // ownership effects (receivers, captures, branches, actors) that
             // this exporter does not yet represent, so it fails closed.
             let outside = match &e.kind {
@@ -4517,7 +4561,7 @@ impl<'a> FnCx<'a> {
                 ExprKind::Lambda { .. } => Some("closure capture"),
                 ExprKind::Spawn(_) | ExprKind::SelfRef | ExprKind::StateRead(_) =>
                     Some("actor, self or protected state access"),
-                _ => Some("expression form outside straight-line-v1"),
+                _ => Some("expression form outside structured-cfg-v1"),
             };
             if let Some(reason) = outside {
                 tr.unavailable(reason);
