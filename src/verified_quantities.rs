@@ -94,7 +94,11 @@ pub(crate) fn lower_mode(source: &str, tokens: &[Token], strict: bool) -> R<Opti
         if declarations > 128 { return Err(p.err("E_UNIT_LIMIT", "too many quantity declarations")); }
         p.declaration()?;
     }
-    if scalar_contract_profile || matches!(&p.token().tok, Tok::Ident(name) if name == "type") {
+    // The ordinary alias-free main uses the checked typed IR too. Keep strict
+    // admission unchanged and never emit the legacy closed-expression result.
+    let alias_free_main = !strict && declarations != 0
+        && matches!(&p.token().tok, Tok::Ident(name) if name == "pub");
+    if scalar_contract_profile || alias_free_main || matches!(&p.token().tok, Tok::Ident(name) if name == "type") {
         return bindings::lower(&mut p).map(|program| Some(Lowered::Typed(program)));
     }
     if strict {
