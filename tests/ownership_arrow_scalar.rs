@@ -50,3 +50,17 @@ fn non_copy_transfer_fails_closed() {
     let error = compile(source).expect_err("non-Copy transfer needs cleanup proof");
     assert_eq!(error.code, "E_OWNERSHIP", "{error}");
 }
+
+#[test]
+fn scalar_shadowing_uses_predeclaration_binding_and_new_slot() {
+    for body in [
+        "let a = 21; let a <- a; return a + a;",
+        "let a = 21; let a = a + 21; return a;",
+        "let a = 1; let a = 0; set a <- 42; return a;",
+    ] {
+        let wasm = compile(&program(body)).expect(body);
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    }
+    let err = compile(&program("const a = 1; const a = 2; return a;")).expect_err("duplicate const");
+    assert_eq!(err.code, "E_DUPLICATE", "{err}");
+}
