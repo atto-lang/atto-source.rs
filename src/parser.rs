@@ -432,8 +432,12 @@ impl Parser {
             }
         }
         self.expect(end, "closing delimiter after callable parameters")?;
-        if !self.eat(&Tok::FatArrow) && !(allow_slim_arrow && self.eat(&Tok::Arrow)) {
-            return Err(self.expected("'=>' before callable result type"));
+        // The explicit postfix marker admits both arrow spellings. Keep the
+        // old undotted syntax on this compatibility slice until its edition
+        // migration is settled; the value-expression parser is unchanged.
+        let dotted = self.eat(&Tok::Dot);
+        if !self.eat(&Tok::FatArrow) && !((dotted || allow_slim_arrow) && self.eat(&Tok::Arrow)) {
+            return Err(self.expected("callable result arrow"));
         }
         let result = self.parse_type()?;
         self.intern_callable(params, result, pos)
@@ -476,9 +480,13 @@ impl Parser {
                 }
             }
             self.expect(Tok::RParen, "')' after parenthesized type")?;
-            if self.eat(&Tok::FatArrow) {
+            let dotted = self.eat(&Tok::Dot);
+            if self.eat(&Tok::FatArrow) || (dotted && self.eat(&Tok::Arrow)) {
                 let result = self.parse_type()?;
                 return self.intern_callable(params, result, pos);
+            }
+            if dotted {
+                return Err(self.expected("'=>' or '->' after callable type marker"));
             }
             return if params.len() == 1 { Ok(params[0]) } else {
                 Err(self.expected("'=>' after callable parameters"))
